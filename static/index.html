@@ -1461,7 +1461,8 @@ input[type=range]::-webkit-slider-thumb:hover { background: var(--gold); }
   flex-direction: column;
 }
 .modal-overlay.open .modal { transform: scale(1); }
-.modal-header { padding: 16px 24px; font-size: 16px; font-weight: 500; border-bottom: 1px solid var(--border); }
+.modal-header { padding: 16px 24px; font-size: 16px; font-weight: 600; border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; }
+.modal-header h3 { margin: 0; font-size: inherit; font-weight: inherit; }
 .modal-body { padding: 24px; font-size: 14px; color: var(--muted); overflow: auto; flex: 1 1 auto; }
 .modal-footer { padding: 16px 24px; display: flex; justify-content: flex-end; gap: 12px; background: rgba(0,0,0,0.1); flex-shrink: 0; }
 
@@ -5604,8 +5605,13 @@ function showMobileSelectPicker(selectId, title) {
 
   const closeBtn = document.createElement('button');
   closeBtn.type = 'button';
-  closeBtn.className = 'close-btn';
-  closeBtn.textContent = '\u00d7';
+  closeBtn.className = 'btn btn-ghost close-btn';
+  closeBtn.style.padding = '6px';
+  closeBtn.innerHTML = `
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <line x1="18" y1="6" x2="6" y2="18"></line>
+      <line x1="6" y1="6" x2="18" y2="18"></line>
+    </svg>`;
 
   header.appendChild(heading);
   header.appendChild(closeBtn);
