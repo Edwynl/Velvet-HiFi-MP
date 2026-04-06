@@ -3974,6 +3974,254 @@ input[type=range]::-webkit-slider-thumb:hover { background: var(--gold); }
       height: 3px !important;
     }
   }
+    /* GRAPHIC EQ STYLES */
+    .eq-overlay {
+      display: none;
+      position: fixed;
+      top: 0; left: 0; width: 100vw; height: 100vh;
+      background: #000;
+      z-index: 9999;
+      flex-direction: column;
+      overflow-y: auto;
+      padding: 40px;
+    }
+    .eq-overlay.active {
+      display: flex;
+    }
+    .eq-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 16px 24px;
+      position: sticky;
+      top: 0;
+      background: var(--bg-color);
+      z-index: 10;
+    }
+    .eq-title {
+      font-family: 'Cormorant Garamond', serif;
+      font-size: 1.5rem;
+      font-style: italic;
+      color: var(--gold);
+    }
+    .eq-close-btn {
+      color: var(--text-muted);
+      cursor: pointer;
+      background: transparent;
+      border: none;
+      transition: color 0.3s ease;
+      display: flex;
+      align-items: center;
+    }
+    .eq-close-btn:hover { color: var(--text-color); }
+    .eq-container {
+      max-width: 1280px;
+      margin: 0 auto;
+      width: 100%;
+      padding: 24px;
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 32px;
+    }
+    @media (min-width: 768px) {
+      .eq-container {
+        grid-template-columns: 3fr 9fr;
+      }
+    }
+    /* Frequency Curve */
+    .eq-curve-container {
+      position: relative;
+      background: #0e0e10;
+      border-radius: 24px;
+      overflow: hidden;
+      aspect-ratio: 21 / 9;
+      box-shadow: 0 25px 50px -12px rgba(0,0,0,0.5);
+      border: 1px solid rgba(255,255,255,0.05);
+      background-image: 
+          linear-gradient(to right, rgba(230, 195, 100, 0.05) 1px, transparent 1px),
+          linear-gradient(to bottom, rgba(230, 195, 100, 0.05) 1px, transparent 1px);
+      background-size: 40px 40px;
+    }
+    @media (max-width: 768px) {
+      .eq-curve-container {
+        aspect-ratio: 16 / 9;
+      }
+    }
+    .eq-curve-path {
+      filter: drop-shadow(0 0 8px rgba(230, 195, 100, 0.4));
+    }
+    .eq-curve-labels {
+      position: absolute;
+      inset: 0;
+      padding: 16px 24px;
+      pointer-events: none;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+    }
+    .eq-curve-y-labels {
+      display: flex;
+      justify-content: space-between;
+      color: rgba(255,255,255,0.2);
+      font-family: 'DM Mono', monospace;
+      font-size: 10px;
+    }
+    .eq-curve-x-labels {
+      position: absolute;
+      bottom: 16px;
+      left: 24px;
+      right: 24px;
+      display: flex;
+      justify-content: space-between;
+      color: rgba(255,255,255,0.2);
+      font-family: 'DM Mono', monospace;
+      font-size: 10px;
+    }
+    /* Sliders */
+    .eq-sliders-panel {
+      background: rgba(42, 42, 44, 0.4);
+      padding: 32px 24px;
+      border-radius: 24px;
+      backdrop-filter: blur(12px);
+      border: 1px solid rgba(255,255,255,0.02);
+      overflow-x: auto;
+    }
+    .eq-sliders-wrapper {
+      display: flex;
+      justify-content: space-between;
+      gap: 16px;
+      min-width: max-content;
+    }
+    .eq-band {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 16px;
+      min-width: 48px;
+    }
+    .eq-band-gain {
+      font-family: 'DM Mono', monospace;
+      font-size: 0.75rem;
+      color: var(--text-color);
+      min-width: 38px;
+      text-align: center;
+    }
+    .eq-band-gain.positive { color: var(--gold); }
+    .eq-slider-track {
+      height: 180px;
+      width: 4px;
+      background: var(--bg-hover);
+      border-radius: 9999px;
+      position: relative;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+    }
+    .eq-vertical-slider {
+      -webkit-appearance: none;
+      appearance: none;
+      width: 180px;
+      height: 4px;
+      background: transparent;
+      outline: none;
+      transform: rotate(-90deg);
+      margin: 0;
+    }
+    .eq-vertical-slider::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      appearance: none;
+      width: 14px;
+      height: 14px;
+      background: var(--gold);
+      border: 2px solid var(--bg-color);
+      border-radius: 50%;
+      cursor: pointer;
+      box-shadow: 0 0 10px rgba(230, 195, 100, 0.8);
+    }
+    .eq-vertical-slider::-moz-range-thumb {
+      width: 14px;
+      height: 14px;
+      background: var(--gold);
+      border: 2px solid var(--bg-color);
+      border-radius: 50%;
+      cursor: pointer;
+      box-shadow: 0 0 10px rgba(230, 195, 100, 0.8);
+    }
+    .eq-band-freq {
+      font-family: 'DM Mono', monospace;
+      font-size: 0.625rem;
+      color: var(--text-muted);
+      text-transform: uppercase;
+    }
+    /* Panel Buttons */
+    .eq-controls-panel {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      background: #0e0e10;
+      padding: 24px;
+      border-radius: 16px;
+      margin-top: 32px;
+      border: 1px solid rgba(255,255,255,0.05);
+      flex-wrap: wrap;
+      gap: 16px;
+    }
+    .eq-presets-list {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+    .eq-preset-btn {
+      width: 100%;
+      text-align: left;
+      padding: 12px 16px;
+      border-radius: 12px;
+      font-family: 'Cormorant Garamond', 'Noto Serif', serif;
+      font-size: 1.125rem;
+      transition: all 0.3s ease;
+      background: transparent;
+      border: none;
+      color: var(--text-muted);
+      cursor: pointer;
+      border-left: 2px solid transparent;
+    }
+    .eq-preset-btn:hover {
+      background: rgba(255,255,255,0.05);
+      color: var(--text-color);
+    }
+    .eq-preset-btn.active {
+      background: var(--bg-hover);
+      color: var(--gold);
+      border-left-color: var(--gold);
+    }
+    .eq-btn-reset {
+      padding: 8px 24px;
+      border-radius: 12px;
+      font-family: 'DM Mono', monospace;
+      font-size: 0.75rem;
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      color: var(--text-muted);
+      border: 1px solid rgba(255,255,255,0.1);
+      background: transparent;
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+    .eq-btn-reset:hover { background: rgba(255,255,255,0.1); }
+    .eq-btn-save {
+      padding: 8px 24px;
+      border-radius: 12px;
+      font-family: 'DM Mono', monospace;
+      font-size: 0.75rem;
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      background: var(--gold);
+      color: #3d2e00;
+      font-weight: 700;
+      border: none;
+      cursor: pointer;
+      box-shadow: 0 4px 14px rgba(230,195,100,0.2);
+    }
 </style>
 </head>
 <body>
@@ -4364,6 +4612,10 @@ input[type=range]::-webkit-slider-thumb:hover { background: var(--gold); }
       <h1 class="mobile-player-title">Velvet HiFi Player</h1>
     </div>
     <div class="mobile-player-header-actions">
+      <button class="mobile-player-pill" id="mobile-top-eq" type="button" title="Equalizer">
+        <span class="mobile-player-pill-label">EQ</span>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 21v-7 M4 10V3 M12 21v-9 M12 8V3 M20 21v-5 M20 12V3 M1 14h6 M9 8h6 M17 12h6"/></svg>
+      </button>
       <button class="mobile-player-pill" id="mobile-top-vu" type="button" title="VU Meters">
         <span class="mobile-player-pill-label">VU</span>
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/></svg>
@@ -4572,6 +4824,76 @@ input[type=range]::-webkit-slider-thumb:hover { background: var(--gold); }
   <div class="cast-menu-header">Cast to Device</div>
   <div id="cast-device-list">
     <div class="cast-item loading-text">Scanning...</div>
+  </div>
+</div>
+
+<div id="eq-overlay" class="eq-overlay">
+  <div class="eq-header">
+    <h1 class="eq-title">Velvet | Graphic EQ</h1>
+    <button class="eq-close-btn" id="eq-close-btn">
+      <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+    </button>
+  </div>
+  <div class="eq-container">
+    <!-- Left Sidebar: EQ Presets -->
+    <aside style="display: flex; flex-direction: column; gap: 16px;">
+      <div id="eq-presets-container" class="eq-presets-list">
+        <!-- Render preset buttons here dynamically via JS -->
+      </div>
+    </aside>
+
+    <!-- Main Workspace -->
+    <div style="display:flex; flex-direction:column; gap: 32px; min-width: 0;">
+      <!-- Frequency Response Curve -->
+      <div class="eq-curve-container">
+        <div class="frequency-grid"></div>
+        <div class="eq-curve-labels">
+          <div class="eq-curve-y-labels">
+            <span>+12dB</span>
+            <span>0dB</span>
+            <span>-12dB</span>
+          </div>
+        </div>
+        <svg viewBox="0 0 1000 300" id="eq-curve-svg" style="width:100%; height:100%; position: absolute; inset: 0;">
+          <!-- Baseline -->
+          <line stroke="rgba(153, 144, 126, 0.1)" stroke-width="1" x1="0" x2="1000" y1="150" y2="150"></line>
+          <!-- Area under curve -->
+          <path id="eq-curve-fill" d="M 0 150 L 1000 150 V 300 H 0 Z" fill="url(#goldGradientEQ)" opacity="0.05"></path>
+          <!-- Dynamic Path -->
+          <path id="eq-curve-path" class="eq-curve-path" d="M 0 150 L 1000 150" fill="none" stroke="#e6c364" stroke-width="3"></path>
+          <defs>
+            <linearGradient id="goldGradientEQ" x1="0%" y1="0%" x2="0%" y2="100%">
+              <stop offset="0%" style="stop-color:#e6c364;stop-opacity:1"></stop>
+              <stop offset="100%" style="stop-color:#e6c364;stop-opacity:0"></stop>
+            </linearGradient>
+          </defs>
+        </svg>
+        <div class="eq-curve-x-labels">
+          <span>31.5Hz</span><span>125Hz</span><span>500Hz</span><span>2kHz</span><span>8kHz</span><span>16kHz</span>
+        </div>
+      </div>
+
+      <!-- Graphic EQ Sliders -->
+      <section class="eq-sliders-panel">
+        <div class="eq-sliders-wrapper" id="eq-sliders-wrapper">
+          <!-- Render sliders dynamically -->
+        </div>
+      </section>
+
+      <!-- Quick Controls -->
+      <div class="eq-controls-panel">
+        <div style="display:flex; gap: 32px">
+            <div>
+              <p style="font-family: 'DM Mono', monospace; font-size: 10px; text-transform: uppercase; color: var(--text-muted); margin-bottom: 4px;">DSP Name</p>
+              <p id="eq-current-name" style="font-family: 'Cormorant Garamond', serif; font-size: 1.125rem; font-style: italic; color: var(--text-color);">Custom Profile</p>
+            </div>
+        </div>
+        <div style="display:flex; gap: 16px;">
+          <button class="eq-btn-reset" id="eq-btn-reset">Reset</button>
+          <button class="eq-btn-save" id="eq-btn-save">Save & Apply</button>
+        </div>
+      </div>
+    </div>
   </div>
 </div>
 
@@ -5973,6 +6295,14 @@ function handleCastButtonClick(e) {
 $('btn-cast').addEventListener('click', handleCastButtonClick);
 $('mobile-btn-cast').addEventListener('click', handleCastButtonClick);
 $('mobile-top-cast').addEventListener('click', handleCastButtonClick);
+$('mobile-top-eq')?.addEventListener('click', (e) => { 
+  e.stopPropagation(); 
+  if (window.openGraphicEQ) window.openGraphicEQ(); 
+});
+$('eq-close-btn')?.addEventListener('click', (e) => {
+  e.stopPropagation();
+  $('eq-overlay')?.classList.remove('active');
+});
 $('mobile-top-vu')?.addEventListener('click', (e) => { e.stopPropagation(); toggleVUMeters(); });
 $('mobile-top-upsample').addEventListener('click', (e) => {
   e.stopPropagation();
@@ -8969,13 +9299,13 @@ async function renderSettings(vc) {
             `).join('')}
           </div>
 
-          <div id="dsp-editor-panel" style="background:var(--s2);border:1px solid var(--border);border-radius:var(--radius);padding:16px">
-            <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:12px">
+          <div id="dsp-editor-panel" style="background:#000;border:1px solid rgba(255,255,255,0.1);border-radius:20px;padding:24px;margin-top:16px">
+            <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:20px">
               <div>
-                <div style="font-size:14px;color:var(--text);font-weight:600">Custom DSP Editor</div>
-                <div id="dsp-editor-status" style="font-size:11px;color:var(--muted);margin-top:4px">Create a custom profile or duplicate a factory preset.</div>
+                <div style="font-size:16px;color:var(--gold);font-weight:600;font-family:'Cormorant Garamond',serif;font-style:italic">Custom DSP Editor</div>
+                <div id="dsp-editor-status" style="font-size:11px;color:var(--muted);margin-top:4px">Refine your sonic signature with precision filters.</div>
               </div>
-              <span id="dsp-editor-badge" style="font-size:10px;padding:4px 8px;border-radius:999px;background:rgba(255,255,255,.06);color:var(--muted)">Blank</span>
+              <span id="dsp-editor-badge" style="font-size:10px;padding:4px 10px;border-radius:4px;border:1px solid rgba(255,255,255,0.1);background:rgba(255,255,255,0.03);color:var(--muted);text-transform:uppercase;letter-spacing:1px">Blank</span>
             </div>
 
             <div style="display:grid;gap:12px">
@@ -9158,31 +9488,30 @@ async function renderSettings(vc) {
     }
 
     const headerRow = `
-      <div style="display:grid;grid-template-columns:minmax(90px,1.2fr) minmax(50px,1fr) minmax(50px,1fr) minmax(50px,1fr) 50px 65px;gap:8px;padding:0 10px;font-size:11px;color:var(--muted);text-align:center">
-        <div style="text-align:left;padding-left:4px">Type</div>
-        <div>Freq (Hz)</div>
-        <div>Gain (dB)</div>
-        <div>Q Factor</div>
-        <div></div>
-        <div></div>
+      <div style="display:grid;grid-template-columns:1.2fr 1fr 1fr 1fr 60px 80px;gap:12px;padding:0 12px;margin-bottom:8px;font-size:11px;color:rgba(255,255,255,0.4);text-transform:uppercase;letter-spacing:0.5px">
+        <div>Type</div>
+        <div style="text-align:center">Freq (Hz)</div>
+        <div style="text-align:center">Gain (dB)</div>
+        <div style="text-align:center">Q Factor</div>
+        <div style="text-align:center">ON</div>
+        <div style="text-align:right">Action</div>
       </div>
     `;
 
     list.innerHTML = headerRow + filters.map((filter, index) => `
-      <div class="dsp-filter-row" style="display:grid;grid-template-columns:minmax(90px,1.2fr) minmax(50px,1fr) minmax(50px,1fr) minmax(50px,1fr) 50px 65px;gap:8px;align-items:center;background:var(--s3);border:1px solid var(--border);border-radius:var(--radius);padding:10px">
-        <select class="form-input dsp-filter-type">
+      <div class="dsp-filter-row" style="display:grid;grid-template-columns:1.2fr 1fr 1fr 1fr 60px 80px;gap:12px;align-items:center;background:rgba(255,255,255,0.02);border:1px solid rgba(255,255,255,0.05);border-radius:12px;padding:12px">
+        <select class="form-input dsp-filter-type" style="border-radius:8px;background:#111;font-size:13px">
           <option value="peaking" ${filter.type === 'peaking' ? 'selected' : ''}>Peaking</option>
           <option value="low_shelf" ${filter.type === 'low_shelf' ? 'selected' : ''}>Low Shelf</option>
           <option value="high_shelf" ${filter.type === 'high_shelf' ? 'selected' : ''}>High Shelf</option>
         </select>
-        <input class="form-input dsp-filter-freq" type="number" min="20" max="20000" step="1" value="${Number(filter.freq || 1000)}" placeholder="Freq">
-        <input class="form-input dsp-filter-gain" type="number" min="-12" max="12" step="0.1" value="${Number(filter.gain || 0)}" placeholder="Gain">
-        <input class="form-input dsp-filter-q" type="number" min="0.1" max="10" step="0.1" value="${Number(filter.q || 1.0)}" placeholder="Q">
-        <label style="display:flex;align-items:center;gap:6px;font-size:11px;color:var(--muted)">
-          <input class="dsp-filter-enabled" type="checkbox" ${filter.enabled === false ? '' : 'checked'}>
-          On
-        </label>
-        <button class="btn btn-ghost dsp-remove-filter-btn" data-filter-index="${index}" style="padding:8px 10px;color:#ff8d8d">Remove</button>
+        <input class="form-input dsp-filter-freq" type="number" min="20" max="20000" step="1" value="${Number(filter.freq || 1000)}" style="border-radius:8px;background:#111;text-align:center;font-size:13px">
+        <input class="form-input dsp-filter-gain" type="number" min="-12" max="12" step="0.1" value="${Number(filter.gain || 0)}" style="border-radius:8px;background:#111;text-align:center;font-size:13px">
+        <input class="form-input dsp-filter-q" type="number" min="0.1" max="10" step="0.1" value="${Number(filter.q || 1.0)}" style="border-radius:8px;background:#111;text-align:center;font-size:13px">
+        <div style="display:flex;justify-content:center">
+          <input class="dsp-filter-enabled" type="checkbox" ${filter.enabled === false ? '' : 'checked'} style="width:18px;height:18px;accent-color:var(--gold)">
+        </div>
+        <button class="btn btn-ghost dsp-remove-filter-btn" data-filter-index="${index}" style="padding:6px;color:#ff8d8d;font-size:12px;text-align:right">Remove</button>
       </div>
     `).join('');
 
@@ -9736,6 +10065,229 @@ async function loadStats() {
     $('stat-duration').textContent = stats.total_duration_hours + 'h';
   } catch {}
 }
+
+// ─── Graphic EQ Logic ─────────────────────────────────────────────────────────
+
+const GEQ_BANDS = [31.5, 63, 125, 250, 500, 1000, 2000, 4000, 8000, 16000];
+const GEQ_DEFAULT_Q = 1.41;
+let currentEqGains = new Array(10).fill(0);
+let currentEqProfileId = null;
+
+function formatFreq(f) {
+  return f >= 1000 ? (f/1000) + 'kHz' : f + 'Hz';
+}
+
+function renderEQPresets() {
+  const container = $('eq-presets-container');
+  if (!container || !state.dspProfiles) return;
+  
+  let html = `<button class="eq-preset-btn ${!currentEqProfileId ? 'active' : ''}" onclick="selectEQPreset('')">Dry (Flat)</button>`;
+  
+  state.dspProfiles.forEach((profile, i) => {
+    const isActive = (currentEqProfileId === profile.id);
+    let shortLabel = compactDspLabel(profile.short_name || profile.name) || `DSP${i + 1}`;
+    html += `<button class="eq-preset-btn ${isActive ? 'active' : ''}" onclick="selectEQPreset('${profile.id}')">${escHtml(shortLabel)}</button>`;
+  });
+  
+  container.innerHTML = html;
+}
+
+window.selectEQPreset = async function(id) {
+  currentEqProfileId = id;
+  console.log('[VELVET] Selecting EQ Preset:', id);
+  
+  if (!id) {
+    currentEqGains.fill(0);
+    $('eq-current-name').textContent = 'Dry (Flat)';
+  } else {
+    const profile = state.dspProfiles.find(p => String(p.id) === String(id));
+    if (profile) {
+      $('eq-current-name').textContent = profile.name || 'Custom Preset';
+      currentEqGains.fill(0);
+      
+      let filters = profile.filters;
+      if (!filters && profile.filter_chain_json) {
+        try {
+          filters = JSON.parse(profile.filter_chain_json);
+        } catch (e) {
+          console.error('[VELVET] Failed to parse filters:', e);
+        }
+      }
+
+      if (filters && Array.isArray(filters)) {
+        filters.forEach(f => {
+          // Both 'peaking' and 'shelf' filters contribute to the perceived curve
+          if (f.type !== 'peaking' && !f.type.includes('shelf')) return;
+          
+          let minDiff = 999999;
+          let bestIdx = -1;
+          GEQ_BANDS.forEach((bf, idx) => {
+            const diff = Math.abs(bf - f.freq);
+            if(diff < minDiff) { 
+              minDiff = diff; 
+              bestIdx = idx; 
+            }
+          });
+          
+          // Map to the closest band if it's within a reasonable octave range
+          // Graphic EQ is an approximation of the underlying DSP
+          if (bestIdx !== -1) {
+            const gain = parseFloat(f.gain) || 0;
+            // If multiple filters map to the same band, we sum them (simple approximation)
+            currentEqGains[bestIdx] += gain;
+          }
+        });
+        
+        // Clamp gains to +/- 12dB
+        for(let i=0; i<currentEqGains.length; i++) {
+          currentEqGains[i] = Math.max(-12, Math.min(12, currentEqGains[i]));
+        }
+      }
+    }
+  }
+  
+  renderEQPresets();
+  renderEQSliders();
+  updateEQCurve();
+}
+
+function renderEQSliders() {
+  const wrapper = $('eq-sliders-wrapper');
+  if (!wrapper) return;
+  
+  let html = '';
+  GEQ_BANDS.forEach((f, i) => {
+    const val = currentEqGains[i] || 0;
+    const sign = val > 0 ? '+' : '';
+    const colorClass = val > 0 ? 'positive' : '';
+    const label = formatFreq(f);
+    
+    html += `
+      <div class="eq-band">
+        <span class="eq-band-gain ${colorClass}" id="eq-gain-val-${i}">${sign}${val.toFixed(1)} dB</span>
+        <div class="eq-slider-track">
+          <input class="eq-vertical-slider" type="range" min="-12" max="12" step="0.1" value="${val}" 
+                 oninput="handleEQSliderInput(${i}, this.value)">
+        </div>
+        <span class="eq-band-freq">${label}</span>
+      </div>
+    `;
+  });
+  wrapper.innerHTML = html;
+}
+
+window.handleEQSliderInput = function(i, value) {
+  const val = parseFloat(value);
+  currentEqGains[i] = val;
+  const gainEl = $(`eq-gain-val-${i}`);
+  if (gainEl) {
+    const sign = val > 0 ? '+' : '';
+    gainEl.textContent = `${sign}${val.toFixed(1)} dB`;
+    if (val > 0) gainEl.classList.add('positive');
+    else gainEl.classList.remove('positive');
+  }
+  $('eq-current-name').textContent = 'Custom Profile';
+  currentEqProfileId = 'custom';
+  renderEQPresets(); 
+  updateEQCurve();
+};
+
+function updateEQCurve() {
+  const path = $('eq-curve-path');
+  const fill = $('eq-curve-fill');
+  if (!path || !fill) return;
+  
+  const points = [];
+  const W = 1000;
+  const H = 300;
+  const midY = 150;
+  const pixelsPerDb = 10; 
+  
+  for (let x = 0; x <= W; x += 5) {
+    const freq = 20 * Math.pow(2, (x / W) * 9.965784);
+    
+    let totalDb = 0;
+    for (let i=0; i<10; i++) {
+      const g = currentEqGains[i];
+      if (Math.abs(g) < 0.1) continue;
+      const ratio = freq / GEQ_BANDS[i];
+      const invRatio = GEQ_BANDS[i] / freq;
+      const qTerm = GEQ_DEFAULT_Q * (ratio - invRatio);
+      const mag = g / (1 + qTerm * qTerm);
+      totalDb += mag;
+    }
+    
+    const y = midY - (totalDb * pixelsPerDb);
+    points.push(`${x},${y}`);
+  }
+  
+  const d = `M 0 150 L ${points.map(p => p.replace(',', ' ')).join(' L ')} L 1000 150`;
+  path.setAttribute('d', d);
+  fill.setAttribute('d', d + ' V 300 H 0 Z');
+}
+
+window.openGraphicEQ = function() {
+  $('eq-overlay').classList.add('active');
+  currentEqProfileId = state.dspProfile;
+  selectEQPreset(currentEqProfileId);
+}
+
+window.addEventListener('DOMContentLoaded', () => {
+    $('eq-btn-reset')?.addEventListener('click', () => {
+      currentEqGains.fill(0);
+      $('eq-current-name').textContent = 'Dry (Flat)';
+      currentEqProfileId = 'custom';
+      renderEQSliders();
+      renderEQPresets();
+      updateEQCurve();
+    });
+
+    $('eq-btn-save')?.addEventListener('click', async () => {
+      const btn = $('eq-btn-save');
+      if(btn) btn.textContent = 'Saving...';
+      
+      const filters = [];
+      GEQ_BANDS.forEach((f, i) => {
+        if (Math.abs(currentEqGains[i]) > 0.05) {
+          filters.push({
+            type: 'peaking',
+            freq: f,
+            gain: currentEqGains[i],
+            q: GEQ_DEFAULT_Q
+          });
+        }
+      });
+      
+      const profile = {
+        name: 'Custom Graphic EQ',
+        preamp: 0.0,
+        filters: filters
+      };
+      
+      try {
+        const res = await api('/dsp/presets/custom', {
+          method: 'POST',
+          body: JSON.stringify(profile)
+        });
+        if (res && res.success) {
+          await loadDspProfiles();
+          const select = $('dsp-select');
+          if (select) {
+            select.value = 'custom';
+            select.dispatchEvent(new Event('change'));
+          } else {
+            await api('/dsp/apply', { method: 'POST', body: JSON.stringify({ id: 'custom' }) });
+            state.dspProfile = 'custom';
+          }
+          showToast('EQ Saved & Applied');
+          $('eq-overlay').classList.remove('active');
+        }
+      } catch (err) {
+        showToast('Failed to save EQ');
+      }
+      if(btn) btn.textContent = 'Save & Apply';
+    });
+});
 
 async function loadDspProfiles() {
   try {
