@@ -8937,7 +8937,7 @@ async function renderSettings(vc) {
           <button class="btn btn-gold" id="dsp-new-custom-btn">New Custom</button>
           <button class="btn btn-ghost" id="dsp-duplicate-active-btn">Duplicate Active Preset</button>
         </div>
-        <div style="display:grid;grid-template-columns:minmax(0,1.1fr) minmax(0,1fr);gap:16px;align-items:start">
+        <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(360px, 1fr));gap:16px;align-items:start">
           <div id="dsp-preset-grid">
             ${settingsDspProfiles.map(profile => `
               <div class="dsp-preset-card" data-profile-id="${profile.id}" style="background:var(--s2);border:1px solid ${String(profile.id) === activeDspId ? 'var(--gold)' : 'var(--border)'};border-radius:var(--radius);padding:14px 16px;margin-bottom:10px">
