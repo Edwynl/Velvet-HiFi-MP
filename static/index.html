@@ -3581,7 +3581,7 @@ input[type=range]::-webkit-slider-thumb:hover { background: var(--gold); }
     background: #e6c364;
     transform-origin: bottom center;
     transform: rotate(-48deg);
-    transition: transform 0.08s ease-out;
+    /* transition removed — animation is fully JS-driven via requestAnimationFrame */
     box-shadow: 0 0 10px rgba(230, 195, 100, 0.5);
   }
   .mobile-vu-pivot {
@@ -5376,33 +5376,7 @@ function makeArtistCard(artist) {
   return el;
 }
 
-function makeAlbumCard(album) {
-  const el = document.createElement('div');
-  el.className = 'card album-card';
-  
-  // Detection for hi-res
-  const isHiRes = isHiResTrack({ sample_rate: album.sample_rate || 0, bit_depth: album.bit_depth || 0, is_hires: album.is_hires });
-  const hiResBadge = isHiRes ? `<div class="card-hires-badge">HI-RES</div>` : '';
-
-  el.innerHTML = `
-    <div class="card-art">
-      <img src="/api/covers/${album.id}/thumb" alt="${escHtml(album.title)}" 
-           onerror="this.parentElement.querySelector('.card-art-placeholder').classList.add('visible'); this.style.display='none'"
-           loading="lazy">
-      <div class="card-art-placeholder"></div>
-      ${hiResBadge}
-      <div class="card-play-btn" onclick="event.stopPropagation(); playAlbum('${album.id}')">
-        <svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
-      </div>
-    </div>
-    <div class="card-title" title="${escHtml(album.title)}">${escHtml(album.title)}</div>
-    <div class="card-sub" title="${escHtml(album.artist_name || 'Various Artists')}">${escHtml(album.artist_name || 'Various Artists')}</div>
-  `;
-
-  el.addEventListener('click', () => navigate('album', { id: album.id }));
-  return el;
-}
-
+// playAlbum: quick-play an album without navigating (used by card play button)
 async function playAlbum(albumId) {
   try {
     const tracks = await api(`/albums/${albumId}/tracks`);
@@ -5673,15 +5647,15 @@ let audioSource = null;
 let audioDataArray = null;
 let browserPlaybackToken = 0;
 const browserPlaybackRecoveryConfig = {
-  pauseDelayMs: 350,
-  stallDelayMs: 1200,
-  visibilityDelayMs: 250,
-  watchdogIntervalMs: 1500,
-  stuckThresholdMs: 2500,
-  minProgressDelta: 0.05,
-  minGapMs: 800,
+  pauseDelayMs: 400,
+  stallDelayMs: 4500, // 4.5s (up from 1.2s) - allow more time for mobile buffering
+  visibilityDelayMs: 300,
+  watchdogIntervalMs: 2000, // 2.0s (up from 1.5s)
+  stuckThresholdMs: 6500, // 6.5s (up from 2.5s)
+  minProgressDelta: 0.1,
+  minGapMs: 1500, // 1.5s (up from 0.8s) - prevent rapid-fire recoveries
   maxAttempts: 3,
-  attemptWindowMs: 15000,
+  attemptWindowMs: 25000,
 };
 let browserRecoveryTimer = null;
 let browserRecoveryInFlight = null;
@@ -5706,6 +5680,21 @@ function setMediaSessionPlaybackState(playbackState) {
   try {
     navigator.mediaSession.playbackState = playbackState;
   } catch {}
+}
+
+// On mobile, closing the AudioContext tab or suspending it (e.g. screen recording)
+// can leave the MediaElementSource graph in a broken state. audio.play() will still
+// start the HTML5 Audio pipeline but the old source node reference may be stale.
+// Call this before audio.play() to ensure a clean slate if AudioContext was suspended.
+// This is SAFE to call even when AudioContext is already null (no-op).
+async function cleanupSuspendedAudioContextIfNeeded() {
+  if (audioContext && audioContext.state === 'suspended') {
+    try { await audioContext.close(); } catch {}
+    audioContext = null;
+    audioAnalyser = null;
+    audioSource = null;
+    audioDataArray = null;
+  }
 }
 
 function markExpectedBrowserPause(durationMs = 800) {
@@ -5805,10 +5794,16 @@ function startBrowserPlaybackWatchdog() {
       return;
     }
 
+    // Only treat audio.paused as an error if readyState shows we have no data.
+    // On mobile, audio.paused can be true temporarily during source switches or
+    // AudioContext state changes even though the audio is supposed to be playing.
+    // If readyState >= 2 (HAVE_CURRENT_DATA), the audio element has data and
+    // the browser is just temporarily not playing it — don't spam recovery.
     if (audio.paused) {
-      if (!isExpectedBrowserPause()) {
+      if (!isExpectedBrowserPause() && audio.readyState < 2) {
         scheduleBrowserPlaybackRecovery('unexpected-pause', { delayMs: browserPlaybackRecoveryConfig.pauseDelayMs });
       }
+      noteBrowserPlaybackProgress();
       return;
     }
 
@@ -5820,14 +5815,39 @@ function startBrowserPlaybackWatchdog() {
   }, browserPlaybackRecoveryConfig.watchdogIntervalMs);
 }
 
+// ─── AudioContext / VU Meter Notes ────────────────────────────────────────────
+//
+// CRITICAL: AudioContext is ONLY used for VU meter visualization.
+// Normal HTML5 Audio playback does NOT require AudioContext.
+//
+// HOW IT WORKS:
+//   HTML5 Audio element (this.audio) plays audio independently via the browser's
+//   media pipeline. AudioContext is a SEPARATE API used only for reading audio
+//   data (getByteFrequencyData) to drive the VU meter needle animation.
+//
+// THE GOLDEN RULE:
+//   DO NOT call initAudioAnalyser() during playback resume, togglePlayAction,
+//   visibilitychange, pageshow, mediaSession play action, or audio.ended handlers.
+//   AudioContext must only be initialized when the user OPENs the VU overlay.
+//
+// WHY THIS MATTERS (Mobile Lock Screen):
+//   On iOS/Android, when the screen locks or the tab goes to background, the
+//   browser may suspend the AudioContext. If createMediaElementSource() was
+//   already called, the audio graph is "broken" — HTML5 Audio alone would have
+//   continued fine, but the AudioContext connection kills the audio path.
+//   By NOT initializing AudioContext during playback, the HTML5 Audio element
+//   continues playing normally on lock screen even when AudioContext is suspended.
+//
+// safe call sites (only): startBrowserPlayback (before first play), startVUAnimation
+//
+// ─────────────────────────────────────────────────────────────────────────────
 function initAudioAnalyser() {
-  if (audioContext) return;
-  if (!shouldUseWebAudioAnalyser()) return;
+  if (audioContext) return; // Already initialized; do NOT recreate
   try {
     audioContext = new (window.AudioContext || window.webkitAudioContext)();
     audioAnalyser = audioContext.createAnalyser();
     audioAnalyser.fftSize = 256;
-    audioAnalyser.smoothingTimeConstant = 0.8;
+    audioAnalyser.smoothingTimeConstant = 0.6;
     audioSource = audioContext.createMediaElementSource(audio);
     audioSource.connect(audioAnalyser);
     audioAnalyser.connect(audioContext.destination);
@@ -5868,6 +5888,12 @@ function streamUrl(trackId, upsample) {
   return `/api/stream/${trackId}?upsample=${u}${dsp}`;
 }
 
+// DO NOT call initAudioAnalyser() here — audio must stay decoupled from AudioContext
+// so that HTML5 Audio continues on mobile lock screen. VU overlay calls initAudioAnalyser
+// when the user opens it. See "AudioContext / VU Meter Notes" above.
+// DO NOT call initAudioAnalyser() here — audio must stay decoupled from AudioContext
+// so that HTML5 Audio continues on mobile lock screen. VU overlay calls initAudioAnalyser
+// when the user opens it. See "AudioContext / VU Meter Notes" above.
 async function startBrowserPlayback(track, { resumeTime = null, token = null } = {}) {
   const playbackToken = token ?? ++browserPlaybackToken;
   const targetUrl = streamUrl(track.id);
@@ -5875,6 +5901,14 @@ async function startBrowserPlayback(track, { resumeTime = null, token = null } =
   cancelBrowserPlaybackRecovery();
   markExpectedBrowserPause(1200);
   audio.pause();
+
+  // Clean up any suspended AudioContext before swapping the audio source.
+  // On mobile (screen recording, lock screen), AudioContext can be left suspended
+  // with a broken MediaElementSource graph. audio.removeAttribute('src') would
+  // corrupt the audio element's state. The helper also nulls out all audio graph
+  // refs so the VU overlay can recreate them fresh when reopened.
+  await cleanupSuspendedAudioContextIfNeeded();
+
   audio.removeAttribute('src');
   audio.load();
 
@@ -5901,6 +5935,8 @@ async function startBrowserPlayback(track, { resumeTime = null, token = null } =
     }
   }
 
+  audio.playbackRate = 1.0; // Ensure normal speed (mobile browsers may alter rate on route changes)
+
   try {
     await audio.play();
   } catch (error) {
@@ -5908,7 +5944,10 @@ async function startBrowserPlayback(track, { resumeTime = null, token = null } =
     console.warn('[VELVET] Browser playback failed:', error?.message || error);
     state.playing = false;
     updatePlayBtnUI();
-    return false;
+    // Even though playback failed, the track is loaded — still return true so
+    // the caller (playTrack) updates the UI with the new track title/artist.
+    // state.playing is already false so the play button will show the correct state.
+    return true;
   }
 
   if (playbackToken !== browserPlaybackToken) {
@@ -5929,13 +5968,34 @@ async function playTrack(track, queue, idx) {
   state.queue    = queue || state.queue;
   state.queueIdx = idx   !== undefined ? idx : state.queueIdx;
 
+  // Only update player UI if this is a different track from what's currently playing.
+  // This avoids expensive DOM updates (especially cover art reload) when resuming the
+  // same track, e.g. from zone switching or lock screen.
+  const prevTrackId = state.currentTrack?.id;
+  const isNewTrack = !prevTrackId || prevTrackId !== track.id;
+  if (isNewTrack) {
+    updatePlayerUI(track);  // Immediate UI update before any async work
+  }
+
+  // Set current track FIRST — the old version did this before any async ops.
+  // This ensures the UI always shows the correct track even if playback hasn't started.
+  state.currentTrack = track;
+
+  // Open mobile player IMMEDIATELY when a new track is selected (before async fetch).
+  // This prevents the "no response" bug when the async fetch causes a delay.
+  // Mobile player needs to open before any potential awaits.
+  if (isNewTrack && window.innerWidth <= 768) {
+    toggleMobilePlayer(true);
+  }
+
   // Ensure track has artist/album info for Media Session and UI
-  // Fetch full track info if artist_name is missing
+  // Fetch full track info if artist_name is missing (do this in background)
   if (!track.artist_name && !track.artist && !track.album_artist) {
     try {
       const fullTrack = await api(`/tracks/${track.id}`);
       if (playbackToken !== browserPlaybackToken) return;
-      // Merge full info into track
+      // Merge full info into track; if this changes the track data, refresh UI
+      const hadTitle = !!(track.artist_name || track.artist || track.album_artist);
       Object.assign(track, {
         artist_name: fullTrack.artist_name || track.artist_name,
         album_title: fullTrack.album_title || track.album_title,
@@ -5945,13 +6005,16 @@ async function playTrack(track, queue, idx) {
         sample_rate: fullTrack.sample_rate || track.sample_rate,
         bit_depth: fullTrack.bit_depth || track.bit_depth
       });
+      // If this fetch added missing info, refresh UI one more time
+      if (!hadTitle && (track.artist_name || track.artist || track.album_artist)) {
+        updatePlayerUI(track);
+      }
     } catch (e) {
       console.warn('Failed to fetch full track info:', e);
     }
   }
 
   if (playbackToken !== browserPlaybackToken) return;
-  state.currentTrack = track;
 
   if (isCastZone()) {
     markExpectedBrowserPause(1200);
@@ -5988,21 +6051,20 @@ async function playTrack(track, queue, idx) {
     }
   } else {
     stopCastPolling();
-    const started = await startBrowserPlayback(track, { token: playbackToken });
-    if (!started) return;
+    await startBrowserPlayback(track, { token: playbackToken });
+    // Do NOT early-return if startBrowserPlayback returns false.
+    // state.currentTrack is already set correctly, so highlight + mobile player
+    // should always update to reflect what the user just clicked.
   }
 
-  if (playbackToken !== browserPlaybackToken) return;
-  updatePlayerUI(track);
-  highlightPlaying(track.id);
+  // Always highlight and open mobile player — state.currentTrack was set before
+  // any async work, so it always correctly reflects what is actually playing now.
+  if (state.currentTrack) highlightPlaying(state.currentTrack.id);
 
-  if ($('lyrics-panel').classList.contains('open')) loadLyrics(track);
+  if ($('lyrics-panel').classList.contains('open')) loadLyrics(state.currentTrack);
   if ($('queue-panel').classList.contains('open')) renderQueue();
 
-  // Instant full screen player when playing a track on mobile
-  if (window.innerWidth <= 768) {
-    toggleMobilePlayer(true);
-  }
+  // Mobile player already opened above for new tracks
 }
 
 function startCastPolling() {
@@ -6471,6 +6533,8 @@ async function toggleCurrentAlbumFavorite() {
 }
 
 function highlightPlaying(trackId) {
+  // Silently exit if no valid trackId — don't throw or log
+  if (!trackId) return;
   // Optimization: Only update the previously playing track and the new one
   const prevPlaying = document.querySelector('.track-item.playing');
   const newPlaying = document.querySelector(`.track-item[data-track-id="${trackId}"]`);
@@ -6533,12 +6597,14 @@ audio.addEventListener('playing', () => {
 });
 
 audio.addEventListener('waiting', () => {
-  if (!canRecoverBrowserPlayback() || audio.seeking) return;
+  // Only trigger recovery if we are TRULY stuck (readyState < 2 means no data)
+  // If readyState >= 2, the browser has data and is just processing it.
+  if (!canRecoverBrowserPlayback() || audio.seeking || audio.readyState >= 2) return;
   scheduleBrowserPlaybackRecovery('waiting');
 });
 
 audio.addEventListener('stalled', () => {
-  if (!canRecoverBrowserPlayback()) return;
+  if (!canRecoverBrowserPlayback() || audio.readyState >= 2) return;
   scheduleBrowserPlaybackRecovery('stalled');
 });
 
@@ -6557,11 +6623,13 @@ audio.addEventListener('error', () => {
   scheduleBrowserPlaybackRecovery('error', { delayMs: browserPlaybackRecoveryConfig.pauseDelayMs });
 });
 
-audio.addEventListener('ended', () => {
+audio.addEventListener('ended', async () => {
   if (isCastZone() || isNativeZone()) return; // Handle outside browser output
   cancelBrowserPlaybackRecovery();
   resetBrowserPlaybackRecoveryWindow();
   if (state.repeatMode === 'one') {
+    await cleanupSuspendedAudioContextIfNeeded();
+    audio.playbackRate = 1.0;
     audio.currentTime = 0; audio.play(); return;
   }
   const next = state.queueIdx + 1;
@@ -6605,9 +6673,11 @@ window.addEventListener('pageshow', () => {
   }
 });
 
+// DO NOT add initAudioAnalyser() here.
+// See "AudioContext / VU Meter Notes" above.
 const togglePlayAction = async () => {
   if (!state.currentTrack) return;
-  
+
   if (isCastZone()) {
     const action = state.playing ? 'Pause' : 'Play';
     const res = await api(`/cast/control/${state.castDevice.udn}/${action}`, { method: 'POST' });
@@ -6629,10 +6699,15 @@ const togglePlayAction = async () => {
   }
 
   if (audio.paused) {
+    // On mobile, screen recording start/stop or lock screen can leave AudioContext
+    // suspended. Clean it up before playing to prevent the MediaElementSource graph
+    // from causing pitch/speed issues. Also ensures playbackRate stays at 1.0.
+    await cleanupSuspendedAudioContextIfNeeded();
+    audio.playbackRate = 1.0;
     audio.play();
     state.playing = true;
-    noteBrowserPlaybackProgress();
     updatePlayBtnUI();
+    if (state.currentTrack) updateMediaSession(state.currentTrack);
   } else {
     markExpectedBrowserPause();
     audio.pause();
@@ -7043,11 +7118,13 @@ document.addEventListener('click', e => {
 // ─── Media Session Controls ───────────────────────────────────────────────────
 
 if ('mediaSession' in navigator) {
-  navigator.mediaSession.setActionHandler('play', () => {
+  navigator.mediaSession.setActionHandler('play', async () => {
+    await cleanupSuspendedAudioContextIfNeeded();
+    audio.playbackRate = 1.0;
     audio.play();
     state.playing = true;
-    noteBrowserPlaybackProgress();
     updatePlayBtnUI();
+    if (state.currentTrack) updateMediaSession(state.currentTrack);
   });
   navigator.mediaSession.setActionHandler('pause', () => {
     markExpectedBrowserPause();
@@ -7071,17 +7148,10 @@ startBrowserPlaybackWatchdog();
 const _pageCache = new Map();
 const _maxCacheSize = 5;  // Keep last 5 pages in memory
 
-function navigate(view, params = {}, push = true) {
+async function navigate(view, params = {}, push = true) {
   console.log(`[VELVET] Navigating to: ${view}`, params);
   const prevView = state.view;
   const prevParams = state.viewParams;
-
-  // Don't re-render if navigating to same view with same params
-  // Only skip if state.view is already set (not null)
-  if (prevView && prevView === view && JSON.stringify(params) === JSON.stringify(state.viewParams)) {
-    console.log('[VELVET] Navigation skipped (same view/params)');
-    return;
-  }
 
   if (view === 'search' && prevView !== 'search') {
     state.prevView = prevView || 'home';
@@ -7111,7 +7181,7 @@ function navigate(view, params = {}, push = true) {
     _cachePage(prevView, vc.innerHTML);
   }
 
-  render();
+  await render();
 }
 
 // Simple page caching
@@ -7131,16 +7201,6 @@ function _getCachedPage(view) {
 $$('.nav-item').forEach(el => {
   el.addEventListener('click', () => navigate(el.dataset.view));
 });
-
-// Debounce navigation to prevent rapid clicks
-let _navPending = false;
-const originalNavigate = navigate;
-window.navigate = function(view, params = {}, push = true) {
-  if (_navPending) return;
-  _navPending = true;
-  originalNavigate(view, params, push);
-  setTimeout(() => { _navPending = false; }, 200);
-};
 
 $$('.player-info').forEach(el => {
   el.addEventListener('click', () => {
@@ -7170,6 +7230,19 @@ async function render() {
   // Show loading immediately with smoother transition
   vc.style.opacity = '0.5';
   vc.className = 'view-' + state.view;
+
+  // Restore from cache if available (faster than re-fetching/re-rendering)
+  // Skip cache for views that use addEventListener on rendered cards (album cards,
+  // track rows, etc.) — innerHTML restore loses all event bindings, making cards
+  // unclickable. home and albums use makeAlbumCard with addEventListener.
+  const detailViews = ['album', 'artist', 'playlist', 'work', 'credit', 'home', 'albums', 'discover'];
+  const cached = detailViews.includes(state.view) ? null : _getCachedPage(state.view);
+  if (cached) {
+    vc.innerHTML = cached;
+    vc.style.opacity = '1';
+    console.log('[VELVET] Render complete (cached):', state.view);
+    return;
+  }
 
   try {
     console.log('[VELVET] Rendering view:', state.view);
@@ -7839,9 +7912,13 @@ async function renderAlbums(vc) {
     renderGrid();
   });
 
-  // Global click to close v-selects
+  // Global click to close v-selects (use AbortController to prevent listener leak across page navigations)
   const closeAllVSelects = () => document.querySelectorAll('.v-select').forEach(s => s.classList.remove('open'));
-  window.addEventListener('click', closeAllVSelects);
+  const vSelectCloseAc = new AbortController();
+  window.addEventListener('click', closeAllVSelects, { signal: vSelectCloseAc.signal });
+  // Clean up previous instance if navigated back to albums
+  window.__vSelectCloseAc?.abort();
+  window.__vSelectCloseAc = vSelectCloseAc;
 
   clearFocusBtn.addEventListener('click', () => {
     if (searchMode) return;
@@ -9428,9 +9505,13 @@ async function renderAlbum(vc, { id }) {
     const menu = $('album-more-menu');
     menu.classList.toggle('open');
   });
+  const albumMenuCloseAc = new AbortController();
   document.addEventListener('click', () => {
     $('album-more-menu')?.classList.remove('open');
-  }, { once: false });
+  }, { signal: albumMenuCloseAc.signal });
+  // Clean up when navigating away
+  window.__albumMenuCloseAc?.abort();
+  window.__albumMenuCloseAc = albumMenuCloseAc;
 
   $('album-radio-btn').addEventListener('click', () => startRadio('album', album.id));
 
@@ -10923,11 +11004,11 @@ async function setAlbumCover(albumId, url) {
 }
 
 // Browser history
-window.addEventListener('popstate', (e) => {
+window.addEventListener('popstate', async (e) => {
   if (e.state && e.state.view) {
-    navigate(e.state.view, e.state.params, false);
+    await navigate(e.state.view, e.state.params, false);
   } else {
-    navigate('home', {}, false);
+    await navigate('home', {}, false);
   }
 });
 
