@@ -259,10 +259,10 @@ def cast_track(device_udn, track_url, meta_xml=""):
 
     import time
 
-    # Simple approach - try SetAVTransportURI first, if 701 then try Stop and retry
-    args = f'<CurrentURI>{_esc(track_url)}</CurrentURI><CurrentURIMetaData></CurrentURIMetaData>'
-    log.info(f"[CAST] Sending SetAVTransportURI (no metadata)...")
-    result = soap_request(ctrl_url, svc, "SetAVTransportURI", args)
+    # Prefer full metadata first so album art and track details show up on capable renderers.
+    args_full = f'<CurrentURI>{_esc(track_url)}</CurrentURI><CurrentURIMetaData>{_esc(meta_xml)}</CurrentURIMetaData>'
+    log.info(f"[CAST] Sending SetAVTransportURI (full metadata)...")
+    result = soap_request(ctrl_url, svc, "SetAVTransportURI", args_full)
 
     if result is None:
         log.info(f"[CAST] First attempt failed, trying Stop then retry...")
@@ -270,9 +270,8 @@ def cast_track(device_udn, track_url, meta_xml=""):
         soap_request(ctrl_url, svc, "Stop", "")
         time.sleep(2)
 
-        # Retry with metadata
-        log.info(f"[CAST] Retrying SetAVTransportURI...")
-        result = soap_request(ctrl_url, svc, "SetAVTransportURI", args)
+        log.info(f"[CAST] Retrying SetAVTransportURI with full metadata...")
+        result = soap_request(ctrl_url, svc, "SetAVTransportURI", args_full)
 
     if result is None:
         # Try with empty DIDL
@@ -282,10 +281,10 @@ def cast_track(device_udn, track_url, meta_xml=""):
         result = soap_request(ctrl_url, svc, "SetAVTransportURI", args_minimal)
 
     if result is None:
-        # Last try with full metadata
-        log.info(f"[CAST] Retrying with full metadata...")
-        args_full = f'<CurrentURI>{_esc(track_url)}</CurrentURI><CurrentURIMetaData>{_esc(meta_xml)}</CurrentURIMetaData>'
-        result = soap_request(ctrl_url, svc, "SetAVTransportURI", args_full)
+        # Last try with no metadata for strict renderers that reject DIDL entirely.
+        args = f'<CurrentURI>{_esc(track_url)}</CurrentURI><CurrentURIMetaData></CurrentURIMetaData>'
+        log.info(f"[CAST] Retrying SetAVTransportURI (no metadata fallback)...")
+        result = soap_request(ctrl_url, svc, "SetAVTransportURI", args)
 
     if result is None:
         log.error(f"[CAST] All SetAVTransportURI attempts failed")
@@ -450,7 +449,7 @@ def track_xml(track, parent_id):
     }
     mime = mime_map.get(fmt, "audio/flac")
     stream_url = f"http://{LOCAL_IP}:{MAIN_PORT}/api/stream/{tid}"
-    cover_url  = f"http://{LOCAL_IP}:{MAIN_PORT}/api/covers/{album_id}" if album_id else ""
+    cover_url  = f"http://{LOCAL_IP}:{MAIN_PORT}/api/covers/{album_id}/thumb?size=medium" if album_id else ""
 
     # Use correct DLNA profile for the format
     dlna_profile = _get_dlna_profile(mime, fmt)

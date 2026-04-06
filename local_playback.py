@@ -14,6 +14,7 @@ Supported output modes:
 """
 
 import os
+import subprocess
 import threading
 from pathlib import Path
 from typing import Optional
@@ -42,6 +43,8 @@ _playback_state = {
 
 _state_lock = threading.Lock()
 _playback_thread: Optional[threading.Thread] = None
+_player_lock = threading.Lock()
+_active_player: Optional["LocalPlayer"] = None
 
 UPSAMPLE_MULTIPLIERS = {
     "none": 1,
@@ -131,7 +134,9 @@ class LocalPlayer:
         self.device_id = device_id
         self.latency = latency
         self.stream = None
+        self.process = None
         self.current_file = None
+        self._playback_finished = False
 
         # Latency settings (in seconds)
         self.latency_map = {
@@ -175,9 +180,6 @@ class LocalPlayer:
 
         self.stop()
 
-        # Use FFmpeg to decode to raw PCM, then play via sounddevice
-        import subprocess
-
         device_info = self._get_device_info()
         resolved_rate = int(output_sample_rate or device_info.get("sample_rate") or 48000)
         cmd = [
@@ -192,8 +194,8 @@ class LocalPlayer:
             cmd[2:2] = ["-af", dsp_filter]
 
         try:
-            # Start FFmpeg process
-            process = subprocess.Popen(
+            self._playback_finished = False
+            self.process = subprocess.Popen(
                 cmd,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.DEVNULL
@@ -203,15 +205,29 @@ class LocalPlayer:
             # Create output stream
             def callback(outdata, frames, time_info, status):
                 if status:
-                    pass
+                    log.warning(f"Audio callback status: {status}")
+
+                process = self.process
+                if process is None or process.stdout is None:
+                    outdata.fill(0)
+                    raise sd.CallbackStop()
 
                 data = process.stdout.read(frames * 4)  # 2 channels * 2 bytes
                 if not data:
                     outdata.fill(0)
+                    self._mark_finished()
                     raise sd.CallbackStop()
-                outdata[:] = (
-                    numpy.frombuffer(data, dtype='int16').reshape(-1, 2) / 32768.0
-                ) * float(volume)
+
+                frame_count = len(data) // 4
+                pcm = numpy.frombuffer(data[: frame_count * 4], dtype='int16')
+                if frame_count <= 0 or pcm.size == 0:
+                    outdata.fill(0)
+                    self._mark_finished()
+                    raise sd.CallbackStop()
+
+                samples = numpy.zeros((frames, 2), dtype='float32')
+                samples[:frame_count] = pcm.reshape(frame_count, 2) / 32768.0
+                outdata[:] = samples * float(volume)
 
             import numpy
 
@@ -229,8 +245,42 @@ class LocalPlayer:
             return True
 
         except Exception as e:
+            self.stop()
             log.error(f"Playback error: {e}")
             return False
+
+    def _mark_finished(self):
+        if self._playback_finished:
+            return
+        self._playback_finished = True
+        with _state_lock:
+            _playback_state["playing"] = False
+            _playback_state["paused"] = False
+            _playback_state["position"] = 0
+            _playback_state["track_id"] = None
+        self._terminate_process()
+
+    def _terminate_process(self):
+        process = self.process
+        self.process = None
+        if process is None:
+            return
+        try:
+            if process.poll() is None:
+                process.terminate()
+                try:
+                    process.wait(timeout=1.5)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait(timeout=1.0)
+        except Exception:
+            pass
+        finally:
+            try:
+                if process.stdout:
+                    process.stdout.close()
+            except Exception:
+                pass
 
     def stop(self):
         """Stop playback."""
@@ -241,7 +291,31 @@ class LocalPlayer:
             except:
                 pass
             self.stream = None
+        self._terminate_process()
+        self._playback_finished = False
         self.current_file = None
+
+    def pause(self) -> bool:
+        """Pause playback without destroying the decoder process."""
+        if not self.stream:
+            return False
+        try:
+            self.stream.stop()
+            return True
+        except Exception as exc:
+            log.warning(f"Failed to pause local playback: {exc}")
+            return False
+
+    def resume(self) -> bool:
+        """Resume playback after pause."""
+        if not self.stream:
+            return False
+        try:
+            self.stream.start()
+            return True
+        except Exception as exc:
+            log.warning(f"Failed to resume local playback: {exc}")
+            return False
 
     def set_volume(self, volume: float):
         """Set playback volume (0.0 to 1.0)."""
@@ -299,7 +373,18 @@ def play_local(
         return {"success": False, "error": "File not found on disk"}
 
     try:
-        player = LocalPlayer(device_id=device_id, latency=latency)
+        global _active_player
+        with _player_lock:
+            if (
+                _active_player is None
+                or _active_player.device_id != device_id
+                or _active_player.latency != latency
+            ):
+                if _active_player is not None:
+                    _active_player.stop()
+                _active_player = LocalPlayer(device_id=device_id, latency=latency)
+            player = _active_player
+
         device_info = player._get_device_info()
         output_sample_rate = _resolve_output_sample_rate(
             track["sample_rate"],
@@ -319,6 +404,9 @@ def play_local(
                 _playback_state["playing"] = True
                 _playback_state["paused"] = False
                 _playback_state["track_id"] = track_id
+                _playback_state["position"] = 0
+                _playback_state["device"] = device_info["name"]
+                _playback_state["volume"] = volume
 
             return {
                 "success": True,
@@ -338,27 +426,42 @@ def play_local(
 
 def stop_local() -> dict:
     """Stop local playback."""
-    # This would need to access the global player instance
+    global _active_player
+    with _player_lock:
+        if _active_player is not None:
+            _active_player.stop()
     with _state_lock:
         _playback_state["playing"] = False
         _playback_state["paused"] = False
+        _playback_state["track_id"] = None
+        _playback_state["position"] = 0
     return {"success": True}
 
 
 def pause_local() -> dict:
     """Pause local playback."""
+    global _active_player
+    paused = False
+    with _player_lock:
+        if _active_player is not None:
+            paused = _active_player.pause()
     with _state_lock:
-        if _playback_state["playing"]:
+        if paused and _playback_state["playing"]:
             _playback_state["paused"] = True
-    return {"success": True}
+    return {"success": paused}
 
 
 def resume_local() -> dict:
     """Resume local playback."""
+    global _active_player
+    resumed = False
+    with _player_lock:
+        if _active_player is not None:
+            resumed = _active_player.resume()
     with _state_lock:
-        if _playback_state["paused"]:
+        if resumed and _playback_state["paused"]:
             _playback_state["paused"] = False
-    return {"success": True}
+    return {"success": resumed}
 
 
 def get_playback_status() -> dict:

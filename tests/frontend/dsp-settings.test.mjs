@@ -286,6 +286,24 @@ async function main() {
     await waitFor(() => document.querySelector('#dsp-select').value === '2');
     assert.equal(document.querySelector('#mobile-top-dsp-label').textContent.trim(), 'Black');
 
+    const requestCountBeforeEqSave = harness.requests.length;
+    dom.window.handleEQSliderInput(0, '2.0');
+    document.querySelector('#eq-btn-save').click();
+    await waitFor(() => harness.requests.length > requestCountBeforeEqSave);
+    const eqSaveRequests = harness.requests.slice(requestCountBeforeEqSave);
+    assert.ok(
+      eqSaveRequests.some(request =>
+        request.method === 'POST' || request.method === 'PUT'
+          ? /^\/api\/dsp\/profiles(?:\/\d+)?$/.test(request.path)
+          : false
+      ),
+      'expected graphic EQ save to use the current /api/dsp/profiles endpoint'
+    );
+    assert.ok(
+      eqSaveRequests.every(request => request.path !== '/api/dsp/presets/custom' && request.path !== '/api/dsp/apply'),
+      'expected graphic EQ save to avoid deprecated DSP endpoints'
+    );
+
     document.querySelector('#dsp-delete-editor-btn').click();
     await waitFor(() => !harness.dspProfiles.some(profile => profile.id === savedProfile.id));
 
