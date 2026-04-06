@@ -1403,9 +1403,12 @@ input[type=range]::-webkit-slider-thumb:hover { background: var(--gold); }
   -moz-appearance: textfield;
   appearance: textfield;
 }
+.dsp-filter-row .form-input {
+  min-width: 0;
+}
 
 /* ─── Settings Section & Card ─── */
-.settings-section { padding: 0 32px 32px; max-width: 640px; }
+.settings-section { padding: 0 32px 32px; max-width: 880px; }
 .settings-card {
   background: var(--s2);
   border: 1px solid var(--border);
@@ -9149,7 +9152,7 @@ async function renderSettings(vc) {
     }
 
     list.innerHTML = filters.map((filter, index) => `
-      <div class="dsp-filter-row" style="display:grid;grid-template-columns:140px 1fr 1fr 1fr auto auto;gap:8px;align-items:center;background:var(--s3);border:1px solid var(--border);border-radius:var(--radius);padding:10px">
+      <div class="dsp-filter-row" style="display:grid;grid-template-columns:minmax(90px,1.2fr) minmax(50px,1fr) minmax(50px,1fr) minmax(50px,1fr) auto auto;gap:8px;align-items:center;background:var(--s3);border:1px solid var(--border);border-radius:var(--radius);padding:10px">
         <select class="form-input dsp-filter-type">
           <option value="peaking" ${filter.type === 'peaking' ? 'selected' : ''}>Peaking</option>
           <option value="low_shelf" ${filter.type === 'low_shelf' ? 'selected' : ''}>Low Shelf</option>
