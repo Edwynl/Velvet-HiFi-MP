@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+
+<html class="dark" lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>The Auditory Atelier - Now Playing</title>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Serif:ital,wght@0,400;0,700;1,400&amp;family=Manrope:wght@400;600;800&amp;family=DM+Sans:wght@400;500;700&amp;family=DM+Mono:wght@400;500&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<script id="tailwind-config">
+        tailwind.config = {
+            darkMode: "class",
+            theme: {
+                extend: {
+                    "colors": {
+                        "secondary-fixed": "#ffe084",
+                        "primary-fixed-dim": "#e6c364",
+                        "on-error-container": "#ffdad6",
+                        "on-tertiary-fixed": "#1d1c16",
+                        "primary-container": "#c9a84c",
+                        "surface": "#131316",
+                        "secondary-fixed-dim": "#e3c466",
+                        "on-error": "#690005",
+                        "surface-container": "#201f22",
+                        "secondary-container": "#735c00",
+                        "primary-fixed": "#ffe08f",
+                        "outline": "#99907e",
+                        "on-secondary-container": "#f6d675",
+                        "surface-dim": "#131316",
+                        "tertiary-fixed-dim": "#cac6bd",
+                        "outline-variant": "#4d4637",
+                        "error-container": "#93000a",
+                        "inverse-primary": "#755b00",
+                        "inverse-on-surface": "#313033",
+                        "surface-container-lowest": "#0e0e10",
+                        "on-primary-container": "#503d00",
+                        "on-primary-fixed": "#241a00",
+                        "surface-bright": "#39393b",
+                        "on-tertiary-fixed-variant": "#494740",
+                        "error": "#ffb4ab",
+                        "tertiary": "#cbc6be",
+                        "surface-variant": "#353437",
+                        "tertiary-container": "#afaba3",
+                        "background": "#131316",
+                        "surface-container-highest": "#353437",
+                        "surface-container-high": "#2a2a2c",
+                        "inverse-surface": "#e5e1e5",
+                        "primary": "#e6c364",
+                        "tertiary-fixed": "#e7e2d9",
+                        "on-secondary-fixed-variant": "#574500",
+                        "on-surface-variant": "#d0c5b2",
+                        "on-secondary-fixed": "#231b00",
+                        "on-primary": "#3d2e00",
+                        "surface-container-low": "#1c1b1e",
+                        "on-surface": "#e5e1e5",
+                        "on-primary-fixed-variant": "#584400",
+                        "surface-tint": "#e6c364",
+                        "on-tertiary-container": "#424039",
+                        "on-tertiary": "#32302a",
+                        "secondary": "#e3c466",
+                        "on-secondary": "#3c2f00",
+                        "on-background": "#e5e1e5"
+                    },
+                    "borderRadius": {
+                        "DEFAULT": "0.25rem",
+                        "lg": "0.5rem",
+                        "xl": "0.75rem",
+                        "full": "9999px"
+                    },
+                    "fontFamily": {
+                        "headline": ["Noto Serif"],
+                        "body": ["Manrope"],
+                        "label": ["Manrope"],
+                        "mono": ["DM Mono"],
+                        "sans": ["DM Sans"]
+                    }
+                },
+            },
+        }
+    </script>
+<style>
+        .material-symbols-outlined {
+            font-variation-settings: 'FILL' 0, 'wght' 200, 'GRAD' 0, 'opsz' 24;
+        }
+        body {
+            background-color: #0e0e10;
+            color: #ede8df;
+            overflow: hidden;
+        }
+        /* iPhone 14 Pro Max Landscape Aspect Ratio 19.5:9 */
+        .device-canvas {
+            aspect-ratio: 932 / 430;
+            max-height: 100vh;
+            width: auto;
+            margin: auto;
+            position: relative;
+        }
+        .rose-gold-glow {
+            box-shadow: 0 0 30px rgba(230, 195, 100, 0.15);
+        }
+        .thin-progress-bar {
+            height: 2px;
+            background: rgba(230, 195, 100, 0.1);
+        }
+        .thin-progress-fill {
+            height: 100%;
+            background: #e6c364;
+            box-shadow: 0 0 8px #e6c364;
+        }
+    </style>
+<style>
+    body {
+      min-height: max(884px, 100dvh);
+    }
+  </style>
+  </head>
+<body class="flex items-center justify-center min-h-screen">
+<!-- Device Container -->
+<main class="device-canvas w-full bg-surface-container-lowest overflow-hidden flex flex-col relative">
+<!-- Top App Bar Shared Component Integration -->
+<header class="fixed top-0 w-full z-50 flex justify-between items-center px-12 h-16 w-full">
+<div class="flex items-center gap-4">
+<span class="material-symbols-outlined text-[#7a7469] hover:opacity-80 transition-opacity cursor-pointer">keyboard_arrow_down</span>
+<span class="font-['Nato_Serif'] italic text-[#e6c364] text-xl">The Auditory Atelier</span>
+</div>
+<div class="flex items-center gap-6">
+<div class="flex items-center gap-2 bg-[#2a2a2c] px-3 py-1 rounded-full">
+<span class="text-[10px] font-mono tracking-tighter text-[#7a7469] uppercase">Upsampling</span>
+<span class="material-symbols-outlined text-[14px] text-[#e6c364]">expand_more</span>
+</div>
+<div class="flex items-center gap-2 bg-[#2a2a2c] px-3 py-1 rounded-full">
+<span class="text-[10px] font-mono tracking-tighter text-[#7a7469] uppercase">DSP</span>
+<span class="material-symbols-outlined text-[14px] text-[#e6c364]">tune</span>
+</div>
+<span class="material-symbols-outlined text-[#e6c364] hover:opacity-80 transition-opacity cursor-pointer">settings_input_component</span>
+</div>
+</header>
+<!-- Main Player Split Screen -->
+<section class="flex-1 flex items-center px-16 pt-12 pb-8 gap-16">
+<!-- Left: Album Art Container -->
+<div class="w-1/2 flex justify-center items-center">
+<div class="relative group">
+<div class="absolute -inset-1 rounded-xl bg-[#e6c364]/10 blur-sm"></div>
+<div class="relative aspect-square w-64 md:w-80 rounded-xl overflow-hidden border border-[#e6c364]/20 shadow-2xl rose-gold-glow">
+<img alt="Album Art" class="w-full h-full object-cover" data-alt="Abstract velvet texture with deep purple and gold swirling patterns, moody studio lighting, high-end editorial aesthetic" src="https://lh3.googleusercontent.com/aida-public/AB6AXuAZ7UwjY2JrKxg0RhlmYPovqtHDYNNJlcAGm7wnUpBeC8jKr22SeKcdfD0Iyz_fwUGyWoQUBCTdQjrIlh7L5gCv3H9v0p3-DAe6yQOQ_cOLIA80R-KEydIF8pTEsteZxuRg_TGgsvVHtavg-R5oJVRgISzywOaZchyFw1m-3UH8t5xgO9P7QfB5TAjkN6lIB1chpFu8bPwLqCdWtODvEx3fcB_Pptj3hSFFSqplLdvH3WrSZ__S2-xuGSBL2sKFs-ZlJBE7o83fsxnK"/>
+</div>
+</div>
+</div>
+<!-- Right: Information & Controls -->
+<div class="w-1/2 flex flex-col justify-center gap-8">
+<!-- Metadata Block -->
+<div class="space-y-2">
+<h1 class="font-headline text-4xl lg:text-5xl tracking-tight text-[#ede8df]">Midnight Velvet</h1>
+<p class="font-sans text-xl text-[#7a7469] tracking-wide">Elias Thorne</p>
+<div class="flex items-center gap-3 pt-2">
+<div class="border border-[#e6c364]/20 px-2 py-0.5 rounded text-[10px] font-mono text-[#e6c364] uppercase tracking-widest bg-[#e6c364]/5">
+                            HI-RES
+                        </div>
+<span class="font-mono text-[11px] text-[#7a7469]">24-bit / 192kHz • ALAC</span>
+</div>
+</div>
+<!-- Controls Cluster -->
+<div class="flex items-center gap-10">
+<span class="material-symbols-outlined text-[#7a7469] hover:text-[#e6c364] transition-colors cursor-pointer text-2xl">shuffle</span>
+<div class="flex items-center gap-8">
+<span class="material-symbols-outlined text-[#ede8df] text-3xl active:scale-90 transition-transform cursor-pointer">skip_previous</span>
+<div class="w-16 h-16 rounded-full bg-gradient-to-br from-[#e6c364] to-[#c9a84c] flex items-center justify-center text-[#131316] shadow-lg active:scale-95 transition-all cursor-pointer">
+<span class="material-symbols-outlined text-4xl" style="font-variation-settings: 'FILL' 1;">play_arrow</span>
+</div>
+<span class="material-symbols-outlined text-[#ede8df] text-3xl active:scale-90 transition-transform cursor-pointer">skip_next</span>
+</div>
+<span class="material-symbols-outlined text-[#7a7469] hover:text-[#e6c364] transition-colors cursor-pointer text-2xl">repeat</span>
+</div>
+<!-- Bottom Auxiliary: Volume & Extras -->
+<div class="flex items-center justify-between mt-4">
+<div class="flex items-center gap-4 w-48">
+<span class="material-symbols-outlined text-[#7a7469] text-sm">volume_mute</span>
+<div class="flex-1 h-1 bg-[#2a2a2c] rounded-full relative">
+<div class="absolute top-0 left-0 h-full w-2/3 bg-[#7a7469] rounded-full"></div>
+</div>
+<span class="material-symbols-outlined text-[#7a7469] text-sm">volume_up</span>
+</div>
+<div class="flex items-center gap-6">
+<span class="material-symbols-outlined text-[#7a7469] text-xl">favorite</span>
+<span class="material-symbols-outlined text-[#7a7469] text-xl">playlist_add</span>
+</div>
+</div>
+</div>
+</section>
+<!-- Progress Bar (The Anchor) -->
+<footer class="absolute bottom-0 left-0 w-full px-0 pb-1">
+<div class="flex justify-between px-6 mb-1">
+<span class="font-mono text-[10px] text-[#7a7469]">02:14</span>
+<span class="font-mono text-[10px] text-[#7a7469]">-01:42</span>
+</div>
+<div class="thin-progress-bar w-full">
+<div class="thin-progress-fill w-[58%]"></div>
+</div>
+<!-- Home Indicator Safe Area Space -->
+<div class="h-6 w-full flex justify-center items-end pb-1">
+<div class="w-32 h-1 bg-[#ede8df]/20 rounded-full"></div>
+</div>
+</footer>
+<!-- Bottom NavBar Shared Component Mapping -->
+<!-- Suppressed for Landscape Focused Player View to prioritize content canvas -->
+</main>
+</body></html>

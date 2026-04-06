@@ -1,0 +1,11 @@
+{
+  "name": "velvet-next",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test:frontend": "node tests/frontend/dsp-settings.test.mjs"
+  },
+  "devDependencies": {
+    "jsdom": "^26.1.0"
+  }
+}

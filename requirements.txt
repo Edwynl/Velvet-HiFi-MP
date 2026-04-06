@@ -1,0 +1,25 @@
+# --- Core Dependencies -------------------------------------------------------
+fastapi>=0.110.0,<1.0.0        # Web framework (pin minor version for stability)
+uvicorn>=0.27.0,<1.0.0          # ASGI server
+mutagen>=1.47.0                # Audio metadata extraction
+pydantic-settings>=2.2.1        # Settings management
+bcrypt>=4.1.2                   # Password hashing
+
+# --- Network & API -----------------------------------------------------------
+httpx>=0.27.0,<1.0.0            # Async HTTP client for MusicBrainz/LRCLIB
+aiofiles>=23.2.1               # Async file I/O
+
+# --- Image Processing --------------------------------------------------------
+Pillow>=10.0.0                  # Image processing for cover thumbnails
+
+# --- Caching ----------------------------------------------------------------
+cachetools>=5.3.0               # TTL cache for cover art
+
+# --- Optional Dependencies (auto-installed if needed) ------------------------
+python-multipart>=0.0.9        # Form data parsing
+
+# --- External Tools (not Python packages - handle via system PATH) -----------
+# fpcalc.exe  <- Download from https://acoustid.org/chromaprint (optional)
+# ffmpeg.exe  <- Download from https://ffmpeg.org/download.html (required for upsampling)
+
+# --- Install with: pip install -r requirements.txt -------------------------

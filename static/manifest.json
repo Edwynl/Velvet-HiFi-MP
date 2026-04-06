@@ -1,0 +1,22 @@
+{
+  "name": "VELVET",
+  "short_name": "VELVET",
+  "description": "Personal Hi-Fi Music Server",
+  "start_url": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#070709",
+  "theme_color": "#070709",
+  "icons": [
+    {
+      "src": "/static/icon.png",
+      "sizes": "1024x1024",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ],
+  "categories": ["music", "entertainment"],
+  "lang": "zh-CN",
+  "scope": "/",
+  "prefer_related_applications": false
+}
