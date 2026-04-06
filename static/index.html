@@ -1,4 +1,4 @@
-﻿<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="zh">
 <head>
 <meta charset="UTF-8">
@@ -987,6 +987,11 @@ html, body {
   border-bottom: 1px solid var(--border);
   margin-bottom: 12px;
 }
+.track-list-header div:first-child { text-align: center; }
+.track-list-header div:nth-child(3),
+.track-list-header div:nth-child(4),
+.track-list-header div:nth-child(5) { text-align: right; }
+
 
 .track-item {
   display: grid;
@@ -1375,6 +1380,29 @@ input[type=range]::-webkit-slider-thumb:hover { background: var(--gold); }
 }
 .form-input:focus { border-color: var(--gold); }
 .form-hint { font-size: 11px; color: var(--dim); margin-top: 6px; }
+
+/* ─── DSP Editor Form Fixes ─── */
+.dsp-filter-row .form-input, #dsp-editor-preamp {
+  padding: 6px 8px;
+  font-family: 'DM Mono', monospace;
+}
+.dsp-filter-row input[type=number] {
+  text-align: center;
+}
+.dsp-filter-row select.form-input {
+  text-align: left;
+}
+.dsp-filter-row input[type=number]::-webkit-inner-spin-button,
+.dsp-filter-row input[type=number]::-webkit-outer-spin-button,
+#dsp-editor-preamp::-webkit-inner-spin-button,
+#dsp-editor-preamp::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+.dsp-filter-row input[type=number], #dsp-editor-preamp {
+  -moz-appearance: textfield;
+  appearance: textfield;
+}
 
 /* ─── Settings Section & Card ─── */
 .settings-section { padding: 0 32px 32px; max-width: 640px; }
@@ -2155,7 +2183,7 @@ input[type=range]::-webkit-slider-thumb:hover { background: var(--gold); }
     .track-list {
       padding: 0 12px 24px;
     }
-    .track-list-header {
+    .track-list-header { text-align: left;
       display: none;
     }
     .track-item {
@@ -2939,7 +2967,7 @@ input[type=range]::-webkit-slider-thumb:hover { background: var(--gold); }
       padding: 8px 8px 16px !important;
       height: auto !important;
     }
-    .track-list-header { padding: 4px 8px !important; }
+    .track-list-header { text-align: left; padding: 4px 8px !important; }
     .track-item { padding: 6px 8px !important; }
 
     /* Artist detail – same approach */
