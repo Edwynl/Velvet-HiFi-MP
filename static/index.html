@@ -9151,8 +9151,19 @@ async function renderSettings(vc) {
       return;
     }
 
-    list.innerHTML = filters.map((filter, index) => `
-      <div class="dsp-filter-row" style="display:grid;grid-template-columns:minmax(90px,1.2fr) minmax(50px,1fr) minmax(50px,1fr) minmax(50px,1fr) auto auto;gap:8px;align-items:center;background:var(--s3);border:1px solid var(--border);border-radius:var(--radius);padding:10px">
+    const headerRow = `
+      <div style="display:grid;grid-template-columns:minmax(90px,1.2fr) minmax(50px,1fr) minmax(50px,1fr) minmax(50px,1fr) 50px 65px;gap:8px;padding:0 10px;font-size:11px;color:var(--muted);text-align:center">
+        <div style="text-align:left;padding-left:4px">Type</div>
+        <div>Freq (Hz)</div>
+        <div>Gain (dB)</div>
+        <div>Q Factor</div>
+        <div></div>
+        <div></div>
+      </div>
+    `;
+
+    list.innerHTML = headerRow + filters.map((filter, index) => `
+      <div class="dsp-filter-row" style="display:grid;grid-template-columns:minmax(90px,1.2fr) minmax(50px,1fr) minmax(50px,1fr) minmax(50px,1fr) 50px 65px;gap:8px;align-items:center;background:var(--s3);border:1px solid var(--border);border-radius:var(--radius);padding:10px">
         <select class="form-input dsp-filter-type">
           <option value="peaking" ${filter.type === 'peaking' ? 'selected' : ''}>Peaking</option>
           <option value="low_shelf" ${filter.type === 'low_shelf' ? 'selected' : ''}>Low Shelf</option>
