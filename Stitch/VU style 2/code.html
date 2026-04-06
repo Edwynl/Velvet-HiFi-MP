@@ -1,0 +1,272 @@
+<!DOCTYPE html>
+
+<html class="dark" lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,400;0,600;0,700;1,400;1,600;1,700&amp;family=DM+Sans:wght@400;500;700&amp;family=DM+Mono:wght@400;500&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<style>
+        body { font-family: 'DM Sans', sans-serif; }
+        .font-serif { font-family: 'Cormorant+Garamond', serif; }
+        .font-mono { font-family: 'DM+Mono', monospace; }
+        
+        .glass-panel {
+            background: linear-gradient(135deg, rgba(42, 42, 44, 0.4) 0%, rgba(19, 19, 22, 0.8) 100%);
+            backdrop-filter: blur(20px);
+        }
+        
+        .vu-meter-bg {
+            background: #0e0e10;
+            box-shadow: inset 0 2px 20px rgba(0, 0, 0, 0.3);
+            border: 1px solid rgba(77, 70, 55, 0.15);
+        }
+
+        .needle {
+            transform-origin: bottom center;
+            transition: transform 0.1s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+
+        .glow-gold {
+            filter: drop-shadow(0 0 12px rgba(230, 195, 100, 0.5));
+        }
+
+        .scale-text {
+            fill: #7a7469;
+            font-family: 'DM Mono', monospace;
+            font-size: 10px;
+            letter-spacing: 0.1em;
+        }
+    </style>
+<script id="tailwind-config">
+        tailwind.config = {
+          darkMode: "class",
+          theme: {
+            extend: {
+              "colors": {
+                      "surface-variant": "#353437",
+                      "surface": "#131316",
+                      "tertiary-container": "#afaba3",
+                      "surface-container-high": "#2a2a2c",
+                      "on-surface": "#e5e1e5",
+                      "on-surface-variant": "#d0c5b2",
+                      "surface-container-highest": "#353437",
+                      "primary": "#e6c364",
+                      "outline-variant": "#4d4637",
+                      "tertiary-fixed-dim": "#cac6bd",
+                      "on-primary-fixed": "#241a00",
+                      "on-tertiary-fixed": "#1d1c16",
+                      "on-primary-container": "#503d00",
+                      "inverse-primary": "#755b00",
+                      "primary-fixed": "#ffe08f",
+                      "on-error": "#690005",
+                      "inverse-on-surface": "#313033",
+                      "background": "#131316",
+                      "outline": "#99907e",
+                      "surface-dim": "#131316",
+                      "on-tertiary": "#32302a",
+                      "secondary-fixed-dim": "#e3c466",
+                      "on-background": "#e5e1e5",
+                      "secondary": "#e3c466",
+                      "on-secondary-container": "#f6d675",
+                      "on-secondary-fixed": "#231b00",
+                      "on-primary-fixed-variant": "#584400",
+                      "on-secondary-fixed-variant": "#574500",
+                      "on-primary": "#3d2e00",
+                      "on-tertiary-fixed-variant": "#494740",
+                      "surface-bright": "#39393b",
+                      "surface-container-lowest": "#0e0e10",
+                      "error": "#ffb4ab",
+                      "surface-container-low": "#1c1b1e",
+                      "primary-fixed-dim": "#e6c364",
+                      "on-secondary": "#3c2f00",
+                      "surface-tint": "#e6c364",
+                      "error-container": "#93000a",
+                      "tertiary-fixed": "#e7e2d9",
+                      "inverse-surface": "#e5e1e5",
+                      "tertiary": "#cbc6be",
+                      "secondary-container": "#735c00",
+                      "on-tertiary-container": "#424039",
+                      "on-error-container": "#ffdad6",
+                      "secondary-fixed": "#ffe084",
+                      "surface-container": "#201f22",
+                      "primary-container": "#c9a84c"
+              },
+              "borderRadius": {
+                      "DEFAULT": "0.25rem",
+                      "lg": "0.5rem",
+                      "xl": "0.75rem",
+                      "full": "9999px"
+              },
+              "fontFamily": {
+                      "headline": ["Cormorant Garamond"],
+                      "body": ["DM Sans"],
+                      "label": ["DM Mono"]
+              }
+            },
+          }
+        }
+    </script>
+</head>
+<body class="bg-background text-on-surface min-h-screen flex flex-col overflow-hidden">
+<!-- Top Navigation Shell -->
+<nav class="flex justify-between items-center px-10 py-6 w-full bg-[#131316] dark:bg-[#131316]">
+<div class="text-2xl font-serif italic text-[#e6c364] tracking-tighter">AUDITORY ATELIER</div>
+<div class="hidden md:flex items-center space-x-8">
+<a class="font-mono text-xs uppercase text-[#7a7469] hover:text-[#ede8df] transition-colors duration-300" href="#">Library</a>
+<a class="font-mono text-xs uppercase text-[#e6c364] border-b border-[#e6c364] pb-1 hover:text-[#ede8df] transition-colors duration-300" href="#">Studio</a>
+<a class="font-mono text-xs uppercase text-[#7a7469] hover:text-[#ede8df] transition-colors duration-300" href="#">Boutique</a>
+</div>
+<div class="flex items-center space-x-6">
+<button class="text-[#7a7469] hover:text-[#ede8df] transition-transform duration-200 active:scale-95">
+<span class="material-symbols-outlined">tune</span>
+</button>
+<button class="text-[#7a7469] hover:text-[#ede8df] transition-transform duration-200 active:scale-95">
+<span class="material-symbols-outlined">settings</span>
+</button>
+</div>
+</nav>
+<!-- Main Player Canvas -->
+<main class="flex-grow flex items-center justify-center p-8 relative">
+<!-- Background Decor -->
+<div class="absolute inset-0 z-0 opacity-20 pointer-events-none overflow-hidden">
+<div class="absolute -top-1/4 -left-1/4 w-1/2 h-1/2 bg-[#e6c364] rounded-full blur-[160px]"></div>
+</div>
+<!-- The Mastering Console -->
+<section class="w-full max-w-6xl z-10">
+<div class="glass-panel p-1 border border-white/5 rounded-xl shadow-2xl relative">
+<!-- Front Glass Plate -->
+<div class="bg-[#0e0e10] rounded-lg p-12 border border-[#2a2a2c] shadow-inner">
+<!-- Top Branding & Status Row -->
+<div class="flex justify-between items-end mb-12">
+<div>
+<h2 class="font-serif italic text-4xl text-[#e6c364] tracking-tight leading-none">Velvet</h2>
+<p class="font-mono text-[10px] tracking-[0.2em] text-[#7a7469] uppercase mt-2">Reference Mastering Desktop</p>
+</div>
+<div class="flex space-x-12 items-end">
+<div class="flex flex-col items-center">
+<div class="w-3 h-3 rounded-full bg-red-600/20 border border-red-500/40 mb-2 flex items-center justify-center">
+<div class="w-1 h-1 bg-red-500 rounded-full animate-pulse"></div>
+</div>
+<span class="font-mono text-[9px] text-[#7a7469] uppercase tracking-tighter">Peak</span>
+</div>
+<div class="flex flex-col items-center">
+<div class="w-3 h-3 rounded-full bg-[#e6c364]/20 border border-[#e6c364]/40 mb-2 flex items-center justify-center">
+<div class="w-1 h-1 bg-[#e6c364] rounded-full"></div>
+</div>
+<span class="font-mono text-[9px] text-[#7a7469] uppercase tracking-tighter">Power</span>
+</div>
+</div>
+</div>
+<!-- VU Meter Array -->
+<div class="grid grid-cols-1 md:grid-cols-2 gap-8 mb-12">
+<!-- Left Channel -->
+<div class="vu-meter-bg h-64 rounded-md relative overflow-hidden flex flex-col items-center justify-center">
+<div class="absolute inset-0 bg-gradient-to-b from-[#131316]/40 to-transparent"></div>
+<!-- Meter Scale -->
+<svg class="w-full h-full p-4" viewbox="0 0 400 200">
+<path d="M 50 160 A 150 150 0 0 1 350 160" fill="none" opacity="0.2" stroke="#e6c364" stroke-width="1"></path>
+<text class="scale-text" opacity="0.8" x="50" y="175">-20</text>
+<text class="scale-text" opacity="0.8" text-anchor="middle" x="200" y="55">-5</text>
+<text class="scale-text" opacity="0.8" text-anchor="end" x="350" y="175">0</text>
+<!-- Needle -->
+<line class="needle glow-gold" stroke="#e6c364" stroke-width="2.5" style="transform: rotate(15deg); transform-origin: 200px 190px;" x1="200" x2="100" y1="190" y2="70"></line>
+<circle cx="200" cy="190" fill="#131316" r="6" stroke="#e6c364" stroke-width="1.5"></circle>
+</svg>
+<div class="absolute bottom-6 font-mono text-[10px] tracking-[0.3em] text-[#7a7469] uppercase">Left Channel</div>
+</div>
+<!-- Right Channel -->
+<div class="vu-meter-bg h-64 rounded-md relative overflow-hidden flex flex-col items-center justify-center">
+<div class="absolute inset-0 bg-gradient-to-b from-[#131316]/40 to-transparent"></div>
+<!-- Meter Scale -->
+<svg class="w-full h-full p-4" viewbox="0 0 400 200">
+<path d="M 50 160 A 150 150 0 0 1 350 160" fill="none" opacity="0.2" stroke="#e6c364" stroke-width="1"></path>
+<text class="scale-text" opacity="0.8" x="50" y="175">-20</text>
+<text class="scale-text" opacity="0.8" text-anchor="middle" x="200" y="55">-5</text>
+<text class="scale-text" opacity="0.8" text-anchor="end" x="350" y="175">0</text>
+<!-- Needle -->
+<line class="needle glow-gold" stroke="#e6c364" stroke-width="2.5" style="transform: rotate(45deg); transform-origin: 200px 190px;" x1="200" x2="300" y1="190" y2="70"></line>
+<circle cx="200" cy="190" fill="#131316" r="6" stroke="#e6c364" stroke-width="1.5"></circle>
+</svg>
+<div class="absolute bottom-6 font-mono text-[10px] tracking-[0.3em] text-[#7a7469] uppercase">Right Channel</div>
+</div>
+</div>
+<!-- Mastering Section / Peak Bar -->
+<div class="space-y-6">
+<div class="flex justify-between items-center px-2">
+<span class="font-mono text-[10px] text-[#7a7469] tracking-widest">MASTER OUTPUT</span>
+<div class="flex space-x-4">
+<div class="px-2 py-0.5 border border-[#e6c364]/20 rounded text-[9px] font-mono text-[#e6c364]">24-BIT / 192kHz</div>
+<div class="px-2 py-0.5 border border-[#7a7469]/20 rounded text-[9px] font-mono text-[#7a7469]">STUDIO MASTER</div>
+</div>
+</div>
+<div class="h-4 bg-[#0e0e10] border border-[#2a2a2c] rounded-full overflow-hidden flex p-[2px]">
+<div class="h-full w-[82%] bg-gradient-to-r from-green-900 via-[#e6c364] to-red-600 rounded-full opacity-80 shadow-[0_0_10px_rgba(230,195,100,0.3)]"></div>
+</div>
+<!-- Info Metadata -->
+<div class="grid grid-cols-3 gap-4 pt-4 border-t border-white/5">
+<div class="text-center">
+<div class="font-mono text-[10px] text-[#7a7469] mb-1">DYNAMIC RANGE</div>
+<div class="font-serif italic text-xl text-on-surface">+14.2 LUFS</div>
+</div>
+<div class="text-center">
+<div class="font-mono text-[10px] text-[#7a7469] mb-1">BITRATE</div>
+<div class="font-serif italic text-xl text-on-surface">9216 KBPS</div>
+</div>
+<div class="text-center">
+<div class="font-mono text-[10px] text-[#7a7469] mb-1">HEADROOM</div>
+<div class="font-serif italic text-xl text-on-surface">-0.3 DB</div>
+</div>
+</div>
+</div>
+</div>
+<!-- Control Dials -->
+<div class="absolute -bottom-6 left-1/2 -translate-x-1/2 flex space-x-20">
+<div class="flex flex-col items-center">
+<div class="w-14 h-14 rounded-full bg-gradient-to-b from-[#2a2a2c] to-[#131316] border border-[#e6c364]/20 shadow-xl flex items-center justify-center cursor-pointer group">
+<div class="w-1 h-4 bg-[#e6c364] rounded-full group-hover:rotate-45 transition-transform duration-500"></div>
+</div>
+<span class="font-mono text-[8px] text-[#7a7469] mt-3 tracking-widest uppercase">Input Gain</span>
+</div>
+<div class="flex flex-col items-center">
+<div class="w-20 h-20 rounded-full bg-gradient-to-b from-[#2a2a2c] to-[#131316] border border-[#e6c364]/30 shadow-2xl flex items-center justify-center cursor-pointer group relative">
+<div class="absolute inset-0 rounded-full border-4 border-[#e6c364]/5"></div>
+<div class="w-1 h-6 bg-[#e6c364] rounded-full group-hover:-rotate-12 transition-transform duration-500"></div>
+</div>
+<span class="font-mono text-[8px] text-[#e6c364] mt-3 tracking-widest uppercase font-bold">Master Volume</span>
+</div>
+<div class="flex flex-col items-center">
+<div class="w-14 h-14 rounded-full bg-gradient-to-b from-[#2a2a2c] to-[#131316] border border-[#e6c364]/20 shadow-xl flex items-center justify-center cursor-pointer group">
+<div class="w-1 h-4 bg-[#e6c364] rounded-full group-hover:-rotate-90 transition-transform duration-500"></div>
+</div>
+<span class="font-mono text-[8px] text-[#7a7469] mt-3 tracking-widest uppercase">Output Trim</span>
+</div>
+</div>
+</div>
+</section>
+</main>
+<!-- Bottom Navigation Shell (Desktop Overlay Style) -->
+<footer class="h-24 bg-[#0e0e10]/95 backdrop-blur-xl fixed bottom-0 left-0 w-full flex justify-around items-center px-12 z-50 border-t border-[#e6c364]/10 shadow-[0_-10px_40px_rgba(230,195,100,0.05)]">
+<div class="flex flex-col items-center justify-center text-[#7a7469] pt-2 hover:bg-[#2a2a2c]/50 hover:text-[#ede8df] transition-colors cursor-pointer w-full h-full">
+<span class="material-symbols-outlined mb-1">explore</span>
+<span class="font-mono text-[10px] tracking-widest uppercase">Discovery</span>
+</div>
+<div class="flex flex-col items-center justify-center text-[#7a7469] pt-2 hover:bg-[#2a2a2c]/50 hover:text-[#ede8df] transition-colors cursor-pointer w-full h-full">
+<span class="material-symbols-outlined mb-1">analytics</span>
+<span class="font-mono text-[10px] tracking-widest uppercase">Analytics</span>
+</div>
+<div class="flex flex-col items-center justify-center text-[#e6c364] border-t-2 border-[#e6c364] pt-2 w-full h-full opacity-80">
+<span class="material-symbols-outlined mb-1">equalizer</span>
+<span class="font-mono text-[10px] tracking-widest uppercase">Mastering</span>
+</div>
+<div class="flex flex-col items-center justify-center text-[#7a7469] pt-2 hover:bg-[#2a2a2c]/50 hover:text-[#ede8df] transition-colors cursor-pointer w-full h-full">
+<span class="material-symbols-outlined mb-1">album</span>
+<span class="font-mono text-[10px] tracking-widest uppercase">Collection</span>
+</div>
+<div class="flex flex-col items-center justify-center text-[#7a7469] pt-2 hover:bg-[#2a2a2c]/50 hover:text-[#ede8df] transition-colors cursor-pointer w-full h-full">
+<span class="material-symbols-outlined mb-1">person</span>
+<span class="font-mono text-[10px] tracking-widest uppercase">Profile</span>
+</div>
+</footer>
+</body></html>
