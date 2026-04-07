@@ -5675,10 +5675,17 @@ function setMediaSessionPlaybackState(playbackState) {
 // This is SAFE to call even when AudioContext is already null (no-op).
 async function cleanupSuspendedAudioContextIfNeeded() {
   if (audioContext) {
-    // ALWAYS close AudioContext on visibilitychange/hidden, not just when suspended.
-    // When VU meter is open, MediaElementSource is connected. If we don't disconnect
-    // and close here, Safari leaves a broken graph on the audio element that silently
-    // kills audio.play() on resume even after the tab becomes visible again.
+    // CRITICAL: disconnect MediaElementSource BEFORE closing AudioContext.
+    // The MediaElementSource node is connected to the HTML5 <audio> element.
+    // If we close AudioContext without disconnecting first, Safari's media pipeline
+    // still thinks the graph is active — even though AudioContext is now closed.
+    // This silently kills audio.play() on resume. Disconnect first to break the graph.
+    if (audioSource) {
+      try { audioSource.disconnect(); } catch {}
+    }
+    if (audioAnalyser) {
+      try { audioAnalyser.disconnect(); } catch {}
+    }
     try { await audioContext.close(); } catch {}
     audioContext = null;
     audioAnalyser = null;
