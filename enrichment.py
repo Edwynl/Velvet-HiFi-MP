@@ -34,7 +34,7 @@ COVERS_DIR = Path(os.environ.get("DATA_DIR", "musiciq_data")) / "covers"
 COVERS_DIR.mkdir(parents=True, exist_ok=True)
 
 # AcoustID API key — set ACOUSTID_KEY environment variable
-ACOUSTID_KEY = os.environ["ACOUSTID_KEY"]
+ACOUSTID_KEY = os.environ.get("ACOUSTID_KEY", "")
 MB_UA = "MusicIQ/1.0 ( musiciq-personal-server )"
 
 # Discogs API (no key needed for search, but limited)
@@ -347,7 +347,8 @@ async def fetch_artist_bio(artist_name: str, lang: str = "en") -> Optional[str]:
     return None
 
 def _wiki_slug(name: str) -> str:
-    return name.replace(" ", "_")
+    import urllib.parse
+    return urllib.parse.quote(name, safe="")
 
 def _clean_bio(text: str) -> str:
     """Keep first 4 sentences max, clean up Wikipedia artifacts."""

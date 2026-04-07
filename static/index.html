@@ -5610,6 +5610,7 @@ const state = {
   castDevice: null, // { udn, name }
   castPollId: null,
   isComposing: false,
+  mobilePlayerDismissed: false,
 };
 
 // ─── Audio ────────────────────────────────────────────────────────────────────
@@ -5959,11 +5960,9 @@ async function playTrack(track, queue, idx) {
   // This ensures the UI always shows the correct track even if playback hasn't started.
   state.currentTrack = track;
 
-  // Open mobile player IMMEDIATELY when a new track is selected (before async fetch).
-  // This prevents the "no response" bug when the async fetch causes a delay.
-  // Mobile player needs to open before any potential awaits.
-  if (isNewTrack && window.innerWidth <= 768) {
-    toggleMobilePlayer(true);
+  // Only auto-open the mobile fullscreen player until the user explicitly minimizes it.
+  if (isNewTrack && window.innerWidth <= 768 && !state.mobilePlayerDismissed) {
+    toggleMobilePlayer(true, { source: 'auto' });
   }
 
   // Ensure track has artist/album info for Media Session and UI
@@ -6042,7 +6041,7 @@ async function playTrack(track, queue, idx) {
   if (UI['lyrics-panel']?.classList.contains('open')) loadLyrics(state.currentTrack);
   if (UI['queue-panel']?.classList.contains('open')) renderQueue();
 
-  // Mobile player already opened above for new tracks
+  // Mobile player auto-open is handled above for first-touch playback only.
 }
 
 function startCastPolling() {
@@ -6989,10 +6988,17 @@ bindProgressScrub(UI['progress-row']);
 bindProgressScrub(UI['mobile-progress-row']);
 
 // Toggle mobile player
-function toggleMobilePlayer(show) {
+function toggleMobilePlayer(show, { source = 'manual' } = {}) {
   const overlay = UI['mobile-fullscreen-player'];
-  if (show) overlay.classList.add('open');
-  else overlay.classList.remove('open');
+  if (!overlay) return;
+  if (show) {
+    overlay.classList.add('open');
+    return;
+  }
+  overlay.classList.remove('open');
+  if (source === 'dismiss') {
+    state.mobilePlayerDismissed = true;
+  }
 }
 function openFullscreenPlayer(e) {
   if (e) {
@@ -7003,19 +7009,21 @@ function openFullscreenPlayer(e) {
     showToast('No track playing');
     return;
   }
-  toggleMobilePlayer(true);
+  toggleMobilePlayer(true, { source: 'manual' });
 }
 
 // Bind close button
-UI['mobile-player-back'].addEventListener('click', () => toggleMobilePlayer(false));
+UI['mobile-player-back'].addEventListener('click', () => toggleMobilePlayer(false, { source: 'dismiss' }));
 UI['player-art'].addEventListener('click', openFullscreenPlayer);
 
-// Provide a way to manually open: click player info area when on mobile
+// Provide a way to manually open only from the now-playing info block on mobile.
 UI['player'].addEventListener('click', e => {
-  // Don't open if they clicked controls
-  if (e.target.closest('.player-controls, .player-right, .progress-row, .progress-bar')) return;
-  if (e.target.closest('#player-art')) return;
-  if (window.innerWidth <= 768 && state.currentTrack) toggleMobilePlayer(true);
+  if (window.innerWidth > 768 || !state.currentTrack) return;
+  const target = e.target;
+  if (!(target instanceof Element)) return;
+  if (!target.closest('.player-info')) return;
+  if (target.closest('#player-art, .player-art-vu-btn')) return;
+  toggleMobilePlayer(true, { source: 'manual' });
 });
 
 UI['volume-slider'].addEventListener('input', e => {
