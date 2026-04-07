@@ -26,7 +26,7 @@ function makeJsonResponse(body, status = 200) {
   };
 }
 
-async function waitFor(predicate, { timeoutMs = 5000, intervalMs = 25 } = {}) {
+async function waitFor(predicate, { timeoutMs = 4000, intervalMs = 20 } = {}) {
   const started = Date.now();
   while (Date.now() - started < timeoutMs) {
     const value = predicate();
@@ -37,8 +37,6 @@ async function waitFor(predicate, { timeoutMs = 5000, intervalMs = 25 } = {}) {
 }
 
 function createHarness() {
-  let playCalls = 0;
-
   const route = (url, opts = {}) => {
     const method = (opts.method || 'GET').toUpperCase();
     const parsedUrl = new URL(url, 'http://localhost');
@@ -80,29 +78,10 @@ function createHarness() {
       return Promise.resolve(makeJsonResponse([]));
     }
 
-    const trackMatch = parsedUrl.pathname.match(/^\/api\/tracks\/(\d+)$/);
-    if (trackMatch && method === 'GET') {
-      const trackId = Number(trackMatch[1]);
-      return Promise.resolve(makeJsonResponse({
-        id: trackId,
-        title: trackId === 7 ? 'Recovery Track' : 'Other Track',
-        artist_name: 'Recovery Artist',
-        album_title: 'Recovery Album',
-        album_id: 77,
-        duration: 240,
-        format: 'FLAC',
-        sample_rate: 96000,
-        bit_depth: 24,
-      }));
-    }
-
     throw new Error(`Unhandled fetch: ${method} ${parsedUrl.pathname}`);
   };
 
   return {
-    getPlayCalls() {
-      return playCalls;
-    },
     async createDom() {
       const html = readFileSync(HTML_PATH, 'utf8').replace(/<link[^>]+>/g, '');
       const dom = new JSDOM(html, {
@@ -114,6 +93,16 @@ function createHarness() {
           window.confirm = () => true;
           window.alert = () => {};
           window.scrollTo = () => {};
+          Object.defineProperty(window, 'innerWidth', {
+            configurable: true,
+            writable: true,
+            value: 390,
+          });
+          Object.defineProperty(window, 'outerWidth', {
+            configurable: true,
+            writable: true,
+            value: 390,
+          });
           window.matchMedia = query => ({
             media: query,
             matches: query === '(pointer: coarse)',
@@ -137,7 +126,6 @@ function createHarness() {
             setActionHandler() {},
           };
           window.HTMLMediaElement.prototype.play = function() {
-            playCalls += 1;
             this.paused = false;
             this.dispatchEvent(new window.Event('playing'));
             return Promise.resolve();
@@ -155,18 +143,7 @@ function createHarness() {
   };
 }
 
-function setDocumentHidden(dom, hidden) {
-  Object.defineProperty(dom.window.document, 'hidden', {
-    configurable: true,
-    get: () => hidden,
-  });
-  Object.defineProperty(dom.window.document, 'visibilityState', {
-    configurable: true,
-    get: () => (hidden ? 'hidden' : 'visible'),
-  });
-}
-
-function primeAudio(dom, { paused = false, currentTime = 42, duration = 240, readyState = 4 } = {}) {
+function primeAudio(dom, { paused = false, currentTime = 12, duration = 180, readyState = 4 } = {}) {
   const audio = dom.window.eval('audio');
   Object.defineProperty(audio, 'paused', {
     configurable: true,
@@ -191,55 +168,68 @@ function primeAudio(dom, { paused = false, currentTime = 42, duration = 240, rea
   return audio;
 }
 
-async function testRecoveryAfterWaiting() {
+async function testAutoOpenOnlyBeforeDismiss() {
   const harness = createHarness();
   const dom = await harness.createDom();
 
   try {
-    const audio = primeAudio(dom, { paused: false, currentTime: 42, readyState: 1 });
-    setDocumentHidden(dom, true);
-    dom.window.eval(`
-      state.outputMode = 'browser';
-      state.currentTrack = {
-        id: 7,
-        title: 'Recovery Track',
-        artist_name: 'Recovery Artist',
-        album_title: 'Recovery Album',
-        album_id: 77,
-        duration: 240,
+    primeAudio(dom, { paused: true });
+    const queue = [
+      {
+        id: 1,
+        title: 'First Track',
+        artist_name: 'Artist One',
+        album_title: 'Album One',
+        album_id: 11,
+        duration: 180,
+        format: 'FLAC',
+        sample_rate: 44100,
+        bit_depth: 16,
+      },
+      {
+        id: 2,
+        title: 'Second Track',
+        artist_name: 'Artist Two',
+        album_title: 'Album One',
+        album_id: 11,
+        duration: 200,
         format: 'FLAC',
         sample_rate: 96000,
-        bit_depth: 24
-      };
-      state.playing = true;
-      updatePlayBtnUI();
-    `);
+        bit_depth: 24,
+      },
+    ];
 
-    audio.dispatchEvent(new dom.window.Event('waiting'));
+    await dom.window.playTrack({ ...queue[0] }, queue, 0);
+    await waitFor(() => dom.window.document.querySelector('#mobile-fullscreen-player')?.classList.contains('open'));
 
-    await waitFor(() => harness.getPlayCalls() >= 1, { timeoutMs: 8000 });
-    assert.match(audio.src, /\/api\/stream\/7\?upsample=none$/);
-    assert.equal(audio.currentTime, 42);
-    assert.equal(dom.window.eval('state.playing'), true);
+    dom.window.document.querySelector('#mobile-player-back').click();
+    assert.equal(dom.window.document.querySelector('#mobile-fullscreen-player').classList.contains('open'), false);
+    assert.equal(dom.window.eval('state.mobilePlayerDismissed'), true);
+
+    await dom.window.playTrack({ ...queue[1] }, queue, 1);
+    await new Promise(resolve => dom.window.setTimeout(resolve, 30));
+
+    assert.equal(dom.window.document.querySelector('#mobile-fullscreen-player').classList.contains('open'), false);
+
+    dom.window.document.querySelector('#player-art').click();
+    await waitFor(() => dom.window.document.querySelector('#mobile-fullscreen-player')?.classList.contains('open'));
   } finally {
     dom.window.close();
   }
 }
 
-async function testManualPauseDoesNotAutoRecover() {
+async function testBottomBarPauseDoesNotOpenFullscreen() {
   const harness = createHarness();
   const dom = await harness.createDom();
 
   try {
-    primeAudio(dom, { paused: false, currentTime: 18 });
-    setDocumentHidden(dom, false);
+    const audio = primeAudio(dom, { paused: false });
     dom.window.eval(`
-      state.outputMode = 'browser';
       state.currentTrack = {
         id: 7,
-        title: 'Recovery Track',
-        artist_name: 'Recovery Artist',
-        album_title: 'Recovery Album',
+        title: 'Pause Check',
+        artist_name: 'Status Artist',
+        album_title: 'Status Album',
         album_id: 77,
         duration: 240,
         format: 'FLAC',
@@ -247,26 +237,32 @@ async function testManualPauseDoesNotAutoRecover() {
         bit_depth: 24
       };
       state.playing = true;
+      updatePlayerUI(state.currentTrack);
       updatePlayBtnUI();
     `);
 
     dom.window.document.querySelector('#btn-play').click();
-    await new Promise(resolve => setTimeout(resolve, 1200));
+    await new Promise(resolve => dom.window.setTimeout(resolve, 30));
 
-    assert.equal(harness.getPlayCalls(), 0);
+    assert.equal(audio.paused, true);
     assert.equal(dom.window.eval('state.playing'), false);
+    assert.equal(dom.window.document.querySelector('#mobile-fullscreen-player').classList.contains('open'), false);
   } finally {
     dom.window.close();
   }
 }
 
+async function main() {
+  await testAutoOpenOnlyBeforeDismiss();
+  await testBottomBarPauseDoesNotOpenFullscreen();
+}
+
 try {
-  await testRecoveryAfterWaiting();
-  await testManualPauseDoesNotAutoRecover();
-  console.log('frontend_mobile_background_recovery_check=OK');
+  await main();
+  console.log('frontend_mobile_player_behavior=OK');
   process.exit(0);
 } catch (error) {
-  console.error('frontend_mobile_background_recovery_check=FAILED');
+  console.error('frontend_mobile_player_behavior=FAILED');
   console.error(error);
   process.exit(1);
 }
