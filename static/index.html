@@ -4947,6 +4947,21 @@ input[type=range]::-webkit-slider-thumb:hover { background: var(--gold); }
 const $ = id => document.getElementById(id);
 const $$ = sel => document.querySelectorAll(sel);
 
+// UI Element Cache for performance (On-demand caching via Proxy)
+// In an SPA environment where elements are recreated via innerHTML, 
+// we MUST check isConnected to avoid stale, detached element references.
+const UI = new Proxy({}, {
+  get(target, prop) {
+    const cached = target[prop];
+    if (cached && cached.isConnected) return cached;
+    
+    // Not cached or detached, find it in current DOM
+    const el = document.getElementById(prop);
+    if (el) target[prop] = el;
+    return el;
+  }
+});
+
 function fmt(s) {
   if (!s) return '—';
   s = Math.floor(s);
@@ -4962,7 +4977,15 @@ const CREDIT_ID_SEP = '__VELVET_CREDIT__';
 
 function isHiResTrack(track) {
   if (!track) return false;
-  return track.sample_rate > 48000 || track.bit_depth > 16;
+  if (track.is_hires) return true;
+  const sr = Number(track.sample_rate || 0);
+  const bd = Number(track.bit_depth || 0);
+  const fmt = String(track.format || '').toLowerCase();
+  
+  // Strictly HI-RES: (Anything > CD quality)
+  // CD = 16-bit / 44.1kHz
+  // High-Sample Rate (Roon/Qobuz/Tidal hi-res) or 24-bit/32-bit
+  return sr > 48000 || bd > 16 || /dsd/.test(fmt);
 }
 
 function escHtml(str) {
@@ -4972,15 +4995,16 @@ function escHtml(str) {
   return d.innerHTML;
 }
 
-function fmtSR(sr) {
-  if (!sr) return '';
-  if (sr >= 1000) return (sr / 1000).toFixed(sr % 1000 === 0 ? 0 : 1) + 'kHz';
-  return sr + 'Hz';
+function fmtSR(hz) {
+  if (!hz) return '';
+  if (hz >= 1000000) return (hz/1000000).toFixed(3).replace(/\.?0+$/, '') + 'MHz';
+  return (hz/1000).toFixed(1).replace(/\.?0+$/, '') + 'kHz';
 }
 
-function fmtCompactSR(sr) {
-  if (!sr) return '';
-  return Math.round(sr / 1000).toString() + 'k';
+function fmtCompactSR(hz) {
+  if (!hz) return '';
+  if (hz >= 1000000) return (hz/1000000).toFixed(1).replace(/\.?0+$/, '') + 'M';
+  return (hz/1000).toFixed(1).replace(/\.?0+$/, '') + 'k';
 }
 
 function makeWorkId(composer, title) {
@@ -5186,17 +5210,7 @@ function showSignalPath() {
   });
 }
 
-function fmtSR(hz) {
-  if (!hz) return '';
-  if (hz >= 1000000) return (hz/1000000).toFixed(3).replace(/\.?0+$/, '') + 'MHz';
-  return (hz/1000).toFixed(1).replace(/\.?0+$/, '') + 'kHz';
-}
 
-function fmtCompactSR(hz) {
-  if (!hz) return '';
-  if (hz >= 1000000) return (hz/1000000).toFixed(1).replace(/\.?0+$/, '') + 'M';
-  return (hz/1000).toFixed(1).replace(/\.?0+$/, '') + 'k';
-}
 
 function compactDspLabel(name) {
   if (!name) return 'Dry';
@@ -5328,53 +5342,7 @@ function initMobileMenu() {
 
 // ─── Component Factories ──────────────────────────────────────────────────────
 
-function setupSearch() {
-  const input = $('search-input');
-  if (!input) return;
-  
-  let isComposing = false;
-  input.addEventListener('compositionstart', () => { isComposing = true; });
-  input.addEventListener('compositionend', () => {
-    isComposing = false;
-    input.dispatchEvent(new Event('input'));
-  });
 
-  input.addEventListener('input', () => {
-    if (isComposing) return;
-    const q = input.value.trim();
-    if (q && state.view !== 'search' && state.view !== 'albums' && state.view !== 'artists') {
-      navigate('search', { q });
-    }
-  });
-
-  input.addEventListener('keydown', e => {
-    if (e.key === 'Enter') {
-      const q = input.value.trim();
-      if (q) navigate('search', { q });
-    }
-  });
-}
-
-function makeArtistCard(artist) {
-  const el = document.createElement('div');
-  el.className = 'card artist-card';
-  el.innerHTML = `
-    <div class="card-art artist">
-      <div class="card-art-placeholder visible" style="display:flex;align-items:center;justify-content:center">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" style="width:40px;opacity:0.3">
-          <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/>
-        </svg>
-      </div>
-      <div class="card-play-btn" onclick="event.stopPropagation(); startRadio('artist', '${artist.id}')">
-        <svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
-      </div>
-    </div>
-    <div class="card-title" style="text-align:center">${escHtml(artist.name || artist.artist_name)}</div>
-    <div class="card-sub" style="text-align:center">${artist.total_albums || artist.album_count || 0} albums</div>
-  `;
-  el.addEventListener('click', () => navigate('artist', { id: artist.id }));
-  return el;
-}
 
 // playAlbum: quick-play an album without navigating (used by card play button)
 async function playAlbum(albumId) {
@@ -5480,7 +5448,12 @@ async function api(path, opts = {}) {
     }
 
     if (!r.ok) {
-      console.warn(`API ${path} → ${r.status}`);
+      const errText = `API ${path} failed with status ${r.status}`;
+      console.warn(errText);
+      // For non-GET requests (mutations), show a toast error
+      if (opts.method && opts.method !== 'GET') {
+        showToast('Operation failed: ' + r.status);
+      }
       return null;
     }
 
@@ -5495,8 +5468,13 @@ async function api(path, opts = {}) {
     clearTimeout(timeoutId);
     if (e.name === 'AbortError') {
       console.warn(`API ${path} timed out`);
+      showToast('Connection timed out');
     } else {
       console.warn('API error:', path, e.message);
+      // Only toast network errors for major actions to avoid spam
+      if (opts.method && opts.method !== 'GET') {
+        showToast('Network error: ' + e.message);
+      }
     }
     return null;
   }
@@ -5648,14 +5626,14 @@ let audioDataArray = null;
 let browserPlaybackToken = 0;
 const browserPlaybackRecoveryConfig = {
   pauseDelayMs: 400,
-  stallDelayMs: 4500, // 4.5s (up from 1.2s) - allow more time for mobile buffering
-  visibilityDelayMs: 300,
-  watchdogIntervalMs: 2000, // 2.0s (up from 1.5s)
-  stuckThresholdMs: 6500, // 6.5s (up from 2.5s)
+  stallDelayMs: 5500, // 5.5s (up from 4.5s) - allow more time for mobile buffering
+  visibilityDelayMs: 600, // Increased for stability
+  watchdogIntervalMs: 2500, // 2.5s (up from 2.0s)
+  stuckThresholdMs: 8500, // 8.5s (up from 6.5s)
   minProgressDelta: 0.1,
-  minGapMs: 1500, // 1.5s (up from 0.8s) - prevent rapid-fire recoveries
+  minGapMs: 3500, // 3.5s (up from 1.5s) - prevent rapid-fire recoveries
   maxAttempts: 3,
-  attemptWindowMs: 25000,
+  attemptWindowMs: 30000, // 30s
 };
 let browserRecoveryTimer = null;
 let browserRecoveryInFlight = null;
@@ -6040,9 +6018,9 @@ async function playTrack(track, queue, idx) {
       state.playing = true;
       updatePlayBtnUI();
       updateMediaSession(track);
-      $('progress-fill').style.width = '0%';
-      $('time-current').textContent = '0:00';
-      $('time-total').textContent = fmt(track.duration || 0);
+      UI['progress-fill'].style.width = '0%';
+      UI['time-current'].textContent = '0:00';
+      UI['time-total'].textContent = fmt(track.duration || 0);
     } else {
       showToast(result?.error || 'Native playback failed');
       state.playing = false;
@@ -6061,8 +6039,8 @@ async function playTrack(track, queue, idx) {
   // any async work, so it always correctly reflects what is actually playing now.
   if (state.currentTrack) highlightPlaying(state.currentTrack.id);
 
-  if ($('lyrics-panel').classList.contains('open')) loadLyrics(state.currentTrack);
-  if ($('queue-panel').classList.contains('open')) renderQueue();
+  if (UI['lyrics-panel']?.classList.contains('open')) loadLyrics(state.currentTrack);
+  if (UI['queue-panel']?.classList.contains('open')) renderQueue();
 
   // Mobile player already opened above for new tracks
 }
@@ -6089,9 +6067,9 @@ function startCastPolling() {
 
       if (status.duration > 0) {
         const pct = (status.position / status.duration) * 100;
-        $('progress-fill').style.width = pct + '%';
-        $('time-current').textContent  = fmt(status.position);
-        $('time-total').textContent    = fmt(status.duration);
+        UI['progress-fill'].style.width = pct + '%';
+        UI['time-current'].textContent  = fmt(status.position);
+        UI['time-total'].textContent    = fmt(status.duration);
       }
     } catch (e) {
       console.warn("Cast polling error:", e);
@@ -6128,12 +6106,12 @@ async function castTo(track, device) {
 }
 
 async function toggleCastMenu() {
-  const menu = $('cast-menu');
+  const menu = UI['cast-menu'];
   if (!menu) {
     alert('Critical: Cast menu element #cast-menu not found in DOM.');
     return;
   }
-  const mobilePlayerOpen = window.innerWidth <= 768 && $('mobile-fullscreen-player')?.classList.contains('open');
+  const mobilePlayerOpen = window.innerWidth <= 768 && UI['mobile-fullscreen-player']?.classList.contains('open');
   menu.classList.toggle('mobile-player-open', !!mobilePlayerOpen);
   
   // Directly set based on presence of 'open' class to avoid toggle issues
@@ -6415,8 +6393,8 @@ function updateMobileFavoriteButton(track) {
 }
 
 function updatePlayerUI(track) {
-  $('player-title').textContent  = track.title || '—';
-  $('player-artist').textContent = track.artist_name || track.artist || track.album_artist || '—';
+  UI['player-title'].textContent  = track.title || '—';
+  UI['player-artist'].textContent = track.artist_name || track.artist || track.album_artist || '—';
 
   const bitLabel = track.bit_depth ? `${track.bit_depth}bit` : (track.format || '');
   const rateLabel = track.sample_rate ? fmtCompactSR(track.sample_rate) : '';
@@ -6430,7 +6408,7 @@ function updatePlayerUI(track) {
   fmt_label += ` · ${dspProfile ? `DSP ${dspProfile.name}` : 'DSP Flat'}`;
   const activeZone = getActiveZone();
   fmt_label += ` · Output ${activeZone.name}`;
-  const formatEl = $('player-format');
+  const formatEl = UI['player-format'];
   formatEl.innerHTML = `${showHiRes ? '<img src="/static/logo-hires.png" class="player-format-badge" alt="Hi-Res">' : ''}${compactFormat ? `<span class="player-format-lines">${bitLabel ? `<span class="player-format-line">${escHtml(bitLabel)}</span>` : ''}${rateLabel ? `<span class="player-format-line">${escHtml(rateLabel)}</span>` : ''}</span>` : ''}`;
   formatEl.style.display = (showHiRes || compactFormat) ? '' : 'none';
   formatEl.title = fmt_label || 'Open Signal Path';
@@ -6439,11 +6417,12 @@ function updatePlayerUI(track) {
 
   // Cover art - avoid reloading the same image when only DSP/Source state changes.
   if (track.album_id) {
-    let img = $('player-art').querySelector('img');
+    const artWrap = UI['player-art'];
+    let img = artWrap.querySelector('img');
     if (!img) {
       img = document.createElement('img');
-      $('player-art').innerHTML = '';
-      $('player-art').appendChild(img);
+      artWrap.innerHTML = '';
+      artWrap.appendChild(img);
     }
     if (img.dataset.albumId !== albumId) {
       img.dataset.albumId = albumId;
@@ -6457,33 +6436,34 @@ function updatePlayerUI(track) {
 
   // Update play button to pause icon
   const pauseIcon = `<svg class="icon-play" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>`;
-  $('btn-play').innerHTML = `<svg viewBox="0 0 24 24" fill="currentColor">
+  const playPauseHtml = `<svg viewBox="0 0 24 24" fill="currentColor">
     <rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/>
   </svg>`;
-  $('mobile-btn-play').innerHTML = $('btn-play').innerHTML;
+  UI['btn-play'].innerHTML = playPauseHtml;
+  UI['mobile-btn-play'].innerHTML = playPauseHtml;
 
   // ─── Mobile Player UI Update ───
-  $('mobile-player-track-title').textContent = track.title || '—';
-  $('mobile-player-track-artist').textContent = track.artist_name || track.artist || track.album_artist || '—';
-  $('mobile-landscape-track-title').textContent = track.title || '—';
-  $('mobile-landscape-track-artist').textContent = track.artist_name || track.artist || track.album_artist || '—';
-  const mobileBadge = $('mobile-player-hires-badge');
+  UI['mobile-player-track-title'].textContent = track.title || '—';
+  UI['mobile-player-track-artist'].textContent = track.artist_name || track.artist || track.album_artist || '—';
+  UI['mobile-landscape-track-title'].textContent = track.title || '—';
+  UI['mobile-landscape-track-artist'].textContent = track.artist_name || track.artist || track.album_artist || '—';
+  const mobileBadge = UI['mobile-player-hires-badge'];
   if (showHiRes || compactFormat) {
     mobileBadge.style.display = 'flex';
-    $('mobile-player-format-text').textContent = compactFormat || 'Hi-Res';
+    UI['mobile-player-format-text'].textContent = compactFormat || 'Hi-Res';
   } else {
     mobileBadge.style.display = 'none';
   }
-  $('mobile-landscape-hires').style.display = showHiRes ? 'inline-flex' : 'none';
-  $('mobile-landscape-quality-text').textContent = compactFormat || (track.format || '');
+  UI['mobile-landscape-hires'].style.display = showHiRes ? 'inline-flex' : 'none';
+  UI['mobile-landscape-quality-text'].textContent = compactFormat || (track.format || '');
   if (track.album_id) {
     const coverUrl = getPlayerCoverUrl(track.album_id);
-    const mobileCover = $('mobile-player-cover');
+    const mobileCover = UI['mobile-player-cover'];
     if (mobileCover.dataset.albumId !== albumId) {
       mobileCover.dataset.albumId = albumId;
       mobileCover.src = coverUrl;
     }
-    const bgImg = $('mobile-player-bg-image');
+    const bgImg = UI['mobile-player-bg-image'];
     if (bgImg && bgImg.dataset.albumId !== albumId) {
       bgImg.dataset.albumId = albumId;
       bgImg.style.backgroundImage = `url("${coverUrl}")`;
@@ -6493,14 +6473,14 @@ function updatePlayerUI(track) {
   syncMobileLandscapeControls();
 
   // ─── VU Overlay UI Update ───
-  const vuTitle = $('mobile-vu-track-title');
-  const vuArtist = $('mobile-vu-track-artist');
+  const vuTitle = UI['mobile-vu-track-title'];
+  const vuArtist = UI['mobile-vu-track-artist'];
   if (vuTitle) vuTitle.textContent = track.title || '—';
   if (vuArtist) vuArtist.textContent = track.artist_name || track.artist || track.album_artist || '—';
   
-  const vuFormat = $('mobile-vu-format');
-  const vuSR = $('mobile-vu-sr');
-  const vuCodec = $('mobile-vu-codec');
+  const vuFormat = UI['mobile-vu-format'];
+  const vuSR = UI['mobile-vu-sr'];
+  const vuCodec = UI['mobile-vu-codec'];
   if (vuFormat) vuFormat.textContent = track.bit_depth ? `${track.bit_depth}-BIT` : (track.format ? track.format.toUpperCase() : '—');
   if (vuSR) vuSR.textContent = rateLabel || '—';
   if (vuCodec) vuCodec.textContent = track.format ? track.format.toUpperCase() : '—';
@@ -6521,7 +6501,7 @@ async function toggleCurrentAlbumFavorite() {
     track.album_is_favorite = !!res.is_favorite;
     track.is_favorite = !!res.is_favorite;
     updateMobileFavoriteButton(track);
-    const albumFavBtn = $('favorite-btn');
+    const albumFavBtn = UI['favorite-btn'];
     if (albumFavBtn && state.view === 'album' && String(state.viewParams?.id) === String(track.album_id)) {
       albumFavBtn.style.color = res.is_favorite ? '#ff6b6b' : 'var(--muted)';
       albumFavBtn.textContent = res.is_favorite ? '♥ Favorite' : '♡ Favorite';
@@ -6558,7 +6538,7 @@ function highlightPlaying(trackId) {
 
 // Scroll to top helper
 function scrollToTop() {
-  const main = $('main');
+  const main = UI['main'];
   if (main) {
     main.scrollTop = 0;
   }
@@ -6570,21 +6550,21 @@ audio.addEventListener('timeupdate', () => {
   noteBrowserPlaybackProgress();
   const Math_max = Math.max;
   const pct = audio.duration ? (audio.currentTime / audio.duration) * 100 : 0;
-  $('progress-fill').style.width = pct + '%';
-  $('mobile-progress-fill').style.width = pct + '%';
+  UI['progress-fill'].style.width = pct + '%';
+  UI['mobile-progress-fill'].style.width = pct + '%';
   
   const curr = fmt(audio.currentTime);
   const tot = fmt(audio.duration);
-  $('time-current').textContent = curr;
-  $('time-total').textContent = tot;
-  $('mobile-time-current').textContent = curr;
-  $('mobile-time-total').textContent = tot;
+  UI['time-current'].textContent = curr;
+  UI['time-total'].textContent = tot;
+  UI['mobile-time-current'].textContent = curr;
+  UI['mobile-time-total'].textContent = tot;
 
   // VU Overlay progress
-  const vuFill = $('mobile-vu-progress-fill');
+  const vuFill = UI['mobile-vu-progress-fill'];
   if (vuFill) vuFill.style.width = pct + '%';
-  const vuTimeCurr = $('mobile-vu-time-current');
-  const vuTimeTot = $('mobile-vu-time-total');
+  const vuTimeCurr = UI['mobile-vu-time-current'];
+  const vuTimeTot = UI['mobile-vu-time-total'];
   if (vuTimeCurr) vuTimeCurr.textContent = curr;
   if (vuTimeTot) vuTimeTot.textContent = tot;
 });
@@ -6642,9 +6622,9 @@ audio.addEventListener('ended', async () => {
   } else {
     state.playing = false;
     const pauseIcon = `<svg class="icon-play" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>`;
-    $('btn-play').innerHTML = pauseIcon;
-    $('mobile-btn-play').innerHTML = pauseIcon;
-    const vuPlay = $('mobile-vu-btn-play');
+    UI['btn-play'].innerHTML = pauseIcon;
+    UI['mobile-btn-play'].innerHTML = pauseIcon;
+    const vuPlay = UI['mobile-vu-btn-play'];
     if (vuPlay) vuPlay.innerHTML = pauseIcon;
   }
 });
@@ -6716,34 +6696,34 @@ const togglePlayAction = async () => {
   }
 };
 
-$('btn-play').addEventListener('click', togglePlayAction);
-$('mobile-btn-play').addEventListener('click', togglePlayAction);
+UI['btn-play'].addEventListener('click', togglePlayAction);
+UI['mobile-btn-play'].addEventListener('click', togglePlayAction);
 
 function updatePlayBtnUI() {
   const playIcon = `<svg viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>`;
   const pauseIcon = `<svg class="icon-play" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>`;
   if (state.playing) {
-    $('btn-play').innerHTML = playIcon;
-    $('mobile-btn-play').innerHTML = playIcon;
-    const vuPlay = $('mobile-vu-btn-play');
+    UI['btn-play'].innerHTML = playIcon;
+    UI['mobile-btn-play'].innerHTML = playIcon;
+    const vuPlay = UI['mobile-vu-btn-play'];
     if (vuPlay) vuPlay.innerHTML = playIcon;
     setMediaSessionPlaybackState('playing');
   } else {
-    $('btn-play').innerHTML = pauseIcon;
-    $('mobile-btn-play').innerHTML = pauseIcon;
-    const vuPlay = $('mobile-vu-btn-play');
+    UI['btn-play'].innerHTML = pauseIcon;
+    UI['mobile-btn-play'].innerHTML = pauseIcon;
+    const vuPlay = UI['mobile-vu-btn-play'];
     if (vuPlay) vuPlay.innerHTML = pauseIcon;
     setMediaSessionPlaybackState('paused');
   }
 }
 
 // VU Overlay Controls Listeners
-$('mobile-vu-btn-play')?.addEventListener('click', togglePlayAction);
-$('mobile-vu-btn-prev')?.addEventListener('click', () => $('btn-prev').click());
-$('mobile-vu-btn-next')?.addEventListener('click', () => $('btn-next').click());
+UI['mobile-vu-btn-play']?.addEventListener('click', togglePlayAction);
+UI['mobile-vu-btn-prev']?.addEventListener('click', () => UI['btn-prev'].click());
+UI['mobile-vu-btn-next']?.addEventListener('click', () => UI['btn-next'].click());
 
 // VU Overlay Progress Bar Seek
-$('mobile-vu-progress-bar')?.addEventListener('click', (e) => {
+UI['mobile-vu-progress-bar']?.addEventListener('click', (e) => {
   if (isCastZone() || isNativeZone()) return;
   const bar = e.currentTarget;
   const rect = bar.getBoundingClientRect();
@@ -6754,24 +6734,24 @@ $('mobile-vu-progress-bar')?.addEventListener('click', (e) => {
   }
 });
 
-$('btn-prev').addEventListener('click', () => {
+UI['btn-prev'].addEventListener('click', () => {
   if (!isCastZone() && !isNativeZone() && audio.currentTime > 3) { audio.currentTime = 0; return; }
   const prev = state.queueIdx - 1;
   if (prev >= 0) { state.queueIdx = prev; playTrack(state.queue[prev]); }
 });
-$('mobile-btn-prev').addEventListener('click', () => $('btn-prev').click());
+UI['mobile-btn-prev'].addEventListener('click', () => UI['btn-prev'].click());
 
-$('btn-next').addEventListener('click', () => {
+UI['btn-next'].addEventListener('click', () => {
   const next = state.queueIdx + 1;
   if (next < state.queue.length) { state.queueIdx = next; playTrack(state.queue[next]); }
 });
-$('mobile-btn-next').addEventListener('click', () => $('btn-next').click());
+UI['mobile-btn-next'].addEventListener('click', () => UI['btn-next'].click());
 
-$('btn-shuffle').addEventListener('click', () => {
+UI['btn-shuffle'].addEventListener('click', () => {
   state.shuffle = !state.shuffle;
   const colored = state.shuffle ? 'var(--gold)' : '';
-  $('btn-shuffle').style.color = colored;
-  $('mobile-btn-shuffle').style.color = colored;
+  UI['btn-shuffle'].style.color = colored;
+  UI['mobile-btn-shuffle'].style.color = colored;
   if (state.shuffle) {
     const shuffled = [...state.queue].sort(() => Math.random() - 0.5);
     state.queue = shuffled;
@@ -6779,54 +6759,54 @@ $('btn-shuffle').addEventListener('click', () => {
     showToast('Shuffle on');
   }
 });
-$('mobile-btn-shuffle').addEventListener('click', () => $('btn-shuffle').click());
+UI['mobile-btn-shuffle'].addEventListener('click', () => UI['btn-shuffle'].click());
 
-$('btn-repeat').addEventListener('click', () => {
+UI['btn-repeat'].addEventListener('click', () => {
   const modes = ['none', 'all', 'one'];
   const idx = modes.indexOf(state.repeatMode);
   state.repeatMode = modes[(idx + 1) % modes.length];
   const labels = { none: '', all: '↺', one: '↺¹' };
   const colored = state.repeatMode !== 'none' ? 'var(--gold)' : '';
-  $('btn-repeat').style.color = colored;
-  $('mobile-btn-repeat').style.color = colored;
+  UI['btn-repeat'].style.color = colored;
+  UI['mobile-btn-repeat'].style.color = colored;
   if (state.repeatMode !== 'none') showToast(`Repeat: ${state.repeatMode}`);
 });
-$('mobile-btn-repeat').addEventListener('click', () => $('btn-repeat').click());
+UI['mobile-btn-repeat'].addEventListener('click', () => UI['btn-repeat'].click());
 
-$('mobile-btn-lyrics').addEventListener('click', () => { toggleMobilePlayer(false); $('btn-lyrics').click(); });
-$('mobile-btn-queue').addEventListener('click', () => { toggleMobilePlayer(false); $('btn-queue-toggle').click(); });
+UI['mobile-btn-lyrics'].addEventListener('click', () => { toggleMobilePlayer(false); UI['btn-lyrics'].click(); });
+UI['mobile-btn-queue'].addEventListener('click', () => { toggleMobilePlayer(false); UI['btn-queue-toggle'].click(); });
 function handleCastButtonClick(e) {
   e.stopPropagation();
   toggleCastMenu();
 }
-$('btn-cast').addEventListener('click', handleCastButtonClick);
-$('mobile-btn-cast').addEventListener('click', handleCastButtonClick);
-$('mobile-top-cast').addEventListener('click', handleCastButtonClick);
-$('mobile-top-eq')?.addEventListener('click', (e) => { 
+UI['btn-cast'].addEventListener('click', handleCastButtonClick);
+UI['mobile-btn-cast'].addEventListener('click', handleCastButtonClick);
+UI['mobile-top-cast'].addEventListener('click', handleCastButtonClick);
+UI['mobile-top-eq']?.addEventListener('click', (e) => { 
   e.stopPropagation(); 
   if (window.openGraphicEQ) window.openGraphicEQ(); 
 });
-$('eq-close-btn')?.addEventListener('click', (e) => {
+UI['eq-close-btn']?.addEventListener('click', (e) => {
   e.stopPropagation();
-  $('eq-overlay')?.classList.remove('active');
+  UI['eq-overlay']?.classList.remove('active');
 });
-$('mobile-top-vu')?.addEventListener('click', (e) => { e.stopPropagation(); toggleVUMeters(); });
-$('mobile-top-upsample').addEventListener('click', (e) => {
+UI['mobile-top-vu']?.addEventListener('click', (e) => { e.stopPropagation(); toggleVUMeters(); });
+UI['mobile-top-upsample'].addEventListener('click', (e) => {
   e.stopPropagation();
   openMobileUpsamplePicker();
 });
-$('mobile-top-dsp').addEventListener('click', (e) => {
+UI['mobile-top-dsp'].addEventListener('click', (e) => {
   e.stopPropagation();
   openMobileDspPicker();
 });
-$('mobile-btn-add-playlist').addEventListener('click', () => {
+UI['mobile-btn-add-playlist'].addEventListener('click', () => {
   if (!state.currentTrack) {
     showToast('No track playing');
     return;
   }
   showPlaylistPicker(state.currentTrack);
 });
-$('mobile-btn-favorite').addEventListener('click', toggleCurrentAlbumFavorite);
+UI['mobile-btn-favorite'].addEventListener('click', toggleCurrentAlbumFavorite);
 
 // VU Meter toggle
 let vuMeterOpen = false;
@@ -6834,10 +6814,10 @@ let vuAnimationFrame = null;
 let vuStyle = 1; // 1 = Classic gold, 2 = Mcintosh blue
 
 function toggleVUMeters(show) {
-  const overlay = $('mobile-vu-meters');
-  const btn = $('mobile-btn-vu');
-  const topBtn = $('mobile-top-vu');
-  const deskBtn = $('btn-vu-desktop');
+  const overlay = UI['mobile-vu-meters'];
+  const btn = UI['mobile-btn-vu'];
+  const topBtn = UI['mobile-top-vu'];
+  const deskBtn = UI['btn-vu-desktop'];
   if (show === undefined) show = !vuMeterOpen;
 
   if (show) {
@@ -6859,8 +6839,8 @@ function toggleVUMeters(show) {
 }
 
 // Add listeners for VU toggles
-if ($('btn-vu-desktop')) {
-  $('btn-vu-desktop').addEventListener('click', (e) => {
+if (UI['btn-vu-desktop']) {
+  UI['btn-vu-desktop'].addEventListener('click', (e) => {
     e.stopPropagation();
     toggleVUMeters();
   });
@@ -6869,11 +6849,11 @@ if ($('btn-vu-desktop')) {
 function updateVUMetersInfo() {
   if (!state.currentTrack) return;
   const track = state.currentTrack;
-  const vuTitle = $('mobile-vu-track-title');
-  const vuArtist = $('mobile-vu-track-artist');
-  const vuFormat = $('mobile-vu-format');
-  const vuSr = $('mobile-vu-sr');
-  const vuCodec = $('mobile-vu-codec');
+  const vuTitle = UI['mobile-vu-track-title'];
+  const vuArtist = UI['mobile-vu-track-artist'];
+  const vuFormat = UI['mobile-vu-format'];
+  const vuSr = UI['mobile-vu-sr'];
+  const vuCodec = UI['mobile-vu-codec'];
 
   if (vuTitle) vuTitle.textContent = track.title || '—';
   if (vuArtist) vuArtist.textContent = track.artist_name || track.artist || '—';
@@ -6885,8 +6865,8 @@ function updateVUMetersInfo() {
 function startVUAnimation() {
   if (vuAnimationFrame) return;
 
-  const leftNeedle = $('vu-needle-left');
-  const rightNeedle = $('vu-needle-right');
+  const leftNeedle = UI['vu-needle-left'];
+  const rightNeedle = UI['vu-needle-right'];
   if (!leftNeedle || !rightNeedle) return;
 
   // Initialize audio analyser on first user interaction
@@ -6940,14 +6920,14 @@ function stopVUAnimation() {
   }
 }
 
-$('mobile-btn-vu').addEventListener('click', () => toggleVUMeters());
-$('mobile-vu-close').addEventListener('click', () => toggleVUMeters(false));
+UI['mobile-btn-vu'].addEventListener('click', () => toggleVUMeters());
+UI['mobile-vu-close'].addEventListener('click', () => toggleVUMeters(false));
 
 // VU style toggle
 function setVUStyle(style) {
-  const overlay = $('mobile-vu-meters');
-  const style1Btn = $('vu-style-1');
-  const style2Btn = $('vu-style-2');
+  const overlay = UI['mobile-vu-meters'];
+  const style1Btn = UI['vu-style-1'];
+  const style2Btn = UI['vu-style-2'];
 
   vuStyle = style;
 
@@ -6962,8 +6942,8 @@ function setVUStyle(style) {
   }
 }
 
-$('vu-style-1').addEventListener('click', () => setVUStyle(1));
-$('vu-style-2').addEventListener('click', () => setVUStyle(2));
+UI['vu-style-1'].addEventListener('click', () => setVUStyle(1));
+UI['vu-style-2'].addEventListener('click', () => setVUStyle(2));
 
 // Handle progress scrub on both desktop and mobile bars
 let isSeekingProgress = false;
@@ -7005,12 +6985,12 @@ function bindProgressScrub(containerEl) {
   containerEl.addEventListener('lostpointercapture', () => isSeekingProgress = false);
 }
 
-bindProgressScrub($('progress-row'));
-bindProgressScrub($('mobile-progress-row'));
+bindProgressScrub(UI['progress-row']);
+bindProgressScrub(UI['mobile-progress-row']);
 
 // Toggle mobile player
 function toggleMobilePlayer(show) {
-  const overlay = $('mobile-fullscreen-player');
+  const overlay = UI['mobile-fullscreen-player'];
   if (show) overlay.classList.add('open');
   else overlay.classList.remove('open');
 }
@@ -7027,36 +7007,36 @@ function openFullscreenPlayer(e) {
 }
 
 // Bind close button
-$('mobile-player-back').addEventListener('click', () => toggleMobilePlayer(false));
-$('player-art').addEventListener('click', openFullscreenPlayer);
+UI['mobile-player-back'].addEventListener('click', () => toggleMobilePlayer(false));
+UI['player-art'].addEventListener('click', openFullscreenPlayer);
 
 // Provide a way to manually open: click player info area when on mobile
-$('player').addEventListener('click', e => {
+UI['player'].addEventListener('click', e => {
   // Don't open if they clicked controls
   if (e.target.closest('.player-controls, .player-right, .progress-row, .progress-bar')) return;
   if (e.target.closest('#player-art')) return;
   if (window.innerWidth <= 768 && state.currentTrack) toggleMobilePlayer(true);
 });
 
-$('volume-slider').addEventListener('input', e => {
+UI['volume-slider'].addEventListener('input', e => {
   audio.volume = e.target.value / 100;
-  $('mobile-volume-slider').value = e.target.value;
+  UI['mobile-volume-slider'].value = e.target.value;
 });
-$('mobile-volume-slider').addEventListener('input', e => {
+UI['mobile-volume-slider'].addEventListener('input', e => {
   audio.volume = e.target.value / 100;
-  $('volume-slider').value = e.target.value;
+  UI['volume-slider'].value = e.target.value;
 });
 audio.volume = 0.85;
-$('mobile-volume-slider').value = $('volume-slider').value;
+UI['mobile-volume-slider'].value = UI['volume-slider'].value;
 
-$('player-format').addEventListener('click', e => {
+UI['player-format'].addEventListener('click', e => {
   e.stopPropagation();
   showSignalPath();
 });
 
 bindDesktopPlayerSelectPopover('upsample-select', { openUp: true });
 
-$('upsample-select').addEventListener('change', e => {
+UI['upsample-select'].addEventListener('change', e => {
   state.upsample = e.target.value;
   if (state.currentTrack) {
     if (isCastZone()) {
@@ -7076,7 +7056,7 @@ $('upsample-select').addEventListener('change', e => {
   syncMobileLandscapeControls();
 });
 
-$('dsp-select').addEventListener('change', e => {
+UI['dsp-select'].addEventListener('change', e => {
   state.dspProfile = e.target.value;
   const selected = state.dspProfiles.find(profile => String(profile.id) === String(state.dspProfile));
   showToast(selected ? `DSP: ${selected.name}` : 'DSP: Dry');
@@ -7103,15 +7083,15 @@ $('dsp-select').addEventListener('change', e => {
 // Close cast menu when clicking outside
 document.addEventListener('click', e => {
   if (
-    !$('cast-menu').contains(e.target) &&
-    e.target !== $('btn-cast') &&
-    e.target !== $('mobile-btn-cast') &&
-    e.target !== $('mobile-top-cast') &&
+    !UI['cast-menu'].contains(e.target) &&
+    e.target !== UI['btn-cast'] &&
+    e.target !== UI['mobile-btn-cast'] &&
+    e.target !== UI['mobile-top-cast'] &&
     !e.target.closest('#btn-cast') &&
     !e.target.closest('#mobile-btn-cast') &&
     !e.target.closest('#mobile-top-cast')
   ) {
-    $('cast-menu').classList.remove('open');
+    UI['cast-menu'].classList.remove('open');
   }
 });
 
@@ -7133,10 +7113,10 @@ if ('mediaSession' in navigator) {
     updatePlayBtnUI();
   });
   navigator.mediaSession.setActionHandler('previoustrack', () => {
-    $('btn-prev').click();
+    UI['btn-prev'].click();
   });
   navigator.mediaSession.setActionHandler('nexttrack', () => {
-    $('btn-next').click();
+    UI['btn-next'].click();
   });
 }
 
@@ -7158,6 +7138,11 @@ async function navigate(view, params = {}, push = true) {
     state.prevParams = prevParams || {};
   }
 
+  // FORCE re-render by clearing current view if navigating to the same type (e.g. album -> album)
+  if (state.view === view && view !== 'search') {
+    console.log('[VELVET] Same view type navigation, forcing fresh render');
+  }
+
   state.view = view;
   state.viewParams = params;
 
@@ -7176,13 +7161,38 @@ async function navigate(view, params = {}, push = true) {
   });
 
   // Cache current page before rendering new one
-  const vc = $('view-container');
+  const vc = UI['view-container'];
   if (prevView && vc.innerHTML) {
     _cachePage(prevView, vc.innerHTML);
   }
 
+  // Close overlays
+  UI['sidebar-overlay']?.classList.remove('active');
+  UI['sidebar']?.classList.remove('open');
+
   await render();
 }
+
+window.addEventListener('popstate', (event) => {
+  // Clear HTML page cache on popstate to ensure interactive cards (cards with event listeners) 
+  // are re-rendered correctly rather than restored from stale innerHTML.
+  _pageCache.clear();
+
+  if (event.state && event.state.view) {
+    console.log('[VELVET] Popstate navigation (from state):', event.state.view);
+    navigate(event.state.view, event.state.params, false);
+  } else {
+    // Falls back to URL hash decoding if state is missing
+    const hash = location.hash.replace('#', '');
+    console.log('[VELVET] Popstate navigation (from hash):', hash || 'home');
+    if (hash) {
+      const [view, id] = hash.split('/');
+      navigate(view, id ? { id: decodeURIComponent(id) } : {}, false);
+    } else {
+      navigate('home', {}, false);
+    }
+  }
+});
 
 // Simple page caching
 function _cachePage(view, html) {
@@ -7214,7 +7224,7 @@ $$('.player-info').forEach(el => {
 
 async function render() {
   console.log('[VELVET] render() started');
-  const vc = $('view-container');
+  const vc = UI['view-container'];
   if (!vc) {
     console.error('[VELVET] Critical Error: #view-container not found in DOM');
     return;
@@ -7301,10 +7311,10 @@ async function renderHome(vc) {
   }
 
   // Update sidebar stats (safe to do even if api fails as we have defaults)
-  if ($('stat-artists')) $('stat-artists').textContent  = (stats.artists || 0).toLocaleString();
-  if ($('stat-albums')) $('stat-albums').textContent   = (stats.albums || 0).toLocaleString();
-  if ($('stat-tracks')) $('stat-tracks').textContent   = (stats.tracks || 0).toLocaleString();
-  if ($('stat-duration')) $('stat-duration').textContent = (stats.total_duration_hours || 0) + 'h';
+  if (UI['stat-artists']) UI['stat-artists'].textContent  = (stats.artists || 0).toLocaleString();
+  if (UI['stat-albums']) UI['stat-albums'].textContent   = (stats.albums || 0).toLocaleString();
+  if (UI['stat-tracks']) UI['stat-tracks'].textContent   = (stats.tracks || 0).toLocaleString();
+  if (UI['stat-duration']) UI['stat-duration'].textContent = (stats.total_duration_hours || 0) + 'h';
 
   const hour = new Date().getHours();
   const greeting = hour < 12 ? 'Good morning' : hour < 18 ? 'Good afternoon' : 'Good evening';
@@ -7352,7 +7362,7 @@ async function renderHome(vc) {
   console.log('[VELVET] Loading recent albums');
   try {
     const recent = await api('/recently-added?limit=20');
-    const grid = $('recent-grid');
+    const grid = UI['recent-grid'];
     if (!grid) return;
 
     if (!recent || !recent.length) {
@@ -7368,7 +7378,7 @@ async function renderHome(vc) {
     console.log('[VELVET] Recent albums rendered:', recent.length);
   } catch (e) {
     console.warn('[VELVET] Failed to load recent albums:', e);
-    const grid = $('recent-grid');
+    const grid = UI['recent-grid'];
     if (grid) grid.innerHTML = '<div style="color:var(--muted)">Failed to load recent music</div>';
   }
 }
@@ -7404,10 +7414,10 @@ async function renderDiscover(vc) {
   `;
 
   setupSearch();
-  $('discover-favorites-btn')?.addEventListener('click', () => navigate('albums'));
-  $('discover-history-btn')?.addEventListener('click', () => navigate('history'));
+  UI['discover-favorites-btn']?.addEventListener('click', () => navigate('albums'));
+  UI['discover-history-btn']?.addEventListener('click', () => navigate('history'));
 
-  const container = $('discover-sections');
+  const container = UI['discover-sections'];
   const config = [
     {
       key: 'favorites',
@@ -7580,22 +7590,22 @@ async function renderAlbums(vc) {
     </div>
   `;
 
-  const input = $('search-input');
-  const grid = $('albums-grid');
-  const countEl = $('albums-count');
-  const headerEl = $('albums-header');
-  const backToTopBtn = $('back-to-top-btn');
-  const mainEl = $('main');
+  const input = UI['search-input'];
+  const grid = UI['albums-grid'];
+  const countEl = UI['albums-count'];
+  const headerEl = UI['albums-header'];
+  const backToTopBtn = UI['back-to-top-btn'];
+  const mainEl = UI['main'];
   const sectionTitle = headerEl.querySelector('.section-title');
-  const pagination = $('albums-pagination');
-  const favBtn = $('favorites-filter-btn');
-  const sortSelect = $('album-sort-select');
-  const genreSelect = $('album-genre-select');
-  const decadeSelect = $('album-decade-select');
-  const clearFocusBtn = $('clear-focus-btn');
-  const prevBtn = $('prev-page-btn');
-  const nextBtn = $('next-page-btn');
-  const pageInfo = $('page-info');
+  const pagination = UI['albums-pagination'];
+  const favBtn = UI['favorites-filter-btn'];
+  const sortSelect = UI['album-sort-select'];
+  const genreSelect = UI['album-genre-select'];
+  const decadeSelect = UI['album-decade-select'];
+  const clearFocusBtn = UI['clear-focus-btn'];
+  const prevBtn = UI['prev-page-btn'];
+  const nextBtn = UI['next-page-btn'];
+  const pageInfo = UI['page-info'];
 
   // Scroll to top on header click
   headerEl.addEventListener('click', (e) => {
@@ -7662,8 +7672,8 @@ async function renderAlbums(vc) {
     clearFocusBtn.style.opacity = (currentGenre || currentDecade) ? '1' : '0.6';
   }
 
-  // Make a track row with album cover
-  function makeTrackRow(track) {
+  // Make a track row for search results (links to album)
+  function makeSearchRow(track) {
     const el = document.createElement('div');
     el.className = 'history-item';
     el.innerHTML = `
@@ -7716,7 +7726,7 @@ async function renderAlbums(vc) {
       tracksList.className = 'tracks-list';
       tracksList.style.cssText = 'display:flex;flex-direction:column;gap:4px;padding:0 12px 16px;';
       const tracksFragment = document.createDocumentFragment();
-      searchResults.forEach(track => tracksFragment.appendChild(makeTrackRow(track)));
+      searchResults.forEach(track => tracksFragment.appendChild(makeSearchRow(track)));
       tracksList.appendChild(tracksFragment);
       fragment.appendChild(tracksList);
     }
@@ -7965,16 +7975,16 @@ async function renderArtists(vc) {
     </div>
   `;
 
-  const input = $('search-input');
-  const grid = $('artists-grid');
-  const countEl = $('artists-count');
-  const headerEl = $('artists-header');
-  const backToTopBtn = $('back-to-top-btn');
-  const mainEl = $('main');
-  const pagination = $('artists-pagination');
-  const prevBtn = $('prev-page-btn');
-  const nextBtn = $('next-page-btn');
-  const pageInfo = $('page-info');
+  const input = UI['search-input'];
+  const grid = UI['artists-grid'];
+  const countEl = UI['artists-count'];
+  const headerEl = UI['artists-header'];
+  const backToTopBtn = UI['back-to-top-btn'];
+  const mainEl = UI['main'];
+  const pagination = UI['artists-pagination'];
+  const prevBtn = UI['prev-page-btn'];
+  const nextBtn = UI['next-page-btn'];
+  const pageInfo = UI['page-info'];
 
   // Scroll to top on header click
   headerEl.addEventListener('click', (e) => {
@@ -8132,9 +8142,9 @@ async function renderComposers(vc) {
     <div class="grid artist-grid" id="composers-grid"></div>
   `;
 
-  const input = $('search-input');
-  const grid = $('composers-grid');
-  const countEl = $('composers-count');
+  const input = UI['search-input'];
+  const grid = UI['composers-grid'];
+  const countEl = UI['composers-count'];
 
   function getFiltered() {
     const q = searchQuery.trim();
@@ -8221,9 +8231,9 @@ async function renderComposer(vc, { id }) {
     </div>
   `;
 
-  $('composer-open-all-btn')?.addEventListener('click', () => navigate('composers'));
+  UI['composer-open-all-btn']?.addEventListener('click', () => navigate('composers'));
 
-  const worksGrid = $('composer-works-grid');
+  const worksGrid = UI['composer-works-grid'];
   if (!works.length) {
     worksGrid.innerHTML = `<div class="credits-card"><div class="zone-title">No work metadata</div><div class="zone-sub">This composer is present, but the source files do not expose separate work titles yet.</div></div>`;
   } else {
@@ -8244,7 +8254,7 @@ async function renderComposer(vc, { id }) {
     worksGrid.appendChild(workFragment);
   }
 
-  const albumsGrid = $('composer-albums-grid');
+  const albumsGrid = UI['composer-albums-grid'];
   if (!albums.length) {
     albumsGrid.innerHTML = `<div style="padding:0;color:var(--muted);font-size:13px;grid-column:1/-1">No albums found.</div>`;
   } else {
@@ -8253,7 +8263,7 @@ async function renderComposer(vc, { id }) {
     albumsGrid.appendChild(albumFragment);
   }
 
-  const trackList = $('composer-tracks-list');
+  const trackList = UI['composer-tracks-list'];
   if (!tracks.length) {
     trackList.innerHTML = `<div style="color:var(--muted);font-size:13px">No tracks found.</div>`;
   } else {
@@ -8288,11 +8298,11 @@ async function renderWorks(vc) {
     <div class="credits-grid" id="works-grid"></div>
   `;
 
-  const grid = $('works-grid');
-  const countEl = $('works-count');
+  const grid = UI['works-grid'];
+  const countEl = UI['works-count'];
 
   const filterWorks = () => {
-    const q = ($('search-input')?.value || '').trim().toLowerCase();
+    const q = (UI['search-input']?.value || '').trim().toLowerCase();
     if (!q) return allWorks;
     return allWorks.filter(item =>
       chineseMatch(item.work_title || '', q) ||
@@ -8313,7 +8323,7 @@ async function renderWorks(vc) {
     grid.appendChild(fragment);
   };
 
-  $('search-input')?.addEventListener('input', renderGrid);
+  UI['search-input']?.addEventListener('input', renderGrid);
   renderGrid();
 }
 
@@ -8434,10 +8444,10 @@ async function renderWork(vc, { id, role = '', credit = '', version = '' }) {
     </div>
   `;
 
-  $('work-open-all-btn')?.addEventListener('click', () => navigate('works'));
-  $('work-composer-pill')?.addEventListener('click', () => navigate('composer', { id: work.composer }));
-  $('work-clear-filter-pill')?.addEventListener('click', () => navigate('work', { id, version }));
-  $('work-clear-version-pill')?.addEventListener('click', () => navigate('work', role && credit ? { id, role, credit } : { id }));
+  UI['work-open-all-btn']?.addEventListener('click', () => navigate('works'));
+  UI['work-composer-pill']?.addEventListener('click', () => navigate('composer', { id: work.composer }));
+  UI['work-clear-filter-pill']?.addEventListener('click', () => navigate('work', { id, version }));
+  UI['work-clear-version-pill']?.addEventListener('click', () => navigate('work', role && credit ? { id, role, credit } : { id }));
   $$('.work-filter-pill').forEach(btn => {
     btn.addEventListener('click', () => {
       const nextRole = btn.dataset.role;
@@ -8447,7 +8457,7 @@ async function renderWork(vc, { id, role = '', credit = '', version = '' }) {
     });
   });
 
-  const versionsGrid = $('work-versions-grid');
+  const versionsGrid = UI['work-versions-grid'];
   if (!versions.length) {
     versionsGrid.innerHTML = `<div class="credits-card"><div class="zone-title">No versions detected</div><div class="zone-sub">This work currently resolves to a single recording shape in your library.</div></div>`;
   } else {
@@ -8482,7 +8492,7 @@ async function renderWork(vc, { id, role = '', credit = '', version = '' }) {
     versionsGrid.appendChild(fragment);
   }
 
-  const albumsGrid = $('work-albums-grid');
+  const albumsGrid = UI['work-albums-grid'];
   if (!albums.length) {
     albumsGrid.innerHTML = `<div style="padding:0;color:var(--muted);font-size:13px;grid-column:1/-1">No albums found.</div>`;
   } else {
@@ -8491,7 +8501,7 @@ async function renderWork(vc, { id, role = '', credit = '', version = '' }) {
     albumsGrid.appendChild(albumFragment);
   }
 
-  const trackList = $('work-tracks-list');
+  const trackList = UI['work-tracks-list'];
   if (!tracks.length) {
     trackList.innerHTML = `<div style="color:var(--muted);font-size:13px">No tracks found.</div>`;
   } else {
@@ -8562,9 +8572,9 @@ async function renderCredits(vc) {
   `;
 
   function renderBucket(role, label) {
-    const query = (($('search-input')?.value || '').trim().toLowerCase());
-    const countEl = $(`${role}s-count`);
-    const grid = $(`${role}s-grid`);
+    const query = ((UI['search-input']?.value || '').trim().toLowerCase());
+    const countEl = UI[`${role}s-count`];
+    const grid = UI[`${role}s-grid`];
     const items = !query
       ? buckets[role]
       : buckets[role].filter(item => chineseMatch(item.name || '', query));
@@ -8587,7 +8597,7 @@ async function renderCredits(vc) {
     renderBucket('ensemble', 'Ensemble');
   };
 
-  $('search-input')?.addEventListener('input', rerender);
+  UI['search-input']?.addEventListener('input', rerender);
   rerender();
 }
 
@@ -8660,12 +8670,12 @@ async function renderCreditEntity(vc, { id }) {
     </div>
   `;
 
-  $('credit-open-all-btn')?.addEventListener('click', () => navigate('credits'));
+  UI['credit-open-all-btn']?.addEventListener('click', () => navigate('credits'));
   $$('.credit-composer-pill').forEach(btn => {
     btn.addEventListener('click', () => navigate('composer', { id: btn.dataset.composer }));
   });
 
-  const worksGrid = $('credit-works-grid');
+  const worksGrid = UI['credit-works-grid'];
   if (!works.length) {
     worksGrid.innerHTML = `<div class="credits-card"><div class="zone-title">No works found</div><div class="zone-sub">This credit exists, but no grouped work metadata is available yet.</div></div>`;
   } else {
@@ -8674,7 +8684,7 @@ async function renderCreditEntity(vc, { id }) {
     worksGrid.appendChild(fragment);
   }
 
-  const albumsGrid = $('credit-albums-grid');
+  const albumsGrid = UI['credit-albums-grid'];
   if (!albums.length) {
     albumsGrid.innerHTML = `<div style="padding:0;color:var(--muted);font-size:13px;grid-column:1/-1">No albums found.</div>`;
   } else {
@@ -8683,7 +8693,7 @@ async function renderCreditEntity(vc, { id }) {
     albumsGrid.appendChild(fragment);
   }
 
-  const trackList = $('credit-tracks-list');
+  const trackList = UI['credit-tracks-list'];
   if (!tracks.length) {
     trackList.innerHTML = `<div style="color:var(--muted);font-size:13px">No tracks found.</div>`;
   } else {
@@ -8735,13 +8745,13 @@ async function renderTracks(vc) {
     </div>
   `;
 
-  const list = $('tracks-list');
-  const countEl = $('tracks-count');
-  const prevBtn = $('tracks-prev-btn');
-  const nextBtn = $('tracks-next-btn');
-  const pageInfo = $('tracks-page-info');
-  const sortSelect = $('track-sort');
-  const input = $('search-input');
+  const list = UI['tracks-list'];
+  const countEl = UI['tracks-count'];
+  const prevBtn = UI['tracks-prev-btn'];
+  const nextBtn = UI['tracks-next-btn'];
+  const pageInfo = UI['tracks-page-info'];
+  const sortSelect = UI['track-sort'];
+  const input = UI['search-input'];
 
   async function renderPage() {
     const offset = (currentPage - 1) * PAGE_SIZE;
@@ -8823,9 +8833,9 @@ async function renderGenres(vc) {
     <div class="grid" id="genres-grid"></div>
   `;
 
-  const grid = $('genres-grid');
-  const input = $('search-input');
-  const countEl = $('genres-count');
+  const grid = UI['genres-grid'];
+  const input = UI['search-input'];
+  const countEl = UI['genres-count'];
 
   function draw(items) {
     grid.innerHTML = '';
@@ -8879,7 +8889,7 @@ async function renderGenre(vc, { id }) {
     <div class="grid" id="genre-albums-grid"></div>
   `;
 
-  const grid = $('genre-albums-grid');
+  const grid = UI['genre-albums-grid'];
   if (!albums.length) {
     grid.innerHTML = `<div style="padding:0;color:var(--muted);font-size:13px;grid-column:1/-1">No albums in this genre yet.</div>`;
     return;
@@ -8906,7 +8916,7 @@ async function renderPlaylists(vc) {
     <div class="grid" id="playlists-grid"></div>
   `;
 
-  $('create-playlist-btn').addEventListener('click', async () => {
+  UI['create-playlist-btn'].addEventListener('click', async () => {
     const name = prompt('Playlist name', 'New Playlist');
     if (!name) return;
     const created = await api('/playlists', {
@@ -8919,7 +8929,7 @@ async function renderPlaylists(vc) {
     }
   });
 
-  const grid = $('playlists-grid');
+  const grid = UI['playlists-grid'];
   if (!playlists.length) {
     grid.innerHTML = `<div style="padding:0;color:var(--muted);font-size:13px;grid-column:1/-1">No playlists yet. Create one from this page or add a track with the ＋ button.</div>`;
     return;
@@ -8971,7 +8981,7 @@ async function renderPlaylist(vc, { id }) {
     <div class="track-list" id="playlist-tracks-list"></div>
   `;
 
-  $('rename-playlist-btn').addEventListener('click', async () => {
+  UI['rename-playlist-btn'].addEventListener('click', async () => {
     const name = prompt('Rename playlist', playlist.name);
     if (!name || name === playlist.name) return;
     const result = await api(`/playlists/${id}`, {
@@ -8985,7 +8995,7 @@ async function renderPlaylist(vc, { id }) {
     }
   });
 
-  $('delete-playlist-btn').addEventListener('click', async () => {
+  UI['delete-playlist-btn'].addEventListener('click', async () => {
     const confirmed = confirm(`Delete playlist "${playlist.name}"?`);
     if (!confirmed) return;
     const result = await api(`/playlists/${id}`, { method: 'DELETE' });
@@ -8995,7 +9005,7 @@ async function renderPlaylist(vc, { id }) {
     }
   });
 
-  const list = $('playlist-tracks-list');
+  const list = UI['playlist-tracks-list'];
   if (!playlist.tracks.length) {
     list.innerHTML = `<div style="padding:24px 32px;color:var(--muted);font-size:13px">This playlist is empty. Add tracks with the ＋ button in albums, search, or tracks.</div>`;
     return;
@@ -9094,16 +9104,16 @@ async function renderZones(vc, { refresh = false } = {}) {
     </div>
   `;
 
-  $('zones-open-discover')?.addEventListener('click', () => navigate('discover'));
-  $('zones-open-settings')?.addEventListener('click', () => navigate('settings'));
-  $('zones-refresh-btn')?.addEventListener('click', async () => {
+  UI['zones-open-discover']?.addEventListener('click', () => navigate('discover'));
+  UI['zones-open-settings']?.addEventListener('click', () => navigate('settings'));
+  UI['zones-refresh-btn']?.addEventListener('click', async () => {
     showToast('Refreshing devices…');
     await renderZones(vc, { refresh: true });
   });
 
-  const browserGrid = $('zones-browser-grid');
-  const nativeGrid = $('zones-native-grid');
-  const networkGrid = $('zones-network-grid');
+  const browserGrid = UI['zones-browser-grid'];
+  const nativeGrid = UI['zones-native-grid'];
+  const networkGrid = UI['zones-network-grid'];
 
   const makeZoneCard = (zone, subtitle, meta) => {
     const isActive = activeZone.type === zone.type && String(activeZone.id) === String(zone.id);
@@ -9205,16 +9215,16 @@ async function renderArtist(vc, { id }) {
     <div class="grid" id="artist-albums-grid"></div>
   `;
 
-  const grid = $('artist-albums-grid');
+  const grid = UI['artist-albums-grid'];
   // Use DocumentFragment for better performance
   const fragment = document.createDocumentFragment();
   albums.forEach(a => fragment.appendChild(makeAlbumCard({ ...a, artist_name: artist.name })));
   grid.appendChild(fragment);
 
-  $('artist-radio-btn')?.addEventListener('click', () => startRadio('artist', id));
+  UI['artist-radio-btn']?.addEventListener('click', () => startRadio('artist', id));
 
   // Refresh artist metadata
-  $('refresh-artist-btn')?.addEventListener('click', async () => {
+  UI['refresh-artist-btn']?.addEventListener('click', async () => {
     showToast('Re-reading metadata from files…');
     try {
       const res = await api(`/artists/${id}/refresh`, { method: 'POST' });
@@ -9232,7 +9242,7 @@ async function renderArtist(vc, { id }) {
 
   // Load bio separately
   try {
-    const bioWrap = $('artist-bio');
+    const bioWrap = UI['artist-bio'];
     const result = await api(`/artists/${id}/enrich-bio`, { method: 'POST' });
     if (result.bio) {
       bioWrap.innerHTML = `<div class="bio-text">${escHtml(result.bio)}</div>`;
@@ -9240,7 +9250,7 @@ async function renderArtist(vc, { id }) {
       bioWrap.innerHTML = '';
     }
   } catch {
-    $('artist-bio').innerHTML = '';
+    if (UI['artist-bio']) UI['artist-bio'].innerHTML = '';
   }
 }
 
@@ -9414,7 +9424,7 @@ async function renderAlbum(vc, { id }) {
   `;
 
   // Cover - use medium thumbnail for faster loading, fall back to full cover
-  const heroArt = $('album-art-hero');
+  const heroArt = UI['album-art-hero'];
   const placeholder = heroArt.querySelector('.album-art-placeholder');
   const img = document.createElement('img');
   img.src = `/api/covers/${album.id}/thumb?size=medium&t=${Date.now()}`;
@@ -9434,7 +9444,7 @@ async function renderAlbum(vc, { id }) {
   heroArt.prepend(img);
 
   // Artist click
-  $('hero-artist').addEventListener('click', () => {
+  UI['hero-artist'].addEventListener('click', () => {
     if (album.artist_id) {
       navigate('artist', { id: album.artist_id });
     } else {
@@ -9442,7 +9452,7 @@ async function renderAlbum(vc, { id }) {
     }
   });
 
-  $('album-primary-artist-pill')?.addEventListener('click', () => {
+  UI['album-primary-artist-pill']?.addEventListener('click', () => {
     if (album.artist_id) navigate('artist', { id: album.artist_id });
   });
 
@@ -9459,8 +9469,8 @@ async function renderAlbum(vc, { id }) {
     btn.addEventListener('click', () => navigate('credit', { id: makeCreditId(btn.dataset.role, btn.dataset.name) }));
   });
 
-  const albumMetaToggle = $('album-meta-toggle');
-  const albumMetaPanel = $('album-mobile-meta');
+  const albumMetaToggle = UI['album-meta-toggle'];
+  const albumMetaPanel = UI['album-mobile-meta'];
   if (albumMetaToggle && albumMetaPanel) {
     const isMobile = window.matchMedia('(max-width: 768px), (orientation: landscape) and (max-height: 500px)').matches;
     const setAlbumMetaExpanded = (expanded) => {
@@ -9476,7 +9486,7 @@ async function renderAlbum(vc, { id }) {
 
 
   // Render tracks using DocumentFragment for better performance
-  const container = $('tracks-container');
+  const container = UI['tracks-container'];
   const fragment = document.createDocumentFragment();
   tracks.forEach((t, i) => {
     const el = makeTrackRow(t, i + 1);
@@ -9495,34 +9505,34 @@ async function renderAlbum(vc, { id }) {
   container.appendChild(fragment);
 
   // Play all
-  $('play-all-btn').addEventListener('click', () => {
+  UI['play-all-btn'].addEventListener('click', () => {
     if (tracks.length) playTrack(tracks[0], tracks, 0);
   });
 
   // Overflow manage menu toggle
-  $('album-more-trigger').addEventListener('click', (e) => {
+  UI['album-more-trigger'].addEventListener('click', (e) => {
     e.stopPropagation();
-    const menu = $('album-more-menu');
+    const menu = UI['album-more-menu'];
     menu.classList.toggle('open');
   });
   const albumMenuCloseAc = new AbortController();
   document.addEventListener('click', () => {
-    $('album-more-menu')?.classList.remove('open');
+    UI['album-more-menu']?.classList.remove('open');
   }, { signal: albumMenuCloseAc.signal });
   // Clean up when navigating away
   window.__albumMenuCloseAc?.abort();
   window.__albumMenuCloseAc = albumMenuCloseAc;
 
-  $('album-radio-btn').addEventListener('click', () => startRadio('album', album.id));
+  UI['album-radio-btn'].addEventListener('click', () => startRadio('album', album.id));
 
   // Shuffle all
-  $('shuffle-all-btn').addEventListener('click', () => {
+  UI['shuffle-all-btn'].addEventListener('click', () => {
     const shuffled = [...tracks].sort(() => Math.random() - 0.5);
     if (shuffled.length) { state.shuffle = true; playTrack(shuffled[0], shuffled, 0); }
   });
 
   // Enrich cover
-  $('enrich-btn').addEventListener('click', async () => {
+  UI['enrich-btn'].addEventListener('click', async () => {
     showToast('Searching all sources (Netease, QQ, Apple Music…)…');
     try {
       const res = await fetch(`/api/albums/${album.id}/fetch-cover`, { method: 'POST' });
@@ -9539,10 +9549,10 @@ async function renderAlbum(vc, { id }) {
   });
 
   // Search iTunes
-  $('search-itunes-btn').addEventListener('click', () => showCoverPicker(album.id));
+  UI['search-itunes-btn'].addEventListener('click', () => showCoverPicker(album.id));
 
   // Open folder
-  $('open-folder-btn').addEventListener('click', async () => {
+  UI['open-folder-btn'].addEventListener('click', async () => {
     try {
       const res = await api(`/albums/${album.id}/open-folder`, { method: 'POST' });
       if (!res.success) showToast('Failed to open folder');
@@ -9552,7 +9562,7 @@ async function renderAlbum(vc, { id }) {
   });
 
   // Refresh album metadata
-  $('refresh-album-btn').addEventListener('click', async () => {
+  UI['refresh-album-btn'].addEventListener('click', async () => {
     showToast('Re-reading metadata from files…');
     try {
       const res = await api(`/albums/${album.id}/refresh`, { method: 'POST' });
@@ -9570,7 +9580,7 @@ async function renderAlbum(vc, { id }) {
 
   // Toggle favorite
   let isFavorite = album.is_favorite;
-  const favBtn = $('favorite-btn');
+  const favBtn = UI['favorite-btn'];
   favBtn.addEventListener('click', async () => {
     try {
       const res = await api(`/albums/${album.id}/favorite`, { method: 'POST' });
@@ -9586,8 +9596,8 @@ async function renderAlbum(vc, { id }) {
   });
 
   // Custom cover upload
-  $('custom-cover-btn').addEventListener('click', () => {
-    const input = $('cover-upload-input');
+  UI['custom-cover-btn'].addEventListener('click', () => {
+    const input = UI['cover-upload-input'];
     input.onchange = async () => {
       if (!input.files[0]) return;
       const formData = new FormData();
@@ -9612,7 +9622,7 @@ async function renderAlbum(vc, { id }) {
   });
 
   // Delete album
-  $('del-album-btn').addEventListener('click', () => {
+  UI['del-album-btn'].addEventListener('click', () => {
     showConfirm({
       title: 'Delete Album',
       body: `Are you sure you want to delete "${album.title}"?<br><br>Choose how to delete:`,
@@ -9623,7 +9633,7 @@ async function renderAlbum(vc, { id }) {
       `,
       confirmText: 'Delete Now',
       onConfirm: async () => {
-        const delFiles = $('delete-files-check')?.checked;
+        const delFiles = UI['delete-files-check']?.checked;
         showToast(delFiles ? 'Deleting files and library entry…' : 'Removing from library…');
         try {
           const res = await api(`/albums/${album.id}?delete_files=${delFiles}`, { method: 'DELETE' });
@@ -9648,7 +9658,7 @@ async function renderSearch(vc, { q }) {
   const results = await api(`/search?q=${encodeURIComponent(q)}`);
   const tracks = results.tracks || [];
   const containerId = 'search-tracks';
-  const existingContainer = $(containerId);
+  const existingContainer = UI[containerId];
 
   if (!existingContainer) {
     vc.innerHTML = `
@@ -9668,10 +9678,10 @@ async function renderSearch(vc, { q }) {
     `;
     setupSearch();
   } else {
-    $('search-results-title').textContent = `Tracks — ${tracks.length} result${tracks.length !== 1 ? 's' : ''}`;
+    UI['search-results-title'].textContent = `Tracks — ${tracks.length} result${tracks.length !== 1 ? 's' : ''}`;
   }
 
-  const container = $(containerId);
+  const container = UI[containerId];
   container.innerHTML = '';
   if (!tracks.length) {
     container.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:16px 0">No results found.</div>';
@@ -9966,7 +9976,7 @@ async function renderSettings(vc) {
 
   function applyDspProfile(profileId) {
     state.dspProfile = profileId ? String(profileId) : '';
-    const select = $('dsp-select');
+    const select = UI['dsp-select'];
     if (select) {
       select.value = state.dspProfile;
       select.dispatchEvent(new Event('change'));
@@ -9990,7 +10000,7 @@ async function renderSettings(vc) {
   }
 
   function renderFilterRows(filters = []) {
-    const list = $('dsp-filter-list');
+    const list = UI['dsp-filter-list'];
     if (!list) return;
 
     if (!filters.length) {
@@ -10044,26 +10054,26 @@ async function renderSettings(vc) {
     const isBlank = !!opts.blank;
     editingDspProfileId = profile?.id || null;
 
-    $('dsp-editor-name').value = profile?.name || '';
-    $('dsp-editor-description').value = profile?.description || '';
-    $('dsp-editor-category').value = profile?.category || 'custom';
-    $('dsp-editor-preamp').value = String(profile?.preamp_db ?? 0);
-    $('dsp-editor-status').textContent = isBlank
+    UI['dsp-editor-name'].value = profile?.name || '';
+    UI['dsp-editor-description'].value = profile?.description || '';
+    UI['dsp-editor-category'].value = profile?.category || 'custom';
+    UI['dsp-editor-preamp'].value = String(profile?.preamp_db ?? 0);
+    UI['dsp-editor-status'].textContent = isBlank
       ? 'Build a new custom profile from scratch.'
       : isFactory
         ? 'Factory presets are read-only. Save will create a custom copy.'
         : 'Editing a custom preset.';
-    $('dsp-editor-badge').textContent = isBlank ? 'Blank' : (isFactory ? 'Factory Source' : 'Custom');
-    $('dsp-delete-editor-btn').style.display = !isBlank && !isFactory ? 'inline-flex' : 'none';
+    UI['dsp-editor-badge'].textContent = isBlank ? 'Blank' : (isFactory ? 'Factory Source' : 'Custom');
+    UI['dsp-delete-editor-btn'].style.display = !isBlank && !isFactory ? 'inline-flex' : 'none';
     renderFilterRows(parseJsonArray(profile?.filter_chain_json, []));
   }
 
   function buildEditorPayload() {
     return {
-      name: $('dsp-editor-name').value.trim() || 'Custom DSP',
-      description: $('dsp-editor-description').value.trim(),
-      category: $('dsp-editor-category').value || 'custom',
-      preamp_db: Number($('dsp-editor-preamp').value || 0),
+      name: UI['dsp-editor-name'].value.trim() || 'Custom DSP',
+      description: UI['dsp-editor-description'].value.trim(),
+      category: UI['dsp-editor-category'].value || 'custom',
+      preamp_db: Number(UI['dsp-editor-preamp'].value || 0),
       filters: getEditorFilters(),
       tags: ['custom'],
     };
@@ -10118,11 +10128,11 @@ async function renderSettings(vc) {
   loadProfileIntoEditor(null, { blank: true });
   syncDspPresetCardState(activeDspId);
 
-  $('dsp-new-custom-btn')?.addEventListener('click', () => {
+  UI['dsp-new-custom-btn']?.addEventListener('click', () => {
     loadProfileIntoEditor(null, { blank: true });
   });
 
-  $('dsp-duplicate-active-btn')?.addEventListener('click', async () => {
+  UI['dsp-duplicate-active-btn']?.addEventListener('click', async () => {
     const sourceId = state.dspProfile || dspProfilesState.find(profile => profile.is_factory)?.id;
     if (!sourceId) return showToast('No preset available to duplicate');
     const clone = await api(`/dsp/profiles/${sourceId}/clone`, { method: 'POST' });
@@ -10347,21 +10357,7 @@ function renderScanProgress(s) {
   `;
 }
 
-function startScanPolling() {
-  if (state.scanPollId) clearInterval(state.scanPollId);
-  state.scanPollId = setInterval(async () => {
-    try {
-      const s = await api('/scan/status');
-      const panel = $('scan-status-panel');
-      if (panel) panel.innerHTML = renderScanProgress(s);
-      if (!s.running) {
-        clearInterval(state.scanPollId);
-        showToast(`✅ Scan done — ${s.tracks_added} tracks added`);
-        loadStats();
-      }
-    } catch {}
-  }, 1500);
-}
+
 
 // ─── Card Makers ──────────────────────────────────────────────────────────────
 
@@ -10569,17 +10565,7 @@ function setupSearch() {
   });
 }
 
-// ─── Stats ────────────────────────────────────────────────────────────────────
 
-async function loadStats() {
-  try {
-    const stats = await api('/stats');
-    $('stat-artists').textContent  = stats.artists.toLocaleString();
-    $('stat-albums').textContent   = stats.albums.toLocaleString();
-    $('stat-tracks').textContent   = stats.tracks.toLocaleString();
-    $('stat-duration').textContent = stats.total_duration_hours + 'h';
-  } catch {}
-}
 
 // ─── Graphic EQ Logic ─────────────────────────────────────────────────────────
 
@@ -10747,68 +10733,7 @@ window.openGraphicEQ = function() {
   selectEQPreset(currentEqProfileId);
 }
 
-window.addEventListener('DOMContentLoaded', () => {
-    $('eq-btn-reset')?.addEventListener('click', () => {
-      currentEqGains.fill(0);
-      $('eq-current-name').textContent = 'Dry (Flat)';
-      currentEqProfileId = 'custom';
-      renderEQSliders();
-      renderEQPresets();
-      updateEQCurve();
-    });
 
-    $('eq-btn-save')?.addEventListener('click', async () => {
-      const btn = $('eq-btn-save');
-      if(btn) btn.textContent = 'Saving...';
-      
-      const filters = [];
-      GEQ_BANDS.forEach((f, i) => {
-        if (Math.abs(currentEqGains[i]) > 0.05) {
-          filters.push({
-            type: 'peaking',
-            freq: f,
-            gain: currentEqGains[i],
-            q: GEQ_DEFAULT_Q
-          });
-        }
-      });
-      
-      const profile = {
-        name: 'Custom Graphic EQ',
-        description: 'Saved from the 10-band Graphic EQ.',
-        category: 'custom',
-        preamp_db: 0.0,
-        filters: filters,
-        tags: ['custom', 'graphic-eq']
-      };
-      
-      try {
-        const existingProfile = state.dspProfiles.find(profile => String(profile.id) === String(currentEqProfileId));
-        const isExistingCustom = existingProfile && !existingProfile.is_factory;
-        const endpoint = isExistingCustom ? `/dsp/profiles/${existingProfile.id}` : '/dsp/profiles';
-        const method = isExistingCustom ? 'PUT' : 'POST';
-        const res = await api(endpoint, {
-          method,
-          body: JSON.stringify(profile)
-        });
-        if (res && (res.success || res.id)) {
-          const savedProfileId = String(res.id || existingProfile?.id || '');
-          await loadDspProfiles();
-          const select = $('dsp-select');
-          if (select && savedProfileId) {
-            currentEqProfileId = savedProfileId;
-            select.value = savedProfileId;
-            select.dispatchEvent(new Event('change', { bubbles: true }));
-          }
-          showToast('EQ Saved & Applied');
-          $('eq-overlay').classList.remove('active');
-        }
-      } catch (err) {
-        showToast('Failed to save EQ');
-      }
-      if(btn) btn.textContent = 'Save & Apply';
-    });
-});
 
 async function loadDspProfiles() {
   try {
@@ -11689,18 +11614,74 @@ console.log('[VELVET] Initializing core services...');
 loadStats();
 loadDspProfiles();
 
-window.addEventListener('DOMContentLoaded', () => {
+window.addEventListener('DOMContentLoaded', async () => {
   console.log('[VELVET] DOM ready, performing initial navigation...');
+  // EQ Controls
+  UI['eq-btn-reset']?.addEventListener('click', () => {
+    currentEqGains.fill(0);
+    if (UI['eq-current-name']) UI['eq-current-name'].textContent = 'Dry (Flat)';
+    currentEqProfileId = 'custom';
+    renderEQSliders();
+    renderEQPresets();
+    updateEQCurve();
+  });
+
+  UI['eq-btn-save']?.addEventListener('click', async () => {
+    const btn = UI['eq-btn-save'];
+    if (btn) btn.textContent = 'Saving...';
+    
+    const filters = [];
+    GEQ_BANDS.forEach((f, i) => {
+      if (Math.abs(currentEqGains[i]) > 0.05) {
+        filters.push({ type: 'peaking', freq: f, gain: currentEqGains[i], q: GEQ_DEFAULT_Q });
+      }
+    });
+    
+    const profile = {
+      name: 'Custom Graphic EQ',
+      description: 'Saved from the 10-band Graphic EQ.',
+      category: 'custom',
+      preamp_db: 0.0,
+      filters: filters,
+      tags: ['custom', 'graphic-eq']
+    };
+    
+    try {
+      const existingProfile = state.dspProfiles.find(p => String(p.id) === String(currentEqProfileId));
+      const isExistingCustom = existingProfile && !existingProfile.is_factory;
+      const endpoint = isExistingCustom ? `/dsp/profiles/${existingProfile.id}` : '/dsp/profiles';
+      const method = isExistingCustom ? 'PUT' : 'POST';
+      const res = await api(endpoint, { method, body: JSON.stringify(profile) });
+      if (res && (res.success || res.id)) {
+        const savedProfileId = String(res.id || existingProfile?.id || '');
+        await loadDspProfiles();
+        const select = $('dsp-select');
+        if (select && savedProfileId) {
+          currentEqProfileId = savedProfileId;
+          select.value = savedProfileId;
+          select.dispatchEvent(new Event('change', { bubbles: true }));
+        }
+        showToast('EQ Saved & Applied');
+        UI['eq-overlay']?.classList.remove('active');
+      }
+    } catch (err) {
+      showToast('Failed to save EQ');
+    }
+    if (btn) btn.textContent = 'Save & Apply';
+  });
+
+  // Initialization sequence MUST await first navigation
   const hash = location.hash.replace('#', '');
   if (hash) {
     const [view, id] = hash.split('/');
-    navigate(view, id ? { id: decodeURIComponent(id) } : {}, true);
+    await navigate(view, id ? { id: decodeURIComponent(id) } : {}, false);
   } else {
-    // Always render on initial load - force navigate by temporarily clearing view
     state.view = null;
-    navigate('home', {}, true);
+    await navigate('home', {}, false);
   }
-  // Replace initial state so back from home works
+  
+  // Replace initial state so back from home works. We use replaceState here specifically
+  // after navigate() completes so that state.view and state.params are valid.
   history.replaceState({ view: state.view, params: state.viewParams }, '', location.hash || '#home');
 
   // Poll scan status if scan is running
