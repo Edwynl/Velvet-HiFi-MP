@@ -7199,10 +7199,9 @@ async function navigate(view, params = {}, push = true) {
 }
 
 window.addEventListener('popstate', (event) => {
-  // Clear HTML page cache on popstate to ensure interactive cards (cards with event listeners) 
-  // are re-rendered correctly rather than restored from stale innerHTML.
-  _pageCache.clear();
-
+  // Don't clear page cache on back/forward — interactive cards (with addEventListener)
+  // will be re-rendered by navigate() anyway via render(). We only clear cache when
+  // memory pressure is high (handled by _cachePage eviction policy).
   if (event.state && event.state.view) {
     console.log('[VELVET] Popstate navigation (from state):', event.state.view);
     navigate(event.state.view, event.state.params, false);
@@ -7231,6 +7230,26 @@ function _cachePage(view, html) {
 
 function _getCachedPage(view) {
   return _pageCache.get(view);
+}
+
+// ─── API Response Data Cache ─────────────────────────────────────────────────
+// Caches album/artist/etc data to avoid re-fetching on back navigation.
+// TTL 5 minutes keeps data fresh enough while enabling instant back navigation.
+const _dataCache = new Map();
+const _DATA_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+
+function _cacheData(key, data) {
+  _dataCache.set(key, { data, ts: Date.now() });
+}
+
+function _getCachedData(key) {
+  const entry = _dataCache.get(key);
+  if (!entry) return null;
+  if (Date.now() - entry.ts > _DATA_CACHE_TTL_MS) {
+    _dataCache.delete(key);
+    return null;
+  }
+  return entry.data;
 }
 
 $$('.nav-item').forEach(el => {
@@ -9207,10 +9226,19 @@ async function renderArtist(vc, { id }) {
     vc.innerHTML = `<div class="empty-state"><div class="empty-state-title">Artist not found</div></div>`;
     return;
   }
-  const [artist, albums] = await Promise.all([
-    api(`/artists/${id}`),
-    api(`/artists/${id}/albums`)
-  ]);
+  const cacheKey = `artist:${id}`;
+  let artist, albums;
+  const cached = _getCachedData(cacheKey);
+  if (cached) {
+    artist = cached.artist;
+    albums = cached.albums;
+  } else {
+    [artist, albums] = await Promise.all([
+      api(`/artists/${id}`),
+      api(`/artists/${id}/albums`)
+    ]);
+    _cacheData(cacheKey, { artist, albums });
+  }
 
   vc.innerHTML = `
     <div class="topbar">
@@ -9282,10 +9310,20 @@ async function renderArtist(vc, { id }) {
 // ── Album Detail ──────────────────────────────────────────────────────────────
 
 async function renderAlbum(vc, { id }) {
-  const [album, credits] = await Promise.all([
-    api(`/albums/${id}`),
-    api(`/albums/${id}/credits`)
-  ]);
+  // Try data cache first for faster back navigation
+  const cacheKey = `album:${id}`;
+  let album, credits;
+  const cached = _getCachedData(cacheKey);
+  if (cached) {
+    album = cached.album;
+    credits = cached.credits;
+  } else {
+    [album, credits] = await Promise.all([
+      api(`/albums/${id}`),
+      api(`/albums/${id}/credits`)
+    ]);
+    _cacheData(cacheKey, { album, credits });
+  }
   const tracks = album.tracks || [];
 
   const totalDur = tracks.reduce((s, t) => s + (t.duration || 0), 0);
@@ -9452,11 +9490,12 @@ async function renderAlbum(vc, { id }) {
   const heroArt = UI['album-art-hero'];
   const placeholder = heroArt.querySelector('.album-art-placeholder');
   const img = document.createElement('img');
-  img.src = `/api/covers/${album.id}/thumb?size=medium&t=${Date.now()}`;
+  const albumTs = album.updated_at ? `&t=${album.updated_at}` : `&t=${Date.now()}`;
+  img.src = `/api/covers/${album.id}/thumb?size=medium${albumTs}`;
   img.style.cssText = 'width:100%;height:100%;object-fit:cover;display:block';
   img.onerror = function() {
     if (this.src.indexOf('/thumb') > -1) {
-      this.src = `/api/covers/${album.id}?t=${Date.now()}`;
+      this.src = `/api/covers/${album.id}${albumTs}`;
     } else {
       this.style.display = 'none';
       if (placeholder) placeholder.classList.add('visible');
@@ -9564,6 +9603,7 @@ async function renderAlbum(vc, { id }) {
       const data = await res.json();
       if (data.success) {
         showToast(`Cover found from ${data.source || 'web'}!`);
+        // Force refresh by invalidating server cover cache
         img.src = `/api/covers/${album.id}?t=${Date.now()}`;
       } else {
         showToast('No cover found, try manual search');
@@ -9635,6 +9675,7 @@ async function renderAlbum(vc, { id }) {
         });
         if (res.ok) {
           showToast('Cover updated!');
+          // Force refresh after upload with timestamp to bust CDN/browser cache
           img.src = `/api/covers/${album.id}?t=${Date.now()}`;
         } else {
           showToast('Upload failed');
@@ -10397,8 +10438,10 @@ function makeAlbumCard(album) {
   const isFav = album.is_favorite;
   // Use dynamic thumbnail size based on screen width
   const thumbSize = getThumbSize();
-  const thumbUrl = `/api/covers/${album.id}/thumb?size=${thumbSize}&t=${Date.now()}`;
-  const fullUrl = `/api/covers/${album.id}?t=${Date.now()}`;
+  // Use album.updated_at for cache busting only when cover actually changed
+  const albumTs = album.updated_at ? `&t=${album.updated_at}` : '';
+  const thumbUrl = `/api/covers/${album.id}/thumb?size=${thumbSize}${albumTs}`;
+  const fullUrl = `/api/covers/${album.id}${albumTs}`;
   div.innerHTML = `
     <div class="card-art">
       <img src="${thumbUrl}" alt="" onerror="handleImgError(this, '${fullUrl}')" onload="handleImgLoad(this)"
