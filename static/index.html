@@ -6637,24 +6637,27 @@ audio.addEventListener('ended', async () => {
 
 document.addEventListener('visibilitychange', () => {
   if (document.hidden || !canRecoverBrowserPlayback()) return;
-  if (audio.paused || audio.readyState < 2) {
+  // On mobile, audio.paused=true during lock screen is normal browser behavior (not an error).
+  // Only trigger recovery when audio has no data loaded (readyState < 2).
+  if (audio.readyState < 2) {
     scheduleBrowserPlaybackRecovery('visibilitychange', {
       delayMs: browserPlaybackRecoveryConfig.visibilityDelayMs,
       force: true
     });
-  } else {
+  } else if (!audio.paused) {
     noteBrowserPlaybackProgress();
   }
 });
 
 window.addEventListener('pageshow', () => {
   if (!canRecoverBrowserPlayback()) return;
-  if (audio.paused || audio.readyState < 2) {
+  // Same logic as visibilitychange: only recover when truly no data, not when just paused.
+  if (audio.readyState < 2) {
     scheduleBrowserPlaybackRecovery('pageshow', {
       delayMs: browserPlaybackRecoveryConfig.visibilityDelayMs,
       force: true
     });
-  } else {
+  } else if (!audio.paused) {
     noteBrowserPlaybackProgress();
   }
 });
@@ -7131,7 +7134,11 @@ if ('mediaSession' in navigator) {
     updatePlayBtnUI();
     if (state.currentTrack) updateMediaSession(state.currentTrack);
   });
-  navigator.mediaSession.setActionHandler('pause', () => {
+  navigator.mediaSession.setActionHandler('pause', async () => {
+    // Clean up suspended AudioContext on pause to prevent broken graph causing
+    // pitch/speed issues when resuming later on mobile.
+    await cleanupSuspendedAudioContextIfNeeded();
+    audio.playbackRate = 1.0;
     markExpectedBrowserPause();
     audio.pause();
     state.playing = false;
