@@ -5333,11 +5333,18 @@ function initMobileMenu() {
   });
 
   // Close menu on resize to desktop
-  window.addEventListener('resize', () => {
+  function debounce(fn, delay) {
+    let timer;
+    return (...args) => {
+      clearTimeout(timer);
+      timer = setTimeout(() => fn(...args), delay);
+    };
+  }
+  window.addEventListener('resize', debounce(() => {
     if (window.innerWidth > 768) {
       closeMenu();
     }
-  });
+  }, 150));
 }
 
 // ─── Component Factories ──────────────────────────────────────────────────────
@@ -5599,7 +5606,6 @@ const state = {
   playing: false,
   currentTrack: null,
   shuffle: false,
-  repeat: false,     // 'none' | 'one' | 'all'
   repeatMode: 'none',
   upsample: 'none',
   dspProfile: '',
@@ -5647,7 +5653,8 @@ let browserWatchdogLastTime = 0;
 let browserWatchdogLastProgressAt = Date.now();
 
 function shouldUseWebAudioAnalyser() {
-  return !window.matchMedia('(pointer: coarse)').matches;
+  // Enable VU meters on tablets (width >= 768px) and all desktops; disable only on small phones
+  return window.innerWidth >= 768 || !window.matchMedia('(pointer: coarse)').matches;
 }
 
 function isBrowserZone() {
@@ -6746,13 +6753,22 @@ UI['btn-next'].addEventListener('click', () => {
 });
 UI['mobile-btn-next'].addEventListener('click', () => UI['btn-next'].click());
 
+function shuffleArray(arr) {
+  const a = [...arr];
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+}
+
 UI['btn-shuffle'].addEventListener('click', () => {
   state.shuffle = !state.shuffle;
   const colored = state.shuffle ? 'var(--gold)' : '';
   UI['btn-shuffle'].style.color = colored;
   UI['mobile-btn-shuffle'].style.color = colored;
   if (state.shuffle) {
-    const shuffled = [...state.queue].sort(() => Math.random() - 0.5);
+    const shuffled = shuffleArray(state.queue);
     state.queue = shuffled;
     state.queueIdx = 0;
     showToast('Shuffle on');
@@ -6945,7 +6961,6 @@ UI['vu-style-1'].addEventListener('click', () => setVUStyle(1));
 UI['vu-style-2'].addEventListener('click', () => setVUStyle(2));
 
 // Handle progress scrub on both desktop and mobile bars
-let isSeekingProgress = false;
 function seekFromClientX(clientX, trackEl) {
   if (isCastZone() || isNativeZone()) return;
   if (!Number.isFinite(audio.duration) || audio.duration <= 0) return;
@@ -6954,13 +6969,15 @@ function seekFromClientX(clientX, trackEl) {
   audio.currentTime = audio.duration * pct;
 }
 function bindProgressScrub(containerEl) {
+  let isSeeking = false;
+
+  const track = containerEl.querySelector('.progress-track') || containerEl.querySelector('.mobile-progress-track');
   const stopSeek = (e) => {
-    isSeekingProgress = false;
+    isSeeking = false;
     if (e && typeof e.pointerId === 'number' && containerEl.hasPointerCapture?.(e.pointerId)) {
       containerEl.releasePointerCapture(e.pointerId);
     }
   };
-  const track = containerEl.querySelector('.progress-track') || containerEl.querySelector('.mobile-progress-track');
   containerEl.addEventListener('click', e => {
     if (!track) return;
     seekFromClientX(e.clientX, track);
@@ -6968,20 +6985,20 @@ function bindProgressScrub(containerEl) {
   containerEl.addEventListener('pointerdown', e => {
     if (e.pointerType === 'mouse' && e.button !== 0) return;
     if (!track) return;
-    isSeekingProgress = true;
+    isSeeking = true;
     containerEl.setPointerCapture?.(e.pointerId);
     seekFromClientX(e.clientX, track);
     e.preventDefault();
   });
   containerEl.addEventListener('pointermove', e => {
-    if (!isSeekingProgress) return;
+    if (!isSeeking) return;
     if (!track) return;
     seekFromClientX(e.clientX, track);
     e.preventDefault();
   });
   containerEl.addEventListener('pointerup', stopSeek);
   containerEl.addEventListener('pointercancel', stopSeek);
-  containerEl.addEventListener('lostpointercapture', () => isSeekingProgress = false);
+  containerEl.addEventListener('lostpointercapture', () => { isSeeking = false; });
 }
 
 bindProgressScrub(UI['progress-row']);
@@ -9535,7 +9552,7 @@ async function renderAlbum(vc, { id }) {
 
   // Shuffle all
   UI['shuffle-all-btn'].addEventListener('click', () => {
-    const shuffled = [...tracks].sort(() => Math.random() - 0.5);
+    const shuffled = shuffleArray(tracks);
     if (shuffled.length) { state.shuffle = true; playTrack(shuffled[0], shuffled, 0); }
   });
 
