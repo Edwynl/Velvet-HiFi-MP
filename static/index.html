@@ -6636,16 +6636,23 @@ audio.addEventListener('ended', async () => {
 });
 
 document.addEventListener('visibilitychange', () => {
-  if (document.hidden || !canRecoverBrowserPlayback()) return;
-  // On mobile, audio.paused=true during lock screen is normal browser behavior (not an error).
-  // Only trigger recovery when audio has no data loaded (readyState < 2).
-  if (audio.readyState < 2) {
-    scheduleBrowserPlaybackRecovery('visibilitychange', {
-      delayMs: browserPlaybackRecoveryConfig.visibilityDelayMs,
-      force: true
-    });
-  } else if (!audio.paused) {
-    noteBrowserPlaybackProgress();
+  if (document.hidden) {
+    // Close AudioContext before Safari suspends it on lock screen.
+    // When VU meter is open, AudioContext is alive. If we don't close it here,
+    // Safari suspends AudioContext and the MediaElementSource graph gets broken.
+    // Then audio.play() silently fails on resume because the graph is stale.
+    cleanupSuspendedAudioContextIfNeeded();
+    if (!canRecoverBrowserPlayback()) return;
+    // On mobile, audio.paused=true during lock screen is normal (not an error).
+    // Only trigger recovery when audio has no data loaded.
+    if (audio.readyState < 2) {
+      scheduleBrowserPlaybackRecovery('visibilitychange', {
+        delayMs: browserPlaybackRecoveryConfig.visibilityDelayMs,
+        force: true
+      });
+    } else if (!audio.paused) {
+      noteBrowserPlaybackProgress();
+    }
   }
 });
 
