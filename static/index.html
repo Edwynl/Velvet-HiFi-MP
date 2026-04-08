@@ -5866,12 +5866,15 @@ function initAudioAnalyser() {
     vuAudio.muted = true;       // Silent — we only want the analysis signal
     vuAudio.volume = 0;
     vuAudio.playsInline = true;
-    // src is kept in sync with main audio via syncVUAudioToPlayback()
-
-    audioSource = audioContext.createMediaElementSource(vuAudio);
-    audioSource.connect(audioAnalyser);
-    // Do NOT connect audioAnalyser to audioContext.destination — we only analyze, not output
-    audioDataArray = new Uint8Array(audioAnalyser.frequencyBinCount);
+    vuAudio.src = audio.src || '';
+    // createMediaElementSource captures the audio stream at the moment it is called.
+    // An element with empty src → empty stream → analyser gets silence forever.
+    // Fix: wait until the audio is actually playable before capturing it.
+    if (vuAudio.readyState >= 3) {
+      finishInit();
+    } else {
+      vuAudio.addEventListener('canplay', finishInit, { once: true });
+    }
   } catch (e) {
     console.warn('Audio analyser not available:', e);
     try { audioContext?.close(); } catch {}
@@ -5880,6 +5883,15 @@ function initAudioAnalyser() {
     audioSource = null;
     audioDataArray = null;
     vuAudio = null;
+  }
+
+  function finishInit() {
+    if (!audioContext || !vuAudio) return;
+    vuAudio.play().catch(() => {});
+    audioSource = audioContext.createMediaElementSource(vuAudio);
+    audioSource.connect(audioAnalyser);
+    // Do NOT connect audioAnalyser to audioContext.destination — we only analyze, not output
+    audioDataArray = new Uint8Array(audioAnalyser.frequencyBinCount);
   }
 }
 
