@@ -29,8 +29,9 @@ import httpx
 
 log = logging.getLogger("musiciq.enrich")
 
-DB_PATH    = Path(os.environ.get("DATA_DIR", "musiciq_data")) / "library.db"
-COVERS_DIR = Path(os.environ.get("DATA_DIR", "musiciq_data")) / "covers"
+_db_data_dir = os.environ.get("DATA_DIR", "velvet_data")
+DB_PATH    = Path(_db_data_dir) / "library.db"
+COVERS_DIR = Path(_db_data_dir) / "covers"
 COVERS_DIR.mkdir(parents=True, exist_ok=True)
 
 # AcoustID API key — set ACOUSTID_KEY environment variable
@@ -53,29 +54,37 @@ LASTFM_KEY = os.environ.get("LASTFM_API_KEY", "")  # Set your own key: LASTFM_AP
 # ─── DB helpers ───────────────────────────────────────────────────────────────
 
 def _db():
-    conn = sqlite3.connect(str(DB_PATH), check_same_thread=False)
+    conn = sqlite3.connect(str(DB_PATH), check_same_thread=False, timeout=30.0)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA synchronous=NORMAL")
+    conn.execute("PRAGMA cache_size=10000")
+    conn.execute("PRAGMA foreign_keys=ON")
+    conn.execute("PRAGMA temp_store=MEMORY")
+    conn.execute("PRAGMA mmap_size=268435456")
     return conn
 
 def _query(sql, params=()):
+    conn = _db()
     try:
-        conn = _db()
-        rows = conn.execute(sql, params).fetchall()
-        conn.close()
-        return [dict(r) for r in rows]
+        return [dict(r) for r in conn.execute(sql, params).fetchall()]
     except Exception as e:
         log.warning(f"DB query error: {e}")
         return []
+    finally:
+        try: conn.close()
+        except: pass
 
 def _exec(sql, params=()):
+    conn = _db()
     try:
-        conn = _db()
         conn.execute(sql, params)
         conn.commit()
-        conn.close()
     except Exception as e:
         log.warning(f"DB exec error: {e}")
+    finally:
+        try: conn.close()
+        except: pass
 
 # ─── AcoustID fingerprinting ──────────────────────────────────────────────────
 
@@ -593,9 +602,9 @@ async def search_artist_photo(artist_name: str) -> str | None:
 
 async def download_artist_photo(artist_id: int, url: str) -> str | None:
     """
-    Download photo and save to musiciq_data/artist_images/{id}.jpg
+    Download photo and save to velvet_data/artist_images/{id}.jpg
     """
-    dest_dir = Path("musiciq_data/artist_images")
+    dest_dir = COVERS_DIR.parent / "artist_images"
     dest_dir.mkdir(parents=True, exist_ok=True)
     dest_path = dest_dir / f"{artist_id}.jpg"
 
