@@ -5681,10 +5681,6 @@ function setMediaSessionPlaybackState(playbackState) {
 async function cleanupSuspendedAudioContextIfNeeded() {
   if (audioContext) {
     // CRITICAL: disconnect MediaElementSource BEFORE closing AudioContext.
-    // The MediaElementSource node is connected to the HTML5 <audio> element.
-    // If we close AudioContext without disconnecting first, Safari's media pipeline
-    // still thinks the graph is active — even though AudioContext is now closed.
-    // This silently kills audio.play() on resume. Disconnect first to break the graph.
     if (audioSource) {
       try { audioSource.disconnect(); } catch {}
     }
@@ -5696,6 +5692,13 @@ async function cleanupSuspendedAudioContextIfNeeded() {
     audioAnalyser = null;
     audioSource = null;
     audioDataArray = null;
+  }
+  // Release the dedicated VU audio element (it holds no playback state, safe to reset)
+  if (vuAudio) {
+    try { vuAudio.pause(); } catch {}
+    vuAudio.src = '';
+    vuAudio.load();
+    vuAudio = null;
   }
 }
 
@@ -5843,6 +5846,11 @@ function startBrowserPlaybackWatchdog() {
 // safe call sites (only): startBrowserPlayback (before first play), startVUAnimation
 //
 // ─────────────────────────────────────────────────────────────────────────────
+// Dedicated audio element solely for VU meter analysis — does NOT affect main `audio` playback.
+// Using a separate element avoids hijacking the main audio element's output routing
+// via createMediaElementSource (which breaks audio.play() on Safari/iOS after cleanup).
+let vuAudio = null;
+
 function initAudioAnalyser() {
   if (audioContext) return; // Already initialized; do NOT recreate
   try {
@@ -5851,34 +5859,55 @@ function initAudioAnalyser() {
     audioAnalyser.fftSize = 256;
     audioAnalyser.smoothingTimeConstant = 0.6;
 
-    // Prefer captureStream — it does NOT hijack the audio element's output routing.
-    // In Chrome/Firefox/Android, audio continues to play normally through the HTML5
-    // Audio element while we analyze a mirrored MediaStream.
-    // Safari/iOS doesn't support captureStream, so fall back to createMediaElementSource.
-    const stream = audio.captureStream?.() || audio.mozCaptureStream?.();
-    if (stream) {
-      audioSource = audioContext.createMediaStreamSource(stream);
-      audioSource.connect(audioAnalyser);
-      // Do NOT connect to destination — we only need the analyser, not the output.
-      // audio element routes through its normal HTML5 pipeline untouched.
-    } else {
-      // Fallback for Safari/iOS: use createMediaElementSource.
-      // This HIJACKS the audio element's output — once captured, audio.play() may
-      // become silent after AudioContext is closed on some Safari versions.
-      // The cleanup in stopVUAnimation() mitigates this.
-      audioSource = audioContext.createMediaElementSource(audio);
-      audioSource.connect(audioAnalyser);
-      audioAnalyser.connect(audioContext.destination); // Required or else silent
-    }
+    // Create a SILENT dedicated audio element for analysis.
+    // This is completely independent from the main `audio` element that handles playback.
+    // createMediaElementSource(vuAudio) only captures vuAudio's output, never audio's.
+    vuAudio = new Audio();
+    vuAudio.muted = true;       // Silent — we only want the analysis signal
+    vuAudio.volume = 0;
+    vuAudio.playsInline = true;
+    // src is kept in sync with main audio via syncVUAudioToPlayback()
+
+    audioSource = audioContext.createMediaElementSource(vuAudio);
+    audioSource.connect(audioAnalyser);
+    // Do NOT connect audioAnalyser to audioContext.destination — we only analyze, not output
     audioDataArray = new Uint8Array(audioAnalyser.frequencyBinCount);
   } catch (e) {
     console.warn('Audio analyser not available:', e);
-    // Clean up on error — don't leave a half-initialized context
     try { audioContext?.close(); } catch {}
     audioContext = null;
     audioAnalyser = null;
     audioSource = null;
     audioDataArray = null;
+    vuAudio = null;
+  }
+}
+
+// Keep vuAudio in sync with whatever the main audio element is playing.
+// Call this whenever playback state or src changes.
+function syncVUAudioToPlayback() {
+  if (!vuAudio || !audioContext) return;
+  const willPlay = !audio.paused && audio.readyState >= 2 && audio.src;
+  if (!willPlay) {
+    if (vuAudio.src) { vuAudio.src = ''; vuAudio.load(); }
+    return;
+  }
+  // Sync: same src, same currentTime, same playback rate
+  const needsSrcSync = vuAudio.src !== audio.src;
+  if (needsSrcSync) {
+    vuAudio.src = audio.src;
+    vuAudio.currentTime = audio.currentTime;
+    vuAudio.load();
+  } else if (Math.abs(vuAudio.currentTime - audio.currentTime) > 0.5) {
+    vuAudio.currentTime = audio.currentTime;
+  }
+  if (vuAudio.playbackRate !== audio.playbackRate) {
+    vuAudio.playbackRate = audio.playbackRate;
+  }
+  if (audio.paused) {
+    vuAudio.pause();
+  } else {
+    vuAudio.play().catch(() => {});
   }
 }
 
@@ -5886,14 +5915,8 @@ function getAudioLevel() {
   if (!audioAnalyser || !audioDataArray) return { left: 0, right: 0 };
   audioAnalyser.getByteFrequencyData(audioDataArray);
 
-  // In Safari with captureStream, the stream may be empty or not yet producing
-  // audio data (e.g. during track transition). Check for all-zero bins as a proxy.
-  const bins = audioAnalyser.frequencyBinCount;
-  let sum = 0;
-  for (let i = 0; i < bins; i++) sum += audioDataArray[i];
-  if (sum === 0) return { left: 0, right: 0 }; // stream silent or not ready
-
   // Get low frequency range for VU-like reading (mimics VU meter behavior)
+  const bins = audioAnalyser.frequencyBinCount;
   const vuRange = Math.floor(bins * 0.4); // Focus on lower frequencies
 
   // Left channel: lower half of frequency range
@@ -5968,6 +5991,8 @@ async function startBrowserPlayback(track, { resumeTime = null, token = null } =
 
   try {
     await audio.play();
+    // Keep VU audio in sync with the new playback state / src
+    syncVUAudioToPlayback();
   } catch (error) {
     if (playbackToken !== browserPlaybackToken) return false;
     console.warn('[VELVET] Browser playback failed:', error?.message || error);
@@ -6953,6 +6978,9 @@ function startVUAnimation() {
 
     const delta = lastTime ? (time - lastTime) / 1000 : 0.05;
     lastTime = time;
+
+    // Keep the dedicated vuAudio in sync with main audio playback
+    syncVUAudioToPlayback();
 
     // Only animate when music is playing, otherwise return to rest position
     if (state.playing) {
