@@ -5436,7 +5436,7 @@ async function api(path, opts = {}) {
   const timeoutId = setTimeout(() => controller.abort(), 8000);
 
   try {
-    console.log(`[VELVET] API Call: ${path}`);
+    log(`[VELVET] API Call: ${path}`);
     const r = await fetch('/api' + path, { ...opts, headers, signal: controller.signal });
     clearTimeout(timeoutId);
 
@@ -5579,7 +5579,7 @@ function updateMediaSession(track) {
   const fullCoverUrl = track.album_id ? `${window.location.origin}${getPlayerCoverUrl(track.album_id)}` : '';
   const thumbCoverUrl = track.album_id ? `${window.location.origin}${getPlayerThumbUrl(track.album_id)}` : '';
 
-  console.log('[MediaSession] Updating:', { title: track.title, artist, album, fullCoverUrl });
+  log('[MediaSession] Updating:', { title: track.title, artist, album, fullCoverUrl });
 
   navigator.mediaSession.metadata = new MediaMetadata({
     title: track.title || 'Unknown Title',
@@ -5618,6 +5618,11 @@ const state = {
   isComposing: false,
   mobilePlayerDismissed: false,
 };
+
+// ─── Debug ────────────────────────────────────────────────────────────────────
+
+const DEBUG = false;
+const log = DEBUG ? console.log.bind(console) : () => {};
 
 // ─── Audio ────────────────────────────────────────────────────────────────────
 
@@ -5971,6 +5976,7 @@ async function playTrack(track, queue, idx) {
   const prevTrackId = state.currentTrack?.id;
   const isNewTrack = !prevTrackId || prevTrackId !== track.id;
   if (isNewTrack) {
+    state.mobilePlayerDismissed = false;  // User picked a new track — clear dismissed flag
     updatePlayerUI(track);  // Immediate UI update before any async work
   }
 
@@ -6913,7 +6919,10 @@ function startVUAnimation() {
   let rightAngle = -48;
 
   function animate(time) {
-    if (!vuMeterOpen) return;
+    if (!vuMeterOpen) {
+      vuAnimationFrame = null;
+      return;
+    }
 
     const delta = lastTime ? (time - lastTime) / 1000 : 0.05;
     lastTime = time;
@@ -7179,7 +7188,7 @@ const _pageCache = new Map();
 const _maxCacheSize = 5;  // Keep last 5 pages in memory
 
 async function navigate(view, params = {}, push = true) {
-  console.log(`[VELVET] Navigating to: ${view}`, params);
+  log(`[VELVET] Navigating to: ${view}`, params);
   const prevView = state.view;
   const prevParams = state.viewParams;
 
@@ -7190,7 +7199,7 @@ async function navigate(view, params = {}, push = true) {
 
   // FORCE re-render by clearing current view if navigating to the same type (e.g. album -> album)
   if (state.view === view && view !== 'search') {
-    console.log('[VELVET] Same view type navigation, forcing fresh render');
+    log('[VELVET] Same view type navigation, forcing fresh render');
   }
 
   state.view = view;
@@ -7228,12 +7237,12 @@ window.addEventListener('popstate', (event) => {
   // will be re-rendered by navigate() anyway via render(). We only clear cache when
   // memory pressure is high (handled by _cachePage eviction policy).
   if (event.state && event.state.view) {
-    console.log('[VELVET] Popstate navigation (from state):', event.state.view);
+    log('[VELVET] Popstate navigation (from state):', event.state.view);
     navigate(event.state.view, event.state.params, false);
   } else {
     // Falls back to URL hash decoding if state is missing
     const hash = location.hash.replace('#', '');
-    console.log('[VELVET] Popstate navigation (from hash):', hash || 'home');
+    log('[VELVET] Popstate navigation (from hash):', hash || 'home');
     if (hash) {
       const [view, id] = hash.split('/');
       navigate(view, id ? { id: decodeURIComponent(id) } : {}, false);
@@ -7292,7 +7301,7 @@ $$('.player-info').forEach(el => {
 // ─── Rendering ───────────────────────────────────────────────────────────────
 
 async function render() {
-  console.log('[VELVET] render() started');
+  log('[VELVET] render() started');
   const vc = UI['view-container'];
   if (!vc) {
     console.error('[VELVET] Critical Error: #view-container not found in DOM');
@@ -7314,17 +7323,22 @@ async function render() {
   // Skip cache for views that use addEventListener on rendered cards (album cards,
   // track rows, etc.) — innerHTML restore loses all event bindings, making cards
   // unclickable. home and albums use makeAlbumCard with addEventListener.
-  const detailViews = ['album', 'artist', 'playlist', 'work', 'credit', 'home', 'albums', 'discover'];
-  const cached = detailViews.includes(state.view) ? null : _getCachedPage(state.view);
+  const NO_CACHE_VIEWS = new Set([
+    'album', 'artist', 'playlist', 'work', 'credit',
+    'home', 'albums', 'discover',
+    'artists', 'tracks', 'genres', 'playlists',
+    'composers', 'works', 'credits', 'history', 'most-played'
+  ]);
+  const cached = NO_CACHE_VIEWS.has(state.view) ? null : _getCachedPage(state.view);
   if (cached) {
     vc.innerHTML = cached;
     vc.style.opacity = '1';
-    console.log('[VELVET] Render complete (cached):', state.view);
+    log('[VELVET] Render complete (cached):', state.view);
     return;
   }
 
   try {
-    console.log('[VELVET] Rendering view:', state.view);
+    log('[VELVET] Rendering view:', state.view);
     switch (state.view) {
       case 'home':        await renderHome(vc);    break;
       case 'discover':    await renderDiscover(vc); break;
@@ -7350,7 +7364,7 @@ async function render() {
       case 'most-played':await renderMostPlayed(vc); break;
       case 'remote':      await renderRemote(vc); break;
     }
-    console.log('[VELVET] Render complete:', state.view);
+    log('[VELVET] Render complete:', state.view);
   } catch (e) {
     console.error('[VELVET] render error:', state.view, e);
     vc.innerHTML = `<div class="empty-state">
@@ -7367,14 +7381,14 @@ async function render() {
 // ── Home ──────────────────────────────────────────────────────────────────────
 
 async function renderHome(vc) {
-  console.log('[VELVET] renderHome started');
+  log('[VELVET] renderHome started');
   
   // Load stats first
   let stats = { artists: 0, albums: 0, tracks: 0, total_duration_hours: 0 };
   try {
     const rawStats = await api('/stats');
     if (rawStats) stats = { ...stats, ...rawStats };
-    console.log('[VELVET] Stats loaded:', stats);
+    log('[VELVET] Stats loaded:', stats);
   } catch (e) {
     console.warn('[VELVET] Failed to load stats for home:', e);
   }
@@ -7398,7 +7412,7 @@ async function renderHome(vc) {
     </div>`;
   }
 
-  console.log('[VELVET] Setting home innerHTML');
+  log('[VELVET] Setting home innerHTML');
   vc.innerHTML = `
     <div class="topbar">
       ${getTopNavHtml('home')}
@@ -7428,7 +7442,7 @@ async function renderHome(vc) {
   setupSearch();
   
   // Now load recently added separately
-  console.log('[VELVET] Loading recent albums');
+  log('[VELVET] Loading recent albums');
   try {
     const recent = await api('/recently-added?limit=20');
     const grid = UI['recent-grid'];
@@ -7436,7 +7450,7 @@ async function renderHome(vc) {
 
     if (!recent || !recent.length) {
       grid.innerHTML = '<div style="padding:0;color:var(--muted);font-size:13px">No albums yet. Scan your library to get started.</div>';
-      console.log('[VELVET] No recent albums found');
+      log('[VELVET] No recent albums found');
       return;
     }
 
@@ -7444,7 +7458,7 @@ async function renderHome(vc) {
     const fragment = document.createDocumentFragment();
     recent.forEach(album => fragment.appendChild(makeAlbumCard(album)));
     grid.appendChild(fragment);
-    console.log('[VELVET] Recent albums rendered:', recent.length);
+    log('[VELVET] Recent albums rendered:', recent.length);
   } catch (e) {
     console.warn('[VELVET] Failed to load recent albums:', e);
     const grid = UI['recent-grid'];
@@ -10688,7 +10702,7 @@ function renderEQPresets() {
 
 window.selectEQPreset = async function(id) {
   currentEqProfileId = id;
-  console.log('[VELVET] Selecting EQ Preset:', id);
+  log('[VELVET] Selecting EQ Preset:', id);
   
   if (!id) {
     currentEqGains.fill(0);
@@ -11675,7 +11689,7 @@ function startBioPolling() {
 
 async function loadStats() {
   try {
-    console.log('[VELVET] Loading stats...');
+    log('[VELVET] Loading stats...');
     const s = await api('/stats') || {};
     if ($('stat-artists')) $('stat-artists').textContent = (s.artists || 0).toLocaleString();
     if ($('stat-albums'))  $('stat-albums').textContent  = (s.albums || 0).toLocaleString();
@@ -11703,12 +11717,12 @@ function startScanPolling() {
   }, 3000);
 }
 
-console.log('[VELVET] Initializing core services...');
+log('[VELVET] Initializing core services...');
 loadStats();
 loadDspProfiles();
 
 window.addEventListener('DOMContentLoaded', async () => {
-  console.log('[VELVET] DOM ready, performing initial navigation...');
+  log('[VELVET] DOM ready, performing initial navigation...');
   // EQ Controls
   UI['eq-btn-reset']?.addEventListener('click', () => {
     currentEqGains.fill(0);
@@ -11796,9 +11810,9 @@ window.addEventListener('keydown', e => {
   if ('serviceWorker' in navigator) {
     window.addEventListener('load', () => {
       navigator.serviceWorker.register('/sw.js').then(reg => {
-        console.log('SW registered:', reg);
+        log('SW registered:', reg);
       }).catch(err => {
-        console.log('SW registration failed:', err);
+        log('SW registration failed:', err);
       });
     });
   }
