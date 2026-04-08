@@ -5863,7 +5863,8 @@ function initAudioAnalyser() {
     // This is completely independent from the main `audio` element that handles playback.
     // createMediaElementSource(vuAudio) only captures vuAudio's output, never audio's.
     vuAudio = new Audio();
-    vuAudio.volume = 0;          // Silent — volume 0, not muted (muting can suspend MediaElementSource in some browsers)
+    vuAudio.muted = true;       // Silent — we only want the analysis signal
+    vuAudio.volume = 0;
     vuAudio.playsInline = true;
     // src is kept in sync with main audio via syncVUAudioToPlayback()
 
@@ -5886,10 +5887,6 @@ function initAudioAnalyser() {
 // Call this whenever playback state or src changes.
 function syncVUAudioToPlayback() {
   if (!vuAudio || !audioContext) return;
-  // Ensure AudioContext is running before analyser can produce data
-  if (audioContext.state === 'suspended') {
-    audioContext.resume().catch(() => {});
-  }
   const willPlay = !audio.paused && audio.readyState >= 2 && audio.src;
   if (!willPlay) {
     if (vuAudio.src) { vuAudio.src = ''; vuAudio.load(); }
