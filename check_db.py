@@ -1,7 +1,7 @@
 import sqlite3
 import os
 
-db_path = os.path.join(os.environ.get('DATA_DIR', 'musiciq_data'), 'library.db')
+db_path = os.path.join(os.environ.get('DATA_DIR', 'velvet_data'), 'library.db')
 print(f"Checking database at {db_path}")
 
 conn = sqlite3.connect(db_path)
