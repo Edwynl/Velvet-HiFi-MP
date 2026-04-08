@@ -5850,12 +5850,35 @@ function initAudioAnalyser() {
     audioAnalyser = audioContext.createAnalyser();
     audioAnalyser.fftSize = 256;
     audioAnalyser.smoothingTimeConstant = 0.6;
-    audioSource = audioContext.createMediaElementSource(audio);
-    audioSource.connect(audioAnalyser);
-    audioAnalyser.connect(audioContext.destination);
+
+    // Prefer captureStream — it does NOT hijack the audio element's output routing.
+    // In Chrome/Firefox/Android, audio continues to play normally through the HTML5
+    // Audio element while we analyze a mirrored MediaStream.
+    // Safari/iOS doesn't support captureStream, so fall back to createMediaElementSource.
+    const stream = audio.captureStream?.() || audio.mozCaptureStream?.();
+    if (stream) {
+      audioSource = audioContext.createMediaStreamSource(stream);
+      audioSource.connect(audioAnalyser);
+      // Do NOT connect to destination — we only need the analyser, not the output.
+      // audio element routes through its normal HTML5 pipeline untouched.
+    } else {
+      // Fallback for Safari/iOS: use createMediaElementSource.
+      // This HIJACKS the audio element's output — once captured, audio.play() may
+      // become silent after AudioContext is closed on some Safari versions.
+      // The cleanup in stopVUAnimation() mitigates this.
+      audioSource = audioContext.createMediaElementSource(audio);
+      audioSource.connect(audioAnalyser);
+      audioAnalyser.connect(audioContext.destination); // Required or else silent
+    }
     audioDataArray = new Uint8Array(audioAnalyser.frequencyBinCount);
   } catch (e) {
     console.warn('Audio analyser not available:', e);
+    // Clean up on error — don't leave a half-initialized context
+    try { audioContext?.close(); } catch {}
+    audioContext = null;
+    audioAnalyser = null;
+    audioSource = null;
+    audioDataArray = null;
   }
 }
 
@@ -6963,6 +6986,10 @@ function stopVUAnimation() {
     cancelAnimationFrame(vuAnimationFrame);
     vuAnimationFrame = null;
   }
+  // Immediately release AudioContext and disconnect MediaElementSource.
+  // Without this, the audio element stays "captured" in Safari/iOS and
+  // audio.play() may go silent after a subsequent lock-screen / visibility-change.
+  cleanupSuspendedAudioContextIfNeeded();
 }
 
 UI['mobile-btn-vu'].addEventListener('click', () => toggleVUMeters());
