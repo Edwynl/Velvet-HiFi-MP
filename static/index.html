@@ -5912,34 +5912,6 @@ function getAudioLevel() {
 
   return { left: leftLevel, right: rightLevel };
 }
-    audioDataArray = null;
-  }
-}
-
-function getAudioLevel() {
-  if (!audioAnalyser || !audioDataArray) return { left: 0, right: 0 };
-  audioAnalyser.getByteFrequencyData(audioDataArray);
-
-  // Get low frequency range for VU-like reading (mimics VU meter behavior)
-  const bins = audioAnalyser.frequencyBinCount;
-  const vuRange = Math.floor(bins * 0.4); // Focus on lower frequencies
-
-  // Left channel: lower half of frequency range
-  let leftSum = 0;
-  for (let i = 0; i < vuRange / 2; i++) {
-    leftSum += audioDataArray[i];
-  }
-  const leftLevel = leftSum / (vuRange / 2) / 255;
-
-  // Right channel: upper half of frequency range
-  let rightSum = 0;
-  for (let i = Math.floor(vuRange / 2); i < vuRange; i++) {
-    rightSum += audioDataArray[i];
-  }
-  const rightLevel = rightSum / (vuRange / 2) / 255;
-
-  return { left: leftLevel, right: rightLevel };
-}
 
 function streamUrl(trackId, upsample) {
   const u = upsample || state.upsample;
@@ -5950,9 +5922,7 @@ function streamUrl(trackId, upsample) {
 // DO NOT call initAudioAnalyser() here — audio must stay decoupled from AudioContext
 // so that HTML5 Audio continues on mobile lock screen. VU overlay calls initAudioAnalyser
 // when the user opens it. See "AudioContext / VU Meter Notes" above.
-// DO NOT call initAudioAnalyser() here — audio must stay decoupled from AudioContext
-// so that HTML5 Audio continues on mobile lock screen. VU overlay calls initAudioAnalyser
-// when the user opens it. See "AudioContext / VU Meter Notes" above.
+
 async function startBrowserPlayback(track, { resumeTime = null, token = null } = {}) {
   const playbackToken = token ?? ++browserPlaybackToken;
   const targetUrl = streamUrl(track.id);
