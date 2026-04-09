@@ -29,7 +29,7 @@ except ImportError:
     print("WARNING: sounddevice not installed. Local playback disabled.")
     print("Install with: pip install sounddevice")
 
-log = __import__("logging").getLogger("musiciq.playback")
+log = __import__("logging").getLogger("velvet.playback")
 
 # Global playback state
 _playback_state = {

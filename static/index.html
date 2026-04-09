@@ -2170,7 +2170,8 @@ input[type=range]::-webkit-slider-thumb:hover { background: var(--gold); }
       margin-bottom: 8px;
     }
     .view-home .hires-badge,
-    .view-albums .hires-badge {
+    .view-albums .hires-badge,
+    .discover-section .hires-badge {
       height: 14px !important;
     }
     .hires-badge-detail {
@@ -2979,7 +2980,8 @@ input[type=range]::-webkit-slider-thumb:hover { background: var(--gold); }
     .album-hero-title { font-size: 18px !important; margin-bottom: 4px !important; line-height: 1.2 !important; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .album-hero-artist { font-size: 13px !important; margin-bottom: 4px !important; }
     .view-home .hires-badge,
-    .view-albums .hires-badge { height: 14px !important; }
+    .view-albums .hires-badge,
+    .discover-section .hires-badge { height: 14px !important; }
     .hires-badge-detail { height: 24px !important; }
     .album-meta-row { margin-bottom: 6px !important; gap: 10px !important; flex-wrap: wrap !important; justify-content: flex-start !important; }
     .album-actions { gap: 6px !important; justify-content: flex-start !important; }
@@ -4975,19 +4977,6 @@ function fmt(s) {
 const WORK_ID_SEP = '__VELVET_WORK__';
 const CREDIT_ID_SEP = '__VELVET_CREDIT__';
 
-function isHiResTrack(track) {
-  if (!track) return false;
-  if (track.is_hires) return true;
-  const sr = Number(track.sample_rate || 0);
-  const bd = Number(track.bit_depth || 0);
-  const fmt = String(track.format || '').toLowerCase();
-  
-  // Strictly HI-RES: (Anything > CD quality)
-  // CD = 16-bit / 44.1kHz
-  // High-Sample Rate (Roon/Qobuz/Tidal hi-res) or 24-bit/32-bit
-  return sr > 48000 || bd > 16 || /dsd/.test(fmt);
-}
-
 function escHtml(str) {
   if (!str) return '';
   const d = document.createElement('div');
@@ -5966,15 +5955,14 @@ function syncVUAudioToPlayback() {
 }
 
 function getAudioLevel() {
-  // Use dual-channel analysers for true left/right stereo separation.
-  // Left analyser = left channel (background music), right analyser = right channel (vocals).
+  // Dual-channel analysers for true left/right stereo.
   if (!audioAnalyserL || !audioAnalyserR || !audioDataArrayL || !audioDataArrayR) {
     return { left: 0, right: 0 };
   }
   audioAnalyserL.getByteFrequencyData(audioDataArrayL);
   audioAnalyserR.getByteFrequencyData(audioDataArrayR);
 
-  // Left channel: low-frequency energy from background music.
+  // Left channel: low-frequency range (bass/mids of left channel).
   const binsL = audioAnalyserL.frequencyBinCount;
   const vuRangeL = Math.floor(binsL * 0.4);
   let leftSum = 0;
@@ -5983,7 +5971,7 @@ function getAudioLevel() {
   }
   const leftLevel = leftSum / vuRangeL / 255;
 
-  // Right channel: full-range energy for vocals.
+  // Right channel: same range from right channel.
   const binsR = audioAnalyserR.frequencyBinCount;
   const vuRangeR = Math.floor(binsR * 0.4);
   let rightSum = 0;
@@ -11780,9 +11768,13 @@ function startFpPolling() {
         `${s.processed} / ${s.total} · ${s.matched} corrected · ${s.current || ''}`;
       if (!s.running) {
         clearInterval(_fpPollId);
+        _fpPollId = null;
         showToast(`✅ Fingerprinting done — ${s.matched} tracks corrected`);
       }
-    } catch {}
+    } catch {
+      clearInterval(_fpPollId);
+      _fpPollId = null;
+    }
   }, 1500);
 }
 
@@ -11800,10 +11792,14 @@ function startBioPolling() {
         `${s.processed} / ${s.total} · ${s.fetched || 0} fetched · ${s.current || ''}`;
       if (!s.running) {
         clearInterval(_bioPollId);
+        _bioPollId = null;
         const total = s.fetched + (s.not_found || 0);
         showToast(`✅ Bio enrichment done — ${s.fetched || 0} fetched, ${s.not_found || 0} not found`);
       }
-    } catch {}
+    } catch {
+      clearInterval(_bioPollId);
+      _bioPollId = null;
+    }
   }, 1500);
 }
 

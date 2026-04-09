@@ -27,20 +27,19 @@ from typing import Optional
 
 import httpx
 
-log = logging.getLogger("musiciq.enrich")
+log = logging.getLogger("velvet.enrich")
 
-_db_data_dir = os.environ.get("DATA_DIR", "velvet_data")
-DB_PATH    = Path(_db_data_dir) / "library.db"
-COVERS_DIR = Path(_db_data_dir) / "covers"
+DB_PATH    = Path(os.environ.get("DATA_DIR", "velvet_data")) / "library.db"
+COVERS_DIR = Path(os.environ.get("DATA_DIR", "velvet_data")) / "covers"
 COVERS_DIR.mkdir(parents=True, exist_ok=True)
 
 # AcoustID API key — set ACOUSTID_KEY environment variable
 ACOUSTID_KEY = os.environ.get("ACOUSTID_KEY", "")
-MB_UA = "MusicIQ/1.0 ( musiciq-personal-server )"
+MB_UA = "Velvet/1.0 (velvet-personal-server)"
 
 # Discogs API (no key needed for search, but limited)
 # Get a free key at https://www.discogs.com/settings/developers for higher limits
-DISCOGS_UA = "MusicIQ/1.0 (https://musiciq.io)"
+DISCOGS_UA = "Velvet/1.0 (https://velvet.io)"
 
 # Rate limiting for external API calls
 API_SEMAPHORE = asyncio.Semaphore(8)  # Increased concurrent API calls
@@ -67,7 +66,8 @@ def _db():
 def _query(sql, params=()):
     conn = _db()
     try:
-        return [dict(r) for r in conn.execute(sql, params).fetchall()]
+        rows = conn.execute(sql, params).fetchall()
+        return [dict(r) for r in rows]
     except Exception as e:
         log.warning(f"DB query error: {e}")
         return []
