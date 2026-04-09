@@ -3176,11 +3176,6 @@ async def request_id_middleware(request: Request, call_next):
 
 # ─── Frontend ─────────────────────────────────────────────────────────────────
 
-@app.get("/static/logo-hires.png")
-def serve_hires_logo():
-    path = Path(__file__).parent / "static" / "logo-hires.png"
-    return FileResponse(path, media_type="image/png")
-
 @app.get("/")
 def serve_frontend():
     html = Path(__file__).parent / "static" / "index.html"
@@ -3226,7 +3221,7 @@ if __name__ == "__main__":
     # ─── Logging Setup ──────────────────────────────────────────────────────────────
     log_dir = DATA_DIR / "logs"
     log_dir.mkdir(exist_ok=True)
-    log_file = log_dir / "musiciq.log"
+    log_file = log_dir / "velvet.log"
 
     logging.basicConfig(
         level=logging.WARNING,  # Uvicorn uses its own logger for requests
