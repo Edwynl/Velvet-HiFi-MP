@@ -5635,6 +5635,12 @@ let audioContext = null;
 let audioAnalyser = null;
 let audioSource = null;
 let audioDataArray = null;
+// Dual-channel VU: separate analysers for true left/right stereo separation.
+let audioAnalyserL = null; // Left channel analyser
+let audioAnalyserR = null; // Right channel analyser
+let audioDataArrayL = null;
+let audioDataArrayR = null;
+let channelSplitter = null; // ChannelSplitterNode for L/R separation
 let browserPlaybackToken = 0;
 const browserPlaybackRecoveryConfig = {
   pauseDelayMs: 400,
@@ -5680,20 +5686,22 @@ function setMediaSessionPlaybackState(playbackState) {
 // This is SAFE to call even when AudioContext is already null (no-op).
 async function cleanupSuspendedAudioContextIfNeeded() {
   if (audioContext) {
-    // CRITICAL: disconnect MediaElementSource BEFORE closing AudioContext.
-    if (audioSource) {
-      try { audioSource.disconnect(); } catch {}
-    }
-    if (audioAnalyser) {
-      try { audioAnalyser.disconnect(); } catch {}
-    }
+    try { audioSource?.disconnect(); } catch {}
+    try { channelSplitter?.disconnect(); } catch {}
+    try { audioAnalyser?.disconnect(); } catch {}
+    try { audioAnalyserL?.disconnect(); } catch {}
+    try { audioAnalyserR?.disconnect(); } catch {}
     try { await audioContext.close(); } catch {}
     audioContext = null;
     audioAnalyser = null;
+    audioAnalyserL = null;
+    audioAnalyserR = null;
     audioSource = null;
     audioDataArray = null;
+    audioDataArrayL = null;
+    audioDataArrayR = null;
+    channelSplitter = null;
   }
-  // Release the dedicated VU audio element (it holds no playback state, safe to reset)
   if (vuAudio) {
     try { vuAudio.pause(); } catch {}
     vuAudio.src = '';
@@ -5851,60 +5859,93 @@ function startBrowserPlaybackWatchdog() {
 // via createMediaElementSource (which breaks audio.play() on Safari/iOS after cleanup).
 let vuAudio = null;
 
+// initAudioAnalyser — sets up AudioContext + AnalyserNode.
+// createMediaElementSource is NOT called here — it is deferred to
+// syncVUAudioToPlayback which runs when audio is actively playing and
+// AudioContext is guaranteed to be in the "running" state (not suspended).
+// initAudioAnalyser — creates a fresh AudioContext + ChannelSplitter + dual AnalyserNodes
+// (one per channel) + audioDataArrays + vuAudio.
+// This runs when the user opens the VU overlay. If VU is open during a track change,
+// startBrowserPlayback calls initAudioAnalyser again to rebuild the graph with the new track.
 function initAudioAnalyser() {
-  if (audioContext) return; // Already initialized; do NOT recreate
+  if (audioContext) return;
   try {
     audioContext = new (window.AudioContext || window.webkitAudioContext)();
+    if (audioContext.state === 'suspended') {
+      audioContext.resume().catch(() => {});
+    }
+
+    // Dual-channel analysers: ChannelSplitter separates stereo L/R into two mono streams,
+    // each routed through its own AnalyserNode so left = left channel, right = right channel.
     audioAnalyser = audioContext.createAnalyser();
     audioAnalyser.fftSize = 256;
     audioAnalyser.smoothingTimeConstant = 0.6;
 
-    // Create a SILENT dedicated audio element for analysis.
-    // This is completely independent from the main `audio` element that handles playback.
-    // createMediaElementSource(vuAudio) only captures vuAudio's output, never audio's.
+    audioAnalyserL = audioContext.createAnalyser();
+    audioAnalyserL.fftSize = 256;
+    audioAnalyserL.smoothingTimeConstant = 0.5;
+
+    audioAnalyserR = audioContext.createAnalyser();
+    audioAnalyserR.fftSize = 256;
+    audioAnalyserR.smoothingTimeConstant = 0.5;
+
+    audioDataArray = new Uint8Array(audioAnalyser.frequencyBinCount);
+    audioDataArrayL = new Uint8Array(audioAnalyserL.frequencyBinCount);
+    audioDataArrayR = new Uint8Array(audioAnalyserR.frequencyBinCount);
+
+    // ChannelSplitter: outputs[0] = left channel, outputs[1] = right channel.
+    channelSplitter = audioContext.createChannelSplitter(2);
+
+    // Create a brand-new audio element each time.
     vuAudio = new Audio();
-    vuAudio.muted = true;       // Silent — we only want the analysis signal
-    vuAudio.volume = 0;
+    vuAudio.muted = false;
+    vuAudio.volume = 1;
     vuAudio.playsInline = true;
-    vuAudio.src = audio.src || '';
-    // createMediaElementSource captures the audio stream at the moment it is called.
-    // An element with empty src → empty stream → analyser gets silence forever.
-    // Fix: wait until the audio is actually playable before capturing it.
-    if (vuAudio.readyState >= 3) {
-      finishInit();
-    } else {
-      vuAudio.addEventListener('canplay', finishInit, { once: true });
-    }
+
+    // createMediaElementSource: captures vuAudio's raw PCM output before volume stage.
+    audioSource = audioContext.createMediaElementSource(vuAudio);
+    // Route through ChannelSplitter to separate left/right.
+    audioSource.connect(channelSplitter);
+    // Connect each channel to its own analyser (no destination = silent).
+    channelSplitter.connect(audioAnalyserL, 0); // left channel
+    channelSplitter.connect(audioAnalyserR, 1); // right channel
   } catch (e) {
-    console.warn('Audio analyser not available:', e);
+    console.warn('[VU] Audio analyser init failed:', e.message);
     try { audioContext?.close(); } catch {}
     audioContext = null;
     audioAnalyser = null;
+    audioAnalyserL = null;
+    audioAnalyserR = null;
     audioSource = null;
     audioDataArray = null;
+    audioDataArrayL = null;
+    audioDataArrayR = null;
+    channelSplitter = null;
     vuAudio = null;
-  }
-
-  function finishInit() {
-    if (!audioContext || !vuAudio) return;
-    vuAudio.play().catch(() => {});
-    audioSource = audioContext.createMediaElementSource(vuAudio);
-    audioSource.connect(audioAnalyser);
-    // Do NOT connect audioAnalyser to audioContext.destination — we only analyze, not output
-    audioDataArray = new Uint8Array(audioAnalyser.frequencyBinCount);
   }
 }
 
-// Keep vuAudio in sync with whatever the main audio element is playing.
-// Call this whenever playback state or src changes.
+// Sync vuAudio to whatever the main audio element is playing.
+// If AudioContext was destroyed (track change or screen lock) but VU overlay is
+// still open, rebuild the audio graph immediately so the RAF loop doesn't stall.
 function syncVUAudioToPlayback() {
+  // Rebuild audio graph if it was destroyed but VU meter is still open.
+  if (vuMeterOpen && (!vuAudio || !audioContext)) {
+    initAudioAnalyser();
+  }
   if (!vuAudio || !audioContext) return;
+
+  if (audioContext.state === 'suspended') {
+    audioContext.resume().catch(() => {});
+  }
+
   const willPlay = !audio.paused && audio.readyState >= 2 && audio.src;
   if (!willPlay) {
     if (vuAudio.src) { vuAudio.src = ''; vuAudio.load(); }
     return;
   }
-  // Sync: same src, same currentTime, same playback rate
+
+  // Sync: same src, same currentTime, same playback rate.
   const needsSrcSync = vuAudio.src !== audio.src;
   if (needsSrcSync) {
     vuAudio.src = audio.src;
@@ -5916,6 +5957,7 @@ function syncVUAudioToPlayback() {
   if (vuAudio.playbackRate !== audio.playbackRate) {
     vuAudio.playbackRate = audio.playbackRate;
   }
+
   if (audio.paused) {
     vuAudio.pause();
   } else {
@@ -5924,29 +5966,38 @@ function syncVUAudioToPlayback() {
 }
 
 function getAudioLevel() {
-  if (!audioAnalyser || !audioDataArray) return { left: 0, right: 0 };
-  audioAnalyser.getByteFrequencyData(audioDataArray);
+  // Use dual-channel analysers for true left/right stereo separation.
+  // Left analyser = left channel (background music), right analyser = right channel (vocals).
+  if (!audioAnalyserL || !audioAnalyserR || !audioDataArrayL || !audioDataArrayR) {
+    return { left: 0, right: 0 };
+  }
+  audioAnalyserL.getByteFrequencyData(audioDataArrayL);
+  audioAnalyserR.getByteFrequencyData(audioDataArrayR);
 
-  // Get low frequency range for VU-like reading (mimics VU meter behavior)
-  const bins = audioAnalyser.frequencyBinCount;
-  const vuRange = Math.floor(bins * 0.4); // Focus on lower frequencies
-
-  // Left channel: lower half of frequency range
+  // Left channel: low-frequency energy from background music.
+  const binsL = audioAnalyserL.frequencyBinCount;
+  const vuRangeL = Math.floor(binsL * 0.4);
   let leftSum = 0;
-  for (let i = 0; i < vuRange / 2; i++) {
-    leftSum += audioDataArray[i];
+  for (let i = 0; i < vuRangeL; i++) {
+    leftSum += audioDataArrayL[i];
   }
-  const leftLevel = leftSum / (vuRange / 2) / 255;
+  const leftLevel = leftSum / vuRangeL / 255;
 
-  // Right channel: upper half of frequency range
+  // Right channel: full-range energy for vocals.
+  const binsR = audioAnalyserR.frequencyBinCount;
+  const vuRangeR = Math.floor(binsR * 0.4);
   let rightSum = 0;
-  for (let i = Math.floor(vuRange / 2); i < vuRange; i++) {
-    rightSum += audioDataArray[i];
+  for (let i = 0; i < vuRangeR; i++) {
+    rightSum += audioDataArrayR[i];
   }
-  const rightLevel = rightSum / (vuRange / 2) / 255;
+  const rightLevel = rightSum / vuRangeR / 255;
 
   return { left: leftLevel, right: rightLevel };
 }
+
+// ⚠️  DO NOT DELETE the leftLevel/rightLevel calculation above.
+// This is the VU meter needle driving logic — removing it causes a
+// ReferenceError that silently crashes the animation and freezes the needles.
 
 function streamUrl(trackId, upsample) {
   const u = upsample || state.upsample;
