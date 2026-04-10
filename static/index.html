@@ -4977,13 +4977,6 @@ function fmt(s) {
 const WORK_ID_SEP = '__VELVET_WORK__';
 const CREDIT_ID_SEP = '__VELVET_CREDIT__';
 
-function escHtml(str) {
-  if (!str) return '';
-  const d = document.createElement('div');
-  d.textContent = String(str);
-  return d.innerHTML;
-}
-
 function fmtSR(hz) {
   if (!hz) return '';
   if (hz >= 1000000) return (hz/1000000).toFixed(3).replace(/\.?0+$/, '') + 'MHz';
@@ -5648,6 +5641,7 @@ let browserRecoveryAttempts = 0;
 let browserRecoveryWindowStartedAt = 0;
 let browserRecoveryLastAt = 0;
 let browserExpectedPauseUntil = 0;
+let browserInterrupted = false; // true = 当前暂停是系统中断（通话/视频通话/Siri），不是用户主动暂停
 let browserWatchdogId = null;
 let browserWatchdogLastTime = 0;
 let browserWatchdogLastProgressAt = Date.now();
@@ -5802,7 +5796,12 @@ function startBrowserPlaybackWatchdog() {
     // If readyState >= 2 (HAVE_CURRENT_DATA), the audio element has data and
     // the browser is just temporarily not playing it — don't spam recovery.
     if (audio.paused) {
-      if (!isExpectedBrowserPause() && audio.readyState < 2) {
+      // 如果 browserInterrupted=true，说明是通话等系统中断，playing 事件可能没有及时触发。
+      // 兜底：强制尝试恢复播放（通话结束但 playing 事件漏发时）。
+      if (browserInterrupted) {
+        browserInterrupted = false;
+        audio.play().catch(() => {});
+      } else if (!isExpectedBrowserPause() && audio.readyState < 2) {
         scheduleBrowserPlaybackRecovery('unexpected-pause', { delayMs: browserPlaybackRecoveryConfig.pauseDelayMs });
       }
       noteBrowserPlaybackProgress();
@@ -5868,15 +5867,15 @@ function initAudioAnalyser() {
     // each routed through its own AnalyserNode so left = left channel, right = right channel.
     audioAnalyser = audioContext.createAnalyser();
     audioAnalyser.fftSize = 256;
-    audioAnalyser.smoothingTimeConstant = 0.6;
+    audioAnalyser.smoothingTimeConstant = 0.2;
 
     audioAnalyserL = audioContext.createAnalyser();
     audioAnalyserL.fftSize = 256;
-    audioAnalyserL.smoothingTimeConstant = 0.5;
+    audioAnalyserL.smoothingTimeConstant = 0.2;
 
     audioAnalyserR = audioContext.createAnalyser();
     audioAnalyserR.fftSize = 256;
-    audioAnalyserR.smoothingTimeConstant = 0.5;
+    audioAnalyserR.smoothingTimeConstant = 0.2;
 
     audioDataArray = new Uint8Array(audioAnalyser.frequencyBinCount);
     audioDataArrayL = new Uint8Array(audioAnalyserL.frequencyBinCount);
@@ -5900,6 +5899,14 @@ function initAudioAnalyser() {
     channelSplitter.connect(audioAnalyserR, 1); // right channel
   } catch (e) {
     console.warn('[VU] Audio analyser init failed:', e.message);
+    // Disconnect any nodes that were created before the error.
+    // Some may be null (not yet created), but disconnect() on a null ref is a no-op
+    // and disconnecting an already-disconnected node is also safe.
+    try { audioSource?.disconnect(); } catch {}
+    try { channelSplitter?.disconnect(); } catch {}
+    try { audioAnalyser?.disconnect(); } catch {}
+    try { audioAnalyserL?.disconnect(); } catch {}
+    try { audioAnalyserR?.disconnect(); } catch {}
     try { audioContext?.close(); } catch {}
     audioContext = null;
     audioAnalyser = null;
@@ -5956,29 +5963,26 @@ function syncVUAudioToPlayback() {
 
 function getAudioLevel() {
   // Dual-channel analysers for true left/right stereo.
+  // Uses RMS-style averaging over the full spectrum (not just low bins) for a
+  // more accurate overall loudness reading that is less biased toward bass.
   if (!audioAnalyserL || !audioAnalyserR || !audioDataArrayL || !audioDataArrayR) {
     return { left: 0, right: 0 };
   }
   audioAnalyserL.getByteFrequencyData(audioDataArrayL);
   audioAnalyserR.getByteFrequencyData(audioDataArrayR);
 
-  // Left channel: low-frequency range (bass/mids of left channel).
   const binsL = audioAnalyserL.frequencyBinCount;
-  const vuRangeL = Math.floor(binsL * 0.4);
-  let leftSum = 0;
-  for (let i = 0; i < vuRangeL; i++) {
-    leftSum += audioDataArrayL[i];
-  }
-  const leftLevel = leftSum / vuRangeL / 255;
-
-  // Right channel: same range from right channel.
   const binsR = audioAnalyserR.frequencyBinCount;
-  const vuRangeR = Math.floor(binsR * 0.4);
+
+  // Full-spectrum RMS: sum all bins, divide by count — reflects total audio energy.
+  let leftSum = 0;
   let rightSum = 0;
-  for (let i = 0; i < vuRangeR; i++) {
+  for (let i = 0; i < binsL; i++) {
+    leftSum += audioDataArrayL[i];
     rightSum += audioDataArrayR[i];
   }
-  const rightLevel = rightSum / vuRangeR / 255;
+  const leftLevel = leftSum / binsL / 255;
+  const rightLevel = rightSum / binsR / 255;
 
   return { left: leftLevel, right: rightLevel };
 }
@@ -6671,33 +6675,64 @@ function scrollToTop() {
   window.scrollTo({ top: 0, behavior: 'instant' });
 }
 
-audio.addEventListener('timeupdate', () => {
-  if (isCastZone() || isNativeZone()) return; // Ignore local time outside browser output
+// Throttle: caps timeupdate DOM work to ~15fps so progress bar updates don't
+// cause continuous layout recalculation on mobile. Always fires the LAST pending
+// update so progress bar is always accurate on screen.
+let _timeupdateLast = 0;
+let _timeupdateScheduled = false;
+let _timeupdatePending = false;
+
+function flushTimeupdate() {
+  _timeupdateScheduled = false;
+  if (!_timeupdatePending) return;
+  _timeupdatePending = false;
+
+  if (isCastZone() || isNativeZone()) return;
   noteBrowserPlaybackProgress();
-  const Math_max = Math.max;
   const pct = audio.duration ? (audio.currentTime / audio.duration) * 100 : 0;
   UI['progress-fill'].style.width = pct + '%';
   UI['mobile-progress-fill'].style.width = pct + '%';
-  
   const curr = fmt(audio.currentTime);
   const tot = fmt(audio.duration);
   UI['time-current'].textContent = curr;
   UI['time-total'].textContent = tot;
   UI['mobile-time-current'].textContent = curr;
   UI['mobile-time-total'].textContent = tot;
-
-  // VU Overlay progress
   const vuFill = UI['mobile-vu-progress-fill'];
   if (vuFill) vuFill.style.width = pct + '%';
   const vuTimeCurr = UI['mobile-vu-time-current'];
   const vuTimeTot = UI['mobile-vu-time-total'];
   if (vuTimeCurr) vuTimeCurr.textContent = curr;
   if (vuTimeTot) vuTimeTot.textContent = tot;
+}
+
+audio.addEventListener('timeupdate', () => {
+  _timeupdatePending = true;
+  if (_timeupdateScheduled) return;
+  const now = performance.now();
+  const elapsed = now - _timeupdateLast;
+  if (elapsed >= 66) {
+    _timeupdateLast = now;
+    _timeupdateScheduled = true;
+    requestAnimationFrame(flushTimeupdate);
+  } else if (!_timeupdateScheduled) {
+    _timeupdateScheduled = true;
+    setTimeout(() => {
+      _timeupdateLast = performance.now();
+      flushTimeupdate();
+    }, 66 - elapsed);
+  }
 });
 
 audio.addEventListener('playing', () => {
   if (!isBrowserZone()) return;
   state.playing = true;
+  // 如果是从系统中断（通话/视频通话）恢复，playing 事件说明音频已重新开始。
+  // 清除中断标记，并同步 watchdog 时间戳防止误判为 stuck。
+  if (browserInterrupted) {
+    browserInterrupted = false;
+    noteBrowserPlaybackProgress();
+  }
   resetBrowserPlaybackRecoveryWindow();
   updatePlayBtnUI();
 });
@@ -6720,7 +6755,18 @@ audio.addEventListener('emptied', () => {
 });
 
 audio.addEventListener('pause', () => {
-  if (!canRecoverBrowserPlayback() || isExpectedBrowserPause()) return;
+  if (!canRecoverBrowserPlayback()) return;
+
+  // 如果音频正在播放但突然暂停，且不是用户主动暂停（不在 expectedPause 窗口内），
+  // 说明是系统中断（手机来电、视频通话、Siri 等）。
+  // 此时不要触发 recovery——通话结束后系统会自动恢复 audio.play()。
+  // 我们只标记中断状态，等 playing 事件或 watchdog 来处理。
+  if (state.playing && !isExpectedBrowserPause()) {
+    browserInterrupted = true;
+    return;
+  }
+
+  // 用户主动暂停 或 在 expectedPause 窗口内（如切歌场景）
   scheduleBrowserPlaybackRecovery('pause', { delayMs: browserPlaybackRecoveryConfig.pauseDelayMs });
 });
 
@@ -6773,6 +6819,11 @@ document.addEventListener('visibilitychange', () => {
     } else if (!audio.paused) {
       noteBrowserPlaybackProgress();
     }
+  } else {
+    // Page became visible again — clear any stale interruption flag.
+    // This covers cases where browserInterrupted was set but playing event
+    // was suppressed and never got a chance to clear it.
+    browserInterrupted = false;
   }
 });
 
@@ -7017,9 +7068,10 @@ function startVUAnimation() {
   // Initialize audio analyser on first user interaction
   initAudioAnalyser();
 
-  let lastTime = 0;
   let leftAngle = -48;
   let rightAngle = -48;
+  let peakLeftAngle = -48;  // Peak needle — moves fast up, decays slowly
+  let peakRightAngle = -48;
 
   function animate(time) {
     if (!vuMeterOpen) {
@@ -7027,31 +7079,45 @@ function startVUAnimation() {
       return;
     }
 
-    const delta = lastTime ? (time - lastTime) / 1000 : 0.05;
-    lastTime = time;
-
     // Keep the dedicated vuAudio in sync with main audio playback
     syncVUAudioToPlayback();
 
     // Only animate when music is playing, otherwise return to rest position
     if (state.playing) {
-      // Get real audio levels from analyser
       const levels = getAudioLevel();
 
       // Map audio level to needle angle: -48deg (rest) to +12deg (max)
       const leftTarget = -48 + levels.left * 60;
       const rightTarget = -48 + levels.right * 60;
 
-      // Smooth interpolation with slightly slower response for VU feel
-      leftAngle += (leftTarget - leftAngle) * Math.min(1, delta * 6);
-      rightAngle += (rightTarget - rightAngle) * Math.min(1, delta * 6);
+      // Peak hold: needle can rise instantly with audio but decays slowly
+      // when the signal drops — mimics real analog VU meter behavior.
+      if (leftTarget > peakLeftAngle) {
+        peakLeftAngle = leftTarget; // Peak rises instantly to new level
+      } else {
+        peakLeftAngle += (leftTarget - peakLeftAngle) * 0.04; // Slow decay toward current level
+      }
+      if (rightTarget > peakRightAngle) {
+        peakRightAngle = rightTarget;
+      } else {
+        peakRightAngle += (rightTarget - peakRightAngle) * 0.04;
+      }
+
+      // Visible needle: fixed lerp coefficient (frame-rate independent).
+      // 0.15 means ~15% of the gap is closed each frame at 60fps.
+      leftAngle += (peakLeftAngle - leftAngle) * 0.15;
+      rightAngle += (peakRightAngle - rightAngle) * 0.15;
     } else {
       // Return to rest position when not playing
-      leftAngle += (-48 - leftAngle) * Math.min(1, delta * 3);
-      rightAngle += (-48 - rightAngle) * Math.min(1, delta * 3);
+      leftAngle += (-48 - leftAngle) * 0.1;
+      rightAngle += (-48 - rightAngle) * 0.1;
+      peakLeftAngle += (-48 - peakLeftAngle) * 0.06;
+      peakRightAngle += (-48 - peakRightAngle) * 0.06;
     }
 
-    // Clamp angles
+    // Clamp angles (peak and needle)
+    peakLeftAngle = Math.max(-48, Math.min(12, peakLeftAngle));
+    peakRightAngle = Math.max(-48, Math.min(12, peakRightAngle));
     leftAngle = Math.max(-48, Math.min(12, leftAngle));
     rightAngle = Math.max(-48, Math.min(12, rightAngle));
 
@@ -7290,6 +7356,19 @@ if ('mediaSession' in navigator) {
 }
 
 startBrowserPlaybackWatchdog();
+
+// ─── Page lifecycle cleanup ──────────────────────────────────────────────────
+// Release AudioContext when the page is unloaded or hidden.
+// Without this, the AudioContext persists in the browser's resource table
+// and counts toward the per-page limit (~6 contexts). Repeatedly opening
+// the VU overlay without proper cleanup would eventually exhaust the budget
+// and crash audio on subsequent visits.
+window.addEventListener('beforeunload', () => {
+  cleanupSuspendedAudioContextIfNeeded();
+});
+window.addEventListener('pagehide', () => {
+  cleanupSuspendedAudioContextIfNeeded();
+});
 
 // ─── Navigation ───────────────────────────────────────────────────────────────
 
@@ -7813,7 +7892,7 @@ async function renderAlbums(vc) {
     } else {
       backToTopBtn.style.display = 'none';
     }
-  });
+  }, { passive: true });
 
   // Back to top button click
   backToTopBtn.addEventListener('click', () => {
@@ -8192,7 +8271,7 @@ async function renderArtists(vc) {
     } else {
       backToTopBtn.style.display = 'none';
     }
-  });
+  }, { passive: true });
 
   // Back to top button click
   backToTopBtn.addEventListener('click', () => {
@@ -11188,7 +11267,7 @@ function renderQueue() {
 
   // Scroll to current
   const activeEl = list.querySelector('.active');
-  if (activeEl) activeEl.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  if (activeEl) activeEl.scrollIntoView({ block: 'center', behavior: 'instant' });
 }
 
 $('btn-queue-toggle').addEventListener('click', () => {
@@ -11205,15 +11284,17 @@ $('queue-close-btn').addEventListener('click', () => {
 
 // ─── Lyrics ───────────────────────────────────────────────────────────────────
 
-let _lyricsData    = null;
-let _lyricsTrackId = null;
-let _lyricsSynced  = [];
+let _lyricsData     = null;
+let _lyricsTrackId  = null;
+let _lyricsSynced   = [];
+let _lyricsActiveIdx = -1; // Tracks the currently highlighted line index — diff update
 
 async function loadLyrics(track) {
   if (!track || track.id === _lyricsTrackId) return;
-  _lyricsTrackId = track.id;
-  _lyricsData    = null;
-  _lyricsSynced  = [];
+  _lyricsTrackId  = track.id;
+  _lyricsData     = null;
+  _lyricsSynced   = [];
+  _lyricsActiveIdx = -1; // Reset on new track so first highlight starts fresh
 
   const body = $('lyrics-body');
   $('lyrics-track-name').textContent = `${track.title} — ${track.artist_name || ''}`;
@@ -11265,15 +11346,35 @@ function renderSyncedLyrics() {
 
 function updateLyricsHighlight(currentTime) {
   if (!_lyricsSynced.length) return;
-  let activeIdx = 0;
-  for (let i = 0; i < _lyricsSynced.length; i++) {
-    if (_lyricsSynced[i].time <= currentTime + 0.1) activeIdx = i;
+
+  // Binary search for the active line — O(log n) vs O(n) full scan.
+  // Each timeupdate fires ~4-8x/s so avoiding the full scan matters.
+  let lo = 0, hi = _lyricsSynced.length - 1, activeIdx = 0;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    if (_lyricsSynced[mid].time <= currentTime + 0.1) {
+      activeIdx = mid;
+      lo = mid + 1;
+    } else {
+      hi = mid - 1;
+    }
   }
-  $$('.lyrics-line').forEach((el, i) => {
-    const isActive = i === activeIdx;
-    el.classList.toggle('active', isActive);
-    if (isActive) el.scrollIntoView({ block: 'center', behavior: 'smooth' });
-  });
+
+  if (activeIdx === _lyricsActiveIdx) return; // Nothing changed — exit immediately
+
+  // Remove highlight from old row
+  if (_lyricsActiveIdx >= 0) {
+    const prev = document.getElementById(`lyric-${_lyricsActiveIdx}`);
+    if (prev) prev.classList.remove('active');
+  }
+
+  // Add highlight to new row + scroll into view
+  _lyricsActiveIdx = activeIdx;
+  const curr = document.getElementById(`lyric-${activeIdx}`);
+  if (curr) {
+    curr.classList.add('active');
+    curr.scrollIntoView({ block: 'center', behavior: 'instant' });
+  }
 }
 
 audio.addEventListener('timeupdate', () => {
