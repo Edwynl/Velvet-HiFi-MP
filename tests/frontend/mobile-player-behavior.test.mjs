@@ -252,9 +252,106 @@ async function testBottomBarPauseDoesNotOpenFullscreen() {
   }
 }
 
+async function testMobileProgressMirrorsPlaybackState() {
+  const harness = createHarness();
+  const dom = await harness.createDom();
+
+  try {
+    const audio = primeAudio(dom, { paused: false, currentTime: 45, duration: 180 });
+    dom.window.eval(`
+      state.currentTrack = {
+        id: 8,
+        title: 'Progress Check',
+        artist_name: 'Timeline Artist',
+        album_title: 'Timeline Album',
+        album_id: 88,
+        duration: 180,
+        format: 'FLAC',
+        sample_rate: 96000,
+        bit_depth: 24
+      };
+      updatePlayerUI(state.currentTrack);
+    `);
+
+    audio.dispatchEvent(new dom.window.Event('timeupdate'));
+    await new Promise(resolve => dom.window.setTimeout(resolve, 90));
+
+    assert.equal(dom.window.document.querySelector('#mobile-time-current').textContent, '0:45');
+    assert.equal(dom.window.document.querySelector('#mobile-time-total').textContent, '3:00');
+    assert.equal(dom.window.document.querySelector('#mobile-progress-fill').style.width, '25%');
+    assert.equal(dom.window.document.querySelector('#mobile-vu-time-current').textContent, '0:45');
+    assert.equal(dom.window.document.querySelector('#mobile-vu-progress-fill').style.width, '25%');
+  } finally {
+    dom.window.close();
+  }
+}
+
+function testUltraCompactLandscapeCssGuards() {
+  const html = readFileSync(HTML_PATH, 'utf8');
+
+  assert.ok(
+    html.includes('@media (orientation: landscape) and (max-height: 430px)'),
+    'Expected a dedicated ultra-compact landscape media query',
+  );
+  assert.ok(
+    html.includes('-webkit-line-clamp: 2 !important;'),
+    'Expected landscape titles to clamp instead of pushing progress controls off-screen',
+  );
+  assert.ok(
+    html.includes('padding: calc(env(safe-area-inset-top, 0px) + 52px) 10px 10px !important;'),
+    'Expected VU overlay to reserve top safe-area space in compact landscape',
+  );
+  assert.ok(
+    html.includes('top: calc(env(safe-area-inset-top, 0px) + 8px) !important;'),
+    'Expected compact landscape top controls to anchor below the safe-area inset',
+  );
+}
+
+function testLandscapeMiniPlayerProgressCssGuards() {
+  const html = readFileSync(HTML_PATH, 'utf8');
+
+  assert.ok(
+    html.includes(':root { --player-h: 48px; --header-h: 42px; }'),
+    'Expected landscape mini-player to keep the compact player height',
+  );
+  assert.ok(
+    html.includes('.progress-time {\n      display: none !important;'),
+    'Expected landscape mini-player progress to stay edge-aligned without inline time labels',
+  );
+  assert.ok(
+    html.includes('top: -1px !important;'),
+    'Expected landscape mini-player progress row to stay pinned to the top edge',
+  );
+  assert.ok(
+    html.includes('height: 3px !important;'),
+    'Expected landscape mini-player progress strip to remain visibly thicker than the old 1px line',
+  );
+  assert.ok(
+    html.includes("UI['progress-fill'].style.setProperty('--prog', pct + '%');"),
+    'Expected progress updates to keep the landscape CSS variable in sync with playback position',
+  );
+}
+
+function testLandscapeMobileVolumeStripHidden() {
+  const html = readFileSync(HTML_PATH, 'utf8');
+
+  assert.ok(
+    html.includes('.mobile-player-volume-strip {\n      display: none !important;'),
+    'Expected the mobile landscape volume strip to stay hidden',
+  );
+  assert.ok(
+    html.includes('.mobile-player-landscape-utility {\n      display: flex !important;\n      order: 4 !important;\n      margin-top: 2px !important;\n      justify-content: flex-end !important;'),
+    'Expected landscape utility actions to right-align after hiding the volume strip',
+  );
+}
+
 async function main() {
   await testAutoOpenOnlyBeforeDismiss();
   await testBottomBarPauseDoesNotOpenFullscreen();
+  await testMobileProgressMirrorsPlaybackState();
+  testUltraCompactLandscapeCssGuards();
+  testLandscapeMiniPlayerProgressCssGuards();
+  testLandscapeMobileVolumeStripHidden();
 }
 
 try {

@@ -2,6 +2,8 @@
 
 > *The art of listening.*
 
+**Latest stable: [velvet-v2.4.18](https://github.com/Edwynl/Velvet-V2.4.6/releases/tag/velvet-v2.4.18)** — VU meter & audio playback fixes: memory leak, call interruption, animation, and performance.
+
 VELVET is a premium, minimalist personal music server designed for audiophiles. It provides a cinematic, high-performance web interface to manage and stream your local music library, with native support for high-resolution formats and UPnP/DLNA integration for high-end playback devices.
 
 [中文介绍](#中文介绍)
@@ -29,6 +31,8 @@ VELVET is a premium, minimalist personal music server designed for audiophiles. 
 # VELVET — 私人 Hi-Fi 音乐服务器
 
 > *聆听的艺术。*
+
+**最新稳定版：[velvet-v2.4.18](https://github.com/Edwynl/Velvet-V2.4.6/releases/tag/velvet-v2.4.18)** — VU 表&音频播放修复：内存泄漏、通话中断、动画及性能优化。
 
 VELVET 是一款专为音乐发烧友打造的高级简约私人音乐服务器。它提供了一个具有电影感、高性能的 Web 界面，用于管理和串流您的本地音乐库，原生支持高分辨率音频格式，并为高端播放设备提供 UPnP/DLNA 整合支持。
 
