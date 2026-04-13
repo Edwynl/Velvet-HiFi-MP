@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test:frontend": "node tests/frontend/dsp-settings.test.mjs && node tests/frontend/playback-race.test.mjs && node tests/frontend/mobile-background-recovery.test.mjs && node tests/frontend/mobile-player-behavior.test.mjs"
+    "test:frontend": "node tests/frontend/dsp-settings.test.mjs && node tests/frontend/playback-race.test.mjs && node tests/frontend/mobile-background-recovery.test.mjs && node tests/frontend/mobile-player-behavior.test.mjs && node tests/frontend/navigation-back.test.mjs"
   },
   "devDependencies": {
     "jsdom": "^26.1.0"

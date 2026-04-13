@@ -2170,8 +2170,7 @@ input[type=range]::-webkit-slider-thumb:hover { background: var(--gold); }
       margin-bottom: 8px;
     }
     .view-home .hires-badge,
-    .view-albums .hires-badge,
-    .discover-section .hires-badge {
+    .view-albums .hires-badge {
       height: 14px !important;
     }
     .hires-badge-detail {
@@ -2637,44 +2636,38 @@ input[type=range]::-webkit-slider-thumb:hover { background: var(--gold); }
       grid-template-columns: minmax(0, 1.25fr) auto auto !important;
       gap: 6px !important;
       padding: 0 4px 0 0 !important;
-      align-items: center !important;
     }
 
-    /* Match portrait behavior: keep mini-player progress as a thin edge strip */
+    /* Full-width glowing gold progress bar at the very top */
     .progress-row {
       position: absolute !important;
-      top: -1px !important;
+      top: -1px !important; /* Perfect merge with top border */
       left: 0 !important;
       right: 0 !important;
-      width: 100% !important; height: 12px !important;
+      width: 100% !important; height: 12px !important; /* Increased hit target */
       padding: 0 !important; margin: 0 !important;
       background: transparent !important;
-      border-radius: 0 !important; gap: 0 !important;
+      border-radius: 0 !important; gap: 20px !important;
       z-index: 50 !important;
       display: flex !important; align-items: flex-start !important;
       box-sizing: border-box !important;
       cursor: pointer !important;
       touch-action: none !important;
     }
-    .progress-time {
-      display: none !important;
-    }
+    .progress-time { display: none !important; }
     .progress-bar {
-      flex: 1 !important;
-      height: 3px !important;
+      flex: 1 !important; height: 100% !important;
       background: transparent !important;
       border-radius: 0 !important;
       min-width: 0 !important;
     }
     .progress-track {
       height: 3px !important;
-      background: rgba(255,255,255,0.18) !important;
-      border-radius: 0 !important;
-      box-shadow: inset 0 0 0 1px rgba(255,255,255,0.03) !important;
+      background: rgba(255,255,255,0.14) !important;
     }
     .progress-fill {
       background: var(--gold) !important;
-      box-shadow: 0 0 8px rgba(201,168,76,0.42) !important;
+      box-shadow: 0 0 6px rgba(201,168,76,0.38) !important;
       height: 100% !important;
       border-radius: 0 !important;
       width: var(--prog, 0%) !important;
@@ -2856,19 +2849,19 @@ input[type=range]::-webkit-slider-thumb:hover { background: var(--gold); }
       flex-direction: row !important;
       align-items: center !important;
       justify-content: space-between !important;
-      gap: 18px !important;
-      padding: 6px 18px 14px !important;
+      gap: 24px !important;
+      padding: 6px 24px 22px !important;
       overflow: hidden !important;
     }
     .mobile-player-art-section {
-      width: 38% !important;
+      width: 42% !important;
       margin-top: 0 !important;
-      gap: 14px !important;
+      gap: 20px !important;
       justify-content: center !important;
     }
     .mobile-player-art-wrapper {
-      width: min(30vw, 240px) !important;
-      max-width: 240px !important;
+      width: min(34vw, 300px) !important;
+      max-width: 300px !important;
       border-radius: 12px !important;
       box-shadow: 0 18px 44px rgba(0,0,0,0.58), inset 0 0 0 1px rgba(255,255,255,0.05) !important;
     }
@@ -2884,12 +2877,12 @@ input[type=range]::-webkit-slider-thumb:hover { background: var(--gold); }
       display: none !important;
     }
     .mobile-player-controls-section {
-      width: 62% !important;
+      width: 58% !important;
       max-width: none !important;
       flex: 1 !important;
       align-self: stretch !important;
-      justify-content: flex-start !important;
-      gap: 12px !important;
+      justify-content: center !important;
+      gap: 18px !important;
       min-width: 0 !important;
     }
     .mobile-player-landscape-meta {
@@ -2905,51 +2898,42 @@ input[type=range]::-webkit-slider-thumb:hover { background: var(--gold); }
       margin-top: 4px !important;
     }
     .mobile-player-main-controls {
-      order: 3 !important;
+      order: 2 !important;
       justify-content: flex-start !important;
-      gap: 24px !important;
+      gap: 32px !important;
       padding: 0 !important;
     }
     .mobile-player-center-controls {
-      gap: 18px !important;
+      gap: 22px !important;
     }
     .mobile-play-btn {
-      width: 56px !important;
-      height: 56px !important;
+      width: 62px !important;
+      height: 62px !important;
     }
     .mobile-play-btn svg {
-      width: 28px !important;
-      height: 28px !important;
+      width: 32px !important;
+      height: 32px !important;
     }
     .mobile-ctrl-btn.large svg {
-      width: 26px !important;
-      height: 26px !important;
+      width: 30px !important;
+      height: 30px !important;
     }
     .mobile-player-landscape-utility {
       display: flex !important;
-      order: 4 !important;
-      margin-top: 2px !important;
-      justify-content: flex-end !important;
-    }
-    .mobile-player-volume-strip {
-      display: none !important;
-    }
-    .mobile-player-progress-container {
-      display: block !important;
-      order: 2 !important;
-      margin-top: 0 !important;
-      margin-bottom: 2px !important;
-      width: 100% !important;
-      flex-shrink: 0 !important;
+      order: 3 !important;
     }
     .mobile-player-secondary-controls {
       display: none !important;
+    }
+    .mobile-player-progress-container {
+      order: 4 !important;
+      margin-top: auto !important;
     }
     .mobile-progress-bar {
       height: 14px !important;
     }
     .mobile-progress-track {
-      height: 3px !important;
+      height: 2px !important;
       background: rgba(230,195,100,0.1) !important;
     }
     .mobile-progress-fill {
@@ -2957,91 +2941,8 @@ input[type=range]::-webkit-slider-thumb:hover { background: var(--gold); }
       box-shadow: 0 0 8px rgba(230,195,100,0.55) !important;
     }
     .mobile-progress-time {
-      display: flex !important;
-      margin-top: 4px !important;
+      margin-top: 3px !important;
       font-size: 10px !important;
-    }
-    .mobile-vu-overlay {
-      justify-content: flex-start !important;
-      gap: 12px !important;
-      padding: 58px 12px 14px !important;
-      overflow: hidden !important;
-    }
-    .mobile-vu-container {
-      gap: 14px !important;
-      margin-top: 2px !important;
-    }
-    .mobile-vu-meter {
-      width: min(42vw, 220px) !important;
-      height: min(28vh, 118px) !important;
-    }
-    .mobile-vu-scale {
-      padding-bottom: 34px !important;
-    }
-    .mobile-vu-arc {
-      top: 26px !important;
-      width: min(34vw, 170px) !important;
-      height: min(34vw, 170px) !important;
-    }
-    .mobile-vu-markings {
-      top: 12px !important;
-      width: min(31vw, 156px) !important;
-      font-size: 9px !important;
-      letter-spacing: 0.06em !important;
-    }
-    .mobile-vu-label {
-      bottom: 14px !important;
-    }
-    .mobile-vu-channel {
-      font-size: 9px !important;
-    }
-    .mobile-vu-track-info #mobile-vu-track-title {
-      max-width: 88vw !important;
-      font-size: 16px !important;
-      white-space: nowrap !important;
-      overflow: hidden !important;
-      text-overflow: ellipsis !important;
-    }
-    .mobile-vu-track-info #mobile-vu-track-artist {
-      max-width: 88vw !important;
-      white-space: nowrap !important;
-      overflow: hidden !important;
-      text-overflow: ellipsis !important;
-    }
-    .mobile-vu-quality-pill {
-      padding: 5px 10px !important;
-      gap: 5px !important;
-    }
-    .mobile-vu-quality-pill span {
-      font-size: 9px !important;
-    }
-    .mobile-vu-controls {
-      gap: 12px !important;
-      max-width: min(82vw, 460px) !important;
-      margin-top: 0 !important;
-    }
-    .mobile-vu-progress-row {
-      padding: 0 14px !important;
-      gap: 10px !important;
-    }
-    .mobile-vu-btns {
-      gap: 28px !important;
-    }
-    .mobile-vu-btn-play {
-      width: 52px !important;
-      height: 52px !important;
-    }
-    .mobile-vu-btn-play svg {
-      width: 24px !important;
-      height: 24px !important;
-    }
-    .mobile-vu-style-toggle {
-      top: 10px !important;
-      left: 10px !important;
-    }
-    .mobile-vu-close {
-      top: 10px !important;
-      right: 10px !important;
     }
 
     /* 4. Album / Artist Detail – Two-Column Layout */
@@ -3078,8 +2979,7 @@ input[type=range]::-webkit-slider-thumb:hover { background: var(--gold); }
     .album-hero-title { font-size: 18px !important; margin-bottom: 4px !important; line-height: 1.2 !important; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .album-hero-artist { font-size: 13px !important; margin-bottom: 4px !important; }
     .view-home .hires-badge,
-    .view-albums .hires-badge,
-    .discover-section .hires-badge { height: 14px !important; }
+    .view-albums .hires-badge { height: 14px !important; }
     .hires-badge-detail { height: 24px !important; }
     .album-meta-row { margin-bottom: 6px !important; gap: 10px !important; flex-wrap: wrap !important; justify-content: flex-start !important; }
     .album-actions { gap: 6px !important; justify-content: flex-start !important; }
@@ -3183,192 +3083,6 @@ input[type=range]::-webkit-slider-thumb:hover { background: var(--gold); }
     }
   }
 
-  @media (orientation: landscape) and (max-height: 430px) {
-    .mobile-player-header {
-      padding: calc(env(safe-area-inset-top, 0px) + 8px) 14px 4px !important;
-      gap: 10px !important;
-      align-items: flex-start !important;
-    }
-    .mobile-player-title {
-      font-size: 15px !important;
-      line-height: 1.1 !important;
-    }
-    .mobile-player-header-actions {
-      gap: 6px !important;
-      flex-wrap: wrap !important;
-      justify-content: flex-end !important;
-      max-width: 56vw !important;
-    }
-    .mobile-player-pill {
-      min-height: 28px !important;
-      padding: 4px 8px !important;
-    }
-    .mobile-player-pill-label {
-      font-size: 8px !important;
-    }
-    .mobile-player-icon-pill {
-      width: 30px !important;
-      height: 30px !important;
-    }
-    .mobile-player-main {
-      gap: 14px !important;
-      padding: 2px 14px 10px !important;
-    }
-    .mobile-player-art-section {
-      width: 34% !important;
-      gap: 10px !important;
-    }
-    .mobile-player-art-wrapper {
-      width: min(26vw, 176px) !important;
-      max-width: 176px !important;
-    }
-    .mobile-player-controls-section {
-      width: 66% !important;
-      gap: 8px !important;
-    }
-    .mobile-player-landscape-title {
-      font-size: clamp(28px, 4.2vw, 40px) !important;
-      line-height: 0.96 !important;
-      margin-bottom: 10px !important;
-      display: -webkit-box !important;
-      -webkit-box-orient: vertical !important;
-      -webkit-line-clamp: 2 !important;
-      overflow: hidden !important;
-      text-overflow: ellipsis !important;
-    }
-    .mobile-player-landscape-artist {
-      font-size: 14px !important;
-      white-space: nowrap !important;
-      overflow: hidden !important;
-      text-overflow: ellipsis !important;
-    }
-    .mobile-player-landscape-quality {
-      margin-top: 8px !important;
-      min-height: 18px !important;
-    }
-    .mobile-player-progress-container {
-      margin-bottom: 4px !important;
-    }
-    .mobile-progress-bar {
-      height: 16px !important;
-    }
-    .mobile-progress-time {
-      margin-top: 2px !important;
-      font-size: 9px !important;
-    }
-    .mobile-player-main-controls {
-      gap: 18px !important;
-    }
-    .mobile-player-center-controls {
-      gap: 14px !important;
-    }
-    .mobile-play-btn {
-      width: 50px !important;
-      height: 50px !important;
-    }
-    .mobile-play-btn svg {
-      width: 24px !important;
-      height: 24px !important;
-    }
-    .mobile-ctrl-btn.large svg {
-      width: 22px !important;
-      height: 22px !important;
-    }
-    .mobile-player-landscape-utility {
-      gap: 10px !important;
-      margin-top: 0 !important;
-    }
-    .mobile-player-volume-strip {
-      gap: 6px !important;
-      max-width: 180px !important;
-    }
-    .mobile-player-volume-strip svg {
-      width: 12px !important;
-      height: 12px !important;
-    }
-    .mobile-player-landscape-actions {
-      gap: 8px !important;
-    }
-    .mobile-utility-btn {
-      width: 34px !important;
-      height: 34px !important;
-    }
-    .mobile-utility-btn svg {
-      width: 16px !important;
-      height: 16px !important;
-    }
-    .mobile-vu-overlay {
-      gap: 10px !important;
-      padding: calc(env(safe-area-inset-top, 0px) + 52px) 10px 10px !important;
-    }
-    .mobile-vu-container {
-      gap: 10px !important;
-      margin-top: 0 !important;
-    }
-    .mobile-vu-meter {
-      width: min(39vw, 196px) !important;
-      height: min(24vh, 106px) !important;
-    }
-    .mobile-vu-arc {
-      width: min(31vw, 152px) !important;
-      height: min(31vw, 152px) !important;
-      top: 24px !important;
-    }
-    .mobile-vu-markings {
-      width: min(29vw, 144px) !important;
-      top: 10px !important;
-      font-size: 8px !important;
-    }
-    .mobile-vu-track-info #mobile-vu-track-title {
-      font-size: 14px !important;
-      max-width: 86vw !important;
-    }
-    .mobile-vu-track-info #mobile-vu-track-artist {
-      max-width: 86vw !important;
-      font-size: 9px !important;
-    }
-    .mobile-vu-quality-pill {
-      padding: 4px 9px !important;
-      gap: 4px !important;
-    }
-    .mobile-vu-quality-pill span {
-      font-size: 8px !important;
-    }
-    .mobile-vu-controls {
-      gap: 8px !important;
-      max-width: min(78vw, 400px) !important;
-    }
-    .mobile-vu-progress-row {
-      padding: 0 10px !important;
-      gap: 8px !important;
-    }
-    .mobile-vu-btns {
-      gap: 20px !important;
-    }
-    .mobile-vu-btn {
-      padding: 4px !important;
-    }
-    .mobile-vu-style-toggle {
-      top: calc(env(safe-area-inset-top, 0px) + 8px) !important;
-      left: 12px !important;
-      gap: 6px !important;
-    }
-    .mobile-vu-style-btn {
-      padding: 5px 9px !important;
-      font-size: 8px !important;
-    }
-    .mobile-vu-close {
-      top: calc(env(safe-area-inset-top, 0px) + 8px) !important;
-      right: 12px !important;
-      width: 32px !important;
-      height: 32px !important;
-    }
-    .mobile-vu-close svg {
-      width: 16px !important;
-      height: 16px !important;
-    }
-  }
-
   /* ─── Mobile Fullscreen Player ─── */
   .mobile-player-overlay {
     position: fixed;
@@ -3385,11 +3099,9 @@ input[type=range]::-webkit-slider-thumb:hover { background: var(--gold); }
     transition: transform 0.4s cubic-bezier(0.2, 0.8, 0.2, 1);
     will-change: transform;
     overflow: hidden;
-    pointer-events: none;
   }
   .mobile-player-overlay.open {
     transform: translateY(0);
-    pointer-events: auto;
   }
   .mobile-player-header {
     display: flex;
@@ -5263,6 +4975,13 @@ function fmt(s) {
 const WORK_ID_SEP = '__VELVET_WORK__';
 const CREDIT_ID_SEP = '__VELVET_CREDIT__';
 
+function escHtml(str) {
+  if (!str) return '';
+  const d = document.createElement('div');
+  d.textContent = String(str);
+  return d.innerHTML;
+}
+
 function fmtSR(hz) {
   if (!hz) return '';
   if (hz >= 1000000) return (hz/1000000).toFixed(3).replace(/\.?0+$/, '') + 'MHz';
@@ -5515,7 +5234,7 @@ function showToast(msg, dur = 2200) {
 
 // ─── Chinese Simplified/Traditional Conversion ──────────────────────────────────
 const T2S_MAP = {
-  '傑':'杰','倫':'伦','臺':'台','裡':'里','發':'发','為':'为','與':'与','陳':'陈',
+  '傑':'杰','倫':'伦','臺':'台','裡':'里','發':'发','為':'为','與':'与',
   '無':'无','來':'来','時':'时','過':'过','說':'说','個':'个','學':'学',
   '國':'国','們':'们','對':'对','會':'会','這':'这','麼':'么','經':'经',
   '開':'开','關':'关','現':'现','長':'长','東':'东','車':'车','麵':'面',
@@ -5927,7 +5646,6 @@ let browserRecoveryAttempts = 0;
 let browserRecoveryWindowStartedAt = 0;
 let browserRecoveryLastAt = 0;
 let browserExpectedPauseUntil = 0;
-let browserInterrupted = false; // true = 当前暂停是系统中断（通话/视频通话/Siri），不是用户主动暂停
 let browserWatchdogId = null;
 let browserWatchdogLastTime = 0;
 let browserWatchdogLastProgressAt = Date.now();
@@ -6082,12 +5800,7 @@ function startBrowserPlaybackWatchdog() {
     // If readyState >= 2 (HAVE_CURRENT_DATA), the audio element has data and
     // the browser is just temporarily not playing it — don't spam recovery.
     if (audio.paused) {
-      // 如果 browserInterrupted=true，说明是通话等系统中断，playing 事件可能没有及时触发。
-      // 兜底：强制尝试恢复播放（通话结束但 playing 事件漏发时）。
-      if (browserInterrupted) {
-        browserInterrupted = false;
-        audio.play().catch(() => {});
-      } else if (!isExpectedBrowserPause() && audio.readyState < 2) {
+      if (!isExpectedBrowserPause() && audio.readyState < 2) {
         scheduleBrowserPlaybackRecovery('unexpected-pause', { delayMs: browserPlaybackRecoveryConfig.pauseDelayMs });
       }
       noteBrowserPlaybackProgress();
@@ -6153,15 +5866,15 @@ function initAudioAnalyser() {
     // each routed through its own AnalyserNode so left = left channel, right = right channel.
     audioAnalyser = audioContext.createAnalyser();
     audioAnalyser.fftSize = 256;
-    audioAnalyser.smoothingTimeConstant = 0.2;
+    audioAnalyser.smoothingTimeConstant = 0.6;
 
     audioAnalyserL = audioContext.createAnalyser();
     audioAnalyserL.fftSize = 256;
-    audioAnalyserL.smoothingTimeConstant = 0.2;
+    audioAnalyserL.smoothingTimeConstant = 0.5;
 
     audioAnalyserR = audioContext.createAnalyser();
     audioAnalyserR.fftSize = 256;
-    audioAnalyserR.smoothingTimeConstant = 0.2;
+    audioAnalyserR.smoothingTimeConstant = 0.5;
 
     audioDataArray = new Uint8Array(audioAnalyser.frequencyBinCount);
     audioDataArrayL = new Uint8Array(audioAnalyserL.frequencyBinCount);
@@ -6185,14 +5898,6 @@ function initAudioAnalyser() {
     channelSplitter.connect(audioAnalyserR, 1); // right channel
   } catch (e) {
     console.warn('[VU] Audio analyser init failed:', e.message);
-    // Disconnect any nodes that were created before the error.
-    // Some may be null (not yet created), but disconnect() on a null ref is a no-op
-    // and disconnecting an already-disconnected node is also safe.
-    try { audioSource?.disconnect(); } catch {}
-    try { channelSplitter?.disconnect(); } catch {}
-    try { audioAnalyser?.disconnect(); } catch {}
-    try { audioAnalyserL?.disconnect(); } catch {}
-    try { audioAnalyserR?.disconnect(); } catch {}
     try { audioContext?.close(); } catch {}
     audioContext = null;
     audioAnalyser = null;
@@ -6249,26 +5954,29 @@ function syncVUAudioToPlayback() {
 
 function getAudioLevel() {
   // Dual-channel analysers for true left/right stereo.
-  // Uses RMS-style averaging over the full spectrum (not just low bins) for a
-  // more accurate overall loudness reading that is less biased toward bass.
   if (!audioAnalyserL || !audioAnalyserR || !audioDataArrayL || !audioDataArrayR) {
     return { left: 0, right: 0 };
   }
   audioAnalyserL.getByteFrequencyData(audioDataArrayL);
   audioAnalyserR.getByteFrequencyData(audioDataArrayR);
 
+  // Left channel: low-frequency range (bass/mids of left channel).
   const binsL = audioAnalyserL.frequencyBinCount;
-  const binsR = audioAnalyserR.frequencyBinCount;
-
-  // Full-spectrum RMS: sum all bins, divide by count — reflects total audio energy.
+  const vuRangeL = Math.floor(binsL * 0.4);
   let leftSum = 0;
-  let rightSum = 0;
-  for (let i = 0; i < binsL; i++) {
+  for (let i = 0; i < vuRangeL; i++) {
     leftSum += audioDataArrayL[i];
+  }
+  const leftLevel = leftSum / vuRangeL / 255;
+
+  // Right channel: same range from right channel.
+  const binsR = audioAnalyserR.frequencyBinCount;
+  const vuRangeR = Math.floor(binsR * 0.4);
+  let rightSum = 0;
+  for (let i = 0; i < vuRangeR; i++) {
     rightSum += audioDataArrayR[i];
   }
-  const leftLevel = leftSum / binsL / 255;
-  const rightLevel = rightSum / binsR / 255;
+  const rightLevel = rightSum / vuRangeR / 255;
 
   return { left: leftLevel, right: rightLevel };
 }
@@ -6369,6 +6077,7 @@ async function playTrack(track, queue, idx) {
   const prevTrackId = state.currentTrack?.id;
   const isNewTrack = !prevTrackId || prevTrackId !== track.id;
   if (isNewTrack) {
+    state.mobilePlayerDismissed = false;  // User picked a new track — clear dismissed flag
     updatePlayerUI(track);  // Immediate UI update before any async work
   }
 
@@ -6434,7 +6143,6 @@ async function playTrack(track, queue, idx) {
       updatePlayBtnUI();
       updateMediaSession(track);
       UI['progress-fill'].style.width = '0%';
-      UI['progress-fill'].style.setProperty('--prog', '0%');
       UI['time-current'].textContent = '0:00';
       UI['time-total'].textContent = fmt(track.duration || 0);
     } else {
@@ -6484,7 +6192,6 @@ function startCastPolling() {
       if (status.duration > 0) {
         const pct = (status.position / status.duration) * 100;
         UI['progress-fill'].style.width = pct + '%';
-        UI['progress-fill'].style.setProperty('--prog', pct + '%');
         UI['time-current'].textContent  = fmt(status.position);
         UI['time-total'].textContent    = fmt(status.duration);
       }
@@ -6962,65 +6669,33 @@ function scrollToTop() {
   window.scrollTo({ top: 0, behavior: 'instant' });
 }
 
-// Throttle: caps timeupdate DOM work to ~15fps so progress bar updates don't
-// cause continuous layout recalculation on mobile. Always fires the LAST pending
-// update so progress bar is always accurate on screen.
-let _timeupdateLast = 0;
-let _timeupdateScheduled = false;
-let _timeupdatePending = false;
-
-function flushTimeupdate() {
-  _timeupdateScheduled = false;
-  if (!_timeupdatePending) return;
-  _timeupdatePending = false;
-
-  if (isCastZone() || isNativeZone()) return;
+audio.addEventListener('timeupdate', () => {
+  if (isCastZone() || isNativeZone()) return; // Ignore local time outside browser output
   noteBrowserPlaybackProgress();
+  const Math_max = Math.max;
   const pct = audio.duration ? (audio.currentTime / audio.duration) * 100 : 0;
   UI['progress-fill'].style.width = pct + '%';
-  UI['progress-fill'].style.setProperty('--prog', pct + '%');
   UI['mobile-progress-fill'].style.width = pct + '%';
+  
   const curr = fmt(audio.currentTime);
   const tot = fmt(audio.duration);
   UI['time-current'].textContent = curr;
   UI['time-total'].textContent = tot;
   UI['mobile-time-current'].textContent = curr;
   UI['mobile-time-total'].textContent = tot;
+
+  // VU Overlay progress
   const vuFill = UI['mobile-vu-progress-fill'];
   if (vuFill) vuFill.style.width = pct + '%';
   const vuTimeCurr = UI['mobile-vu-time-current'];
   const vuTimeTot = UI['mobile-vu-time-total'];
   if (vuTimeCurr) vuTimeCurr.textContent = curr;
   if (vuTimeTot) vuTimeTot.textContent = tot;
-}
-
-audio.addEventListener('timeupdate', () => {
-  _timeupdatePending = true;
-  if (_timeupdateScheduled) return;
-  const now = performance.now();
-  const elapsed = now - _timeupdateLast;
-  if (elapsed >= 66) {
-    _timeupdateLast = now;
-    _timeupdateScheduled = true;
-    requestAnimationFrame(flushTimeupdate);
-  } else if (!_timeupdateScheduled) {
-    _timeupdateScheduled = true;
-    setTimeout(() => {
-      _timeupdateLast = performance.now();
-      flushTimeupdate();
-    }, 66 - elapsed);
-  }
 });
 
 audio.addEventListener('playing', () => {
   if (!isBrowserZone()) return;
   state.playing = true;
-  // 如果是从系统中断（通话/视频通话）恢复，playing 事件说明音频已重新开始。
-  // 清除中断标记，并同步 watchdog 时间戳防止误判为 stuck。
-  if (browserInterrupted) {
-    browserInterrupted = false;
-    noteBrowserPlaybackProgress();
-  }
   resetBrowserPlaybackRecoveryWindow();
   updatePlayBtnUI();
 });
@@ -7043,18 +6718,7 @@ audio.addEventListener('emptied', () => {
 });
 
 audio.addEventListener('pause', () => {
-  if (!canRecoverBrowserPlayback()) return;
-
-  // 如果音频正在播放但突然暂停，且不是用户主动暂停（不在 expectedPause 窗口内），
-  // 说明是系统中断（手机来电、视频通话、Siri 等）。
-  // 此时不要触发 recovery——通话结束后系统会自动恢复 audio.play()。
-  // 我们只标记中断状态，等 playing 事件或 watchdog 来处理。
-  if (state.playing && !isExpectedBrowserPause()) {
-    browserInterrupted = true;
-    return;
-  }
-
-  // 用户主动暂停 或 在 expectedPause 窗口内（如切歌场景）
+  if (!canRecoverBrowserPlayback() || isExpectedBrowserPause()) return;
   scheduleBrowserPlaybackRecovery('pause', { delayMs: browserPlaybackRecoveryConfig.pauseDelayMs });
 });
 
@@ -7107,11 +6771,6 @@ document.addEventListener('visibilitychange', () => {
     } else if (!audio.paused) {
       noteBrowserPlaybackProgress();
     }
-  } else {
-    // Page became visible again — clear any stale interruption flag.
-    // This covers cases where browserInterrupted was set but playing event
-    // was suppressed and never got a chance to clear it.
-    browserInterrupted = false;
   }
 });
 
@@ -7356,10 +7015,9 @@ function startVUAnimation() {
   // Initialize audio analyser on first user interaction
   initAudioAnalyser();
 
+  let lastTime = 0;
   let leftAngle = -48;
   let rightAngle = -48;
-  let peakLeftAngle = -48;  // Peak needle — moves fast up, decays slowly
-  let peakRightAngle = -48;
 
   function animate(time) {
     if (!vuMeterOpen) {
@@ -7367,45 +7025,31 @@ function startVUAnimation() {
       return;
     }
 
+    const delta = lastTime ? (time - lastTime) / 1000 : 0.05;
+    lastTime = time;
+
     // Keep the dedicated vuAudio in sync with main audio playback
     syncVUAudioToPlayback();
 
     // Only animate when music is playing, otherwise return to rest position
     if (state.playing) {
+      // Get real audio levels from analyser
       const levels = getAudioLevel();
 
       // Map audio level to needle angle: -48deg (rest) to +12deg (max)
       const leftTarget = -48 + levels.left * 60;
       const rightTarget = -48 + levels.right * 60;
 
-      // Peak hold: needle can rise instantly with audio but decays slowly
-      // when the signal drops — mimics real analog VU meter behavior.
-      if (leftTarget > peakLeftAngle) {
-        peakLeftAngle = leftTarget; // Peak rises instantly to new level
-      } else {
-        peakLeftAngle += (leftTarget - peakLeftAngle) * 0.04; // Slow decay toward current level
-      }
-      if (rightTarget > peakRightAngle) {
-        peakRightAngle = rightTarget;
-      } else {
-        peakRightAngle += (rightTarget - peakRightAngle) * 0.04;
-      }
-
-      // Visible needle: fixed lerp coefficient (frame-rate independent).
-      // 0.15 means ~15% of the gap is closed each frame at 60fps.
-      leftAngle += (peakLeftAngle - leftAngle) * 0.15;
-      rightAngle += (peakRightAngle - rightAngle) * 0.15;
+      // Smooth interpolation with slightly slower response for VU feel
+      leftAngle += (leftTarget - leftAngle) * Math.min(1, delta * 6);
+      rightAngle += (rightTarget - rightAngle) * Math.min(1, delta * 6);
     } else {
       // Return to rest position when not playing
-      leftAngle += (-48 - leftAngle) * 0.1;
-      rightAngle += (-48 - rightAngle) * 0.1;
-      peakLeftAngle += (-48 - peakLeftAngle) * 0.06;
-      peakRightAngle += (-48 - peakRightAngle) * 0.06;
+      leftAngle += (-48 - leftAngle) * Math.min(1, delta * 3);
+      rightAngle += (-48 - rightAngle) * Math.min(1, delta * 3);
     }
 
-    // Clamp angles (peak and needle)
-    peakLeftAngle = Math.max(-48, Math.min(12, peakLeftAngle));
-    peakRightAngle = Math.max(-48, Math.min(12, peakRightAngle));
+    // Clamp angles
     leftAngle = Math.max(-48, Math.min(12, leftAngle));
     rightAngle = Math.max(-48, Math.min(12, rightAngle));
 
@@ -7503,9 +7147,6 @@ function toggleMobilePlayer(show, { source = 'manual' } = {}) {
   const overlay = UI['mobile-fullscreen-player'];
   if (!overlay) return;
   if (show) {
-    if (source === 'manual') {
-      state.mobilePlayerDismissed = false;
-    }
     overlay.classList.add('open');
     return;
   }
@@ -7648,19 +7289,6 @@ if ('mediaSession' in navigator) {
 
 startBrowserPlaybackWatchdog();
 
-// ─── Page lifecycle cleanup ──────────────────────────────────────────────────
-// Release AudioContext when the page is unloaded or hidden.
-// Without this, the AudioContext persists in the browser's resource table
-// and counts toward the per-page limit (~6 contexts). Repeatedly opening
-// the VU overlay without proper cleanup would eventually exhaust the budget
-// and crash audio on subsequent visits.
-window.addEventListener('beforeunload', () => {
-  cleanupSuspendedAudioContextIfNeeded();
-});
-window.addEventListener('pagehide', () => {
-  cleanupSuspendedAudioContextIfNeeded();
-});
-
 // ─── Navigation ───────────────────────────────────────────────────────────────
 
 // Page cache for faster navigation
@@ -7706,41 +7334,10 @@ async function navigate(view, params = {}, push = true) {
   }
 
   // Close overlays
-  UI['sidebar-overlay']?.classList.remove('open', 'active');
+  UI['sidebar-overlay']?.classList.remove('active');
   UI['sidebar']?.classList.remove('open');
 
   await render();
-}
-
-function routeHash(view, params = {}) {
-  const idPart = params.id ? '/' + encodeURIComponent(params.id) : '';
-  return '#' + view + idPart;
-}
-
-function sameRoute(viewA, paramsA = {}, viewB, paramsB = {}) {
-  return viewA === viewB && JSON.stringify(paramsA || {}) === JSON.stringify(paramsB || {});
-}
-
-function handleHistoryBack(fallbackView = 'home', fallbackParams = {}) {
-  const currentView = state.view;
-  const currentParams = state.viewParams || {};
-  let settled = false;
-
-  const markSettled = () => {
-    settled = true;
-  };
-
-  window.addEventListener('popstate', markSettled, { once: true });
-  history.back();
-
-  window.setTimeout(() => {
-    if (settled) return;
-    if (!sameRoute(state.view, state.viewParams, currentView, currentParams)) return;
-
-    const nextHash = routeHash(fallbackView, fallbackParams);
-    history.replaceState({ view: fallbackView, params: fallbackParams }, '', nextHash);
-    navigate(fallbackView, fallbackParams, false);
-  }, 220);
 }
 
 window.addEventListener('popstate', (event) => {
@@ -7838,8 +7435,7 @@ async function render() {
     'album', 'artist', 'playlist', 'work', 'credit',
     'home', 'albums', 'discover',
     'artists', 'tracks', 'genres', 'playlists',
-    'composers', 'works', 'credits', 'history', 'most-played',
-    'genre', 'search'
+    'composers', 'works', 'credits', 'history', 'most-played'
   ]);
   const cached = NO_CACHE_VIEWS.has(state.view) ? null : _getCachedPage(state.view);
   if (cached) {
@@ -8215,7 +7811,7 @@ async function renderAlbums(vc) {
     } else {
       backToTopBtn.style.display = 'none';
     }
-  }, { passive: true });
+  });
 
   // Back to top button click
   backToTopBtn.addEventListener('click', () => {
@@ -8594,7 +8190,7 @@ async function renderArtists(vc) {
     } else {
       backToTopBtn.style.display = 'none';
     }
-  }, { passive: true });
+  });
 
   // Back to top button click
   backToTopBtn.addEventListener('click', () => {
@@ -8780,7 +8376,7 @@ async function renderComposer(vc, { id }) {
 
   vc.innerHTML = `
     <div class="topbar">
-      <button class="back-btn" onclick="handleHistoryBack('composers')">
+      <button class="back-btn" onclick="history.back()">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
           <polyline points="15 18 9 12 15 6"/>
         </svg>
@@ -8945,7 +8541,7 @@ async function renderWork(vc, { id, role = '', credit = '', version = '' }) {
 
   vc.innerHTML = `
     <div class="topbar">
-      <button class="back-btn" onclick="handleHistoryBack('works')">
+      <button class="back-btn" onclick="history.back()">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
           <polyline points="15 18 9 12 15 6"/>
         </svg>
@@ -9206,7 +8802,7 @@ async function renderCreditEntity(vc, { id }) {
 
   vc.innerHTML = `
     <div class="topbar">
-      <button class="back-btn" onclick="handleHistoryBack('credits')">
+      <button class="back-btn" onclick="history.back()">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
           <polyline points="15 18 9 12 15 6"/>
         </svg>
@@ -9470,7 +9066,7 @@ async function renderGenre(vc, { id }) {
 
   vc.innerHTML = `
     <div class="topbar">
-      <button class="back-btn" onclick="handleHistoryBack('genres')">
+      <button class="back-btn" onclick="history.back()">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
           <polyline points="15 18 9 12 15 6"/>
         </svg>
@@ -9560,7 +9156,7 @@ async function renderPlaylist(vc, { id }) {
 
   vc.innerHTML = `
     <div class="topbar">
-      <button class="back-btn" onclick="handleHistoryBack('playlists')">
+      <button class="back-btn" onclick="history.back()">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
           <polyline points="15 18 9 12 15 6"/>
         </svg>
@@ -9793,7 +9389,7 @@ async function renderArtist(vc, { id }) {
 
   vc.innerHTML = `
     <div class="topbar">
-      <button class="back-btn" onclick="handleHistoryBack('artists')">
+      <button class="back-btn" onclick="history.back()">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
           <polyline points="15 18 9 12 15 6"/>
         </svg>
@@ -9881,7 +9477,7 @@ async function renderAlbum(vc, { id }) {
 
   vc.innerHTML = `
     <div class="topbar">
-      <button class="back-btn" onclick="handleHistoryBack('albums')">
+      <button class="back-btn" onclick="history.back()">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
           <polyline points="15 18 9 12 15 6"/>
         </svg>
@@ -10312,17 +9908,20 @@ async function renderSearch(vc, { q }) {
     const trackIndex = i;
     el.addEventListener('click', async () => {
       if (t.album_id) {
-        await navigate('album', { id: t.album_id });
-        try {
-          const albumData = await api(`/albums/${t.album_id}`);
-          const albumTracks = albumData.tracks || [];
-          const trackIdx = albumTracks.findIndex(tr => tr.id === t.id);
-          if (trackIdx !== -1) {
-            playTrack(albumTracks[trackIdx], albumTracks, trackIdx);
-          }
-        } catch (e) {
-          console.warn('Failed to play track from album:', e);
-        }
+        navigate('album', { id: t.album_id }, () => {
+          setTimeout(async () => {
+            try {
+              const albumData = await api(`/albums/${t.album_id}`);
+              const albumTracks = albumData.tracks || [];
+              const trackIdx = albumTracks.findIndex(tr => tr.id === t.id);
+              if (trackIdx !== -1) {
+                playTrack(albumTracks[trackIdx], albumTracks, trackIdx);
+              }
+            } catch (e) {
+              console.warn('Failed to play track from album:', e);
+            }
+          }, 100);
+        });
       } else {
         playTrack(t, tracks, trackIndex);
       }
@@ -11134,8 +10733,7 @@ function exitSearch() {
   }
   const fallbackView = state.prevView || 'home';
   const fallbackParams = state.prevParams || {};
-  history.replaceState({ view: fallbackView, params: fallbackParams }, '', routeHash(fallbackView, fallbackParams));
-  navigate(fallbackView, fallbackParams, false);
+  navigate(fallbackView, fallbackParams);
 }
 function setupSearch() {
   const input = $('search-input');
@@ -11545,6 +11143,15 @@ async function setAlbumCover(albumId, url) {
   }
 }
 
+// Browser history
+window.addEventListener('popstate', async (e) => {
+  if (e.state && e.state.view) {
+    await navigate(e.state.view, e.state.params, false);
+  } else {
+    await navigate('home', {}, false);
+  }
+});
+
 // ─── Boot ─────────────────────────────────────────────────────────────────────
 
 // ─── Queue Panel ──────────────────────────────────────────────────────────────
@@ -11579,7 +11186,7 @@ function renderQueue() {
 
   // Scroll to current
   const activeEl = list.querySelector('.active');
-  if (activeEl) activeEl.scrollIntoView({ block: 'center', behavior: 'instant' });
+  if (activeEl) activeEl.scrollIntoView({ block: 'center', behavior: 'smooth' });
 }
 
 $('btn-queue-toggle').addEventListener('click', () => {
@@ -11596,17 +11203,15 @@ $('queue-close-btn').addEventListener('click', () => {
 
 // ─── Lyrics ───────────────────────────────────────────────────────────────────
 
-let _lyricsData     = null;
-let _lyricsTrackId  = null;
-let _lyricsSynced   = [];
-let _lyricsActiveIdx = -1; // Tracks the currently highlighted line index — diff update
+let _lyricsData    = null;
+let _lyricsTrackId = null;
+let _lyricsSynced  = [];
 
 async function loadLyrics(track) {
   if (!track || track.id === _lyricsTrackId) return;
-  _lyricsTrackId  = track.id;
-  _lyricsData     = null;
-  _lyricsSynced   = [];
-  _lyricsActiveIdx = -1; // Reset on new track so first highlight starts fresh
+  _lyricsTrackId = track.id;
+  _lyricsData    = null;
+  _lyricsSynced  = [];
 
   const body = $('lyrics-body');
   $('lyrics-track-name').textContent = `${track.title} — ${track.artist_name || ''}`;
@@ -11658,35 +11263,15 @@ function renderSyncedLyrics() {
 
 function updateLyricsHighlight(currentTime) {
   if (!_lyricsSynced.length) return;
-
-  // Binary search for the active line — O(log n) vs O(n) full scan.
-  // Each timeupdate fires ~4-8x/s so avoiding the full scan matters.
-  let lo = 0, hi = _lyricsSynced.length - 1, activeIdx = 0;
-  while (lo <= hi) {
-    const mid = (lo + hi) >> 1;
-    if (_lyricsSynced[mid].time <= currentTime + 0.1) {
-      activeIdx = mid;
-      lo = mid + 1;
-    } else {
-      hi = mid - 1;
-    }
+  let activeIdx = 0;
+  for (let i = 0; i < _lyricsSynced.length; i++) {
+    if (_lyricsSynced[i].time <= currentTime + 0.1) activeIdx = i;
   }
-
-  if (activeIdx === _lyricsActiveIdx) return; // Nothing changed — exit immediately
-
-  // Remove highlight from old row
-  if (_lyricsActiveIdx >= 0) {
-    const prev = document.getElementById(`lyric-${_lyricsActiveIdx}`);
-    if (prev) prev.classList.remove('active');
-  }
-
-  // Add highlight to new row + scroll into view
-  _lyricsActiveIdx = activeIdx;
-  const curr = document.getElementById(`lyric-${activeIdx}`);
-  if (curr) {
-    curr.classList.add('active');
-    curr.scrollIntoView({ block: 'center', behavior: 'instant' });
-  }
+  $$('.lyrics-line').forEach((el, i) => {
+    const isActive = i === activeIdx;
+    el.classList.toggle('active', isActive);
+    if (isActive) el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  });
 }
 
 audio.addEventListener('timeupdate', () => {
