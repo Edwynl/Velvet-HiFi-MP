@@ -26,6 +26,8 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs, quote
 import logging
 
+import env_loader  # noqa: F401 - load .env for direct module use
+
 log = logging.getLogger("velvet.upnp")
 
 # ─── Config ────────────────────────────────────────────────────────────────────
@@ -36,9 +38,9 @@ UPNP_PORT   = 8766           # Separate port for UPnP XML/control
 MAIN_PORT   = 8765           # MusicIQ streaming server port
 
 # Configurable device identification (can be set via environment variables)
-DEVICE_UUID = os.environ.get("UPNP_DEVICE_UUID", "uuid:velvet-00000000-0000-0000-0000-000000000001")
-DEVICE_NAME = os.environ.get("UPNP_DEVICE_NAME", "VELVET")
-DB_PATH     = Path(os.environ.get("DATA_DIR", "velvet_data")) / "library.db"
+DEVICE_UUID = os.environ.get("VELVET_UPNP_DEVICE_UUID") or os.environ.get("UPNP_DEVICE_UUID", "uuid:velvet-00000000-0000-0000-0000-000000000001")
+DEVICE_NAME = os.environ.get("VELVET_UPNP_FRIENDLY_NAME") or os.environ.get("UPNP_DEVICE_NAME", "VELVET")
+DB_PATH     = Path(os.environ.get("VELVET_DATA_DIR") or os.environ.get("DATA_DIR", "velvet_data")) / "library.db"
 
 def get_all_local_ips():
     ips = []

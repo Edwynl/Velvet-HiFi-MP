@@ -173,6 +173,7 @@ async function main() {
 
     await Promise.allSettled([firstPlay, secondPlay]);
     await waitFor(() => dom.window.document.querySelector('#player-title')?.textContent?.trim() === 'Fast Track');
+    await waitFor(() => dom.window.document.querySelector('#player-artist')?.textContent?.trim() === 'Artist Two');
 
     assert.equal(dom.window.document.querySelector('#player-title').textContent.trim(), 'Fast Track');
     assert.equal(dom.window.document.querySelector('#player-artist').textContent.trim(), 'Artist Two');

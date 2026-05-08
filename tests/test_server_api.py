@@ -210,10 +210,12 @@ class ServerApiTests(unittest.TestCase):
         body = resp.json()
         preset_keys = {profile["preset_key"] for profile in body}
         self.assertIn("flat", preset_keys)
+        self.assertIn("reference_neutral", preset_keys)
         self.assertIn("black_background", preset_keys)
         self.assertIn("vocal_forward_warm", preset_keys)
         self.assertIn("vocal_forward_cool", preset_keys)
         self.assertIn("bass_boost", preset_keys)
+        self.assertIn("sub_bass_boost", preset_keys)
         self.assertIn("pop", preset_keys)
         self.assertIn("classical", preset_keys)
 

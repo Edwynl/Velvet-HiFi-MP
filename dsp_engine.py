@@ -21,6 +21,23 @@ def _clamp(value: float, minimum: float, maximum: float) -> float:
 
 FACTORY_DSP_PRESETS = [
     {
+        "id": 20,
+        "name": "Reference Neutral",
+        "description": "A restrained balancing curve for clearer reference listening without obvious coloration.",
+        "preset_key": "reference_neutral",
+        "category": "reference",
+        "is_factory": 1,
+        "preamp_db": -2.0,
+        "filter_chain_json": _json_text([
+            {"type": "low_shelf", "freq": 90, "gain": -0.5, "q": 0.7, "enabled": True},
+            {"type": "peaking", "freq": 250, "gain": -0.7, "q": 0.9, "enabled": True},
+            {"type": "peaking", "freq": 2500, "gain": 0.5, "q": 0.9, "enabled": True},
+            {"type": "high_shelf", "freq": 10000, "gain": 0.4, "q": 0.7, "enabled": True},
+        ]),
+        "tags": _json_text(["reference", "neutral", "balanced"]),
+        "sort_order": 5,
+    },
+    {
         "id": 2,
         "name": "Black Background",
         "description": "Trims bass bloom and low-mid haze for a darker, quieter backdrop.",
@@ -86,6 +103,21 @@ FACTORY_DSP_PRESETS = [
         ]),
         "tags": _json_text(["bass", "fun", "impact"]),
         "sort_order": 40,
+    },
+    {
+        "id": 21,
+        "name": "Sub Bass Boost",
+        "description": "Lifts the deepest bass while trimming upper-bass bloom to keep the mix clean.",
+        "preset_key": "sub_bass_boost",
+        "category": "taste",
+        "is_factory": 1,
+        "preamp_db": -5.5,
+        "filter_chain_json": _json_text([
+            {"type": "low_shelf", "freq": 55, "gain": 3.2, "q": 0.7, "enabled": True},
+            {"type": "peaking", "freq": 140, "gain": -0.6, "q": 1.0, "enabled": True},
+        ]),
+        "tags": _json_text(["bass", "sub", "clean"]),
+        "sort_order": 45,
     },
     {
         "id": 6,

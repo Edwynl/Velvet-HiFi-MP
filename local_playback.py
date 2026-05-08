@@ -19,6 +19,7 @@ import threading
 from pathlib import Path
 from typing import Optional
 
+import env_loader  # noqa: F401 - load .env for direct module use
 from dsp_engine import build_dsp_filter_chain
 
 try:
@@ -57,7 +58,7 @@ UPSAMPLE_MULTIPLIERS = {
 
 def _get_library_db_path() -> Path:
     """Resolve the active library database path for this project."""
-    data_dir = os.environ.get("DATA_DIR")
+    data_dir = os.environ.get("VELVET_DATA_DIR") or os.environ.get("DATA_DIR")
     if data_dir:
         return Path(data_dir) / "library.db"
 

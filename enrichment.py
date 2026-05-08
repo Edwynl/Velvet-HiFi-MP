@@ -27,14 +27,17 @@ from typing import Optional
 
 import httpx
 
+import env_loader  # noqa: F401 - load .env for direct module use
+
 log = logging.getLogger("velvet.enrich")
 
-DB_PATH    = Path(os.environ.get("DATA_DIR", "velvet_data")) / "library.db"
-COVERS_DIR = Path(os.environ.get("DATA_DIR", "velvet_data")) / "covers"
+DATA_DIR_ENV = os.environ.get("VELVET_DATA_DIR") or os.environ.get("DATA_DIR", "velvet_data")
+DB_PATH    = Path(DATA_DIR_ENV) / "library.db"
+COVERS_DIR = Path(DATA_DIR_ENV) / "covers"
 COVERS_DIR.mkdir(parents=True, exist_ok=True)
 
 # AcoustID API key — set ACOUSTID_KEY environment variable
-ACOUSTID_KEY = os.environ.get("ACOUSTID_KEY", "")
+ACOUSTID_KEY = os.environ.get("ACOUSTID_KEY") or os.environ.get("VELVET_ACOUSTID_KEY", "")
 MB_UA = "Velvet/1.0 (velvet-personal-server)"
 
 # Discogs API (no key needed for search, but limited)
@@ -48,7 +51,7 @@ REQUEST_DELAY = 0.1  # Reduced delay between requests (was 0.5)
 # Last.fm API (requires free API key - get one at https://www.last.fm/api/account/create)
 # Get your own free key and set as environment variable LASTFM_API_KEY
 LASTFM_API = "https://ws.audioscrobbler.com/2.0/"
-LASTFM_KEY = os.environ.get("LASTFM_API_KEY", "")  # Set your own key: LASTFM_API_KEY=your_key
+LASTFM_KEY = os.environ.get("LASTFM_API_KEY") or os.environ.get("VELVET_LASTFM_API_KEY", "")  # Set your own key: LASTFM_API_KEY=your_key
 
 # ─── DB helpers ───────────────────────────────────────────────────────────────
 

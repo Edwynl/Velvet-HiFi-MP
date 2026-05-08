@@ -260,9 +260,271 @@ async function testManualPauseDoesNotAutoRecover() {
   }
 }
 
+async function testExpectedPauseDuringDspSwitchDoesNotAutoRecover() {
+  const harness = createHarness();
+  const dom = await harness.createDom();
+
+  try {
+    const audio = primeAudio(dom, { paused: false, currentTime: 64, readyState: 4 });
+    setDocumentHidden(dom, false);
+    dom.window.eval(`
+      state.outputMode = 'browser';
+      state.currentTrack = {
+        id: 7,
+        title: 'Recovery Track',
+        artist_name: 'Recovery Artist',
+        album_title: 'Recovery Album',
+        album_id: 77,
+        duration: 240,
+        format: 'FLAC',
+        sample_rate: 96000,
+        bit_depth: 24
+      };
+      state.playing = true;
+      updatePlayBtnUI();
+      markExpectedBrowserPause(1200);
+    `);
+
+    audio.dispatchEvent(new dom.window.Event('pause'));
+    await new Promise(resolve => setTimeout(resolve, 900));
+
+    assert.equal(harness.getPlayCalls(), 0);
+    assert.equal(dom.window.eval('browserInterrupted'), false);
+  } finally {
+    dom.window.close();
+  }
+}
+
+async function testStaleStartPlaybackDoesNotPauseLatestTrack() {
+  const harness = createHarness();
+  const dom = await harness.createDom();
+
+  try {
+    const audio = primeAudio(dom, { paused: false, currentTime: 12, readyState: 4 });
+    setDocumentHidden(dom, false);
+
+    let playCount = 0;
+    Object.defineProperty(audio, 'play', {
+      configurable: true,
+      value() {
+        playCount += 1;
+        const callId = playCount;
+        return new Promise(resolve => {
+          dom.window.setTimeout(() => {
+            this.paused = false;
+            this.dispatchEvent(new dom.window.Event('playing'));
+            resolve();
+          }, callId === 1 ? 60 : 5);
+        });
+      },
+    });
+    let pauseCount = 0;
+    Object.defineProperty(audio, 'pause', {
+      configurable: true,
+      value() {
+        pauseCount += 1;
+        this.paused = true;
+        this.dispatchEvent(new dom.window.Event('pause'));
+      },
+    });
+
+    dom.window.eval(`
+      state.outputMode = 'browser';
+      state.currentTrack = {
+        id: 7,
+        title: 'Recovery Track',
+        artist_name: 'Recovery Artist',
+        album_title: 'Recovery Album',
+        album_id: 77,
+        duration: 240
+      };
+      state.playing = true;
+      updatePlayBtnUI();
+    `);
+
+    const firstStart = dom.window.startBrowserPlayback({ id: 7, title: 'Recovery Track' });
+    const secondStart = new Promise(resolve => {
+      dom.window.setTimeout(() => resolve(dom.window.startBrowserPlayback({ id: 8, title: 'Other Track' })), 1);
+    }).then(promise => promise);
+
+    await Promise.allSettled([firstStart, secondStart]);
+    await waitFor(() => dom.window.eval('audio.src').includes('/api/stream/8?'), { timeoutMs: 6000 });
+
+    assert.equal(dom.window.eval('audio.paused'), false);
+    assert.equal(dom.window.eval('state.playing'), true);
+    assert.equal(pauseCount, 2);
+  } finally {
+    dom.window.close();
+  }
+}
+
+async function testStaleTokenStartPlaybackHasNoSideEffects() {
+  const harness = createHarness();
+  const dom = await harness.createDom();
+
+  try {
+    const audio = primeAudio(dom, { paused: false, currentTime: 25, readyState: 4 });
+    setDocumentHidden(dom, false);
+
+    let pauseCount = 0;
+    Object.defineProperty(audio, 'pause', {
+      configurable: true,
+      value() {
+        pauseCount += 1;
+        this.paused = true;
+        this.dispatchEvent(new dom.window.Event('pause'));
+      },
+    });
+
+    dom.window.eval(`
+      state.outputMode = 'browser';
+      state.currentTrack = {
+        id: 9,
+        title: 'Current Track',
+        artist_name: 'Current Artist',
+        album_title: 'Current Album',
+        album_id: 99,
+        duration: 180
+      };
+      state.playing = true;
+      updatePlayBtnUI();
+      browserPlaybackToken = 5;
+    `);
+
+    const ok = await dom.window.startBrowserPlayback({ id: 7, title: 'Recovery Track' }, { token: 4, resumeTime: 10 });
+    assert.equal(ok, false);
+    assert.equal(pauseCount, 0);
+  } finally {
+    dom.window.close();
+  }
+}
+
+async function testDspErrorAutoFallbacksToDry() {
+  const harness = createHarness();
+  const dom = await harness.createDom();
+
+  try {
+    const audio = primeAudio(dom, { paused: false, currentTime: 31, readyState: 4 });
+    setDocumentHidden(dom, false);
+    dom.window.eval(`
+      state.outputMode = 'browser';
+      state.currentTrack = {
+        id: 7,
+        title: 'Recovery Track',
+        artist_name: 'Recovery Artist',
+        album_title: 'Recovery Album',
+        album_id: 77,
+        duration: 240
+      };
+      state.dspProfile = '2';
+      state.lastEqProfile = '2';
+      state.playing = false;
+      updatePlayBtnUI();
+    `);
+
+    Object.defineProperty(audio, 'error', {
+      configurable: true,
+      get: () => ({ code: 4 }),
+    });
+    assert.equal(dom.window.noteDspError('2'), 1);
+    assert.equal(dom.window.noteDspError('2'), 2);
+    dom.window.resetDspErrorStreak();
+    audio.dispatchEvent(new dom.window.Event('error'));
+    audio.dispatchEvent(new dom.window.Event('error'));
+
+    await waitFor(() => dom.window.eval('state.dspProfile') === '');
+    await waitFor(() => harness.getPlayCalls() >= 1, { timeoutMs: 8000 });
+    assert.equal(dom.window.localStorage.getItem('velvet:dsp-profile-id'), null);
+  } finally {
+    dom.window.close();
+  }
+}
+
+async function testDspStartupNoProgressAutoFallbacksToDry() {
+  const harness = createHarness();
+  const dom = await harness.createDom();
+
+  try {
+    const audio = primeAudio(dom, { paused: true, currentTime: 0, readyState: 0 });
+    setDocumentHidden(dom, false);
+    dom.window.eval(`
+      state.outputMode = 'browser';
+      state.currentTrack = {
+        id: 7,
+        title: 'Recovery Track',
+        artist_name: 'Recovery Artist',
+        album_title: 'Recovery Album',
+        album_id: 77,
+        duration: 240
+      };
+      state.dspProfile = '2';
+      state.lastEqProfile = '2';
+      state.playing = false;
+      dspStartupHealthDelayMs = 30;
+    `);
+
+    Object.defineProperty(audio, 'play', {
+      configurable: true,
+      value() {
+        return Promise.resolve();
+      },
+    });
+
+    await dom.window.startBrowserPlayback({ id: 7, title: 'Recovery Track' }, { resumeTime: 0 });
+    await waitFor(() => dom.window.eval('state.dspProfile') === '', { timeoutMs: 6000 });
+    assert.equal(dom.window.localStorage.getItem('velvet:dsp-profile-id'), null);
+  } finally {
+    dom.window.close();
+  }
+}
+
+async function testDspPlayRejectedAutoFallbacksToDry() {
+  const harness = createHarness();
+  const dom = await harness.createDom();
+
+  try {
+    const audio = primeAudio(dom, { paused: true, currentTime: 0, readyState: 1 });
+    setDocumentHidden(dom, false);
+    dom.window.eval(`
+      state.outputMode = 'browser';
+      state.currentTrack = {
+        id: 7,
+        title: 'Recovery Track',
+        artist_name: 'Recovery Artist',
+        album_title: 'Recovery Album',
+        album_id: 77,
+        duration: 240
+      };
+      state.dspProfile = '2';
+      state.lastEqProfile = '2';
+      state.playing = false;
+    `);
+
+    Object.defineProperty(audio, 'play', {
+      configurable: true,
+      value() {
+        return Promise.reject(new Error('Media source not supported'));
+      },
+    });
+
+    const ok = await dom.window.startBrowserPlayback({ id: 7, title: 'Recovery Track' });
+    assert.equal(ok, false);
+    await waitFor(() => dom.window.eval('state.dspProfile') === '');
+    assert.equal(dom.window.localStorage.getItem('velvet:dsp-profile-id'), null);
+  } finally {
+    dom.window.close();
+  }
+}
+
 try {
   await testRecoveryAfterWaiting();
   await testManualPauseDoesNotAutoRecover();
+  await testExpectedPauseDuringDspSwitchDoesNotAutoRecover();
+  await testStaleStartPlaybackDoesNotPauseLatestTrack();
+  await testStaleTokenStartPlaybackHasNoSideEffects();
+  await testDspErrorAutoFallbacksToDry();
+  await testDspStartupNoProgressAutoFallbacksToDry();
+  await testDspPlayRejectedAutoFallbacksToDry();
   console.log('frontend_mobile_background_recovery_check=OK');
   process.exit(0);
 } catch (error) {

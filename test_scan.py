@@ -4,9 +4,13 @@ import os
 from server import extract_metadata, init_db, get_db, _sort_name, find_folder_cover, save_cover, DB_PATH
 
 logging.basicConfig(level=logging.DEBUG)
-MUSIC_DIR = r"F:\BaiduNetdiskDownload\Music Roon Updated\毛不易"
+MUSIC_DIR = os.environ.get("VELVET_MUSIC_DIR") or os.environ.get("MUSIC_DIR") or os.path.join(os.path.expanduser("~"), "Music")
 
 def test_scan():
+    if not os.path.isdir(MUSIC_DIR):
+        print(f"Music directory not found: {MUSIC_DIR}")
+        return
+
     try:
         all_files = []
         for root, dirs, files in os.walk(MUSIC_DIR):
