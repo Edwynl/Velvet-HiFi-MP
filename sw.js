@@ -1,5 +1,5 @@
 // VELVET - Service Worker for PWA
-const CACHE_NAME = 'velvet-v2';
+const CACHE_NAME = 'velvet-v3';
 const STATIC_ASSETS = [
   '/',
   '/static/index.html',
@@ -8,7 +8,7 @@ const STATIC_ASSETS = [
 ];
 
 // Separate cache for thumbnails to avoid polluting main cache
-const THUMB_CACHE_NAME = 'velvet-thumbs-v1';
+const THUMB_CACHE_NAME = 'velvet-thumbs-v2';
 
 // Install event - cache static assets
 self.addEventListener('install', event => {

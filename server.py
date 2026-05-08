@@ -19,6 +19,9 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Optional, AsyncGenerator
 from dataclasses import dataclass, field
+
+import env_loader  # noqa: F401 - load .env before modules read os.environ
+
 from cachetools import TTLCache
 from collections import deque
 

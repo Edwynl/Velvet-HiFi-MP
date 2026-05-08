@@ -345,6 +345,23 @@ function testLandscapeMobileVolumeStripHidden() {
   );
 }
 
+function testLandscapeFullscreenLayoutBalanceGuards() {
+  const html = readFileSync(HTML_PATH, 'utf8');
+
+  assert.ok(
+    html.includes('.mobile-player-main {\n      flex-direction: row !important;\n      align-items: center !important;\n      justify-content: center !important;\n      gap: 28px !important;'),
+    'Expected landscape fullscreen player columns to stay centered instead of pushing metadata upward',
+  );
+  assert.ok(
+    html.includes('.mobile-player-art-section {\n      width: 44% !important;'),
+    'Expected landscape fullscreen cover art column to remain visually substantial',
+  );
+  assert.ok(
+    html.includes('.mobile-player-controls-section {\n      width: 56% !important;'),
+    'Expected landscape fullscreen controls column to stay balanced with the cover art column',
+  );
+}
+
 async function main() {
   await testAutoOpenOnlyBeforeDismiss();
   await testBottomBarPauseDoesNotOpenFullscreen();
@@ -352,6 +369,7 @@ async function main() {
   testUltraCompactLandscapeCssGuards();
   testLandscapeMiniPlayerProgressCssGuards();
   testLandscapeMobileVolumeStripHidden();
+  testLandscapeFullscreenLayoutBalanceGuards();
 }
 
 try {

@@ -4,7 +4,7 @@ import sqlite3
 from dsp_engine import FACTORY_DSP_PRESETS, legacy_eq_bands_to_filters
 
 
-LATEST_SCHEMA_VERSION = 6
+LATEST_SCHEMA_VERSION = 7
 
 
 def _table_columns(conn: sqlite3.Connection, table_name: str) -> set[str]:
@@ -185,6 +185,31 @@ def migration_005_add_lookup_indexes(conn: sqlite3.Connection) -> None:
     conn.execute("CREATE INDEX IF NOT EXISTS idx_albums_title ON albums(title)")
 
 
+def _seed_factory_dsp_presets(conn: sqlite3.Connection) -> None:
+    for preset in FACTORY_DSP_PRESETS:
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO dsp_profiles (
+                id, name, description, is_default, eq_bands, volume_normalize,
+                stereo_width, reverb_room_size, reverb_wet_dry, category,
+                preset_key, is_factory, preamp_db, filter_chain_json, tags, sort_order
+            ) VALUES (?, ?, ?, 0, NULL, 0, 0, 0, 0, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                preset["id"],
+                preset["name"],
+                preset["description"],
+                preset["category"],
+                preset["preset_key"],
+                preset["is_factory"],
+                preset["preamp_db"],
+                preset["filter_chain_json"],
+                preset["tags"],
+                preset["sort_order"],
+            ),
+        )
+
+
 def migration_006_enhance_dsp_profiles(conn: sqlite3.Connection) -> None:
     dsp_columns = _table_columns(conn, "dsp_profiles")
     column_defaults = {
@@ -225,28 +250,11 @@ def migration_006_enhance_dsp_profiles(conn: sqlite3.Connection) -> None:
         """
     )
 
-    for preset in FACTORY_DSP_PRESETS:
-        conn.execute(
-            """
-            INSERT OR IGNORE INTO dsp_profiles (
-                id, name, description, is_default, eq_bands, volume_normalize,
-                stereo_width, reverb_room_size, reverb_wet_dry, category,
-                preset_key, is_factory, preamp_db, filter_chain_json, tags, sort_order
-            ) VALUES (?, ?, ?, 0, NULL, 0, 0, 0, 0, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                preset["id"],
-                preset["name"],
-                preset["description"],
-                preset["category"],
-                preset["preset_key"],
-                preset["is_factory"],
-                preset["preamp_db"],
-                preset["filter_chain_json"],
-                preset["tags"],
-                preset["sort_order"],
-            ),
-        )
+    _seed_factory_dsp_presets(conn)
+
+
+def migration_007_seed_expanded_factory_dsp_presets(conn: sqlite3.Connection) -> None:
+    _seed_factory_dsp_presets(conn)
 
 
 MIGRATIONS = (
@@ -256,6 +264,7 @@ MIGRATIONS = (
     (4, "create_indexes", migration_004_create_indexes),
     (5, "add_lookup_indexes", migration_005_add_lookup_indexes),
     (6, "enhance_dsp_profiles", migration_006_enhance_dsp_profiles),
+    (7, "seed_expanded_factory_dsp_presets", migration_007_seed_expanded_factory_dsp_presets),
 )
 
 

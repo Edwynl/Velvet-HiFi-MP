@@ -2,7 +2,7 @@
 
 > *The art of listening.*
 
-**Latest stable: [velvet-v2.4.18](https://github.com/Edwynl/Velvet-V2.4.6/releases/tag/velvet-v2.4.18)** — VU meter & audio playback fixes: memory leak, call interruption, animation, and performance.
+**Latest stable: [velvet-v2.4.19](https://github.com/Edwynl/Velvet-HiFi-MP/releases/tag/velvet-v2.4.19)** — current GitHub `main` release with portable setup improvements.
 
 VELVET is a premium, minimalist personal music server designed for audiophiles. It provides a cinematic, high-performance web interface to manage and stream your local music library, with native support for high-resolution formats and UPnP/DLNA integration for high-end playback devices.
 
@@ -20,10 +20,28 @@ VELVET is a premium, minimalist personal music server designed for audiophiles. 
 
 ## Quick Start
 
-1. **Install Dependencies**: `pip install -r requirements.txt`
-2. **Configure**: Edit `.env` or set environment variables (Prefix: `VELVET_`).
-3. **Run**: `python server.py`
-4. **Access**: Navigate to `http://localhost:8765` in your browser.
+### Windows
+
+1. **Download/clone** this repository.
+2. **Install and repair the local environment**: double-click `install.bat`.
+   - To also install Python, FFmpeg, and Node.js with winget, run:
+     ```powershell
+     powershell -ExecutionPolicy Bypass -File .\install.ps1 -InstallSystemTools
+     ```
+3. **Configure**: edit `.env` if your music folder is not auto-detected.
+4. **Run**: double-click `start.bat`.
+5. **Access**: open `http://localhost:8765`.
+
+The installer creates `venv/`, installs Python packages, optionally installs Node dependencies, creates a machine-local `.env`, and checks FFmpeg/fpcalc availability. Do not move `venv/` or `.env` between computers; regenerate them with `install.bat`.
+
+### Manual
+
+```powershell
+python -m venv venv
+.\venv\Scripts\python -m pip install -r requirements.txt
+copy .env.example .env
+.\venv\Scripts\python server.py
+```
 
 ---
 
@@ -32,7 +50,7 @@ VELVET is a premium, minimalist personal music server designed for audiophiles. 
 
 > *聆听的艺术。*
 
-**最新稳定版：[velvet-v2.4.18](https://github.com/Edwynl/Velvet-V2.4.6/releases/tag/velvet-v2.4.18)** — VU 表&音频播放修复：内存泄漏、通话中断、动画及性能优化。
+**最新稳定版：[velvet-v2.4.19](https://github.com/Edwynl/Velvet-HiFi-MP/releases/tag/velvet-v2.4.19)** — 当前 GitHub `main` 对应版本，并加入更便携的安装配置流程。
 
 VELVET 是一款专为音乐发烧友打造的高级简约私人音乐服务器。它提供了一个具有电影感、高性能的 Web 界面，用于管理和串流您的本地音乐库，原生支持高分辨率音频格式，并为高端播放设备提供 UPnP/DLNA 整合支持。
 
@@ -46,10 +64,17 @@ VELVET 是一款专为音乐发烧友打造的高级简约私人音乐服务器�
 
 ## 快速开始
 
-1. **安装依赖**：`pip install -r requirements.txt`
-2. **配置**：编辑 `.env` 或设置环境变量（前缀为 `VELVET_`）。
-3. **启动**：运行 `python server.py`
-4. **访问**：在浏览器中打开 `http://localhost:8765`。
+1. **下载或 clone 仓库**。
+2. **安装/修复环境**：双击 `install.bat`。
+   - 如需自动安装 Python、FFmpeg、Node.js，用 PowerShell 运行：
+     ```powershell
+     powershell -ExecutionPolicy Bypass -File .\install.ps1 -InstallSystemTools
+     ```
+3. **配置音乐目录**：检查 `.env` 里的 `VELVET_MUSIC_DIR`。
+4. **启动**：双击 `start.bat`。
+5. **访问**：浏览器打开 `http://localhost:8765`。
+
+不要在电脑之间复制 `venv/` 和 `.env`。换电脑后保留源码，重新运行 `install.bat`，脚本会按新电脑路径重建虚拟环境和本地配置。
 
 ---
 

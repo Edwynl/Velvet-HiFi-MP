@@ -358,12 +358,30 @@ async function testSearchTrackOpensAlbumAndPlaysMatchedTrack() {
   }
 }
 
+function testLandscapeAlbumLayoutCssGuards() {
+  const html = readFileSync(HTML_PATH, 'utf8');
+
+  assert.ok(
+    html.includes('grid-template-columns: clamp(108px, 20vw, 136px) minmax(0, 1fr) !important;'),
+    'Expected landscape album hero to keep cover art and metadata in balanced columns',
+  );
+  assert.ok(
+    html.includes('grid-template-columns: repeat(2, minmax(0, 1fr)) !important;'),
+    'Expected landscape album actions to use a balanced two-column grid',
+  );
+  assert.ok(
+    !html.includes('class="album-hero-title" style="display:flex;align-items:center;justify-content:center;gap:12px;flex-wrap:wrap"'),
+    'Expected album title markup to stop forcing centered inline layout',
+  );
+}
+
 async function main() {
   await testAlbumBackFallsBackWhenHistoryBackDoesNothing();
   await testGenreViewDoesNotReuseCachedMarkupAcrossIds();
   await testExitSearchReplacesHistoryEntryInsteadOfPushingAnother();
   await testNavigateClosesMobileSidebarOverlay();
   await testSearchTrackOpensAlbumAndPlaysMatchedTrack();
+  testLandscapeAlbumLayoutCssGuards();
 }
 
 try {

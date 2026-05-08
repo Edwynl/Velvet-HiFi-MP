@@ -285,6 +285,19 @@ async function main() {
     blackBackgroundButton.click();
     await waitFor(() => document.querySelector('#dsp-select').value === '2');
     assert.equal(document.querySelector('#mobile-top-dsp-label').textContent.trim(), 'Black');
+    assert.equal(dom.window.localStorage.getItem('velvet:dsp-profile-id'), '2');
+    assert.equal(dom.window.localStorage.getItem('velvet:dsp-last-profile-id'), '2');
+
+    // Simulate a transient runtime fallback that clears active DSP only;
+    // load should restore from the last selected DSP preference.
+    dom.window.localStorage.removeItem('velvet:dsp-profile-id');
+    dom.window.eval("state.dspProfile = ''; state.lastEqProfile = '';");
+    await dom.window.loadDspProfiles();
+    await waitFor(() => document.querySelector('#dsp-select').value === '2');
+
+    await dom.window.openGraphicEQ();
+    await waitFor(() => document.querySelector('#eq-current-name')?.textContent?.trim() === 'Black Background');
+    document.querySelector('#eq-overlay')?.classList.remove('active');
 
     const requestCountBeforeEqSave = harness.requests.length;
     dom.window.handleEQSliderInput(0, '2.0');

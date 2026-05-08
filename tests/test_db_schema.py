@@ -98,9 +98,11 @@ class DatabaseSchemaTests(unittest.TestCase):
             {row["preset_key"] for row in profiles[1:]},
             {
                 "black_background",
+                "reference_neutral",
                 "vocal_forward_warm",
                 "vocal_forward_cool",
                 "bass_boost",
+                "sub_bass_boost",
                 "pop",
                 "classical",
             },

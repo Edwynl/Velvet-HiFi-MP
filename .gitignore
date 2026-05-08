@@ -78,3 +78,6 @@ musiciq_data/
 
 # Temporary Windows file
 nul
+
+# Machine-local scratch files
+track_path.txt

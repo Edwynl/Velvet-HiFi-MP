@@ -1366,7 +1366,7 @@ input[type=range]::-webkit-slider-thumb:hover { background: var(--gold); }
 .scan-progress-text { font-size: 10px; color: var(--muted); font-family: 'DM Mono', monospace; }
 
 /* ─── Settings View ─── */
-.settings-form { padding: 0 32px; max-width: 560px; }
+.settings-form { padding: 0 32px; max-width: 1180px; }
 .form-group { margin-bottom: 24px; }
 .form-label {
   display: block; font-size: 11px; letter-spacing: 0.1em;
@@ -1802,6 +1802,13 @@ input[type=range]::-webkit-slider-thumb:hover { background: var(--gold); }
     font: inherit;
     cursor: pointer;
     transition: border-color 0.15s, background 0.15s, transform 0.15s;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  .mobile-select-picker-option small {
+    color: var(--muted);
+    font-size: 11px;
   }
   .mobile-select-picker-option:hover {
     border-color: rgba(255,255,255,0.18);
@@ -2855,20 +2862,21 @@ input[type=range]::-webkit-slider-thumb:hover { background: var(--gold); }
     .mobile-player-main {
       flex-direction: row !important;
       align-items: center !important;
-      justify-content: space-between !important;
-      gap: 18px !important;
-      padding: 6px 18px 14px !important;
+      justify-content: center !important;
+      gap: 28px !important;
+      padding: 8px 18px 14px !important;
       overflow: hidden !important;
     }
     .mobile-player-art-section {
-      width: 38% !important;
+      width: 44% !important;
       margin-top: 0 !important;
-      gap: 14px !important;
+      gap: 16px !important;
       justify-content: center !important;
+      align-items: center !important;
     }
     .mobile-player-art-wrapper {
-      width: min(30vw, 240px) !important;
-      max-width: 240px !important;
+      width: min(34vw, 272px) !important;
+      max-width: 272px !important;
       border-radius: 12px !important;
       box-shadow: 0 18px 44px rgba(0,0,0,0.58), inset 0 0 0 1px rgba(255,255,255,0.05) !important;
     }
@@ -2884,31 +2892,35 @@ input[type=range]::-webkit-slider-thumb:hover { background: var(--gold); }
       display: none !important;
     }
     .mobile-player-controls-section {
-      width: 62% !important;
+      width: 56% !important;
       max-width: none !important;
       flex: 1 !important;
-      align-self: stretch !important;
-      justify-content: flex-start !important;
-      gap: 12px !important;
+      align-self: center !important;
+      justify-content: center !important;
+      gap: 14px !important;
       min-width: 0 !important;
+      padding: 14px 0 6px !important;
     }
     .mobile-player-landscape-meta {
       display: block !important;
       order: 1 !important;
+      padding-top: 12px !important;
     }
     .mobile-player-landscape-title {
-      font-size: clamp(34px, 4.8vw, 56px) !important;
-      line-height: 0.98 !important;
+      font-size: clamp(32px, 4.3vw, 48px) !important;
+      line-height: 1.02 !important;
+      margin-bottom: 8px !important;
     }
     .mobile-player-landscape-artist {
-      font-size: 18px !important;
-      margin-top: 4px !important;
+      font-size: 16px !important;
+      margin-top: 0 !important;
     }
     .mobile-player-main-controls {
       order: 3 !important;
       justify-content: flex-start !important;
       gap: 24px !important;
       padding: 0 !important;
+      margin-top: 4px !important;
     }
     .mobile-player-center-controls {
       gap: 18px !important;
@@ -2937,8 +2949,8 @@ input[type=range]::-webkit-slider-thumb:hover { background: var(--gold); }
     .mobile-player-progress-container {
       display: block !important;
       order: 2 !important;
-      margin-top: 0 !important;
-      margin-bottom: 2px !important;
+      margin-top: 2px !important;
+      margin-bottom: 4px !important;
       width: 100% !important;
       flex-shrink: 0 !important;
     }
@@ -3054,17 +3066,18 @@ input[type=range]::-webkit-slider-thumb:hover { background: var(--gold); }
     .view-album .album-hero {
       position: relative !important; top: auto !important; left: auto !important;
       width: 100% !important;
-      flex-direction: row !important;
-      align-items: center !important;
-      padding: 10px 16px !important;
-      gap: 16px !important;
+      display: grid !important;
+      grid-template-columns: clamp(108px, 20vw, 136px) minmax(0, 1fr) !important;
+      align-items: start !important;
+      padding: 12px 16px !important;
+      gap: 18px !important;
       flex-shrink: 0 !important;
       border-bottom: 1px solid var(--border) !important;
       background: var(--s1) !important;
     }
     .album-hero-art {
-      width: 80px !important;
-      height: 80px !important;
+      width: clamp(108px, 20vw, 136px) !important;
+      height: clamp(108px, 20vw, 136px) !important;
       flex-shrink: 0 !important;
       margin: 0 !important;
       box-shadow: 0 8px 24px rgba(0,0,0,0.6) !important;
@@ -3073,22 +3086,74 @@ input[type=range]::-webkit-slider-thumb:hover { background: var(--gold); }
       text-align: left !important;
       padding: 0 !important;
       min-width: 0 !important;
+      display: flex !important;
+      flex-direction: column !important;
+      justify-content: flex-start !important;
     }
-    .album-label { margin-bottom: 2px !important; }
-    .album-hero-title { font-size: 18px !important; margin-bottom: 4px !important; line-height: 1.2 !important; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-    .album-hero-artist { font-size: 13px !important; margin-bottom: 4px !important; }
+    .album-label {
+      margin-bottom: 6px !important;
+      font-size: 10px !important;
+      letter-spacing: 0.14em !important;
+    }
+    .album-hero-title {
+      display: flex !important;
+      align-items: center !important;
+      justify-content: flex-start !important;
+      gap: 8px !important;
+      flex-wrap: wrap !important;
+      font-size: 22px !important;
+      margin-bottom: 6px !important;
+      line-height: 1.06 !important;
+      white-space: normal !important;
+      overflow: visible !important;
+      text-overflow: unset !important;
+    }
+    .album-hero-artist {
+      font-size: 14px !important;
+      margin-bottom: 8px !important;
+      line-height: 1.2 !important;
+      white-space: nowrap !important;
+      overflow: hidden !important;
+      text-overflow: ellipsis !important;
+    }
     .view-home .hires-badge,
     .view-albums .hires-badge,
     .discover-section .hires-badge { height: 14px !important; }
     .hires-badge-detail { height: 24px !important; }
-    .album-meta-row { margin-bottom: 6px !important; gap: 10px !important; flex-wrap: wrap !important; justify-content: flex-start !important; }
-    .album-actions { gap: 6px !important; justify-content: flex-start !important; }
+    .album-meta-row {
+      margin-bottom: 10px !important;
+      gap: 8px 10px !important;
+      flex-wrap: wrap !important;
+      justify-content: flex-start !important;
+      align-items: center !important;
+    }
     .album-actions {
       display: grid !important;
-      grid-template-columns: repeat(4, minmax(0, 1fr)) !important;
-      width: 100% !important;
+      grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+      width: min(100%, 420px) !important;
+      gap: 8px !important;
+      align-items: stretch !important;
     }
-    .album-actions .btn { padding: 5px 10px !important; font-size: 11px !important; }
+    .album-actions .btn,
+    .album-actions .album-more-btn {
+      width: 100% !important;
+      min-width: 0 !important;
+    }
+    .album-actions .btn,
+    .album-actions .album-more-btn > .btn {
+      min-height: 36px !important;
+      padding: 7px 10px !important;
+      font-size: 11px !important;
+      line-height: 1 !important;
+      justify-content: center !important;
+      gap: 6px !important;
+      white-space: nowrap !important;
+    }
+    .album-actions .btn svg {
+      width: 13px !important;
+      height: 13px !important;
+      flex-shrink: 0 !important;
+    }
     .album-meta-toggle-wrap {
       display: block !important;
       padding: 8px 12px 6px !important;
@@ -3211,24 +3276,30 @@ input[type=range]::-webkit-slider-thumb:hover { background: var(--gold); }
       height: 30px !important;
     }
     .mobile-player-main {
-      gap: 14px !important;
-      padding: 2px 14px 10px !important;
+      gap: 16px !important;
+      padding: 6px 14px 10px !important;
     }
     .mobile-player-art-section {
-      width: 34% !important;
-      gap: 10px !important;
+      width: 40% !important;
+      gap: 12px !important;
+      align-items: center !important;
     }
     .mobile-player-art-wrapper {
-      width: min(26vw, 176px) !important;
-      max-width: 176px !important;
+      width: min(30vw, 198px) !important;
+      max-width: 198px !important;
     }
     .mobile-player-controls-section {
-      width: 66% !important;
-      gap: 8px !important;
+      width: 60% !important;
+      gap: 10px !important;
+      justify-content: center !important;
+      padding: 10px 0 2px !important;
+    }
+    .mobile-player-landscape-meta {
+      padding-top: 8px !important;
     }
     .mobile-player-landscape-title {
       font-size: clamp(28px, 4.2vw, 40px) !important;
-      line-height: 0.96 !important;
+      line-height: 1.01 !important;
       margin-bottom: 10px !important;
       display: -webkit-box !important;
       -webkit-box-orient: vertical !important;
@@ -3237,16 +3308,17 @@ input[type=range]::-webkit-slider-thumb:hover { background: var(--gold); }
       text-overflow: ellipsis !important;
     }
     .mobile-player-landscape-artist {
-      font-size: 14px !important;
+      font-size: 13px !important;
       white-space: nowrap !important;
       overflow: hidden !important;
       text-overflow: ellipsis !important;
     }
     .mobile-player-landscape-quality {
-      margin-top: 8px !important;
+      margin-top: 6px !important;
       min-height: 18px !important;
     }
     .mobile-player-progress-container {
+      margin-top: 2px !important;
       margin-bottom: 4px !important;
     }
     .mobile-progress-bar {
@@ -3258,6 +3330,7 @@ input[type=range]::-webkit-slider-thumb:hover { background: var(--gold); }
     }
     .mobile-player-main-controls {
       gap: 18px !important;
+      margin-top: 2px !important;
     }
     .mobile-player-center-controls {
       gap: 14px !important;
@@ -4554,6 +4627,128 @@ input[type=range]::-webkit-slider-thumb:hover { background: var(--gold); }
       cursor: pointer;
       box-shadow: 0 4px 14px rgba(230,195,100,0.2);
     }
+    .eq-headroom-note {
+      margin-top: 6px;
+      color: var(--muted);
+      font-family: 'DM Mono', monospace;
+      font-size: 10px;
+      letter-spacing: 0.02em;
+    }
+    .eq-workspace {
+      display: flex;
+      flex-direction: column;
+      gap: 32px;
+      min-width: 0;
+      width: 100%;
+    }
+    .dsp-category-heading {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin: 18px 0 10px;
+      color: var(--gold);
+      font-family: 'DM Mono', monospace;
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: .12em;
+    }
+    .dsp-category-heading:first-child {
+      margin-top: 0;
+    }
+    .dsp-category-heading::after {
+      content: '';
+      height: 1px;
+      flex: 1;
+      background: var(--border);
+    }
+    .dsp-settings-grid {
+      display: grid;
+      grid-template-columns: minmax(320px, 520px) minmax(420px, 1fr);
+      gap: 20px;
+      align-items: start;
+    }
+    @media (max-width: 980px) {
+      .dsp-settings-grid {
+        grid-template-columns: 1fr;
+      }
+      #dsp-editor-panel {
+        position: static !important;
+      }
+    }
+    @media (max-width: 768px) {
+      .eq-overlay {
+        padding: calc(env(safe-area-inset-top, 0px) + 14px) 14px calc(env(safe-area-inset-bottom, 0px) + 92px);
+      }
+      .eq-header {
+        padding: 10px 0 12px;
+      }
+      .eq-title {
+        font-size: 1.25rem;
+      }
+      .eq-container {
+        padding: 0;
+        gap: 18px;
+        overflow-x: hidden;
+      }
+      .eq-container > aside,
+      .eq-workspace {
+        min-width: 0;
+        max-width: 100%;
+      }
+      .eq-presets-list {
+        position: sticky;
+        top: calc(env(safe-area-inset-top, 0px) + 50px);
+        z-index: 9;
+        flex-direction: row;
+        overflow-x: auto;
+        padding: 8px 0 10px;
+        background: #000;
+        scroll-snap-type: x proximity;
+      }
+      .eq-preset-btn {
+        width: auto;
+        min-width: max-content;
+        padding: 10px 14px;
+        border-left: 0;
+        border-bottom: 2px solid transparent;
+        font-size: 1rem;
+        scroll-snap-align: start;
+      }
+      .eq-preset-btn.active {
+        border-left-color: transparent;
+        border-bottom-color: var(--gold);
+      }
+      .eq-workspace {
+        gap: 18px;
+      }
+      .eq-curve-container {
+        height: min(220px, 32vh);
+        aspect-ratio: auto;
+        border-radius: 16px;
+      }
+      .eq-sliders-panel {
+        width: 100%;
+        min-width: 0;
+        padding: 24px 14px;
+        border-radius: 16px;
+      }
+      .eq-sliders-wrapper {
+        min-width: 720px;
+        width: max-content;
+      }
+      .eq-controls-panel {
+        position: fixed;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        z-index: 20;
+        margin: 0;
+        border-radius: 18px 18px 0 0;
+        padding: 12px 16px calc(env(safe-area-inset-bottom, 0px) + 12px);
+        background: rgba(14, 14, 16, 0.96);
+        backdrop-filter: blur(16px);
+      }
+    }
 </style>
 </head>
 <body>
@@ -5019,6 +5214,7 @@ input[type=range]::-webkit-slider-thumb:hover { background: var(--gold); }
         <span class="mobile-vu-sep">·</span>
         <span id="mobile-vu-codec">ALAC</span>
       </div>
+      <div id="mobile-vu-status" style="margin-top:10px;color:var(--muted);font-family:'DM Mono',monospace;font-size:10px;text-transform:uppercase;letter-spacing:.14em">No signal</div>
     </div>
     
     <div class="mobile-vu-controls">
@@ -5175,7 +5371,7 @@ input[type=range]::-webkit-slider-thumb:hover { background: var(--gold); }
     </aside>
 
     <!-- Main Workspace -->
-    <div style="display:flex; flex-direction:column; gap: 32px; min-width: 0;">
+    <div class="eq-workspace">
       <!-- Frequency Response Curve -->
       <div class="eq-curve-container">
         <div class="frequency-grid"></div>
@@ -5218,6 +5414,7 @@ input[type=range]::-webkit-slider-thumb:hover { background: var(--gold); }
             <div>
               <p style="font-family: 'DM Mono', monospace; font-size: 10px; text-transform: uppercase; color: var(--text-muted); margin-bottom: 4px;">DSP Name</p>
               <p id="eq-current-name" style="font-family: 'Cormorant Garamond', serif; font-size: 1.125rem; font-style: italic; color: var(--text-color);">Custom Profile</p>
+              <p id="eq-headroom-note" class="eq-headroom-note">Headroom: 0.0 dB</p>
             </div>
         </div>
         <div style="display:flex; gap: 16px;">
@@ -5232,8 +5429,14 @@ input[type=range]::-webkit-slider-thumb:hover { background: var(--gold); }
 <script>
 // ─── Utilities ────────────────────────────────────────────────────────────────
 
-const $ = id => document.getElementById(id);
-const $$ = sel => document.querySelectorAll(sel);
+const $ = id => {
+  const doc = typeof document !== 'undefined' ? document : null;
+  return doc?.getElementById ? doc.getElementById(id) : null;
+};
+const $$ = sel => {
+  const doc = typeof document !== 'undefined' ? document : null;
+  return doc?.querySelectorAll ? doc.querySelectorAll(sel) : [];
+};
 
 // UI Element Cache for performance (On-demand caching via Proxy)
 // In an SPA environment where elements are recreated via innerHTML, 
@@ -5244,7 +5447,8 @@ const UI = new Proxy({}, {
     if (cached && cached.isConnected) return cached;
     
     // Not cached or detached, find it in current DOM
-    const el = document.getElementById(prop);
+    const doc = typeof document !== 'undefined' ? document : null;
+    const el = doc?.getElementById ? doc.getElementById(prop) : null;
     if (el) target[prop] = el;
     return el;
   }
@@ -5487,10 +5691,33 @@ function compactDspLabel(name) {
     .replace(/[()]/g, ' ')
     .trim();
   if (!cleaned) return 'Tone';
-  const words = cleaned.split(/\s+/).filter(Boolean);
-  if (words.length === 1) return words[0].slice(0, 8);
-  const acronym = words.map(word => word[0]).join('').toUpperCase();
-  return acronym.length <= 4 ? acronym : words[0].slice(0, 8);
+  const normalized = cleaned.toLowerCase();
+  const knownLabels = {
+    'flat': 'Flat',
+    'reference neutral': 'Reference',
+    'black background': 'Black',
+    'vocal forward warm': 'Vocal Warm',
+    'vocal forward cool': 'Vocal Cool',
+    'bass boost': 'Bass+',
+    'sub bass boost': 'Sub Bass',
+    'pop': 'Pop',
+    'classical': 'Classical',
+    'custom graphic eq': 'Graphic EQ',
+  };
+  if (knownLabels[normalized]) return knownLabels[normalized];
+  return cleaned.length <= 14 ? cleaned : `${cleaned.slice(0, 13).trim()}…`;
+}
+
+function dspDisplayLabel(profile, fallback = 'DSP') {
+  if (!profile) return fallback;
+  return compactDspLabel(profile.short_name || profile.name || fallback);
+}
+
+function uniqueDspLabel(label, usedLabels) {
+  const base = label || 'DSP';
+  const count = usedLabels.get(base) || 0;
+  usedLabels.set(base, count + 1);
+  return count ? `${base} ${count + 1}` : base;
 }
 
 function isHiResTrack(track) {
@@ -5840,12 +6067,14 @@ function coverUrl(albumId) {
 }
 
 function updateMediaSession(track) {
-  if (!('mediaSession' in navigator)) return;
+  if (!track) return;
+  if (typeof navigator === 'undefined' || !('mediaSession' in navigator)) return;
+  const origin = window?.location?.origin || '';
 
   const artist = track.artist_name || track.artist || track.album_artist || 'Unknown Artist';
   const album = track.album_title || track.album || '';
-  const fullCoverUrl = track.album_id ? `${window.location.origin}${getPlayerCoverUrl(track.album_id)}` : '';
-  const thumbCoverUrl = track.album_id ? `${window.location.origin}${getPlayerThumbUrl(track.album_id)}` : '';
+  const fullCoverUrl = track.album_id && origin ? `${origin}${getPlayerCoverUrl(track.album_id)}` : '';
+  const thumbCoverUrl = track.album_id && origin ? `${origin}${getPlayerThumbUrl(track.album_id)}` : '';
 
   log('[MediaSession] Updating:', { title: track.title, artist, album, fullCoverUrl });
 
@@ -5863,6 +6092,47 @@ function updateMediaSession(track) {
 
 // ─── State ────────────────────────────────────────────────────────────────────
 
+const DSP_PROFILE_STORAGE_KEY = 'velvet:dsp-profile-id';
+const DSP_LAST_PROFILE_STORAGE_KEY = 'velvet:dsp-last-profile-id';
+
+function readPersistedDspProfileId() {
+  try {
+    return String(localStorage.getItem(DSP_PROFILE_STORAGE_KEY) || '');
+  } catch {
+    return '';
+  }
+}
+
+function readPersistedLastDspProfileId() {
+  try {
+    return String(localStorage.getItem(DSP_LAST_PROFILE_STORAGE_KEY) || '');
+  } catch {
+    return '';
+  }
+}
+
+function persistDspProfileId(profileId, { preserveLast = false, lastProfileId = '' } = {}) {
+  try {
+    const value = String(profileId || '');
+    if (value) {
+      localStorage.setItem(DSP_PROFILE_STORAGE_KEY, value);
+      localStorage.setItem(DSP_LAST_PROFILE_STORAGE_KEY, value);
+    } else {
+      localStorage.removeItem(DSP_PROFILE_STORAGE_KEY);
+      const lastValue = String(lastProfileId || '');
+      if (preserveLast && lastValue) {
+        localStorage.setItem(DSP_LAST_PROFILE_STORAGE_KEY, lastValue);
+      } else if (!preserveLast) {
+        localStorage.removeItem(DSP_LAST_PROFILE_STORAGE_KEY);
+      }
+    }
+  } catch {}
+}
+
+const persistedDspProfileId = readPersistedDspProfileId();
+const persistedLastDspProfileId = readPersistedLastDspProfileId();
+const initialDspProfileId = persistedDspProfileId || persistedLastDspProfileId;
+
 const state = {
   view: null, // Start as null to ensure initial navigate() triggers render
   viewParams: {},
@@ -5876,7 +6146,8 @@ const state = {
   shuffle: false,
   repeatMode: 'none',
   upsample: 'none',
-  dspProfile: '',
+  dspProfile: initialDspProfileId,
+  lastEqProfile: persistedLastDspProfileId || persistedDspProfileId,
   dspProfiles: [],
   outputMode: 'browser',
   nativeDevice: null,
@@ -5931,6 +6202,12 @@ let browserInterrupted = false; // true = 当前暂停是系统中断（通话/�
 let browserWatchdogId = null;
 let browserWatchdogLastTime = 0;
 let browserWatchdogLastProgressAt = Date.now();
+let dspAutoFallbackInFlight = false;
+let dspErrorProfileId = '';
+let dspErrorCount = 0;
+let dspErrorLastAt = 0;
+let dspStartupHealthTimer = null;
+let dspStartupHealthDelayMs = 5000;
 
 function shouldUseWebAudioAnalyser() {
   // Enable VU meters on tablets (width >= 768px) and all desktops; disable only on small phones
@@ -5953,14 +6230,19 @@ function setMediaSessionPlaybackState(playbackState) {
 // start the HTML5 Audio pipeline but the old source node reference may be stale.
 // Call this before audio.play() to ensure a clean slate if AudioContext was suspended.
 // This is SAFE to call even when AudioContext is already null (no-op).
-async function cleanupSuspendedAudioContextIfNeeded() {
+function cleanupSuspendedAudioContextIfNeeded() {
   if (audioContext) {
     try { audioSource?.disconnect(); } catch {}
     try { channelSplitter?.disconnect(); } catch {}
     try { audioAnalyser?.disconnect(); } catch {}
     try { audioAnalyserL?.disconnect(); } catch {}
     try { audioAnalyserR?.disconnect(); } catch {}
-    try { await audioContext.close(); } catch {}
+    try {
+      const closeResult = audioContext.close();
+      if (closeResult && typeof closeResult.catch === 'function') {
+        closeResult.catch(() => {});
+      }
+    } catch {}
     audioContext = null;
     audioAnalyser = null;
     audioAnalyserL = null;
@@ -6006,6 +6288,80 @@ function resetBrowserPlaybackRecoveryWindow() {
   browserRecoveryLastAt = 0;
   browserExpectedPauseUntil = 0;
   noteBrowserPlaybackProgress();
+}
+
+function resetDspErrorStreak() {
+  dspErrorProfileId = '';
+  dspErrorCount = 0;
+  dspErrorLastAt = 0;
+}
+
+function noteDspError(profileId) {
+  const normalizedProfileId = String(profileId || '');
+  const now = Date.now();
+  const sameProfile = normalizedProfileId && normalizedProfileId === dspErrorProfileId;
+  const withinWindow = now - dspErrorLastAt <= 4000;
+  if (sameProfile && withinWindow) {
+    dspErrorCount += 1;
+  } else {
+    dspErrorProfileId = normalizedProfileId;
+    dspErrorCount = 1;
+  }
+  dspErrorLastAt = now;
+  return dspErrorCount;
+}
+
+function clearDspStartupHealthCheck() {
+  if (dspStartupHealthTimer) {
+    clearTimeout(dspStartupHealthTimer);
+    dspStartupHealthTimer = null;
+  }
+}
+
+function scheduleDspStartupHealthCheck(playbackToken) {
+  clearDspStartupHealthCheck();
+  if (!state.dspProfile) return;
+  dspStartupHealthTimer = setTimeout(() => {
+    dspStartupHealthTimer = null;
+    if (playbackToken !== browserPlaybackToken) return;
+    if (!isBrowserZone() || !state.currentTrack || !state.dspProfile) return;
+    const currentTime = Number.isFinite(audio.currentTime) ? audio.currentTime : 0;
+    const readyState = Number.isFinite(audio.readyState) ? audio.readyState : 0;
+    const networkState = Number.isFinite(audio.networkState) ? audio.networkState : 0;
+    const noSource = networkState === 3 || readyState === 0; // NETWORK_NO_SOURCE / HAVE_NOTHING
+    const noProgress = currentTime < 0.05 && readyState < 2;
+    if (!noSource && !noProgress) return;
+    attemptDspAutoFallback(noSource ? 'startup-no-source' : 'startup-no-progress');
+  }, dspStartupHealthDelayMs);
+}
+
+function attemptDspAutoFallback(reason = 'stream-error') {
+  if (dspAutoFallbackInFlight) return false;
+  if (!isBrowserZone() || !state.currentTrack || !state.dspProfile) return false;
+  dspAutoFallbackInFlight = true;
+  clearDspStartupHealthCheck();
+
+  const failedProfileId = String(state.dspProfile);
+  state.lastEqProfile = failedProfileId;
+  state.dspProfile = '';
+  persistDspProfileId('', { preserveLast: true, lastProfileId: failedProfileId });
+
+  const select = UI['dsp-select'];
+  if (select) {
+    select.value = '';
+    select.dispatchEvent(new Event('change', { bubbles: true }));
+  } else {
+    const resumeTime = Number.isFinite(audio.currentTime) ? audio.currentTime : 0;
+    startBrowserPlayback(state.currentTrack, { resumeTime }).catch(() => {});
+  }
+
+  showToast('EQ failed, switched to Dry');
+  console.warn('[VELVET] DSP auto-fallback to Dry:', reason, 'profile=', failedProfileId);
+  resetDspErrorStreak();
+  setTimeout(() => {
+    dspAutoFallbackInFlight = false;
+  }, 1200);
+  return true;
 }
 
 function canRecoverBrowserPlayback() {
@@ -6290,6 +6646,8 @@ function streamUrl(trackId, upsample) {
 async function startBrowserPlayback(track, { resumeTime = null, token = null } = {}) {
   const playbackToken = token ?? ++browserPlaybackToken;
   const targetUrl = streamUrl(track.id);
+  if (playbackToken !== browserPlaybackToken) return false;
+  clearDspStartupHealthCheck();
 
   cancelBrowserPlaybackRecovery();
   markExpectedBrowserPause(1200);
@@ -6300,12 +6658,10 @@ async function startBrowserPlayback(track, { resumeTime = null, token = null } =
   // with a broken MediaElementSource graph. audio.removeAttribute('src') would
   // corrupt the audio element's state. The helper also nulls out all audio graph
   // refs so the VU overlay can recreate them fresh when reopened.
-  await cleanupSuspendedAudioContextIfNeeded();
+  cleanupSuspendedAudioContextIfNeeded();
 
   audio.removeAttribute('src');
   audio.load();
-
-  if (playbackToken !== browserPlaybackToken) return false;
 
   audio.src = targetUrl;
   audio.load();
@@ -6334,22 +6690,28 @@ async function startBrowserPlayback(track, { resumeTime = null, token = null } =
     await audio.play();
     // Keep VU audio in sync with the new playback state / src
     syncVUAudioToPlayback();
+    scheduleDspStartupHealthCheck(playbackToken);
   } catch (error) {
     if (playbackToken !== browserPlaybackToken) return false;
+    if (state.dspProfile) {
+      const errorMessage = String(error?.message || '').toLowerCase();
+      const likelyUnsupported =
+        errorMessage.includes('not supported') ||
+        errorMessage.includes('source') ||
+        errorMessage.includes('decode') ||
+        errorMessage.includes('media');
+      const failures = noteDspError(state.dspProfile);
+      if (likelyUnsupported || failures >= 2) {
+        attemptDspAutoFallback(likelyUnsupported ? 'play-rejected-unsupported' : 'play-rejected');
+      }
+    }
     console.warn('[VELVET] Browser playback failed:', error?.message || error);
     state.playing = false;
     updatePlayBtnUI();
-    // Even though playback failed, the track is loaded — still return true so
-    // the caller (playTrack) updates the UI with the new track title/artist.
-    // state.playing is already false so the play button will show the correct state.
-    return true;
-  }
-
-  if (playbackToken !== browserPlaybackToken) {
-    markExpectedBrowserPause(600);
-    audio.pause();
     return false;
   }
+
+  if (playbackToken !== browserPlaybackToken) return false;
 
   state.playing = true;
   noteBrowserPlaybackProgress();
@@ -6376,6 +6738,28 @@ async function playTrack(track, queue, idx) {
   // This ensures the UI always shows the correct track even if playback hasn't started.
   state.currentTrack = track;
 
+  // Reset progress UI for a new selection so total duration is immediately visible
+  // even before audio metadata/timeupdate arrives.
+  if (isNewTrack) {
+    const knownDuration = Number.isFinite(Number(track?.duration)) && Number(track.duration) > 0
+      ? Number(track.duration)
+      : 0;
+    const totalLabel = knownDuration ? fmt(knownDuration) : '—';
+    UI['progress-fill'].style.width = '0%';
+    UI['progress-fill'].style.setProperty('--prog', '0%');
+    UI['mobile-progress-fill'].style.width = '0%';
+    UI['time-current'].textContent = '0:00';
+    UI['mobile-time-current'].textContent = '0:00';
+    UI['time-total'].textContent = totalLabel;
+    UI['mobile-time-total'].textContent = totalLabel;
+    const vuFill = UI['mobile-vu-progress-fill'];
+    if (vuFill) vuFill.style.width = '0%';
+    const vuTimeCurr = UI['mobile-vu-time-current'];
+    const vuTimeTot = UI['mobile-vu-time-total'];
+    if (vuTimeCurr) vuTimeCurr.textContent = '0:00';
+    if (vuTimeTot) vuTimeTot.textContent = totalLabel;
+  }
+
   // Only auto-open the mobile fullscreen player until the user explicitly minimizes it.
   if (isNewTrack && window.innerWidth <= 768 && !state.mobilePlayerDismissed) {
     toggleMobilePlayer(true, { source: 'auto' });
@@ -6384,27 +6768,31 @@ async function playTrack(track, queue, idx) {
   // Ensure track has artist/album info for Media Session and UI
   // Fetch full track info if artist_name is missing (do this in background)
   if (!track.artist_name && !track.artist && !track.album_artist) {
-    try {
-      const fullTrack = await api(`/tracks/${track.id}`);
-      if (playbackToken !== browserPlaybackToken) return;
-      // Merge full info into track; if this changes the track data, refresh UI
-      const hadTitle = !!(track.artist_name || track.artist || track.album_artist);
-      Object.assign(track, {
-        artist_name: fullTrack.artist_name || track.artist_name,
-        album_title: fullTrack.album_title || track.album_title,
-        album_id: fullTrack.album_id || track.album_id,
-        duration: fullTrack.duration || track.duration,
-        format: fullTrack.format || track.format,
-        sample_rate: fullTrack.sample_rate || track.sample_rate,
-        bit_depth: fullTrack.bit_depth || track.bit_depth
-      });
-      // If this fetch added missing info, refresh UI one more time
-      if (!hadTitle && (track.artist_name || track.artist || track.album_artist)) {
-        updatePlayerUI(track);
+    // Keep user gesture chain intact for mobile playback by avoiding an await
+    // before the first audio.play() call.
+    (async () => {
+      try {
+        const fullTrack = await api(`/tracks/${track.id}`);
+        if (playbackToken !== browserPlaybackToken) return;
+        // Merge full info into track; if this changes the track data, refresh UI
+        const hadTitle = !!(track.artist_name || track.artist || track.album_artist);
+        Object.assign(track, {
+          artist_name: fullTrack.artist_name || track.artist_name,
+          album_title: fullTrack.album_title || track.album_title,
+          album_id: fullTrack.album_id || track.album_id,
+          duration: fullTrack.duration || track.duration,
+          format: fullTrack.format || track.format,
+          sample_rate: fullTrack.sample_rate || track.sample_rate,
+          bit_depth: fullTrack.bit_depth || track.bit_depth
+        });
+        // If this fetch added missing info, refresh UI one more time
+        if (!hadTitle && (track.artist_name || track.artist || track.album_artist)) {
+          updatePlayerUI(track);
+        }
+      } catch (e) {
+        console.warn('Failed to fetch full track info:', e);
       }
-    } catch (e) {
-      console.warn('Failed to fetch full track info:', e);
-    }
+    })();
   }
 
   if (playbackToken !== browserPlaybackToken) return;
@@ -6620,6 +7008,8 @@ function showMobileSelectPicker(selectId, title) {
     .map(option => ({
       value: String(option.value ?? ''),
       label: option.textContent?.trim() || String(option.value ?? ''),
+      fullLabel: option.getAttribute('title') || option.textContent?.trim() || String(option.value ?? ''),
+      category: option.dataset.category || '',
       selected: option.selected,
     }));
 
@@ -6672,6 +7062,10 @@ function showMobileSelectPicker(selectId, title) {
     button.type = 'button';
     button.className = `mobile-select-picker-option${option.selected ? ' active' : ''}`;
     button.textContent = option.label;
+    if (option.fullLabel && option.fullLabel !== option.label) {
+      button.title = option.fullLabel;
+      button.setAttribute('aria-label', `${option.label} - ${option.fullLabel}`);
+    }
     button.dataset.value = option.value;
     button.addEventListener('click', () => {
       select.value = option.value;
@@ -6976,12 +7370,20 @@ function flushTimeupdate() {
 
   if (isCastZone() || isNativeZone()) return;
   noteBrowserPlaybackProgress();
-  const pct = audio.duration ? (audio.currentTime / audio.duration) * 100 : 0;
+  const audioDuration = Number.isFinite(audio.duration) && audio.duration > 0 ? audio.duration : 0;
+  const trackDuration = Number.isFinite(Number(state.currentTrack?.duration)) && Number(state.currentTrack.duration) > 0
+    ? Number(state.currentTrack.duration)
+    : 0;
+  const totalDuration = audioDuration || trackDuration;
+  if (audioDuration && state.currentTrack && !trackDuration) {
+    state.currentTrack.duration = audioDuration;
+  }
+  const pct = totalDuration ? (audio.currentTime / totalDuration) * 100 : 0;
   UI['progress-fill'].style.width = pct + '%';
   UI['progress-fill'].style.setProperty('--prog', pct + '%');
   UI['mobile-progress-fill'].style.width = pct + '%';
   const curr = fmt(audio.currentTime);
-  const tot = fmt(audio.duration);
+  const tot = totalDuration ? fmt(totalDuration) : '—';
   UI['time-current'].textContent = curr;
   UI['time-total'].textContent = tot;
   UI['mobile-time-current'].textContent = curr;
@@ -7015,6 +7417,8 @@ audio.addEventListener('timeupdate', () => {
 audio.addEventListener('playing', () => {
   if (!isBrowserZone()) return;
   state.playing = true;
+  clearDspStartupHealthCheck();
+  resetDspErrorStreak();
   // 如果是从系统中断（通话/视频通话）恢复，playing 事件说明音频已重新开始。
   // 清除中断标记，并同步 watchdog 时间戳防止误判为 stuck。
   if (browserInterrupted) {
@@ -7045,20 +7449,31 @@ audio.addEventListener('emptied', () => {
 audio.addEventListener('pause', () => {
   if (!canRecoverBrowserPlayback()) return;
 
+  // Intentional pauses (DSP switch, upsample switch, manual pause) are wrapped
+  // in markExpectedBrowserPause(). Do not schedule recovery for these transitions.
+  if (isExpectedBrowserPause()) {
+    return;
+  }
+
   // 如果音频正在播放但突然暂停，且不是用户主动暂停（不在 expectedPause 窗口内），
   // 说明是系统中断（手机来电、视频通话、Siri 等）。
   // 此时不要触发 recovery——通话结束后系统会自动恢复 audio.play()。
   // 我们只标记中断状态，等 playing 事件或 watchdog 来处理。
-  if (state.playing && !isExpectedBrowserPause()) {
+  if (state.playing) {
     browserInterrupted = true;
     return;
   }
 
-  // 用户主动暂停 或 在 expectedPause 窗口内（如切歌场景）
+  // 非预期暂停且当前状态为非播放，尝试温和恢复。
   scheduleBrowserPlaybackRecovery('pause', { delayMs: browserPlaybackRecoveryConfig.pauseDelayMs });
 });
 
 audio.addEventListener('error', () => {
+  const errCode = Number(audio.error?.code || 0);
+  if (errCode === 4 && state.dspProfile) {
+    const failures = noteDspError(state.dspProfile);
+    if (failures >= 2 && attemptDspAutoFallback('media-src-not-supported')) return;
+  }
   if (!canRecoverBrowserPlayback()) return;
   scheduleBrowserPlaybackRecovery('error', { delayMs: browserPlaybackRecoveryConfig.pauseDelayMs });
 });
@@ -7068,7 +7483,7 @@ audio.addEventListener('ended', async () => {
   cancelBrowserPlaybackRecovery();
   resetBrowserPlaybackRecoveryWindow();
   if (state.repeatMode === 'one') {
-    await cleanupSuspendedAudioContextIfNeeded();
+    cleanupSuspendedAudioContextIfNeeded();
     audio.playbackRate = 1.0;
     audio.currentTime = 0; audio.play(); return;
   }
@@ -7157,12 +7572,23 @@ const togglePlayAction = async () => {
     // On mobile, screen recording start/stop or lock screen can leave AudioContext
     // suspended. Clean it up before playing to prevent the MediaElementSource graph
     // from causing pitch/speed issues. Also ensures playbackRate stays at 1.0.
-    await cleanupSuspendedAudioContextIfNeeded();
+    cleanupSuspendedAudioContextIfNeeded();
     audio.playbackRate = 1.0;
-    audio.play();
-    state.playing = true;
-    updatePlayBtnUI();
-    if (state.currentTrack) updateMediaSession(state.currentTrack);
+    try {
+      await audio.play();
+      state.playing = true;
+      updatePlayBtnUI();
+      if (state.currentTrack) updateMediaSession(state.currentTrack);
+    } catch (error) {
+      console.warn('[VELVET] Resume play failed, retrying stream:', error?.message || error);
+      const resumeTime = Number.isFinite(audio.currentTime) ? audio.currentTime : 0;
+      const recovered = await startBrowserPlayback(state.currentTrack, { resumeTime });
+      if (!recovered) {
+        state.playing = false;
+        updatePlayBtnUI();
+        showToast('Playback resume failed');
+      }
+    }
   } else {
     markExpectedBrowserPause();
     audio.pause();
@@ -7177,16 +7603,17 @@ UI['mobile-btn-play'].addEventListener('click', togglePlayAction);
 function updatePlayBtnUI() {
   const playIcon = `<svg viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>`;
   const pauseIcon = `<svg class="icon-play" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>`;
+  const btnPlay = UI['btn-play'];
+  const mobileBtnPlay = UI['mobile-btn-play'];
+  const vuPlay = UI['mobile-vu-btn-play'];
   if (state.playing) {
-    UI['btn-play'].innerHTML = playIcon;
-    UI['mobile-btn-play'].innerHTML = playIcon;
-    const vuPlay = UI['mobile-vu-btn-play'];
+    if (btnPlay) btnPlay.innerHTML = playIcon;
+    if (mobileBtnPlay) mobileBtnPlay.innerHTML = playIcon;
     if (vuPlay) vuPlay.innerHTML = playIcon;
     setMediaSessionPlaybackState('playing');
   } else {
-    UI['btn-play'].innerHTML = pauseIcon;
-    UI['mobile-btn-play'].innerHTML = pauseIcon;
-    const vuPlay = UI['mobile-vu-btn-play'];
+    if (btnPlay) btnPlay.innerHTML = pauseIcon;
+    if (mobileBtnPlay) mobileBtnPlay.innerHTML = pauseIcon;
     if (vuPlay) vuPlay.innerHTML = pauseIcon;
     setMediaSessionPlaybackState('paused');
   }
@@ -7342,8 +7769,9 @@ function updateVUMetersInfo() {
   if (vuTitle) vuTitle.textContent = track.title || '—';
   if (vuArtist) vuArtist.textContent = track.artist_name || track.artist || '—';
   if (vuFormat) vuFormat.textContent = track.bit_depth ? `${track.bit_depth}-BIT` : (track.format || '—');
-  if (vuSr) vuSr.textContent = track.sample_rate ? fmtCompactSR(track.sample_rate) + 'k' : '—';
+  if (vuSr) vuSr.textContent = track.sample_rate ? fmtCompactSR(track.sample_rate) : '—';
   if (vuCodec) vuCodec.textContent = track.format || '—';
+  if (UI['mobile-vu-status']) UI['mobile-vu-status'].textContent = state.playing ? 'Signal active' : 'No signal';
 }
 
 function startVUAnimation() {
@@ -7373,6 +7801,8 @@ function startVUAnimation() {
     // Only animate when music is playing, otherwise return to rest position
     if (state.playing) {
       const levels = getAudioLevel();
+      const hasSignal = levels.left > 0.005 || levels.right > 0.005;
+      if (UI['mobile-vu-status']) UI['mobile-vu-status'].textContent = hasSignal ? 'Signal active' : 'Waiting for audio';
 
       // Map audio level to needle angle: -48deg (rest) to +12deg (max)
       const leftTarget = -48 + levels.left * 60;
@@ -7396,6 +7826,7 @@ function startVUAnimation() {
       leftAngle += (peakLeftAngle - leftAngle) * 0.15;
       rightAngle += (peakRightAngle - rightAngle) * 0.15;
     } else {
+      if (UI['mobile-vu-status']) UI['mobile-vu-status'].textContent = 'No signal';
       // Return to rest position when not playing
       leftAngle += (-48 - leftAngle) * 0.1;
       rightAngle += (-48 - rightAngle) * 0.1;
@@ -7567,7 +7998,9 @@ UI['upsample-select'].addEventListener('change', e => {
       playTrack(state.currentTrack, state.queue, state.queueIdx);
     } else {
       const t = audio.currentTime;
-      startBrowserPlayback(state.currentTrack, { resumeTime: t });
+      startBrowserPlayback(state.currentTrack, { resumeTime: t }).then((ok) => {
+        if (!ok) showToast('Tap play to resume output');
+      });
     }
     const labels = {none:'Source quality',
       '2x':'2× HiRes (88.2kHz)','4x':'4× HiRes (176.4kHz)',
@@ -7580,6 +8013,11 @@ UI['upsample-select'].addEventListener('change', e => {
 
 UI['dsp-select'].addEventListener('change', e => {
   state.dspProfile = e.target.value;
+  resetDspErrorStreak();
+  if (state.dspProfile) {
+    state.lastEqProfile = String(state.dspProfile);
+  }
+  persistDspProfileId(state.dspProfile);
   const selected = state.dspProfiles.find(profile => String(profile.id) === String(state.dspProfile));
   showToast(selected ? `DSP: ${selected.name}` : 'DSP: Dry');
   document.querySelectorAll('.dsp-preset-card').forEach(card => {
@@ -7595,7 +8033,9 @@ UI['dsp-select'].addEventListener('change', e => {
       playTrack(state.currentTrack, state.queue, state.queueIdx);
     } else {
       const t = audio.currentTime;
-      startBrowserPlayback(state.currentTrack, { resumeTime: t });
+      startBrowserPlayback(state.currentTrack, { resumeTime: t }).then((ok) => {
+        if (!ok) showToast('Tap play to resume output');
+      });
     }
     updatePlayerUI(state.currentTrack);
   }
@@ -7621,17 +8061,29 @@ document.addEventListener('click', e => {
 
 if ('mediaSession' in navigator) {
   navigator.mediaSession.setActionHandler('play', async () => {
-    await cleanupSuspendedAudioContextIfNeeded();
+    cleanupSuspendedAudioContextIfNeeded();
     audio.playbackRate = 1.0;
-    audio.play();
-    state.playing = true;
-    updatePlayBtnUI();
-    if (state.currentTrack) updateMediaSession(state.currentTrack);
+    try {
+      await audio.play();
+      state.playing = true;
+      updatePlayBtnUI();
+      if (state.currentTrack) updateMediaSession(state.currentTrack);
+    } catch (error) {
+      console.warn('[VELVET] MediaSession play failed, retrying stream:', error?.message || error);
+      const resumeTime = Number.isFinite(audio.currentTime) ? audio.currentTime : 0;
+      const recovered = state.currentTrack
+        ? await startBrowserPlayback(state.currentTrack, { resumeTime })
+        : false;
+      if (!recovered) {
+        state.playing = false;
+        updatePlayBtnUI();
+      }
+    }
   });
   navigator.mediaSession.setActionHandler('pause', async () => {
     // Clean up suspended AudioContext on pause to prevent broken graph causing
     // pitch/speed issues when resuming later on mobile.
-    await cleanupSuspendedAudioContextIfNeeded();
+    cleanupSuspendedAudioContextIfNeeded();
     audio.playbackRate = 1.0;
     markExpectedBrowserPause();
     audio.pause();
@@ -9895,7 +10347,7 @@ async function renderAlbum(vc, { id }) {
       </div>
       <div class="album-hero-info">
         <div class="album-label">Album</div>
-        <div class="album-hero-title" style="display:flex;align-items:center;justify-content:center;gap:12px;flex-wrap:wrap">
+        <div class="album-hero-title">
           ${escHtml(album.title)}
           ${album.is_hires ? `<img src="/static/logo-hires.png" class="hires-badge-detail" alt="Hi-Res">` : ''}
         </div>
@@ -10310,22 +10762,29 @@ async function renderSearch(vc, { q }) {
   tracks.forEach((t, i) => {
     const el = makeTrackRow(t, i + 1, true);
     const trackIndex = i;
-    el.addEventListener('click', async () => {
-      if (t.album_id) {
+    el.addEventListener('click', () => {
+      // Keep mobile user-gesture playback chain intact: play immediately, then
+      // load richer album context asynchronously.
+      playTrack(t, tracks, trackIndex);
+      if (!t.album_id) return;
+      (async () => {
         await navigate('album', { id: t.album_id });
         try {
           const albumData = await api(`/albums/${t.album_id}`);
           const albumTracks = albumData.tracks || [];
           const trackIdx = albumTracks.findIndex(tr => tr.id === t.id);
-          if (trackIdx !== -1) {
-            playTrack(albumTracks[trackIdx], albumTracks, trackIdx);
-          }
+          if (trackIdx === -1) return;
+          if (!state.currentTrack || String(state.currentTrack.id) !== String(t.id)) return;
+          state.queue = albumTracks;
+          state.queueIdx = trackIdx;
+          state.currentTrack = { ...state.currentTrack, ...albumTracks[trackIdx] };
+          updatePlayerUI(state.currentTrack);
+          if (state.currentTrack) highlightPlaying(state.currentTrack.id);
+          if (UI['queue-panel']?.classList.contains('open')) renderQueue();
         } catch (e) {
-          console.warn('Failed to play track from album:', e);
+          console.warn('Failed to sync search playback queue:', e);
         }
-      } else {
-        playTrack(t, tracks, trackIndex);
-      }
+      })();
     });
     fragment.appendChild(el);
   });
@@ -10340,6 +10799,46 @@ async function renderSettings(vc) {
   ]);
   const settingsDspProfiles = dspProfiles || [];
   const activeDspId = String(state.dspProfile || '');
+  const dspCategoryLabels = {
+    reference: 'Reference',
+    correction: 'Correction',
+    taste: 'Taste',
+    genre: 'Genre',
+    custom: 'My Presets',
+  };
+  const dspCategoryOrder = ['reference', 'correction', 'taste', 'genre', 'custom'];
+  const renderDspPresetCard = (profile) => `
+    <div class="dsp-preset-card" data-profile-id="${profile.id}" style="background:var(--s2);border:1px solid ${String(profile.id) === activeDspId ? 'var(--gold)' : 'var(--border)'};border-radius:var(--radius);padding:14px 16px;margin-bottom:10px">
+      <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:8px">
+        <div>
+          <div style="font-size:14px;color:var(--text);font-weight:600">${escHtml(profile.name)}</div>
+          <div style="font-size:11px;color:var(--gold);text-transform:uppercase;letter-spacing:.08em;margin-top:4px">${escHtml(profile.category || 'custom')}</div>
+        </div>
+        <div style="display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end">
+          ${String(profile.id) === activeDspId ? '<span style="font-size:10px;padding:4px 8px;border-radius:999px;background:rgba(201,168,76,.18);color:var(--gold)">Active</span>' : ''}
+          ${profile.is_factory ? '<span style="font-size:10px;padding:4px 8px;border-radius:999px;background:rgba(255,255,255,.06);color:var(--muted)">Factory</span>' : '<span style="font-size:10px;padding:4px 8px;border-radius:999px;background:rgba(255,255,255,.06);color:var(--muted)">Custom</span>'}
+        </div>
+      </div>
+      <div style="font-size:12px;color:var(--muted);line-height:1.55;margin-top:8px">${escHtml(profile.description || 'No description')}</div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px">
+        <button class="btn btn-ghost dsp-apply-btn" data-profile-id="${profile.id}" style="padding:8px 10px">Apply</button>
+        <button class="btn btn-ghost dsp-open-btn" data-profile-id="${profile.id}" style="padding:8px 10px">Open</button>
+        ${profile.is_factory
+          ? `<button class="btn btn-ghost dsp-clone-btn" data-profile-id="${profile.id}" style="padding:8px 10px;color:var(--gold)">Duplicate</button>`
+          : `<button class="btn btn-ghost dsp-delete-btn" data-profile-id="${profile.id}" style="padding:8px 10px;color:#ff8d8d">Delete</button>`}
+      </div>
+    </div>
+  `;
+  const renderDspPresetGroups = () => dspCategoryOrder
+    .map(category => {
+      const profiles = settingsDspProfiles.filter(profile => (profile.category || 'custom') === category);
+      if (!profiles.length) return '';
+      return `
+        <div class="dsp-category-heading">${dspCategoryLabels[category] || category}</div>
+        ${profiles.map(renderDspPresetCard).join('')}
+      `;
+    })
+    .join('');
 
   vc.innerHTML = `
     <div class="topbar">
@@ -10412,33 +10911,12 @@ async function renderSettings(vc) {
           <button class="btn btn-gold" id="dsp-new-custom-btn">New Custom</button>
           <button class="btn btn-ghost" id="dsp-duplicate-active-btn">Duplicate Active Preset</button>
         </div>
-        <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(360px, 1fr));gap:16px;align-items:start">
+        <div class="dsp-settings-grid">
           <div id="dsp-preset-grid">
-            ${settingsDspProfiles.map(profile => `
-              <div class="dsp-preset-card" data-profile-id="${profile.id}" style="background:var(--s2);border:1px solid ${String(profile.id) === activeDspId ? 'var(--gold)' : 'var(--border)'};border-radius:var(--radius);padding:14px 16px;margin-bottom:10px">
-                <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:8px">
-                  <div>
-                    <div style="font-size:14px;color:var(--text);font-weight:600">${escHtml(profile.name)}</div>
-                    <div style="font-size:11px;color:var(--gold);text-transform:uppercase;letter-spacing:.08em;margin-top:4px">${escHtml(profile.category || 'custom')}</div>
-                  </div>
-                  <div style="display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end">
-                    ${String(profile.id) === activeDspId ? '<span style="font-size:10px;padding:4px 8px;border-radius:999px;background:rgba(201,168,76,.18);color:var(--gold)">Active</span>' : ''}
-                    ${profile.is_factory ? '<span style="font-size:10px;padding:4px 8px;border-radius:999px;background:rgba(255,255,255,.06);color:var(--muted)">Factory</span>' : '<span style="font-size:10px;padding:4px 8px;border-radius:999px;background:rgba(255,255,255,.06);color:var(--muted)">Custom</span>'}
-                  </div>
-                </div>
-                <div style="font-size:12px;color:var(--muted);line-height:1.55;margin-top:8px">${escHtml(profile.description || 'No description')}</div>
-                <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px">
-                  <button class="btn btn-ghost dsp-apply-btn" data-profile-id="${profile.id}" style="padding:8px 10px">Apply</button>
-                  <button class="btn btn-ghost dsp-open-btn" data-profile-id="${profile.id}" style="padding:8px 10px">Open</button>
-                  ${profile.is_factory
-                    ? `<button class="btn btn-ghost dsp-clone-btn" data-profile-id="${profile.id}" style="padding:8px 10px;color:var(--gold)">Duplicate</button>`
-                    : `<button class="btn btn-ghost dsp-delete-btn" data-profile-id="${profile.id}" style="padding:8px 10px;color:#ff8d8d">Delete</button>`}
-                </div>
-              </div>
-            `).join('')}
+            ${renderDspPresetGroups()}
           </div>
 
-          <div id="dsp-editor-panel" style="background:#000;border:1px solid rgba(255,255,255,0.1);border-radius:20px;padding:24px;margin-top:16px">
+          <div id="dsp-editor-panel" style="background:#000;border:1px solid rgba(255,255,255,0.1);border-radius:20px;padding:24px;position:sticky;top:88px">
             <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:20px">
               <div>
                 <div style="font-size:16px;color:var(--gold);font-weight:600;font-family:'Cormorant Garamond',serif;font-style:italic">Custom DSP Editor</div>
@@ -10588,15 +11066,19 @@ async function renderSettings(vc) {
     });
   }
 
-  function applyDspProfile(profileId) {
-    state.dspProfile = profileId ? String(profileId) : '';
-    const select = UI['dsp-select'];
-    if (select) {
-      select.value = state.dspProfile;
-      select.dispatchEvent(new Event('change'));
-    }
-    syncDspPresetCardState(state.dspProfile);
+function applyDspProfile(profileId) {
+  state.dspProfile = profileId ? String(profileId) : '';
+  if (state.dspProfile) {
+    state.lastEqProfile = state.dspProfile;
   }
+  persistDspProfileId(state.dspProfile);
+  const select = UI['dsp-select'];
+  if (select) {
+    select.value = state.dspProfile;
+    select.dispatchEvent(new Event('change', { bubbles: true }));
+  }
+  syncDspPresetCardState(state.dspProfile);
+}
 
   function getEditorFilters() {
     return Array.from($$('#dsp-filter-list .dsp-filter-row')).map(row => {
@@ -10707,7 +11189,7 @@ async function renderSettings(vc) {
       return null;
     }
 
-    const savedProfileId = res.id || editingProfile?.id;
+    const savedProfileId = res?.id || res?.profile_id || res?.profile?.id || editingProfile?.id;
     if (!savedProfileId) {
       return null;
     }
@@ -11200,14 +11682,27 @@ function renderEQPresets() {
   if (!container || !state.dspProfiles) return;
   
   let html = `<button class="eq-preset-btn ${!currentEqProfileId ? 'active' : ''}" onclick="selectEQPreset('')">Dry (Flat)</button>`;
+  const usedLabels = new Map([['Dry (Flat)', 1]]);
   
   state.dspProfiles.forEach((profile, i) => {
     const isActive = String(currentEqProfileId || '') === String(profile.id);
-    let shortLabel = compactDspLabel(profile.short_name || profile.name) || `DSP${i + 1}`;
-    html += `<button class="eq-preset-btn ${isActive ? 'active' : ''}" onclick="selectEQPreset('${profile.id}')">${escHtml(shortLabel)}</button>`;
+    const shortLabel = uniqueDspLabel(dspDisplayLabel(profile, `DSP ${i + 1}`), usedLabels);
+    html += `<button class="eq-preset-btn ${isActive ? 'active' : ''}" title="${escHtml(profile.name || shortLabel)}" onclick="selectEQPreset('${profile.id}')">${escHtml(shortLabel)}</button>`;
   });
   
   container.innerHTML = html;
+}
+
+function recommendedGraphicEqPreamp() {
+  const maxBoost = Math.max(0, ...currentEqGains.map(gain => Number(gain) || 0));
+  return maxBoost > 0.05 ? -Math.min(12, Math.ceil((maxBoost + 1) * 10) / 10) : 0;
+}
+
+function updateEQHeadroomNote() {
+  const note = $('eq-headroom-note');
+  if (!note) return;
+  const preamp = recommendedGraphicEqPreamp();
+  note.textContent = preamp < 0 ? `Auto headroom: ${preamp.toFixed(1)} dB` : 'Headroom: 0.0 dB';
 }
 
 window.selectEQPreset = async function(id) {
@@ -11267,6 +11762,7 @@ window.selectEQPreset = async function(id) {
   renderEQPresets();
   renderEQSliders();
   updateEQCurve();
+  updateEQHeadroomNote();
 }
 
 function renderEQSliders() {
@@ -11308,6 +11804,7 @@ window.handleEQSliderInput = function(i, value) {
   currentEqProfileId = 'custom';
   renderEQPresets(); 
   updateEQCurve();
+  updateEQHeadroomNote();
 };
 
 function updateEQCurve() {
@@ -11344,10 +11841,18 @@ function updateEQCurve() {
   fill.setAttribute('d', d + ' V 300 H 0 Z');
 }
 
-window.openGraphicEQ = function() {
+window.openGraphicEQ = async function() {
   $('eq-overlay').classList.add('active');
-  currentEqProfileId = state.dspProfile;
+  if (!state.dspProfiles?.length) {
+    await loadDspProfiles();
+  }
+  const activeProfileId = state.dspProfile || state.lastEqProfile || '';
+  const hasProfile = activeProfileId
+    ? state.dspProfiles.some(profile => String(profile.id) === String(activeProfileId))
+    : false;
+  currentEqProfileId = hasProfile ? String(activeProfileId) : '';
   selectEQPreset(currentEqProfileId);
+  updateEQHeadroomNote();
 }
 
 
@@ -11361,22 +11866,29 @@ async function loadDspProfiles() {
     if (!profiles) return;
 
     state.dspProfiles = profiles;
-    const usedLabels = new Set(['Dry']);
+    const usedLabels = new Map([['Dry', 1]]);
     select.innerHTML = '<option value="">Dry</option>' + profiles.map((profile, index) => {
-      let shortLabel = compactDspLabel(profile.short_name || profile.name);
-      if (!shortLabel) shortLabel = `DSP${index + 1}`;
-      if (usedLabels.has(shortLabel)) {
-        shortLabel = `${shortLabel}${index + 1}`;
-      }
-      usedLabels.add(shortLabel);
-      return `<option value="${profile.id}">${escHtml(shortLabel)}</option>`;
+      const shortLabel = uniqueDspLabel(dspDisplayLabel(profile, `DSP ${index + 1}`), usedLabels);
+      return `<option value="${profile.id}" title="${escHtml(profile.name || shortLabel)}" data-category="${escHtml(profile.category || 'custom')}">${escHtml(shortLabel)}</option>`;
     }).join('');
 
-    if (state.dspProfile) {
+    const hasProfile = (profileId) => profiles.some(profile => String(profile.id) === String(profileId));
+    if (!profiles.length) {
+      select.value = '';
+      syncMobileLandscapeControls();
+      return;
+    }
+    const persistedLastProfileId = readPersistedLastDspProfileId();
+    const preferredProfileId = state.dspProfile || state.lastEqProfile || persistedLastProfileId;
+    if (preferredProfileId && hasProfile(preferredProfileId)) {
+      state.dspProfile = String(preferredProfileId);
+      state.lastEqProfile = state.dspProfile;
       select.value = state.dspProfile;
     } else {
+      state.dspProfile = '';
       select.value = '';
     }
+    persistDspProfileId(state.dspProfile);
     syncMobileLandscapeControls();
   } catch (e) {
     console.warn('[VELVET] Failed to load DSP profiles:', e);
@@ -12262,6 +12774,7 @@ window.addEventListener('DOMContentLoaded', async () => {
     renderEQSliders();
     renderEQPresets();
     updateEQCurve();
+    updateEQHeadroomNote();
   });
 
   UI['eq-btn-save']?.addEventListener('click', async () => {
@@ -12279,7 +12792,7 @@ window.addEventListener('DOMContentLoaded', async () => {
       name: 'Custom Graphic EQ',
       description: 'Saved from the 10-band Graphic EQ.',
       category: 'custom',
-      preamp_db: 0.0,
+      preamp_db: recommendedGraphicEqPreamp(),
       filters: filters,
       tags: ['custom', 'graphic-eq']
     };
@@ -12291,11 +12804,13 @@ window.addEventListener('DOMContentLoaded', async () => {
       const method = isExistingCustom ? 'PUT' : 'POST';
       const res = await api(endpoint, { method, body: JSON.stringify(profile) });
       if (res && (res.success || res.id)) {
-        const savedProfileId = String(res.id || existingProfile?.id || '');
+        const savedProfileId = String(res?.id || res?.profile_id || res?.profile?.id || existingProfile?.id || '');
         await loadDspProfiles();
         const select = $('dsp-select');
         if (select && savedProfileId) {
           currentEqProfileId = savedProfileId;
+          state.lastEqProfile = savedProfileId;
+          state.dspProfile = savedProfileId;
           select.value = savedProfileId;
           select.dispatchEvent(new Event('change', { bubbles: true }));
         }
@@ -12320,7 +12835,9 @@ window.addEventListener('DOMContentLoaded', async () => {
   
   // Replace initial state so back from home works. We use replaceState here specifically
   // after navigate() completes so that state.view and state.params are valid.
-  history.replaceState({ view: state.view, params: state.viewParams }, '', location.hash || '#home');
+  if (typeof history !== 'undefined' && history?.replaceState) {
+    history.replaceState({ view: state.view, params: state.viewParams }, '', location.hash || '#home');
+  }
 
   // Poll scan status if scan is running
   api('/scan/status').then(s => {

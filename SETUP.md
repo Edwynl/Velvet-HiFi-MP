@@ -1,7 +1,7 @@
 # VELVET — 完整安装与配置手册
 
 > 个人 Hi-Fi 音乐服务器 · 类 Roon 体验 · 完全本地运行  
-> 版本 v3.0 | 适用于 Windows 10/11
+> 当前 GitHub 版本 velvet-v2.4.19 | 适用于 Windows 10/11
 
 ---
 
@@ -37,8 +37,8 @@
 | 网络 | 局域网 100Mbps | 千兆局域网 |
 
 **必须安装：**
-- [Python 3.10+](https://www.python.org/downloads/) — 安装时务必勾选 **"Add Python to PATH"**
-- [FFmpeg](https://ffmpeg.org/download.html) — 升频功能必须，可选但强烈推荐
+- Python 3.10+ — 可由 `install.ps1 -InstallSystemTools` 通过 winget 自动安装
+- FFmpeg — 可由 `install.ps1 -InstallSystemTools` 通过 winget 自动安装；升频功能强烈推荐
 
 **可选安装：**
 - [fpcalc.exe（Chromaprint）](https://acoustid.org/chromaprint) — 音频指纹识别功能
@@ -48,11 +48,13 @@
 ## 2. 快速开始
 
 ```
-1. 解压 velvet_v3.zip 到任意目录，例如 D:\VELVET\
-2. 双击 start.bat
-3. 浏览器打开 http://localhost:8765
-4. 进入 Settings → 填入音乐目录路径 → 点击 Save & Scan Library
-5. 等待扫描完成，开始听音乐
+1. 从 GitHub 下载 zip 或 git clone 到任意目录，例如 D:\VELVET\
+2. 双击 install.bat，自动创建 venv、安装依赖、生成 .env
+3. 如需自动安装 Python/FFmpeg/Node.js：
+   powershell -ExecutionPolicy Bypass -File .\install.ps1 -InstallSystemTools
+4. 双击 start.bat
+5. 浏览器打开 http://localhost:8765
+6. 进入 Settings → 填入音乐目录路径 → 点击 Save & Scan Library
 ```
 
 **首次扫描时间参考：**
@@ -66,20 +68,34 @@
 
 ## 3. 详细安装步骤
 
-### 3.1 安装 Python
+### 3.1 推荐：一键安装/修复环境
+
+在项目根目录打开 PowerShell：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\install.ps1 -InstallSystemTools
+```
+
+脚本会自动完成：
+
+- 检测/安装 Python 3.10+
+- 创建 `venv/`
+- 安装 `requirements.txt`
+- 检测/安装 FFmpeg
+- 安装 Node.js 依赖（用于前端测试）
+- 创建本机专用 `.env`
+- 编译检查关键 Python 文件
+
+如果你已经手动安装了 Python 和 FFmpeg，只需双击 `install.bat`。
+
+### 3.2 手动安装 Python
 
 1. 访问 https://www.python.org/downloads/
-2. 下载 **Windows installer (64-bit)**，当前推荐 3.12.x
-3. 运行安装程序
-   - ✅ 勾选 **"Add python.exe to PATH"**（非常重要）
-   - 点击 **Install Now**
-4. 验证安装：打开命令提示符（Win+R → cmd），输入：
-   ```
-   python --version
-   ```
-   应显示 `Python 3.12.x`
+2. 下载 Windows installer (64-bit)，推荐 3.12.x
+3. 安装时勾选 "Add python.exe to PATH"
+4. 重新打开终端，运行 `python --version` 验证
 
-### 3.2 安装 FFmpeg（升频功能）
+### 3.3 手动安装 FFmpeg（升频功能）
 
 1. 访问 https://github.com/BtbN/FFmpeg-Builds/releases
 2. 下载 `ffmpeg-master-latest-win64-gpl.zip`
@@ -93,7 +109,9 @@
    ffmpeg -version
    ```
 
-### 3.3 安装 Chromaprint / fpcalc（指纹识别）
+也可以把 `ffmpeg.exe` 放在项目的 `tools\bin\` 目录，`start.bat` 会自动把它加入本次进程 PATH。
+
+### 3.4 安装 Chromaprint / fpcalc（指纹识别）
 
 1. 访问 https://acoustid.org/chromaprint
 2. 下载 **Windows** 版本（`chromaprint-fpcalc-1.5.1-windows-x86_64.zip`）
@@ -106,15 +124,17 @@
    └── ...
    ```
    或者添加到系统 PATH（任选其一）
+   也可以放入 `tools\bin\fpcalc.exe`。
 
-### 3.4 运行 VELVET
+### 3.5 运行 VELVET
 
 双击 `start.bat`，脚本会自动：
-1. 检测 Python 和 FFmpeg 是否安装
-2. 创建 Python 虚拟环境 `venv/`
+1. 调用 `install.ps1` 检查/修复本地环境
+2. 创建或复用 Python 虚拟环境 `venv/`
 3. 自动安装所有依赖（fastapi、uvicorn、mutagen、httpx 等）
-4. 启动服务器（端口 8765）
-5. 同时启动 UPnP/DLNA 服务（端口 8766）
+4. 读取 `.env`
+5. 启动服务器（端口 8765）
+6. 同时启动 UPnP/DLNA 服务（端口 8766）
 
 控制台会显示：
 ```
@@ -147,16 +167,17 @@ E:\HiRes Music
 
 ### 4.2 环境变量方式（开机自启推荐）
 
-也可以在 `start.bat` 中直接修改默认路径，找到这一行：
+也可以在 `.env` 中直接修改默认路径：
 
-```batch
-if "%MUSIC_DIR%"=="" set MUSIC_DIR=C:\Music
+```env
+VELVET_MUSIC_DIR=C:\Music
+VELVET_DATA_DIR=velvet_data
 ```
 
 改为你的实际路径：
 
-```batch
-if "%MUSIC_DIR%"=="" set MUSIC_DIR=D:\HiResMusic
+```env
+VELVET_MUSIC_DIR=D:\HiResMusic
 ```
 
 ---
@@ -403,24 +424,25 @@ VELVET 支持多个客户端**同时连接**，各自独立播放不同音乐。
 
 ## 12. 环境变量与高级配置
 
-可在运行前设置以下环境变量，或直接在 `start.bat` 中修改：
+可在 `.env` 中设置以下变量，也可以在运行前设置同名环境变量。新配置统一使用 `VELVET_` 前缀，旧的 `DATA_DIR`、`UPNP_DEVICE_NAME` 等仍尽量兼容。
 
 | 变量 | 默认值 | 说明 |
 |---|---|---|
-| `MUSIC_DIR` | `C:\Music` | 音乐库根目录 |
-| `DATA_DIR` | `velvet_data` | 数据库和封面缓存目录 |
+| `VELVET_MUSIC_DIR` | `C:\Music` | 音乐库根目录 |
+| `VELVET_DATA_DIR` | `velvet_data` | 数据库和封面缓存目录 |
+| `VELVET_PORT` | `8765` | Web 服务端口 |
+| `VELVET_HOST` | `0.0.0.0` | 监听地址 |
+| `VELVET_UPNP_FRIENDLY_NAME` | `VELVET` | DLNA/UPnP 设备名 |
 
 ### 修改端口
 
-编辑 `server.py` 第 31 行：
-```python
-PORT = 8765   # 改为你想要的端口
+编辑 `.env`：
+
+```env
+VELVET_PORT=8765
 ```
 
-UPnP 端口在 `upnp_server.py` 第 28 行：
-```python
-UPNP_PORT = 8766
-```
+UPnP 控制端口目前仍在 `upnp_server.py` 中定义为 `8766`。
 
 ### 开机自启（Windows 任务计划）
 
@@ -455,10 +477,10 @@ netsh advfirewall firewall add rule name="VELVET-SSDP" dir=in action=allow proto
 **A:** 右键 start.bat → 以管理员身份运行。或打开 cmd，`cd` 到 VELVET 目录后运行 `start.bat`，这样可以看到错误信息。
 
 ### Q: 提示"Python 未找到"？
-**A:** Python 安装时没有勾选 "Add to PATH"。重新安装 Python，或手动添加 Python 路径到系统环境变量。
+**A:** 推荐运行 `powershell -ExecutionPolicy Bypass -File .\install.ps1 -InstallSystemTools`。如果手动安装 Python，安装时勾选 "Add to PATH"，然后重新打开终端。
 
 ### Q: 升频后没有声音？
-**A:** 确认 FFmpeg 已安装且在 PATH 中。在 cmd 中输入 `ffmpeg -version` 验证。
+**A:** 确认 FFmpeg 已安装且在 PATH 中，或放在 `tools\bin\ffmpeg.exe`。在 cmd 中输入 `ffmpeg -version` 验证。
 
 ### Q: HiFi 设备找不到 VELVET？
 **A:** 检查以下几点：
@@ -485,6 +507,9 @@ netsh advfirewall firewall add rule name="VELVET-SSDP" dir=in action=allow proto
 **A:** 只需备份 `velvet_data/` 文件夹，里面包含：
 - `library.db` — 完整的曲库索引和播放历史
 - `covers/` — 已下载的封面图片
+
+### Q: 换电脑/移动文件夹后环境坏了怎么办？
+**A:** 不要复制旧电脑的 `venv/`、`.env`、`node_modules/`。这些目录包含本机路径和平台绑定依赖。换电脑后保留源码，重新运行 `install.bat`；如果系统缺 Python/FFmpeg/Node.js，运行 `install.ps1 -InstallSystemTools`。
 
 ---
 
