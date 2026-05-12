@@ -1,4 +1,5 @@
 import importlib.util
+import os
 import sqlite3
 import sys
 import tempfile
@@ -365,6 +366,51 @@ class ServerApiTests(unittest.TestCase):
             self.assertEqual(refreshed_resp.status_code, 200)
             self.assertEqual(refreshed_resp.json()["network"]["devices"], refreshed_devices)
             self.assertEqual(refresh_renderers.call_count, 1)
+
+    def test_local_ip_detection_handles_172_16_private_boundary(self):
+        self.assertTrue(server._is_local_client_ip("172.16.0.1"))
+        self.assertTrue(server._is_local_client_ip("172.31.255.254"))
+        self.assertFalse(server._is_local_client_ip("172.15.255.255"))
+        self.assertFalse(server._is_local_client_ip("172.32.0.1"))
+
+    def test_auth_middleware_only_skips_private_network_when_disabled_for_all_networks(self):
+        with patch.dict(os.environ, {"VELVET_AUTH_ENFORCE_ALL_NETWORKS": "false"}), \
+             patch.object(server.security, "is_auth_enabled", return_value=True), \
+             patch.object(server.security, "verify_auth", return_value={"allowed": False, "error": "denied"}) as verify_auth:
+            private_resp = self.client.get("/api/config", headers={"X-Forwarded-For": "172.16.5.10"})
+            self.assertEqual(private_resp.status_code, 200)
+            verify_auth.assert_not_called()
+
+            non_private_resp = self.client.get("/api/config", headers={"X-Forwarded-For": "172.15.5.10"})
+            self.assertEqual(non_private_resp.status_code, 401)
+            verify_auth.assert_called_once()
+
+    def test_auth_middleware_accepts_api_key_query_parameter(self):
+        with patch.object(server.security, "is_auth_enabled", return_value=True), \
+             patch.object(server.security, "verify_auth", return_value={"allowed": True, "error": None}) as verify_auth:
+            resp = self.client.get("/api/config?api_key=test-query-key", headers={"X-Forwarded-For": "8.8.8.8"})
+            self.assertEqual(resp.status_code, 200)
+            verify_auth.assert_called_once()
+            kwargs = verify_auth.call_args.kwargs
+            self.assertEqual(kwargs["api_key"], "test-query-key")
+
+    def test_stream_route_allows_tracks_inside_configured_library_roots(self):
+        with self._connect() as conn:
+            conn.execute("DELETE FROM libraries")
+            conn.execute("INSERT INTO libraries (path) VALUES (?)", (str(self.root / "music"),))
+            conn.commit()
+
+        resp = self.client.get("/api/stream/1", headers={"Range": "bytes=0-3"})
+        self.assertIn(resp.status_code, {200, 206})
+
+    def test_stream_route_rejects_tracks_outside_configured_library_roots(self):
+        with self._connect() as conn:
+            conn.execute("DELETE FROM libraries")
+            conn.execute("INSERT INTO libraries (path) VALUES (?)", ("C:/UnrelatedRoot",))
+            conn.commit()
+
+        resp = self.client.get("/api/stream/1", headers={"Range": "bytes=0-3"})
+        self.assertEqual(resp.status_code, 403)
 
 
 if __name__ == "__main__":

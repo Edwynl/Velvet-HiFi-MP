@@ -4,7 +4,7 @@ import sqlite3
 from dsp_engine import FACTORY_DSP_PRESETS, legacy_eq_bands_to_filters
 
 
-LATEST_SCHEMA_VERSION = 7
+LATEST_SCHEMA_VERSION = 8
 
 
 def _table_columns(conn: sqlite3.Connection, table_name: str) -> set[str]:
@@ -257,6 +257,26 @@ def migration_007_seed_expanded_factory_dsp_presets(conn: sqlite3.Connection) ->
     _seed_factory_dsp_presets(conn)
 
 
+def migration_008_add_performance_indexes(conn: sqlite3.Connection) -> None:
+    # Accelerate artist-centric joins and counts.
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_track_artists_artist ON track_artists(artist_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_track_artists_artist_track ON track_artists(artist_id, track_id)")
+
+    # Accelerate album/track ordering and track listings.
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_tracks_album_disc_track ON tracks(album_id, disc_number, track_number)"
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_tracks_date_added ON tracks(date_added DESC)")
+
+    # Accelerate discovery/favorites/genre browsing.
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_albums_created_at ON albums(created_at DESC)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_albums_favorite_created ON albums(is_favorite, created_at DESC)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_albums_genre ON albums(genre)")
+
+    # Accelerate recent history queries and per-track play history.
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_play_history_track_played ON play_history(track_id, played_at DESC)")
+
+
 MIGRATIONS = (
     (1, "create_base_schema", migration_001_create_base_schema),
     (2, "align_album_columns", migration_002_add_album_favorites),
@@ -265,6 +285,7 @@ MIGRATIONS = (
     (5, "add_lookup_indexes", migration_005_add_lookup_indexes),
     (6, "enhance_dsp_profiles", migration_006_enhance_dsp_profiles),
     (7, "seed_expanded_factory_dsp_presets", migration_007_seed_expanded_factory_dsp_presets),
+    (8, "add_performance_indexes", migration_008_add_performance_indexes),
 )
 
 

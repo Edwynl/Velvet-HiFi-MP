@@ -6,6 +6,7 @@ A Roon-like music management system for Windows
 
 import asyncio
 import io
+import ipaddress
 import json
 import logging
 import os
@@ -15,6 +16,7 @@ import sqlite3
 import threading
 import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Optional, AsyncGenerator
@@ -396,9 +398,13 @@ _scan_job = ScanJobState(MUSIC_DIR)
 _cover_cache: TTLCache = TTLCache(maxsize=10000, ttl=86400)  # album_id -> path
 _cover_cache_lock = threading.Lock()
 
-# Thumbnail cache lock for thread-safe thumbnail generation
-_thumb_cache_lock = threading.Lock()
-_thumb_generation_lock = threading.Lock()  # Prevent duplicate thumbnail generation
+def _prime_cover_cache(rows) -> None:
+    """Prime in-memory cover cache from query rows without extra file-system checks."""
+    with _cover_cache_lock:
+        for row in rows:
+            album_id = row["id"]
+            if album_id not in _cover_cache:
+                _cover_cache[album_id] = row["cover_path"] or None
 
 init_db()
 
@@ -622,9 +628,9 @@ def scan_libraries(music_dirs: list[str]):
     # Debug: Check existing records before scan
     db = get_db()
     try:
-        pre_scan_tracks = len(db.execute("SELECT id FROM tracks").fetchall())
-        pre_scan_albums = len(db.execute("SELECT id FROM albums").fetchall())
-        pre_scan_artists = len(db.execute("SELECT id FROM artists").fetchall())
+        pre_scan_tracks = db.execute("SELECT COUNT(*) FROM tracks").fetchone()[0]
+        pre_scan_albums = db.execute("SELECT COUNT(*) FROM albums").fetchone()[0]
+        pre_scan_artists = db.execute("SELECT COUNT(*) FROM artists").fetchone()[0]
         log.warning(
             f"[SCAN] DB state before scan: {pre_scan_tracks} tracks, {pre_scan_albums} albums, {pre_scan_artists} artists"
         )
@@ -952,16 +958,7 @@ def get_artist_albums(artist_id: int):
         (artist_id,)
     ).fetchall()
 
-    # Preload cover paths into cache
-    with _cover_cache_lock:
-        for row in rows:
-            album_id = row["id"]
-            if album_id not in _cover_cache:
-                cover_path = row["cover_path"]
-                if cover_path and Path(cover_path).exists():
-                    _cover_cache[album_id] = str(cover_path)
-                else:
-                    _cover_cache[album_id] = None
+    _prime_cover_cache(rows)
 
     db.close()
     return [dict(r) for r in rows]
@@ -985,16 +982,7 @@ def get_albums(
             to_traditional=to_traditional,
         )
 
-        # Preload cover paths into cache to avoid individual DB queries for each cover
-        with _cover_cache_lock:
-            for row in rows:
-                album_id = row["id"]
-                if album_id not in _cover_cache:
-                    cover_path = row["cover_path"]
-                    if cover_path and Path(cover_path).exists():
-                        _cover_cache[album_id] = str(cover_path)
-                    else:
-                        _cover_cache[album_id] = None
+        _prime_cover_cache(rows)
 
         return rows
     finally:
@@ -1162,16 +1150,7 @@ def recently_added(limit: int = 30):
     finally:
         db.close()
 
-    # Preload cover paths into cache
-    with _cover_cache_lock:
-        for row in rows:
-            album_id = row["id"]
-            if album_id not in _cover_cache:
-                cover_path = row["cover_path"]
-                if cover_path and Path(cover_path).exists():
-                    _cover_cache[album_id] = str(cover_path)
-                else:
-                    _cover_cache[album_id] = None
+    _prime_cover_cache(rows)
 
     return rows
 
@@ -1324,8 +1303,12 @@ def reset_library():
 
 # Queue for pending thumbnail generations (bounded to prevent unbounded memory growth)
 _THUMB_QUEUE_MAX = 10000
+_THUMB_BATCH_SIZE = 24
+_THUMB_WORKERS = max(2, min((os.cpu_count() or 4), 6))
 _thumb_gen_queue: deque[tuple[int, str]] = deque(maxlen=_THUMB_QUEUE_MAX)
 _thumb_gen_queue_lock = threading.Lock()
+_thumb_in_progress: set[tuple[int, str]] = set()
+_thumb_in_progress_lock = threading.Lock()
 
 def _queue_thumbnail_generation(album_id: int, size_name: str):
     """Queue a thumbnail for background generation."""
@@ -1333,13 +1316,24 @@ def _queue_thumbnail_generation(album_id: int, size_name: str):
         if (album_id, size_name) not in _thumb_gen_queue:
             _thumb_gen_queue.append((album_id, size_name))
 
+
+def _load_cover_paths(album_ids: list[int]) -> dict[int, str]:
+    if not album_ids:
+        return {}
+
+    placeholders = ",".join("?" * len(album_ids))
+    with DatabaseConnection() as db:
+        rows = db.execute(
+            f"SELECT id, cover_path FROM albums WHERE id IN ({placeholders})",
+            album_ids,
+        ).fetchall()
+    return {row["id"]: row["cover_path"] for row in rows if row["cover_path"]}
+
 def _process_thumb_queue():
     """Process pending thumbnail generations from the queue."""
-    batch_size = 10  # Process in batches to avoid pool exhaustion
-
     items_to_process = []
     with _thumb_gen_queue_lock:
-        for _ in range(batch_size):
+        for _ in range(_THUMB_BATCH_SIZE):
             if not _thumb_gen_queue:
                 break
             items_to_process.append(_thumb_gen_queue.popleft())
@@ -1347,30 +1341,53 @@ def _process_thumb_queue():
     if not items_to_process:
         return
 
-    # Process batch
+    unique_album_ids = sorted({album_id for album_id, _ in items_to_process})
+    cover_map = _load_cover_paths(unique_album_ids)
+
+    jobs: list[tuple[Path, Path, tuple[int, int], tuple[int, str]]] = []
     for album_id, size_name in items_to_process:
+        thumb_key = (album_id, size_name)
+        with _thumb_in_progress_lock:
+            if thumb_key in _thumb_in_progress:
+                continue
+            _thumb_in_progress.add(thumb_key)
+
         thumb_path = _get_thumb_path(album_id, size_name)
         if thumb_path.exists():
+            with _thumb_in_progress_lock:
+                _thumb_in_progress.discard(thumb_key)
             continue
 
-        with DatabaseConnection() as db:
-            album = db.execute(
-                "SELECT cover_path FROM albums WHERE id=?", (album_id,)
-            ).fetchone()
-
-        if not album or not album["cover_path"]:
+        cover_path = cover_map.get(album_id)
+        if not cover_path:
+            with _thumb_in_progress_lock:
+                _thumb_in_progress.discard(thumb_key)
             continue
 
-        source_path = Path(album["cover_path"])
+        source_path = Path(cover_path)
         if not source_path.exists():
+            with _thumb_in_progress_lock:
+                _thumb_in_progress.discard(thumb_key)
             continue
 
-        with _thumb_generation_lock:
-            if not thumb_path.exists():
-                _generate_thumbnail(source_path, thumb_path, THUMB_SIZES[size_name])
+        jobs.append((source_path, thumb_path, THUMB_SIZES[size_name], thumb_key))
 
-    # Small delay between batches to prevent pool exhaustion
-    time.sleep(0.2)
+    if not jobs:
+        return
+
+    def _run_job(job: tuple[Path, Path, tuple[int, int], tuple[int, str]]) -> bool:
+        source_path, thumb_path, thumb_size, _ = job
+        return _generate_thumbnail(source_path, thumb_path, thumb_size)
+
+    with ThreadPoolExecutor(max_workers=_THUMB_WORKERS, thread_name_prefix="thumb-worker") as executor:
+        futures = [executor.submit(_run_job, job) for job in jobs]
+        for job, future in zip(jobs, futures):
+            _, _, _, thumb_key = job
+            try:
+                future.result()
+            finally:
+                with _thumb_in_progress_lock:
+                    _thumb_in_progress.discard(thumb_key)
 
 # Start background thumbnail worker
 def _start_thumb_worker():
@@ -1666,6 +1683,30 @@ def _stream_file_direct(file_path: str, request: Request):
         "Content-Length": str(size)
     })
 
+
+def _resolve_library_roots(db) -> list[Path]:
+    """Return configured library root directories with MUSIC_DIR fallback."""
+    raw_paths: list[str] = [str(MUSIC_DIR)]
+    try:
+        rows = db.execute("SELECT path FROM libraries").fetchall()
+        raw_paths.extend(row["path"] for row in rows if row and row["path"])
+    except Exception:
+        pass
+
+    roots: list[Path] = []
+    seen: set[str] = set()
+    for raw in raw_paths:
+        try:
+            resolved = Path(raw).resolve()
+        except Exception:
+            continue
+        key = str(resolved).lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        roots.append(resolved)
+    return roots
+
 async def _stream_upsampled(file_path: str, target_rate: str, quality: str = "high",
                            timeout_minutes: int = 60, dsp_filter: str = ""):
     """
@@ -1706,6 +1747,7 @@ async def _stream_upsampled(file_path: str, target_rate: str, quality: str = "hi
     ]
 
     async def gen():
+        proc = None
         try:
             proc = await asyncio.create_subprocess_exec(
                 *cmd,
@@ -1732,7 +1774,7 @@ async def _stream_upsampled(file_path: str, target_rate: str, quality: str = "hi
                 pass
         except Exception as e:
             log.error(f"Stream error: {e}")
-            if proc and not proc.process.poll():
+            if proc and proc.poll() is None:
                 try:
                     proc.kill()
                     await proc.wait()
@@ -1791,6 +1833,7 @@ async def _stream_dop(file_path: str, dop_mode: str, quality: str = "high",
     # Fallback to high-quality PCM upsampling
 
     async def gen():
+        proc = None
         try:
             proc = await asyncio.create_subprocess_exec(
                 *cmd,
@@ -1815,7 +1858,7 @@ async def _stream_dop(file_path: str, dop_mode: str, quality: str = "high",
                 pass
         except Exception as e:
             log.error(f"DoP stream error: {e}")
-            if proc and not proc.process.poll():
+            if proc and proc.poll() is None:
                 try:
                     proc.kill()
                     await proc.wait()
@@ -1852,6 +1895,7 @@ async def _stream_with_dsp(file_path: str, dsp_filter: str, timeout_minutes: int
     ]
 
     async def gen():
+        proc = None
         try:
             proc = await asyncio.create_subprocess_exec(
                 *cmd,
@@ -1876,7 +1920,7 @@ async def _stream_with_dsp(file_path: str, dsp_filter: str, timeout_minutes: int
                 pass
         except Exception as e:
             log.error(f"DSP stream error: {e}")
-            if proc and not proc.process.poll():
+            if proc and proc.poll() is None:
                 try:
                     proc.kill()
                     await proc.wait()
@@ -1914,6 +1958,7 @@ async def stream_track(
     """
     db = get_db()
     track = db.execute("SELECT * FROM tracks WHERE id=?", (track_id,)).fetchone()
+    library_roots = _resolve_library_roots(db)
 
     # Get DSP profile if specified
     dsp_profile = None
@@ -1928,13 +1973,20 @@ async def stream_track(
         raise HTTPException(404, "Track not found")
 
     fp = track["file_path"]
-    # Validate resolved path is within MUSIC_DIR to prevent path traversal
+    # Validate resolved path is within configured library roots.
+    # This keeps traversal protection while supporting multi-library setups.
     try:
         resolved_path = Path(fp).resolve()
-        if not resolved_path.is_relative_to(MUSIC_DIR):
-            raise HTTPException(403, "Access denied: path outside music directory")
     except Exception:
         raise HTTPException(403, "Access denied: invalid path")
+
+    in_allowed_root = any(
+        resolved_path == root or resolved_path.is_relative_to(root)
+        for root in library_roots
+    )
+    if not in_allowed_root:
+        raise HTTPException(403, "Access denied: path outside configured libraries")
+
     if not resolved_path.exists():
         raise HTTPException(404, f"File not found on disk: {fp}")
 
@@ -2071,6 +2123,7 @@ def _refresh_folder_sync(folder_path: str):
             on_progress=lambda progress, current_file: _scan_job.update(progress=progress, current_file=current_file),
             on_track_added=lambda: _scan_job.increment("tracks_added"),
             on_error=lambda message: log.error(message),
+            scan_batch_size=SCAN_BATCH_SIZE,
         )
 
         log.warning(f"[REFRESH] Deleted {result['deleted_tracks']} tracks from {folder_path}")
@@ -2120,21 +2173,29 @@ def generate_thumbnails(background_tasks: BackgroundTasks):
         finally:
             db.close()
 
-        total = len(albums)
+        jobs: list[tuple[Path, Path, tuple[int, int]]] = []
+        for album in albums:
+            source_path = Path(album["cover_path"])
+            if not source_path.exists():
+                continue
+
+            album_id = album["id"]
+            for size_name, size in THUMB_SIZES.items():
+                thumb_path = _get_thumb_path(album_id, size_name)
+                if thumb_path.exists():
+                    continue
+                jobs.append((source_path, thumb_path, size))
+
         generated = 0
         failed = 0
-
-        for album in albums:
-            album_id = album["id"]
-            for size_name in THUMB_SIZES:
-                thumb_path = _get_thumb_path(album_id, size_name)
-                if not thumb_path.exists():
-                    source_path = Path(album["cover_path"])
-                    if source_path.exists():
-                        if _generate_thumbnail(source_path, thumb_path, THUMB_SIZES[size_name]):
-                            generated += 1
-                        else:
-                            failed += 1
+        if jobs:
+            with ThreadPoolExecutor(max_workers=_THUMB_WORKERS, thread_name_prefix="thumb-prebuild") as executor:
+                futures = [executor.submit(_generate_thumbnail, src, thumb, size) for src, thumb, size in jobs]
+                for future in futures:
+                    if future.result():
+                        generated += 1
+                    else:
+                        failed += 1
 
         log.info(f"Thumbnail generation complete: {generated} created, {failed} failed")
 
@@ -3000,6 +3061,27 @@ def get_client_ip(request: Request) -> str:
     return request.client.host if request.client else "unknown"
 
 
+def _is_local_client_ip(client_ip: str) -> bool:
+    """Return True when the IP belongs to loopback/private ranges."""
+    if not client_ip:
+        return False
+
+    normalized = client_ip.strip().lower()
+    if normalized in {"localhost", "0.0.0.0"}:
+        return True
+
+    # Remove IPv6 zone index if present (e.g. fe80::1%eth0)
+    if "%" in normalized:
+        normalized = normalized.split("%", 1)[0]
+
+    try:
+        ip_obj = ipaddress.ip_address(normalized)
+    except ValueError:
+        return False
+
+    return ip_obj.is_loopback or ip_obj.is_private
+
+
 @app.get("/api/security/status")
 def get_security_status():
     """Get security configuration status."""
@@ -3088,16 +3170,7 @@ async def auth_middleware(request: Request, call_next):
     # Only skip if VELVET_AUTH_ENFORCE_ALL_NETWORKS is not set to True (default secure)
     client_ip = get_client_ip(request)
     enforce_all_networks = os.getenv("VELVET_AUTH_ENFORCE_ALL_NETWORKS", "true").lower() in ("true", "1", "yes")
-    is_local = (
-        not enforce_all_networks and
-        (
-            client_ip in ["127.0.0.1", "localhost", "::1", "0.0.0.0"] or
-            client_ip.startswith("192.168.") or
-            client_ip.startswith("10.") or
-            client_ip.startswith("172.") or
-            client_ip.startswith("127.")
-        )
-    )
+    is_local = (not enforce_all_networks) and _is_local_client_ip(client_ip)
 
     # For local network requests, skip auth only when enforce_all_networks is False
     if is_local:
@@ -3107,22 +3180,23 @@ async def auth_middleware(request: Request, call_next):
     path = request.url.path
 
     # Skip auth for certain endpoints
-    skip_auth = [
-        "/",
+    skip_auth_prefixes = [
         "/api/security/",
         "/api/health",
         "/api/health/",
         "/docs",
         "/openapi.json",
-        "/redoc"
+        "/redoc",
     ]
-    should_skip = any(path.startswith(s) for s in skip_auth)
+    should_skip = (path == "/") or any(path.startswith(prefix) for prefix in skip_auth_prefixes)
 
     # Require auth for remote access if enabled
     if security.is_auth_enabled() and not should_skip:
+        password = request.headers.get("X-Password") or request.query_params.get("password")
+        api_key = request.headers.get("X-API-Key") or request.query_params.get("api_key")
         auth_result = security.verify_auth(
-            password=request.headers.get("X-Password"),
-            api_key=request.headers.get("X-API-Key"),
+            password=password,
+            api_key=api_key,
             ip=client_ip
         )
 

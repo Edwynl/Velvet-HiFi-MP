@@ -66,7 +66,7 @@ def scan_music_dirs(
 
     existing_fps = {
         row["file_path"] if isinstance(row, sqlite3.Row) else row[0]
-        for row in db.execute("SELECT file_path FROM tracks").fetchall()
+        for row in db.execute("SELECT file_path FROM tracks")
     }
     artists_cache: dict[str, int] = {}
     albums_cache: dict[tuple[int, str], int] = {}
@@ -123,6 +123,7 @@ def refresh_folder_records(
     on_progress: Callable[[int, str], None],
     on_track_added: Callable[[], dict | None],
     on_error: Callable[[str], None],
+    scan_batch_size: int = 50,
 ) -> dict:
     tracks_to_delete = db.execute(
         "SELECT id, file_path FROM tracks WHERE file_path LIKE ?",
@@ -145,6 +146,9 @@ def refresh_folder_records(
     artists_cache: dict[str, int] = {}
     albums_cache: dict[tuple[int, str], int] = {}
 
+    pending_commits = 0
+    commit_every = max(10, scan_batch_size)
+
     for index, file_path in enumerate(all_files, start=1):
         on_progress(index, os.path.basename(file_path))
         try:
@@ -165,8 +169,14 @@ def refresh_folder_records(
 
             _insert_track_and_artists(db, metadata, file_path, album_id, primary_artist_id, individual_artist_ids)
             on_track_added()
+            pending_commits += 1
+            if pending_commits >= commit_every:
+                db.commit()
+                pending_commits = 0
         except Exception as exc:
             on_error(f"[REFRESH] Error processing {file_path}: {exc}")
+
+    if pending_commits:
         db.commit()
 
     return {"deleted_tracks": len(track_ids), "discovered_files": len(all_files)}

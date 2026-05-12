@@ -4271,6 +4271,153 @@ input[type=range]::-webkit-slider-thumb:hover { background: var(--gold); }
   }
 
   @media (min-width: 1024px) {
+    /* Desktop VU: make meters much larger and de-emphasize secondary UI */
+    .mobile-vu-overlay {
+      gap: 14px !important;
+      padding: 14px 28px 20px !important;
+    }
+    .mobile-vu-container {
+      gap: 54px !important;
+      align-items: flex-end !important;
+      margin-top: 6px !important;
+    }
+    .mobile-vu-meter {
+      width: 430px !important;
+      height: 240px !important;
+      border-radius: 14px !important;
+    }
+    .mobile-vu-scale {
+      padding-bottom: 72px !important;
+    }
+    .mobile-vu-arc {
+      top: 55px !important;
+      width: 336px !important;
+      height: 336px !important;
+      border-top-width: 2px !important;
+    }
+    .mobile-vu-markings {
+      top: 28px !important;
+      width: 302px !important;
+      font-size: 14px !important;
+      letter-spacing: 0.08em !important;
+    }
+    .mobile-vu-label {
+      bottom: 30px !important;
+    }
+    .mobile-vu-channel {
+      font-size: 11px !important;
+      letter-spacing: 0.16em !important;
+    }
+    .mobile-vu-needle-wrap {
+      width: 4px !important;
+      height: 86% !important;
+    }
+    .mobile-vu-pivot {
+      width: 18px !important;
+      height: 18px !important;
+      bottom: -8px !important;
+    }
+    .mobile-vu-tube-glow {
+      width: 88px !important;
+      height: 38px !important;
+      filter: blur(14px) !important;
+    }
+
+    .mobile-vu-tech {
+      gap: 6px !important;
+    }
+    .mobile-vu-track-info #mobile-vu-track-title {
+      font-size: 15px !important;
+      line-height: 1.2 !important;
+      max-width: 72vw !important;
+      white-space: nowrap !important;
+      overflow: hidden !important;
+      text-overflow: ellipsis !important;
+    }
+    .mobile-vu-track-info #mobile-vu-track-artist {
+      font-size: 9px !important;
+      margin-top: 2px !important;
+      letter-spacing: 0.14em !important;
+    }
+    .mobile-vu-quality-pill {
+      padding: 4px 10px !important;
+      gap: 5px !important;
+    }
+    .mobile-vu-quality-pill span {
+      font-size: 9px !important;
+    }
+    #mobile-vu-status {
+      font-size: 9px !important;
+      letter-spacing: 0.14em !important;
+      margin-top: 6px !important;
+    }
+
+    .mobile-vu-controls {
+      gap: 12px !important;
+      max-width: 520px !important;
+      margin-top: 0 !important;
+    }
+    .mobile-vu-progress-row {
+      padding: 0 12px !important;
+      gap: 10px !important;
+    }
+    .mobile-vu-time {
+      font-size: 9px !important;
+      min-width: 30px !important;
+    }
+    .mobile-vu-btns {
+      gap: 26px !important;
+    }
+    .mobile-vu-btn svg {
+      width: 18px !important;
+      height: 18px !important;
+    }
+    .mobile-vu-btn-play {
+      width: 48px !important;
+      height: 48px !important;
+    }
+    .mobile-vu-btn-play svg {
+      width: 22px !important;
+      height: 22px !important;
+    }
+    .mobile-vu-style-btn {
+      font-size: 8px !important;
+      padding: 5px 10px !important;
+    }
+    .mobile-vu-close {
+      width: 32px !important;
+      height: 32px !important;
+    }
+    .mobile-vu-close svg {
+      width: 15px !important;
+      height: 15px !important;
+    }
+
+    .mobile-vu-overlay.style-2 .mobile-vu-meter {
+      width: 430px !important;
+      height: 240px !important;
+    }
+    .mobile-vu-overlay.style-2 .mobile-vu-scale {
+      padding-bottom: 72px !important;
+    }
+    .mobile-vu-overlay.style-2 .mobile-vu-arc {
+      top: 55px !important;
+      width: 336px !important;
+      height: 336px !important;
+    }
+    .mobile-vu-overlay.style-2 .mobile-vu-markings {
+      top: 28px !important;
+      width: 302px !important;
+      font-size: 14px !important;
+    }
+    .mobile-vu-overlay.style-2 .mobile-vu-channel {
+      font-size: 12px !important;
+    }
+    .mobile-vu-overlay.style-2 .mobile-vu-needle-wrap {
+      width: 4px !important;
+      height: 86% !important;
+    }
+
     .mobile-player-overlay {
       background: #0e0e10 !important;
     }
@@ -6636,7 +6783,8 @@ function getAudioLevel() {
 function streamUrl(trackId, upsample) {
   const u = upsample || state.upsample;
   const dsp = state.dspProfile ? `&dsp=${encodeURIComponent(state.dspProfile)}` : '';
-  return `/api/stream/${trackId}?upsample=${u}${dsp}`;
+  const apiKeyParam = authState.apiKey ? `&api_key=${encodeURIComponent(authState.apiKey)}` : '';
+  return `/api/stream/${trackId}?upsample=${u}${dsp}${apiKeyParam}`;
 }
 
 // DO NOT call initAudioAnalyser() here — audio must stay decoupled from AudioContext
@@ -7788,6 +7936,17 @@ function startVUAnimation() {
   let rightAngle = -48;
   let peakLeftAngle = -48;  // Peak needle — moves fast up, decays slowly
   let peakRightAngle = -48;
+  const VU_RANGE_DEGREES = 60;   // -48deg to +12deg
+  const VU_NOISE_FLOOR = 0.003;  // Ignore tiny background noise
+  const VU_SENSITIVITY = 2.45;   // Higher = more meter movement at low-mid levels
+  const VU_CURVE_EXP = 0.72;     // <1 boosts quiet passages; >1 tames them
+
+  function mapLevelToNeedle(level) {
+    const cleaned = Math.max(0, (Number(level) || 0) - VU_NOISE_FLOOR);
+    const curved = Math.pow(cleaned, VU_CURVE_EXP) * VU_SENSITIVITY;
+    const normalized = Math.max(0, Math.min(1, curved));
+    return -48 + normalized * VU_RANGE_DEGREES;
+  }
 
   function animate(time) {
     if (!vuMeterOpen) {
@@ -7804,27 +7963,27 @@ function startVUAnimation() {
       const hasSignal = levels.left > 0.005 || levels.right > 0.005;
       if (UI['mobile-vu-status']) UI['mobile-vu-status'].textContent = hasSignal ? 'Signal active' : 'Waiting for audio';
 
-      // Map audio level to needle angle: -48deg (rest) to +12deg (max)
-      const leftTarget = -48 + levels.left * 60;
-      const rightTarget = -48 + levels.right * 60;
+      // Map level to needle with boosted low-level sensitivity.
+      const leftTarget = mapLevelToNeedle(levels.left);
+      const rightTarget = mapLevelToNeedle(levels.right);
 
       // Peak hold: needle can rise instantly with audio but decays slowly
       // when the signal drops — mimics real analog VU meter behavior.
       if (leftTarget > peakLeftAngle) {
         peakLeftAngle = leftTarget; // Peak rises instantly to new level
       } else {
-        peakLeftAngle += (leftTarget - peakLeftAngle) * 0.04; // Slow decay toward current level
+        peakLeftAngle += (leftTarget - peakLeftAngle) * 0.07; // Slightly faster decay for livelier movement
       }
       if (rightTarget > peakRightAngle) {
         peakRightAngle = rightTarget;
       } else {
-        peakRightAngle += (rightTarget - peakRightAngle) * 0.04;
+        peakRightAngle += (rightTarget - peakRightAngle) * 0.07;
       }
 
       // Visible needle: fixed lerp coefficient (frame-rate independent).
       // 0.15 means ~15% of the gap is closed each frame at 60fps.
-      leftAngle += (peakLeftAngle - leftAngle) * 0.15;
-      rightAngle += (peakRightAngle - rightAngle) * 0.15;
+      leftAngle += (peakLeftAngle - leftAngle) * 0.22;
+      rightAngle += (peakRightAngle - rightAngle) * 0.22;
     } else {
       if (UI['mobile-vu-status']) UI['mobile-vu-status'].textContent = 'No signal';
       // Return to rest position when not playing

@@ -1,9 +1,9 @@
 import logging
+import os
 import sqlite3
 import threading
 import time
 from pathlib import Path
-from queue import Empty, Queue
 
 from settings import get_settings
 
@@ -11,24 +11,45 @@ from settings import get_settings
 settings = get_settings()
 DB_PATH = settings.db_path
 
-DB_POOL_SIZE = 200
-POOL_USAGE_WARNING = 150
-POOL_RECYCLE_THRESHOLD = 20
+CPU_COUNT = os.cpu_count() or 4
+DB_POOL_SIZE = max(4, min(CPU_COUNT * 2, 16))
+POOL_USAGE_WARNING = max(2, DB_POOL_SIZE - 4)
+POOL_RECYCLE_THRESHOLD = max(2, DB_POOL_SIZE // 4)
 POOL_MAX_IDLE_TIME = 300
 
-_db_pool = None
-_pool_lock = threading.Lock()
+_thread_local = threading.local()
+_registry_lock = threading.Lock()
 _pool_recycle_lock = threading.Lock()
 _pool_recovery_in_progress = False
 _pool_last_recycle_time = time.time()
+_connection_registry: dict[int, dict] = {}
 
 log = logging.getLogger("velvet")
 
 
-def _create_db_connection(db_path: Path | None = None):
-    """Create a new database connection with optimized settings."""
+class _ManagedSQLiteConnection(sqlite3.Connection):
+    """SQLite connection that treats .close() as pool release.
+
+    Existing application code calls `db.close()` in many places.
+    With thread-local pooling, we keep the physical connection alive and
+    close it only during recycle/cleanup via `force_close()`.
+    """
+
+    def close(self):  # type: ignore[override]
+        return None
+
+    def force_close(self) -> None:
+        super().close()
+
+
+def _create_db_connection(db_path: Path | None = None) -> sqlite3.Connection:
+    """Create a thread-owned SQLite connection with tuned pragmas."""
     target_path = Path(db_path) if db_path else DB_PATH
-    conn = sqlite3.connect(str(target_path), check_same_thread=False, timeout=30.0)
+    conn = sqlite3.connect(
+        str(target_path),
+        timeout=30.0,
+        factory=_ManagedSQLiteConnection,
+    )
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA synchronous=NORMAL")
@@ -39,148 +60,137 @@ def _create_db_connection(db_path: Path | None = None):
     return conn
 
 
-def _init_db_pool():
-    """Initialize the database connection pool."""
-    global _db_pool, _pool_last_recycle_time
-    if _db_pool is None:
-        with _pool_lock:
-            if _db_pool is None:
-                _db_pool = Queue(maxsize=DB_POOL_SIZE)
-                for _ in range(DB_POOL_SIZE):
-                    _db_pool.put(_create_db_connection())
-                _pool_last_recycle_time = time.time()
-                log.warning(
-                    "[DB] Connection pool initialized with %s connections",
-                    DB_POOL_SIZE,
-                )
+def _get_thread_connection() -> sqlite3.Connection | None:
+    conn = getattr(_thread_local, "connection", None)
+    return conn
 
 
-def _recycle_pool():
-    """Recycle the database connection pool with fresh connections."""
-    global _db_pool, _pool_recovery_in_progress, _pool_last_recycle_time
+def _set_thread_connection(conn: sqlite3.Connection) -> None:
+    _thread_local.connection = conn
+    thread_id = threading.get_ident()
+    with _registry_lock:
+        _connection_registry[thread_id] = {
+            "connection": conn,
+            "last_used": time.time(),
+            "stale": False,
+        }
 
-    if _pool_recovery_in_progress:
-        log.warning("[DB] Pool recovery already in progress, skipping")
-        return
 
-    with _pool_recycle_lock:
-        if _pool_recovery_in_progress:
-            return
-        _pool_recovery_in_progress = True
-
+def _is_connection_healthy(conn: sqlite3.Connection) -> bool:
     try:
-        log.warning("[DB] Starting pool recycling...")
-        old_pool = _db_pool
-        _db_pool = Queue(maxsize=DB_POOL_SIZE)
-
-        closed = 0
-        while True:
-            try:
-                conn = old_pool.get_nowait()
-                try:
-                    conn.close()
-                except Exception:
-                    pass
-                closed += 1
-            except Empty:
-                break
-
-        for _ in range(DB_POOL_SIZE):
-            _db_pool.put(_create_db_connection())
-
-        _pool_last_recycle_time = time.time()
-        log.warning(
-            "[DB] Pool recycled: %s old connections closed, %s fresh connections created",
-            closed,
-            DB_POOL_SIZE,
-        )
-    except Exception as exc:
-        log.error("[DB] Pool recycle failed: %s", exc)
-    finally:
-        _pool_recovery_in_progress = False
+        conn.execute("SELECT 1")
+        return True
+    except Exception:
+        return False
 
 
-def _trigger_pool_recovery():
-    """Trigger pool recovery if the pool is critically low."""
-    if _db_pool is None:
-        return
+def _close_current_thread_connection() -> None:
+    conn = _get_thread_connection()
+    if conn is not None:
+        try:
+            if hasattr(conn, "force_close"):
+                conn.force_close()  # type: ignore[attr-defined]
+            else:
+                conn.close()
+        except Exception:
+            pass
 
-    remaining = _db_pool.qsize()
-    if remaining <= POOL_RECYCLE_THRESHOLD and not _pool_recovery_in_progress:
-        log.warning(
-            "[DB] Pool critically low (%s/%s), triggering recovery",
-            remaining,
-            DB_POOL_SIZE,
-        )
-        recovery_thread = threading.Thread(target=_recycle_pool, daemon=True)
-        recovery_thread.start()
+    if hasattr(_thread_local, "connection"):
+        _thread_local.connection = None
 
-
-def get_db():
-    """Get a database connection from the pool."""
-    if _db_pool is None:
-        _init_db_pool()
-
-    try:
-        conn = _db_pool.get(timeout=30.0)
-        remaining = _db_pool.qsize()
-        if remaining < (DB_POOL_SIZE - POOL_USAGE_WARNING):
-            log.warning("[DB] Pool getting low: %s/%s available", remaining, DB_POOL_SIZE)
-            _trigger_pool_recovery()
-        return conn
-    except Empty:
-        log.warning("[DB] Pool exhausted, creating temporary connection")
-        _trigger_pool_recovery()
-        return _create_db_connection()
+    thread_id = threading.get_ident()
+    with _registry_lock:
+        _connection_registry.pop(thread_id, None)
 
 
-def _return_db(conn):
-    """Return a database connection to the pool."""
+def _is_current_thread_connection_stale() -> bool:
+    thread_id = threading.get_ident()
+    with _registry_lock:
+        info = _connection_registry.get(thread_id)
+        return bool(info and info.get("stale"))
+
+
+def get_db() -> sqlite3.Connection:
+    """Return the current thread's connection, creating/replacing as needed."""
+    conn = _get_thread_connection()
+    if conn is not None:
+        if _is_current_thread_connection_stale() or not _is_connection_healthy(conn):
+            _close_current_thread_connection()
+        else:
+            thread_id = threading.get_ident()
+            with _registry_lock:
+                if thread_id in _connection_registry:
+                    _connection_registry[thread_id]["last_used"] = time.time()
+            return conn
+
+    conn = _create_db_connection()
+    _set_thread_connection(conn)
+
+    active_connections = len(_connection_registry)
+    if active_connections > POOL_USAGE_WARNING:
+        log.warning("[DB] High active thread connections: %s/%s", active_connections, DB_POOL_SIZE)
+
+    return conn
+
+
+def _return_db(conn: sqlite3.Connection | None) -> None:
+    """Compatibility no-op for thread-local connections.
+
+    We keep the thread-owned connection alive for reuse and only close
+    non-thread-owned/invalid connections.
+    """
     if conn is None:
         return
 
-    if _db_pool is not None and not _db_pool.full():
-        try:
-            conn.rollback()
-            _db_pool.put_nowait(conn)
-            return
-        except Exception as exc:
-            log.warning("[DB] Failed to return connection to pool: %s", exc)
+    current_thread_conn = _get_thread_connection()
+    if current_thread_conn is conn:
+        if not _is_connection_healthy(conn):
+            _close_current_thread_connection()
+        return
 
     try:
-        conn.close()
+        if hasattr(conn, "force_close"):
+            conn.force_close()  # type: ignore[attr-defined]
+        else:
+            conn.close()
     except Exception:
         pass
 
 
 class DatabaseConnection:
-    """Context manager that returns pooled connections automatically."""
+    """Context manager for obtaining and returning db connections."""
 
     def __init__(self):
-        self.conn = None
+        self.conn: sqlite3.Connection | None = None
 
-    def __enter__(self):
+    def __enter__(self) -> sqlite3.Connection:
         self.conn = get_db()
         return self.conn
 
     def __exit__(self, exc_type, exc_val, exc_tb):
-        if self.conn:
+        if exc_type is not None and self.conn is not None:
+            try:
+                self.conn.rollback()
+            except Exception:
+                pass
+        if self.conn is not None:
             _return_db(self.conn)
         return False
 
 
 def get_pool_status() -> dict:
-    """Return a snapshot of pool health for diagnostics."""
-    available = 0
-    initialized = _db_pool is not None
-    if initialized:
-        available = _db_pool.qsize()
+    """Return compatibility health snapshot for diagnostics endpoints."""
+    with _registry_lock:
+        active = len(_connection_registry)
+
+    initialized = active > 0
+    available = max(DB_POOL_SIZE - active, 0)
 
     if not initialized:
         health = "uninitialized"
-    elif available <= POOL_RECYCLE_THRESHOLD:
+    elif active >= DB_POOL_SIZE:
         health = "degraded"
-    elif available <= (DB_POOL_SIZE - POOL_USAGE_WARNING):
+    elif active >= POOL_USAGE_WARNING:
         health = "warning"
     else:
         health = "healthy"
@@ -191,29 +201,80 @@ def get_pool_status() -> dict:
         "total": DB_POOL_SIZE,
         "recycling": _pool_recovery_in_progress,
         "recycle_threshold": POOL_RECYCLE_THRESHOLD,
-        "usage_warning_threshold": DB_POOL_SIZE - POOL_USAGE_WARNING,
+        "usage_warning_threshold": POOL_USAGE_WARNING,
         "last_recycle_time": _pool_last_recycle_time,
         "health": health,
     }
 
 
+def _recycle_pool() -> None:
+    global _pool_recovery_in_progress, _pool_last_recycle_time
+
+    with _pool_recycle_lock:
+        if _pool_recovery_in_progress:
+            return
+        _pool_recovery_in_progress = True
+
+    try:
+        with _registry_lock:
+            entries = list(_connection_registry.values())
+            _connection_registry.clear()
+
+        closed = 0
+        for info in entries:
+            try:
+                conn = info["connection"]
+                if hasattr(conn, "force_close"):
+                    conn.force_close()  # type: ignore[attr-defined]
+                else:
+                    conn.close()
+                closed += 1
+            except Exception:
+                pass
+
+        # If recycle is initiated from current thread, clear its stale handle.
+        if hasattr(_thread_local, "connection"):
+            _thread_local.connection = None
+
+        _pool_last_recycle_time = time.time()
+        log.warning("[DB] Recycled %s thread-local connection(s)", closed)
+    finally:
+        _pool_recovery_in_progress = False
+
+
+def _mark_idle_connections_stale() -> None:
+    while True:
+        time.sleep(60)
+        now = time.time()
+        with _registry_lock:
+            for info in _connection_registry.values():
+                if now - info["last_used"] > POOL_MAX_IDLE_TIME:
+                    info["stale"] = True
+
+
 def start_pool_recycle() -> dict:
-    """Start background pool recycling if possible."""
-    if _db_pool is None:
+    """Trigger async recycle and keep original endpoint contract."""
+    with _registry_lock:
+        active = len(_connection_registry)
+
+    if active == 0:
         return {"started": False, "reason": "uninitialized", "connections_before_recycle": 0}
 
     if _pool_recovery_in_progress:
         return {
             "started": False,
             "reason": "already_running",
-            "connections_before_recycle": _db_pool.qsize(),
+            "connections_before_recycle": active,
         }
 
-    pool_size_before = _db_pool.qsize()
-    recycle_thread = threading.Thread(target=_recycle_pool, daemon=True)
+    recycle_thread = threading.Thread(target=_recycle_pool, daemon=True, name="DBPoolRecycle")
     recycle_thread.start()
     return {
         "started": True,
         "reason": "started",
-        "connections_before_recycle": pool_size_before,
+        "connections_before_recycle": active,
     }
+
+
+_cleanup_thread = threading.Thread(target=_mark_idle_connections_stale, daemon=True, name="DBPoolIdleCleanup")
+_cleanup_thread.start()
