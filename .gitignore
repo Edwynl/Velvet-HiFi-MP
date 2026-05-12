@@ -81,3 +81,10 @@ nul
 
 # Machine-local scratch files
 track_path.txt
+
+# Local audit/optimization notes (not runtime artifacts)
+04.07 bug fix/
+05.12 KIMI 优化建议/
+
+# Local HTML backup snapshots
+static/*backup*.html
