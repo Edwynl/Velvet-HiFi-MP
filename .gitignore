@@ -88,3 +88,6 @@ track_path.txt
 
 # Local HTML backup snapshots
 static/*backup*.html
+
+# Design reference assets (non-runtime)
+Stitch/
