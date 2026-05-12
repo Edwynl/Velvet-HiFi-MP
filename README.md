@@ -8,6 +8,15 @@ VELVET is a premium, minimalist personal music server designed for audiophiles. 
 
 [中文介绍](#中文介绍)
 
+## Recent Improvements (2026-05-12)
+
+- Playback reliability fixes for click-to-play flow (desktop/web audio output now initializes more consistently).
+- VU meter desktop tuning: larger visual footprint and higher sensitivity range.
+- Database performance upgrades: query-path tuning and safer pooled connection usage.
+- Cover-art cache refinements to reduce repeated image fetch/processing cost.
+- Library scan throughput improvements with better batch handling.
+- Parallel thumbnail generation path for faster media indexing.
+
 ---
 
 ## Features
@@ -53,6 +62,15 @@ copy .env.example .env
 **最新稳定版：[velvet-v2.4.19](https://github.com/Edwynl/Velvet-HiFi-MP/releases/tag/velvet-v2.4.19)** — 当前 GitHub `main` 对应版本，并加入更便携的安装配置流程。
 
 VELVET 是一款专为音乐发烧友打造的高级简约私人音乐服务器。它提供了一个具有电影感、高性能的 Web 界面，用于管理和串流您的本地音乐库，原生支持高分辨率音频格式，并为高端播放设备提供 UPnP/DLNA 整合支持。
+
+## 最近优化（2026-05-12）
+
+- 修复了点击歌曲后播放链路的稳定性问题（桌面/Web 音频输出初始化更稳定）。
+- 桌面端 VU meter 调整：放大显示区域并提升灵敏度范围。
+- 数据库性能优化：查询路径调优与连接池使用安全性增强。
+- 封面缓存策略改进，减少重复抓取与重复处理开销。
+- 批量扫描吞吐优化，提升媒体库扫描效率。
+- 缩略图并行生成路径优化，加快入库与预览准备速度。
 
 ## 核心特性
 
