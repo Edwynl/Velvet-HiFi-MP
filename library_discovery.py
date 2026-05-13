@@ -64,7 +64,11 @@ def search_tracks(
     to_simplified: Callable[[str], str],
     to_traditional: Callable[[str], str],
 ) -> dict:
-    variants = get_all_variants(q)
+    q = (q or "").strip()
+    variants = get_all_variants(q) if q else []
+    if not variants:
+        return {"tracks": []}
+
     conditions = []
     params = []
     for variant in variants:
@@ -104,6 +108,15 @@ def search_tracks(
     matched_track_ids = {row["id"] for row in tracks}
 
     if len(tracks) < limit:
+        remaining = max(1, limit - len(tracks))
+        exclude_ids = ",".join("?" * len(matched_track_ids))
+        if matched_track_ids:
+            filter_clause = f"WHERE t.id NOT IN ({exclude_ids})"
+            filter_params = list(matched_track_ids)
+        else:
+            filter_clause = ""
+            filter_params = []
+
         all_tracks: list[sqlite3.Row] = db.execute(
             """
             SELECT DISTINCT t.id, t.title, t.duration, t.format, t.track_number,
@@ -116,6 +129,8 @@ def search_tracks(
             LEFT JOIN track_artists ta ON t.id = ta.track_id
             LEFT JOIN artists ar_all ON ta.artist_id = ar_all.id
             """
+            + f"\n{filter_clause}\nLIMIT ?",
+            (*filter_params, remaining * 3),
         ).fetchall()
 
         for track_row in all_tracks:
@@ -152,9 +167,24 @@ def search_tracks(
                 if track["id"] in matched_track_ids:
                     break
 
-        matched_tracks = [dict(row) for row in all_tracks if row["id"] in matched_track_ids]
-        matched_tracks.sort(key=lambda item: (0 if q.lower() in item["title"].lower() else 1, item["title"].lower()))
-        return {"tracks": matched_tracks[:limit]}
+        if len(matched_track_ids) > len(tracks):
+            id_placeholders = ",".join("?" * len(matched_track_ids))
+            final_rows = db.execute(
+                f"""
+                SELECT DISTINCT t.id, t.title, t.duration, t.format, t.track_number,
+                       t.composer, t.work_title, t.performer, t.conductor, t.ensemble,
+                       ar_primary.name as artist_name, al.title as album_title,
+                       al.id as album_id, al.year
+                FROM tracks t
+                JOIN artists ar_primary ON t.artist_id = ar_primary.id
+                JOIN albums al ON t.album_id = al.id
+                WHERE t.id IN ({id_placeholders})
+                ORDER BY (LOWER(t.title) = ?) DESC, LOWER(t.title)
+                LIMIT ?
+                """,
+                (*matched_track_ids, q.lower(), limit),
+            ).fetchall()
+            return {"tracks": [dict(row) for row in final_rows]}
 
     return {"tracks": [dict(row) for row in tracks]}
 

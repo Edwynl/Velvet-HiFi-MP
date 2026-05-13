@@ -38,8 +38,8 @@ def discover_audio_files(paths: list[str], audio_extensions: set[str]) -> list[s
             continue
         for root, dirs, files in os.walk(root_path):
             dirs[:] = sorted(directory for directory in dirs if not directory.startswith("."))
-            for name in files:
-                if name.startswith("._"):
+            for name in sorted(files):
+                if name.startswith("._") or name.startswith("."):
                     continue
                 if Path(name).suffix.lower() in audio_extensions:
                     all_files.append(os.path.join(root, name))
@@ -134,9 +134,11 @@ def refresh_folder_records(
         return {"deleted_tracks": 0, "discovered_files": 0}
 
     track_ids = [row["id"] if isinstance(row, sqlite3.Row) else row[0] for row in tracks_to_delete]
-    for track_id in track_ids:
-        db.execute("DELETE FROM track_artists WHERE track_id=?", (track_id,))
     placeholders = ",".join("?" * len(track_ids))
+    db.execute(
+        f"DELETE FROM track_artists WHERE track_id IN ({placeholders})",
+        track_ids,
+    )
     db.execute(f"DELETE FROM tracks WHERE id IN ({placeholders})", track_ids)
     db.commit()
 

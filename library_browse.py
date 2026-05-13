@@ -47,7 +47,8 @@ def fetch_artists(
     to_simplified: Callable[[str], str],
     to_traditional: Callable[[str], str],
 ) -> list[dict]:
-    variants = get_all_variants(search)
+    search = (search or "").strip()
+    variants = get_all_variants(search) if search else []
 
     if not search:
         rows = db.execute(
@@ -66,21 +67,23 @@ def fetch_artists(
         ).fetchall()
         return _row_dicts(rows)
 
-    like_patterns = [f"%{variant}%" for variant in variants]
-    conditions = " OR ".join(["ar.name LIKE ?"] * len(like_patterns))
-    direct_rows = db.execute(
-        f"""
-        SELECT ar.*,
-               COUNT(DISTINCT t.album_id) as album_count,
-               COUNT(DISTINCT ta.track_id) as track_count
-        FROM artists ar
-        LEFT JOIN track_artists ta ON ar.id = ta.artist_id
-        LEFT JOIN tracks t ON ta.track_id = t.id
-        WHERE {conditions}
-        GROUP BY ar.id
-        """,
-        like_patterns,
-    ).fetchall()
+    like_patterns = [f"%{variant}%" for variant in variants if variant]
+    direct_rows = []
+    if like_patterns:
+        conditions = " OR ".join(["ar.name LIKE ?"] * len(like_patterns))
+        direct_rows = db.execute(
+            f"""
+            SELECT ar.*,
+                   COUNT(DISTINCT t.album_id) as album_count,
+                   COUNT(DISTINCT ta.track_id) as track_count
+            FROM artists ar
+            LEFT JOIN track_artists ta ON ar.id = ta.artist_id
+            LEFT JOIN tracks t ON ta.track_id = t.id
+            WHERE {conditions}
+            GROUP BY ar.id
+            """,
+            like_patterns,
+        ).fetchall()
 
     all_rows = db.execute(
         """
@@ -130,17 +133,24 @@ def fetch_albums(
     }
     order = sort_map.get(sort, "al.title")
 
-    variants = get_all_variants(search)
-    like_patterns = [f"%{variant}%" for variant in variants]
+    search = (search or "").strip()
+    variants = get_all_variants(search) if search else []
+    like_patterns = [f"%{variant}%" for variant in variants if variant]
 
-    title_conditions = " OR ".join(["al.title LIKE ?"] * len(like_patterns))
-    artist_conditions = " OR ".join(["ar.name LIKE ?"] * len(like_patterns))
+    params: list = []
+    where_parts: list[str] = []
 
-    params = [*like_patterns, *like_patterns]
-    year_clause = ""
-    if year:
-        year_clause = "AND al.year = ?"
+    if like_patterns:
+        title_conditions = " OR ".join(["al.title LIKE ?"] * len(like_patterns))
+        artist_conditions = " OR ".join(["ar.name LIKE ?"] * len(like_patterns))
+        where_parts.append(f"({title_conditions} OR {artist_conditions})")
+        params.extend([*like_patterns, *like_patterns])
+
+    if year is not None:
+        where_parts.append("al.year = ?")
         params.append(year)
+
+    where_clause = f"WHERE {' AND '.join(where_parts)}" if where_parts else ""
 
     direct_rows = db.execute(
         f"""
@@ -149,7 +159,7 @@ def fetch_albums(
         FROM albums al
         JOIN artists ar ON al.artist_id = ar.id
         LEFT JOIN tracks t ON t.album_id = al.id
-        WHERE ({title_conditions} OR {artist_conditions}) {year_clause}
+        {where_clause}
         GROUP BY al.id
         ORDER BY {order}
         """,

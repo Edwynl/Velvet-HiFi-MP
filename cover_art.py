@@ -51,6 +51,9 @@ def _resolve_folder_cover_path(folder_path: str) -> Optional[str]:
 
 def save_cover_bytes(cover_data: bytes, key: str, covers_dir: Path) -> str:
     """Save cover art bytes to disk and return the absolute path."""
+    if not cover_data:
+        return ""
+    covers_dir.mkdir(parents=True, exist_ok=True)
     digest = hashlib.md5(key.encode()).hexdigest()
     path = covers_dir / f"{digest}.jpg"
     if not path.exists():

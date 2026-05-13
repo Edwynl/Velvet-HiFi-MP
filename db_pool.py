@@ -57,6 +57,7 @@ def _create_db_connection(db_path: Path | None = None) -> sqlite3.Connection:
     conn.execute("PRAGMA foreign_keys=ON")
     conn.execute("PRAGMA temp_store=MEMORY")
     conn.execute("PRAGMA mmap_size=268435456")
+    conn.execute("PRAGMA busy_timeout=5000")
     return conn
 
 
@@ -141,6 +142,12 @@ def _return_db(conn: sqlite3.Connection | None) -> None:
     """
     if conn is None:
         return
+
+    # Ensure we never leak an open transaction across requests on thread-local reuse.
+    try:
+        conn.rollback()
+    except Exception:
+        pass
 
     current_thread_conn = _get_thread_connection()
     if current_thread_conn is conn:

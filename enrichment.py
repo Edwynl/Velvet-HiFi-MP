@@ -16,6 +16,7 @@ Requirements:
 
 import asyncio
 import hashlib
+import io
 import json
 import logging
 import os
@@ -26,6 +27,7 @@ from pathlib import Path
 from typing import Optional
 
 import httpx
+from PIL import Image
 
 import env_loader  # noqa: F401 - load .env for direct module use
 
@@ -35,6 +37,9 @@ DATA_DIR_ENV = os.environ.get("VELVET_DATA_DIR") or os.environ.get("DATA_DIR", "
 DB_PATH    = Path(DATA_DIR_ENV) / "library.db"
 COVERS_DIR = Path(DATA_DIR_ENV) / "covers"
 COVERS_DIR.mkdir(parents=True, exist_ok=True)
+ARTIST_IMAGE_MAX_SIZE = 300
+ALBUM_COVER_MAX_SIZE = 1000
+IMAGE_JPEG_QUALITY = 88
 
 # AcoustID API key — set ACOUSTID_KEY environment variable
 ACOUSTID_KEY = os.environ.get("ACOUSTID_KEY") or os.environ.get("VELVET_ACOUSTID_KEY", "")
@@ -88,6 +93,43 @@ def _exec(sql, params=()):
     finally:
         try: conn.close()
         except: pass
+
+
+def _normalize_image_to_jpeg_bytes(
+    raw_bytes: bytes,
+    max_edge: Optional[int] = None,
+    quality: int = IMAGE_JPEG_QUALITY,
+) -> Optional[bytes]:
+    """
+    Normalize input image bytes to JPEG, optionally downscaling max edge.
+    Returns None when bytes are not a decodable image.
+    """
+    if not raw_bytes:
+        return None
+
+    try:
+        with Image.open(io.BytesIO(raw_bytes)) as img:
+            if img.mode in ("RGBA", "LA", "P", "CMYK"):
+                if img.mode in ("RGBA", "LA"):
+                    background = Image.new("RGB", img.size, (255, 255, 255))
+                    if img.mode == "RGBA":
+                        background.paste(img, mask=img.split()[-1])
+                    else:
+                        background.paste(img)
+                    img = background
+                else:
+                    img = img.convert("RGB")
+            elif img.mode != "RGB":
+                img = img.convert("RGB")
+
+            if max_edge and max_edge > 0:
+                img.thumbnail((max_edge, max_edge), Image.Resampling.LANCZOS)
+
+            out = io.BytesIO()
+            img.save(out, "JPEG", quality=quality, optimize=True, progressive=True)
+            return out.getvalue()
+    except Exception:
+        return None
 
 # ─── AcoustID fingerprinting ──────────────────────────────────────────────────
 
@@ -615,7 +657,14 @@ async def download_artist_photo(artist_id: int, url: str) -> str | None:
         async with httpx.AsyncClient(timeout=30) as client:
             resp = await client.get(url, follow_redirects=True)
             if resp.status_code == 200:
-                dest_path.write_bytes(resp.content)
+                normalized = _normalize_image_to_jpeg_bytes(
+                    resp.content,
+                    max_edge=ARTIST_IMAGE_MAX_SIZE,
+                )
+                if normalized:
+                    dest_path.write_bytes(normalized)
+                else:
+                    dest_path.write_bytes(resp.content)
                 _exec("UPDATE artists SET image_path=? WHERE id=?", (str(dest_path), artist_id))
                 return str(dest_path)
     except Exception as e:
@@ -644,13 +693,13 @@ async def search_album_covers(artist: str, album: str) -> list[dict]:
                 for item in data.get("results", []):
                     base_url = item.get("artworkUrl100", "")
                     if base_url:
-                        url_high = base_url.replace("100x100bb.jpg", "1000x1000bb.jpg")
+                        url_high = base_url.replace("100x100bb.jpg", "3000x3000bb.jpg")
                         results.append({
                             "url": url_high,
                             "source": "Apple Music",
                             "album": item.get("collectionName"),
                             "artist": item.get("artistName"),
-                            "res": "1000x1000"
+                            "res": "3000x3000 (requested)"
                         })
         except Exception as e:
             log.warning(f"iTunes search failed: {e}")
@@ -750,7 +799,15 @@ async def set_album_cover_from_url(album_id: int, url: str) -> bool:
         async with httpx.AsyncClient(timeout=30) as client:
             resp = await client.get(url, follow_redirects=True)
             if resp.status_code == 200:
-                target_path.write_bytes(resp.content)
+                normalized = _normalize_image_to_jpeg_bytes(
+                    resp.content,
+                    max_edge=ALBUM_COVER_MAX_SIZE,
+                    quality=90,
+                )
+                if normalized:
+                    target_path.write_bytes(normalized)
+                else:
+                    target_path.write_bytes(resp.content)
                 # Update DB
                 # Note: We need to import enrichment inside the function or use the local _exec
                 _exec("UPDATE albums SET cover_path=? WHERE id=?", (str(target_path), album_id))

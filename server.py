@@ -193,6 +193,12 @@ THUMB_SIZES = {
     'large': (400, 400),   # Album detail view / hero images
 }
 THUMB_QUALITY = 85  # JPEG quality (balanced for file size)
+ARTIST_IMAGE_MAX_SIZE = (300, 300)
+ARTIST_IMAGE_QUALITY = 82
+ARTIST_IMAGE_CACHE_DIR = CACHE_DIR / "artist_images"
+ARTIST_IMAGE_CACHE_DIR.mkdir(exist_ok=True)
+ALBUM_COVER_MAX_EDGE = 1000
+ALBUM_COVER_QUALITY = 90
 
 # ─── Constants (Configurable via Settings) ─────────────────────────────────────
 
@@ -1019,7 +1025,13 @@ async def get_artist_image(artist_id: int):
         raise HTTPException(404, "Artist not found")
 
     if row["image_path"] and os.path.exists(row["image_path"]):
-        return FileResponse(row["image_path"])
+        source_path = Path(row["image_path"])
+        serving_path = _get_or_create_artist_image_thumb(artist_id, source_path)
+        return FileResponse(
+            str(serving_path),
+            media_type=_guess_image_media_type(serving_path),
+            headers={"Cache-Control": "max-age=86400"},
+        )
 
     raise HTTPException(404, "No local image found")
 
@@ -1200,6 +1212,57 @@ def invalidate_cover_cache(album_id: int):
 def _get_thumb_path(album_id: int, size_name: str) -> Path:
     """Get the thumbnail file path for an album."""
     return THUMBS_DIR / f"{album_id}_{size_name}.jpg"
+
+
+def _get_artist_thumb_path(artist_id: int) -> Path:
+    """Get cached artist image thumbnail path."""
+    return ARTIST_IMAGE_CACHE_DIR / f"{artist_id}_300.jpg"
+
+
+def _guess_image_media_type(path: Path) -> str:
+    ext = path.suffix.lower()
+    if ext in {".jpg", ".jpeg"}:
+        return "image/jpeg"
+    if ext == ".png":
+        return "image/png"
+    if ext == ".webp":
+        return "image/webp"
+    return "application/octet-stream"
+
+
+def _get_or_create_artist_image_thumb(artist_id: int, source_path: Path) -> Path:
+    """
+    Return a 300x300-capped artist image path.
+    Rebuilds cache file only when source image changes.
+    """
+    thumb_path = _get_artist_thumb_path(artist_id)
+    try:
+        if thumb_path.exists() and thumb_path.stat().st_mtime >= source_path.stat().st_mtime:
+            return thumb_path
+    except Exception:
+        pass
+
+    try:
+        with Image.open(source_path) as img:
+            if img.mode in ('RGBA', 'LA', 'P', 'CMYK'):
+                if img.mode in ('RGBA', 'LA'):
+                    background = Image.new('RGB', img.size, (255, 255, 255))
+                    if img.mode == 'RGBA':
+                        background.paste(img, mask=img.split()[-1])
+                    else:
+                        background.paste(img)
+                    img = background
+                else:
+                    img = img.convert('RGB')
+            elif img.mode != 'RGB':
+                img = img.convert('RGB')
+
+            img.thumbnail(ARTIST_IMAGE_MAX_SIZE, Image.Resampling.LANCZOS)
+            img.save(thumb_path, 'JPEG', quality=ARTIST_IMAGE_QUALITY, optimize=True, progressive=True)
+        return thumb_path
+    except Exception as e:
+        log.warning(f"Failed to generate artist image thumb for {source_path}: {e}")
+        return source_path
 
 def _generate_thumbnail(source_path: Path, thumb_path: Path, size: tuple[int, int]) -> bool:
     """
@@ -1437,7 +1500,7 @@ def get_cover(album_id: int):
 def get_cover_thumbnail(album_id: int, size: str = Query("small", pattern="^(small|medium|large)$")):
     """
     Get a thumbnail-sized version of an album cover.
-    Sizes: small (200x200), medium (300x300), large (500x500)
+    Sizes: small (150x150), medium (250x250), large (400x400)
     Optimized for mobile and list views.
     """
     thumb_path = _get_or_create_thumbnail(album_id, size)
@@ -1483,11 +1546,35 @@ async def upload_album_cover(album_id: int, file: UploadFile = File(...)):
         db.close()
         raise HTTPException(400, "Invalid PNG content")
 
-    filename = f"custom_{album_id}{ext}"
+    file.file.seek(0)
+    raw_bytes = file.file.read()
+
+    filename = f"custom_{album_id}.jpg"
     target_path = COVERS_DIR / filename
 
-    with open(target_path, "wb") as buffer:
-        shutil.copyfileobj(file.file, buffer)
+    try:
+        with Image.open(io.BytesIO(raw_bytes)) as img:
+            if img.mode in ('RGBA', 'LA', 'P', 'CMYK'):
+                if img.mode in ('RGBA', 'LA'):
+                    background = Image.new('RGB', img.size, (255, 255, 255))
+                    if img.mode == 'RGBA':
+                        background.paste(img, mask=img.split()[-1])
+                    else:
+                        background.paste(img)
+                    img = background
+                else:
+                    img = img.convert('RGB')
+            elif img.mode != 'RGB':
+                img = img.convert('RGB')
+
+            img.thumbnail((ALBUM_COVER_MAX_EDGE, ALBUM_COVER_MAX_EDGE), Image.Resampling.LANCZOS)
+            img.save(target_path, 'JPEG', quality=ALBUM_COVER_QUALITY, optimize=True, progressive=True)
+    except Exception:
+        # Fallback to original bytes if image normalization fails.
+        filename = f"custom_{album_id}{ext}"
+        target_path = COVERS_DIR / filename
+        with open(target_path, "wb") as buffer:
+            buffer.write(raw_bytes)
         
     db.execute("UPDATE albums SET cover_path=? WHERE id=?", (str(target_path), album_id))
     db.commit()
