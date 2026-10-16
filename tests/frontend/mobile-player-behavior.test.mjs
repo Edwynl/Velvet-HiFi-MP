@@ -378,7 +378,7 @@ function testLandscapeFullscreenLayoutBalanceGuards() {
 }
 
 function testConstrainedDesktopPlayerPriorityGuards() {
-  const html = readFileSync(HTML_PATH, 'utf8');
+  const html = readFileSync(HTML_PATH, 'utf8').replace(/\r\n/g, '\n');
 
   assert.ok(
     html.includes('@media (min-width: 769px) and (max-width: 1120px)'),
@@ -403,7 +403,7 @@ function testConstrainedDesktopPlayerPriorityGuards() {
 }
 
 function testConstrainedDesktopAlbumLayoutGuards() {
-  const html = readFileSync(HTML_PATH, 'utf8');
+  const html = readFileSync(HTML_PATH, 'utf8').replace(/\r\n/g, '\n');
 
   assert.ok(
     hasCssRule(
