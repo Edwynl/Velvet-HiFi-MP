@@ -21,6 +21,7 @@ from typing import Optional
 
 import env_loader  # noqa: F401 - load .env for direct module use
 from dsp_engine import build_dsp_filter_chain
+from path_compat import filesystem_path
 
 try:
     import sounddevice as sd
@@ -175,7 +176,8 @@ class LocalPlayer:
         This uses FFmpeg to decode and sounddevice to play.
         For true high-quality output, use the streaming API instead.
         """
-        if not Path(file_path).exists():
+        readable_path = filesystem_path(file_path)
+        if not Path(readable_path).exists():
             log.error(f"File not found: {file_path}")
             return False
 
@@ -184,7 +186,7 @@ class LocalPlayer:
         device_info = self._get_device_info()
         resolved_rate = int(output_sample_rate or device_info.get("sample_rate") or 48000)
         cmd = [
-            "ffmpeg", "-i", file_path,
+            "ffmpeg", "-i", readable_path,
             "-f", "s16le",  # 16-bit signed integer
             "-acodec", "pcm_s16le",
             "-ar", str(resolved_rate),
@@ -370,7 +372,7 @@ def play_local(
         return {"success": False, "error": "Track not found"}
 
     file_path = track["file_path"]
-    if not Path(file_path).exists():
+    if not Path(filesystem_path(file_path)).exists():
         return {"success": False, "error": "File not found on disk"}
 
     try:

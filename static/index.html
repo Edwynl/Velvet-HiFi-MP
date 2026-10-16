@@ -2,7 +2,7 @@
 <html lang="zh">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <title>VELVET</title>
 <link rel="manifest" href="/static/manifest.json">
 <meta name="apple-mobile-web-app-capable" content="yes">
@@ -1159,7 +1159,7 @@ html, body {
 }
 
 .player-format-badge {
-  height: 42px !important; /* Balanced size: Not too small, not too large */
+  height: 36px !important;
   width: auto;
   object-fit: contain;
   opacity: 0.95;
@@ -1169,12 +1169,6 @@ html, body {
 }
 .player-format:empty {
   display: none;
-}
-.player-format-badge {
-  height: 13px;
-  width: auto;
-  flex-shrink: 0;
-  display: block;
 }
 .player-format-lines {
   min-width: 0;
@@ -1323,6 +1317,111 @@ input[type=range]::-webkit-slider-thumb {
 }
 input[type=range]::-webkit-slider-thumb:hover { background: var(--gold); }
 
+@media (min-width: 769px) and (max-width: 1120px) {
+  .player-body {
+    grid-template-columns: minmax(280px, 1fr) auto auto;
+    gap: 12px;
+    padding: 0 16px;
+  }
+
+  .player-info {
+    min-width: 0;
+  }
+
+  .player-controls {
+    justify-self: center;
+  }
+
+  .player-right {
+    gap: 4px;
+    min-width: 0;
+  }
+
+  #upsample-select,
+  #dsp-select,
+  .volume-wrap {
+    display: none !important;
+  }
+
+  .player-icon-btn {
+    padding: 6px;
+  }
+}
+
+@media (min-width: 769px) and (max-width: 1120px) {
+  .view-album .topbar {
+    padding: 24px 32px 8px;
+  }
+
+  .view-album .album-hero {
+    display: grid;
+    grid-template-columns: clamp(260px, 34vw, 320px) minmax(210px, 1fr);
+    align-items: start;
+    gap: clamp(22px, 3vw, 32px);
+    padding: 20px 32px 28px;
+  }
+
+  .view-album .album-hero-art {
+    width: 100%;
+    height: auto;
+    aspect-ratio: 1;
+    max-width: 320px;
+    margin: 0;
+  }
+
+  .view-album .album-hero-info {
+    padding-top: 8px;
+    min-width: 0;
+  }
+
+  .view-album .album-hero-title {
+    font-size: clamp(30px, 4.8vw, 40px);
+    line-height: 1.05;
+    margin-bottom: 10px;
+  }
+
+  .view-album .hires-badge-detail {
+    height: 32px;
+  }
+
+  .view-album .album-hero-artist {
+    font-size: 16px;
+    margin-bottom: 14px;
+  }
+
+  .view-album .album-meta-row {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px 14px;
+    margin-bottom: 18px;
+  }
+
+  .view-album .album-actions {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+    width: min(100%, 260px);
+  }
+
+  .view-album .album-actions .btn,
+  .view-album .album-actions .album-more-btn,
+  .view-album .album-actions .album-more-btn > .btn {
+    width: 100%;
+    min-width: 0;
+    justify-content: center;
+  }
+
+  .view-album .credits-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    padding: 0 32px 18px;
+    gap: 14px;
+  }
+
+  .view-album .credits-grid > .credits-card:last-child:nth-child(odd) {
+    grid-column: 1 / -1;
+  }
+}
+
 /* ─── Home View ─── */
 .home-hero {
   padding: 40px 32px 32px;
@@ -1380,6 +1479,193 @@ input[type=range]::-webkit-slider-thumb:hover { background: var(--gold); }
 }
 .form-input:focus { border-color: var(--gold); }
 .form-hint { font-size: 11px; color: var(--dim); margin-top: 6px; }
+
+.library-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+.library-section-head .form-label { margin-bottom: 0; }
+.library-count-badge {
+  padding: 4px 9px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--gold);
+  background: rgba(201,168,76,0.07);
+  font-family: 'DM Mono', monospace;
+  font-size: 10px;
+}
+.libraries-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+.library-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 54px;
+  padding: 9px 12px 9px 16px;
+  background: var(--s2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+.library-path {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text);
+  font-family: 'DM Mono', monospace;
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.library-item-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+.library-item-actions .btn { padding: 7px 10px; }
+.library-add-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  margin-bottom: 6px;
+}
+.library-add-feedback {
+  min-height: 18px;
+  margin-top: 6px;
+  color: var(--muted);
+  font-size: 11px;
+}
+.library-add-feedback.success { color: var(--gold); }
+.library-add-feedback.error { color: #ff8e8e; }
+
+.scan-status-card {
+  margin-bottom: 28px;
+  padding: 18px 20px;
+  overflow: hidden;
+  background: linear-gradient(145deg, rgba(201,168,76,0.08), var(--s2) 42%);
+  border: 1px solid rgba(201,168,76,0.18);
+  border-radius: 14px;
+}
+.scan-status-card.idle {
+  background: var(--s2);
+  border-color: var(--border);
+}
+.scan-status-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 18px;
+  margin-bottom: 14px;
+}
+.scan-status-title {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 600;
+}
+.scan-status-sub {
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 11px;
+}
+.scan-status-percent {
+  color: var(--gold);
+  font-family: 'DM Mono', monospace;
+  font-size: 18px;
+}
+.scan-status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--gold);
+  box-shadow: 0 0 0 0 rgba(201,168,76,0.4);
+  animation: scanStatusPulse 1.8s infinite;
+}
+@keyframes scanStatusPulse {
+  70% { box-shadow: 0 0 0 7px rgba(201,168,76,0); }
+  100% { box-shadow: 0 0 0 0 rgba(201,168,76,0); }
+}
+.scan-status-card .scan-progress-bar {
+  height: 5px;
+  margin-bottom: 12px;
+}
+.scan-progress-fill.indeterminate {
+  width: 36% !important;
+  animation: scanIndeterminate 1.4s ease-in-out infinite;
+}
+@keyframes scanIndeterminate {
+  0% { transform: translateX(-120%); }
+  100% { transform: translateX(340%); }
+}
+.scan-status-metrics {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 10px;
+  margin-top: 14px;
+}
+.scan-status-metric {
+  padding: 11px 12px;
+  background: rgba(0,0,0,0.18);
+  border: 1px solid var(--border);
+  border-radius: 9px;
+}
+.scan-status-value {
+  color: var(--text);
+  font-family: 'DM Mono', monospace;
+  font-size: 17px;
+}
+.scan-status-label {
+  margin-top: 2px;
+  color: var(--dim);
+  font-size: 9px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+.scan-current-file {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--muted);
+  font-family: 'DM Mono', monospace;
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.scan-error-text {
+  margin-top: 12px;
+  padding: 9px 11px;
+  color: #ff9b9b;
+  background: rgba(255,107,107,0.08);
+  border-radius: 8px;
+  font-size: 11px;
+}
+
+@media (max-width: 768px), (orientation: portrait) and (min-width: 769px) and (max-width: 900px) {
+  .library-item {
+    align-items: stretch;
+    flex-direction: column;
+    gap: 9px;
+    padding: 13px;
+  }
+  .library-path { white-space: normal; overflow-wrap: anywhere; }
+  .library-item-actions {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+  .library-item-actions .btn { justify-content: center; min-height: 42px; }
+  .library-add-row { grid-template-columns: 1fr; }
+  .library-add-row .btn { min-height: 46px; justify-content: center; }
+  .scan-status-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .scan-status-card { padding: 16px; }
+}
 
 /* ─── DSP Editor Form Fixes ─── */
 .dsp-filter-row .form-input, #dsp-editor-preamp {
@@ -1941,7 +2227,7 @@ input[type=range]::-webkit-slider-thumb:hover { background: var(--gold); }
   }
 
   /* ─── Mobile Responsive Styles ─── */
-  @media (max-width: 768px) {
+  @media (max-width: 768px), (orientation: portrait) and (min-width: 769px) and (max-width: 900px) {
     /* Variables for mobile */
     :root {
       --sidebar-w: 260px;
@@ -4526,6 +4812,30 @@ input[type=range]::-webkit-slider-thumb:hover { background: var(--gold); }
       height: 3px !important;
     }
   }
+
+  @media (min-width: 769px) and (max-width: 1120px) {
+    .player-body {
+      grid-template-columns: minmax(280px, 1fr) auto auto !important;
+      gap: 12px !important;
+      padding: 0 16px !important;
+    }
+
+    .player-info {
+      min-width: 0 !important;
+    }
+
+    .player-right {
+      gap: 4px !important;
+      min-width: 0 !important;
+    }
+
+    #upsample-select,
+    #dsp-select,
+    .player-right .volume-wrap {
+      display: none !important;
+    }
+  }
+
     /* GRAPHIC EQ STYLES */
     .eq-overlay {
       display: none;
@@ -4594,7 +4904,7 @@ input[type=range]::-webkit-slider-thumb:hover { background: var(--gold); }
           linear-gradient(to bottom, rgba(230, 195, 100, 0.05) 1px, transparent 1px);
       background-size: 40px 40px;
     }
-    @media (max-width: 768px) {
+    @media (max-width: 768px), (orientation: portrait) and (min-width: 769px) and (max-width: 900px) {
       .eq-curve-container {
         aspect-ratio: 16 / 9;
       }
@@ -4822,7 +5132,7 @@ input[type=range]::-webkit-slider-thumb:hover { background: var(--gold); }
         position: static !important;
       }
     }
-    @media (max-width: 768px) {
+    @media (max-width: 768px), (orientation: portrait) and (min-width: 769px) and (max-width: 900px) {
       .eq-overlay {
         padding: calc(env(safe-area-inset-top, 0px) + 14px) 14px calc(env(safe-area-inset-bottom, 0px) + 92px);
       }
@@ -4894,6 +5204,382 @@ input[type=range]::-webkit-slider-thumb:hover { background: var(--gold); }
         padding: 12px 16px calc(env(safe-area-inset-bottom, 0px) + 12px);
         background: rgba(14, 14, 16, 0.96);
         backdrop-filter: blur(16px);
+      }
+    }
+
+    /* OPPO Pad 5 Pro portrait: expected CSS viewport is roughly 800 x 1131. */
+    @media (orientation: portrait) and (min-width: 769px) and (max-width: 900px) {
+      :root {
+        --sidebar-w: 320px;
+        --player-h: 96px;
+      }
+
+      #app {
+        min-height: 100svh;
+      }
+
+      #sidebar {
+        width: min(var(--sidebar-w), 82vw);
+        padding-top: env(safe-area-inset-top, 0px);
+        padding-bottom: env(safe-area-inset-bottom, 0px);
+      }
+
+      .logo {
+        padding: 30px 28px 22px;
+      }
+
+      .nav-item {
+        min-height: 48px;
+        padding: 11px 24px;
+        font-size: 14px;
+      }
+
+      .topbar {
+        padding: calc(env(safe-area-inset-top, 0px) + 14px) 20px 12px;
+        padding-left: 80px;
+        gap: 12px;
+        min-height: calc(env(safe-area-inset-top, 0px) + 72px);
+        background: rgba(7, 7, 9, 0.92);
+        backdrop-filter: blur(18px);
+      }
+
+      .mobile-menu-btn {
+        position: fixed;
+        top: calc(env(safe-area-inset-top, 0px) + 14px);
+        left: 20px;
+        z-index: 30;
+        width: 48px;
+        height: 48px;
+        padding: 12px;
+        margin-right: 0;
+        flex-shrink: 0;
+        border-radius: 50%;
+        background: rgba(19, 19, 22, 0.94);
+      }
+
+      .mobile-menu-btn svg {
+        width: 24px;
+        height: 24px;
+      }
+
+      #search-input {
+        min-height: 46px;
+        font-size: 16px;
+      }
+
+      .home-hero,
+      .discover-hero {
+        padding-left: 24px;
+        padding-right: 24px;
+      }
+
+      .section-header,
+      .discover-section-head,
+      .discover-track-list,
+      .zones-grid,
+      .credits-grid {
+        padding-left: 24px;
+        padding-right: 24px;
+      }
+
+      .grid {
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 18px 16px;
+        padding: 4px 20px 28px;
+      }
+
+      .artist-grid {
+        grid-template-columns: repeat(5, minmax(0, 1fr));
+        gap: 18px 14px;
+      }
+
+      .card-title {
+        font-size: 13px;
+      }
+
+      .card-sub {
+        font-size: 11px;
+      }
+
+      .card-play-btn {
+        width: 38px;
+        height: 38px;
+        right: 8px;
+        bottom: 8px;
+      }
+
+      .album-hero {
+        grid-template-columns: minmax(240px, 300px) minmax(0, 1fr);
+        gap: 24px;
+        padding: 16px 24px 24px;
+      }
+
+      .album-hero-title {
+        font-size: clamp(30px, 5vw, 42px);
+      }
+
+      .track-list {
+        padding-left: 20px;
+        padding-right: 20px;
+      }
+
+      .track-item {
+        min-height: 52px;
+        padding: 10px 14px;
+      }
+
+      #player {
+        padding: 10px 20px calc(10px + env(safe-area-inset-bottom, 0px));
+      }
+
+      .player-body {
+        gap: 16px;
+      }
+
+      .player-art {
+        width: 52px;
+        height: 52px;
+      }
+
+      .play-btn {
+        width: 48px;
+        height: 48px;
+      }
+
+      .ctrl-btn,
+      .player-icon-btn {
+        min-width: 44px;
+        min-height: 44px;
+      }
+
+      .mobile-player-header {
+        padding: calc(env(safe-area-inset-top, 0px) + 18px) 28px 10px;
+      }
+
+      .mobile-player-header-actions {
+        display: flex;
+      }
+
+      .mobile-player-main {
+        justify-content: flex-start;
+        gap: 24px;
+        padding: 14px 48px calc(env(safe-area-inset-bottom, 0px) + 36px);
+      }
+
+      .mobile-player-art-section {
+        gap: 22px;
+        margin-top: 0;
+      }
+
+      .mobile-player-art-wrapper {
+        width: min(58vw, 440px);
+        max-width: 440px;
+      }
+
+      .mobile-player-info,
+      .mobile-player-controls-section {
+        width: min(100%, 500px);
+        max-width: 500px;
+      }
+
+      .mobile-player-title-row h2 {
+        font-size: clamp(36px, 5.5vw, 46px);
+      }
+
+      .mobile-player-controls-section {
+        gap: 24px;
+      }
+
+      .mobile-vu-meter {
+        width: min(42vw, 320px);
+        height: 180px;
+      }
+
+      .eq-overlay {
+        padding-left: 24px;
+        padding-right: 24px;
+      }
+    }
+
+    /* OPPO Pad 5 Pro landscape: expected CSS viewport is roughly 1131 x 800. */
+    @media (orientation: landscape) and (min-width: 901px) and (max-width: 1366px) and (min-height: 650px) {
+      :root {
+        --sidebar-w: 196px;
+        --player-h: 80px;
+      }
+
+      .logo {
+        padding: 24px 20px 18px;
+      }
+
+      .nav-item {
+        min-height: 44px;
+        padding: 10px 18px;
+      }
+
+      .stats-panel {
+        padding: 14px 18px;
+      }
+
+      .topbar {
+        padding: calc(env(safe-area-inset-top, 0px) + 18px) 24px 12px;
+        gap: 18px;
+      }
+
+      .home-hero {
+        padding: 30px 24px 26px;
+      }
+
+      .home-section-title,
+      .section-header,
+      .discover-section-head,
+      .discover-track-list,
+      .zones-grid,
+      .credits-grid {
+        padding-left: 24px;
+        padding-right: 24px;
+      }
+
+      .grid {
+        grid-template-columns: repeat(auto-fill, minmax(148px, 1fr));
+        gap: 18px 16px;
+        padding: 0 24px 28px;
+      }
+
+      .artist-grid {
+        grid-template-columns: repeat(auto-fill, minmax(118px, 1fr));
+      }
+
+      .player-body {
+        grid-template-columns: minmax(280px, 1fr) auto auto !important;
+        gap: 10px !important;
+        padding: 0 14px !important;
+      }
+
+      #upsample-select,
+      #dsp-select,
+      .player-right .volume-wrap {
+        display: none !important;
+      }
+
+      .player-info {
+        min-width: 0;
+      }
+
+      .player-right {
+        gap: 3px;
+      }
+
+      .player-icon-btn,
+      .ctrl-btn {
+        min-width: 42px;
+        min-height: 42px;
+      }
+
+      .view-album .album-hero {
+        display: grid;
+        grid-template-columns: minmax(240px, 290px) minmax(0, 1fr);
+        align-items: start;
+        gap: 28px;
+        padding: 16px 24px 26px;
+      }
+
+      .view-album .album-hero-art {
+        width: 100%;
+        height: auto;
+        max-width: 290px;
+        aspect-ratio: 1;
+      }
+
+      .view-album .album-hero-title {
+        font-size: clamp(34px, 4vw, 46px);
+      }
+
+      .track-list {
+        padding-left: 24px;
+        padding-right: 24px;
+      }
+
+      .mobile-player-header {
+        padding: calc(env(safe-area-inset-top, 0px) + 14px) 24px 8px !important;
+      }
+
+      .mobile-player-main {
+        flex-direction: row !important;
+        align-items: center !important;
+        justify-content: center !important;
+        gap: clamp(32px, 4vw, 52px) !important;
+        padding: 18px 44px calc(env(safe-area-inset-bottom, 0px) + 28px) !important;
+      }
+
+      .mobile-player-art-section {
+        width: min(36vw, 340px) !important;
+        gap: 16px !important;
+        margin-top: 0 !important;
+        flex-shrink: 0 !important;
+      }
+
+      .mobile-player-art-wrapper {
+        width: 100% !important;
+        max-width: 340px !important;
+      }
+
+      .mobile-player-info {
+        display: none !important;
+      }
+
+      .mobile-player-controls-section {
+        width: min(48vw, 520px) !important;
+        max-width: 520px !important;
+        gap: 20px !important;
+      }
+
+      .mobile-player-landscape-meta,
+      .mobile-player-landscape-utility,
+      .mobile-player-header-actions {
+        display: flex !important;
+      }
+
+      .mobile-player-landscape-meta {
+        display: block !important;
+        text-align: left !important;
+      }
+
+      .mobile-player-landscape-title {
+        font-size: clamp(36px, 4.2vw, 52px) !important;
+        margin-bottom: 10px !important;
+      }
+
+      .mobile-player-main-controls {
+        gap: 28px !important;
+        margin: 6px 0 !important;
+      }
+
+      .mobile-play-btn {
+        width: 68px !important;
+        height: 68px !important;
+      }
+
+      .mobile-player-progress-container {
+        margin-top: 6px !important;
+      }
+
+      .mobile-vu-overlay {
+        padding: calc(env(safe-area-inset-top, 0px) + 18px) 24px calc(env(safe-area-inset-bottom, 0px) + 18px) !important;
+      }
+
+      .mobile-vu-container {
+        gap: 28px !important;
+      }
+
+      .mobile-vu-meter,
+      .mobile-vu-overlay.style-2 .mobile-vu-meter {
+        width: min(38vw, 390px) !important;
+        height: 218px !important;
+      }
+
+      .eq-overlay {
+        padding: 24px;
       }
     }
 </style>
@@ -5200,8 +5886,8 @@ input[type=range]::-webkit-slider-thumb:hover { background: var(--gold); }
           <option value="8x">8×</option>
           <option value="16x">16×</option>
         </select>
-        <select class="upsample-select" id="dsp-select" title="DSP Profile">
-          <option value="">Dry</option>
+        <select class="upsample-select" id="dsp-select" title="Sound Preset">
+          <option value="">Off</option>
         </select>
         <div class="volume-wrap">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
@@ -5504,13 +6190,13 @@ input[type=range]::-webkit-slider-thumb:hover { background: var(--gold); }
 
 <div id="eq-overlay" class="eq-overlay">
   <div class="eq-header">
-    <h1 class="eq-title">Velvet | Graphic EQ</h1>
+    <h1 class="eq-title">VELVET | EQ Editor</h1>
     <button class="eq-close-btn" id="eq-close-btn">
       <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
     </button>
   </div>
   <div class="eq-container">
-    <!-- Left Sidebar: EQ Presets -->
+    <!-- Left Sidebar: Sound Presets -->
     <aside style="display: flex; flex-direction: column; gap: 16px;">
       <div id="eq-presets-container" class="eq-presets-list">
         <!-- Render preset buttons here dynamically via JS -->
@@ -5559,8 +6245,8 @@ input[type=range]::-webkit-slider-thumb:hover { background: var(--gold); }
       <div class="eq-controls-panel">
         <div style="display:flex; gap: 32px">
             <div>
-              <p style="font-family: 'DM Mono', monospace; font-size: 10px; text-transform: uppercase; color: var(--text-muted); margin-bottom: 4px;">DSP Name</p>
-              <p id="eq-current-name" style="font-family: 'Cormorant Garamond', serif; font-size: 1.125rem; font-style: italic; color: var(--text-color);">Custom Profile</p>
+              <p style="font-family: 'DM Mono', monospace; font-size: 10px; text-transform: uppercase; color: var(--text-muted); margin-bottom: 4px;">Preset</p>
+              <p id="eq-current-name" style="font-family: 'Cormorant Garamond', serif; font-size: 1.125rem; font-style: italic; color: var(--text-color);">Custom EQ</p>
               <p id="eq-headroom-note" class="eq-headroom-note">Headroom: 0.0 dB</p>
             </div>
         </div>
@@ -5584,6 +6270,30 @@ const $$ = sel => {
   const doc = typeof document !== 'undefined' ? document : null;
   return doc?.querySelectorAll ? doc.querySelectorAll(sel) : [];
 };
+
+const COMPACT_PHONE_MAX = 768;
+const COMPACT_TABLET_PORTRAIT_MAX = 900;
+
+function isCompactLayout() {
+  const win = typeof window !== 'undefined' ? window : null;
+  if (!win) return false;
+  return win.innerWidth <= COMPACT_PHONE_MAX || (
+    win.innerWidth <= COMPACT_TABLET_PORTRAIT_MAX &&
+    win.innerHeight >= win.innerWidth
+  );
+}
+
+function isShortLandscapeLayout() {
+  const win = typeof window !== 'undefined' ? window : null;
+  return !!win && win.innerWidth > win.innerHeight && win.innerHeight <= 500;
+}
+
+function blurActiveEditor() {
+  const active = typeof document !== 'undefined' ? document.activeElement : null;
+  if (active instanceof HTMLElement && active.matches('input, textarea, select, [contenteditable="true"]')) {
+    active.blur();
+  }
+}
 
 // UI Element Cache for performance (On-demand caching via Proxy)
 // In an SPA environment where elements are recreated via innerHTML, 
@@ -5791,7 +6501,7 @@ function showSignalPath() {
 
   const processing = [
     state.upsample === 'none' ? 'Bit-perfect source rate' : `${state.upsample.toUpperCase()} upsampling enabled`,
-    dspProfile ? `DSP ${escHtml(dspProfile.name)}` : 'Flat DSP pipeline'
+    dspProfile ? `DSP ${escHtml(dspProfile.name)}` : 'DSP Off'
   ].join('<br>');
 
   const activeZone = getActiveZone();
@@ -5832,7 +6542,7 @@ function showSignalPath() {
 
 
 function compactDspLabel(name) {
-  if (!name) return 'Dry';
+  if (!name) return 'Off';
   const cleaned = String(name)
     .replace(/\b(dsp|profile|preset)\b/ig, '')
     .replace(/[()]/g, ' ')
@@ -5840,7 +6550,7 @@ function compactDspLabel(name) {
   if (!cleaned) return 'Tone';
   const normalized = cleaned.toLowerCase();
   const knownLabels = {
-    'flat': 'Flat',
+    'flat': 'Off',
     'reference neutral': 'Reference',
     'black background': 'Black',
     'vocal forward warm': 'Vocal Warm',
@@ -5858,6 +6568,39 @@ function compactDspLabel(name) {
 function dspDisplayLabel(profile, fallback = 'DSP') {
   if (!profile) return fallback;
   return compactDspLabel(profile.short_name || profile.name || fallback);
+}
+
+function isFlatDspProfile(profile) {
+  const presetKey = String(profile?.preset_key || '').toLowerCase();
+  const name = String(profile?.name || '').trim().toLowerCase();
+  return presetKey === 'flat' || name === 'flat';
+}
+
+function visibleDspProfiles(profiles = []) {
+  return (profiles || []).filter(profile => !isFlatDspProfile(profile));
+}
+
+function dspProfileGroup(profile) {
+  const category = String(profile?.category || 'custom').toLowerCase();
+  if (category === 'reference' || category === 'correction') return 'reference';
+  if (category === 'genre') return 'genre';
+  if (profile?.is_factory) return 'tone';
+  return 'custom';
+}
+
+function dspProfileGroupLabel(group) {
+  return {
+    reference: 'Reference',
+    tone: 'Tone Shaping',
+    genre: 'Genre',
+    custom: 'My Presets',
+  }[group] || 'Presets';
+}
+
+function dspProfileRoleLabel(profile) {
+  if (!profile) return 'Preset';
+  if (!profile.is_factory) return 'Custom';
+  return dspProfileGroupLabel(dspProfileGroup(profile));
 }
 
 function uniqueDspLabel(label, usedLabels) {
@@ -5951,12 +6694,14 @@ function initMobileMenu() {
   if (!menuBtn || !sidebar || !overlay) return;
 
   function openMenu() {
+    blurActiveEditor();
     sidebar.classList.add('open');
     overlay.classList.add('open');
     document.body.style.overflow = 'hidden';
   }
 
   function closeMenu() {
+    blurActiveEditor();
     sidebar.classList.remove('open');
     overlay.classList.remove('open');
     document.body.style.overflow = '';
@@ -5968,7 +6713,7 @@ function initMobileMenu() {
   // Close menu on nav item click (mobile)
   $$('.nav-item').forEach(item => {
     item.addEventListener('click', () => {
-      if (window.innerWidth <= 768) {
+      if (isCompactLayout()) {
         closeMenu();
       }
     });
@@ -5983,7 +6728,7 @@ function initMobileMenu() {
     };
   }
   window.addEventListener('resize', debounce(() => {
-    if (window.innerWidth > 768) {
+    if (!isCompactLayout()) {
       closeMenu();
     }
   }, 150));
@@ -6502,8 +7247,8 @@ function attemptDspAutoFallback(reason = 'stream-error') {
     startBrowserPlayback(state.currentTrack, { resumeTime }).catch(() => {});
   }
 
-  showToast('EQ failed, switched to Dry');
-  console.warn('[VELVET] DSP auto-fallback to Dry:', reason, 'profile=', failedProfileId);
+  showToast('EQ failed, switched Off');
+  console.warn('[VELVET] DSP auto-fallback to Off:', reason, 'profile=', failedProfileId);
   resetDspErrorStreak();
   setTimeout(() => {
     dspAutoFallbackInFlight = false;
@@ -6909,7 +7654,7 @@ async function playTrack(track, queue, idx) {
   }
 
   // Only auto-open the mobile fullscreen player until the user explicitly minimizes it.
-  if (isNewTrack && window.innerWidth <= 768 && !state.mobilePlayerDismissed) {
+  if (isNewTrack && isCompactLayout() && !state.mobilePlayerDismissed) {
     toggleMobilePlayer(true, { source: 'auto' });
   }
 
@@ -7064,7 +7809,7 @@ async function toggleCastMenu() {
     alert('Critical: Cast menu element #cast-menu not found in DOM.');
     return;
   }
-  const mobilePlayerOpen = window.innerWidth <= 768 && UI['mobile-fullscreen-player']?.classList.contains('open');
+  const mobilePlayerOpen = isCompactLayout() && UI['mobile-fullscreen-player']?.classList.contains('open');
   menu.classList.toggle('mobile-player-open', !!mobilePlayerOpen);
   
   // Directly set based on presence of 'open' class to avoid toggle issues
@@ -7142,7 +7887,7 @@ function syncMobileLandscapeControls() {
   }
   if (dspEl) {
     const selected = $('dsp-select')?.selectedOptions?.[0]?.textContent?.trim();
-    dspEl.textContent = state.dspProfile ? (selected || 'DSP') : 'DSP';
+    dspEl.textContent = state.dspProfile ? (selected || 'DSP') : 'Off';
   }
   castEl?.classList.toggle('active', isCastZone() || isNativeZone());
 }
@@ -7245,7 +7990,7 @@ function openMobileUpsamplePicker() {
 }
 
 function openMobileDspPicker() {
-  showMobileSelectPicker('dsp-select', 'DSP Profile');
+  showMobileSelectPicker('dsp-select', 'Sound Preset');
 }
 
 function getPlayerThumbUrl(albumId) {
@@ -7329,7 +8074,7 @@ function bindDesktopPlayerSelectPopover(selectId, options = {}) {
   if (!select) return;
 
   const openPopover = (event) => {
-    if (window.innerWidth <= 768) return;
+    if (isCompactLayout()) return;
     event.preventDefault?.();
     event.stopPropagation?.();
     showPlayerSelectPopover(select, selectId, options);
@@ -7364,12 +8109,14 @@ function updatePlayerUI(track) {
   if (track.bit_depth)   fmt_label += ` · ${track.bit_depth}bit`;
   if (state.upsample !== 'none') fmt_label += ` → ${state.upsample.toUpperCase()} Upsampled`;
   const dspProfile = state.dspProfiles.find(profile => String(profile.id) === String(state.dspProfile));
-  fmt_label += ` · ${dspProfile ? `DSP ${dspProfile.name}` : 'DSP Flat'}`;
+  fmt_label += ` · ${dspProfile ? `DSP ${dspProfile.name}` : 'DSP Off'}`;
   const activeZone = getActiveZone();
   fmt_label += ` · Output ${activeZone.name}`;
   const formatEl = UI['player-format'];
-  formatEl.innerHTML = `${showHiRes ? '<img src="/static/logo-hires.png" class="player-format-badge" alt="Hi-Res">' : ''}${compactFormat ? `<span class="player-format-lines">${bitLabel ? `<span class="player-format-line">${escHtml(bitLabel)}</span>` : ''}${rateLabel ? `<span class="player-format-line">${escHtml(rateLabel)}</span>` : ''}</span>` : ''}`;
-  formatEl.style.display = (showHiRes || compactFormat) ? '' : 'none';
+  formatEl.innerHTML = showHiRes
+    ? '<img src="/static/logo-hires.png" class="player-format-badge" alt="Hi-Res">'
+    : '';
+  formatEl.style.display = showHiRes ? '' : 'none';
   formatEl.title = fmt_label || 'Open Signal Path';
 
   const albumId = track.album_id ? String(track.album_id) : '';
@@ -8122,7 +8869,7 @@ UI['player-art'].addEventListener('click', openFullscreenPlayer);
 
 // Provide a way to manually open only from the now-playing info block on mobile.
 UI['player'].addEventListener('click', e => {
-  if (window.innerWidth > 768 || !state.currentTrack) return;
+  if (!isCompactLayout() || !state.currentTrack) return;
   const target = e.target;
   if (!(target instanceof Element)) return;
   if (!target.closest('.player-info')) return;
@@ -8171,6 +8918,11 @@ UI['upsample-select'].addEventListener('change', e => {
 });
 
 UI['dsp-select'].addEventListener('change', e => {
+  if (e.target.value === '__open_eq__') {
+    e.target.value = state.dspProfile || '';
+    if (window.openGraphicEQ) window.openGraphicEQ();
+    return;
+  }
   state.dspProfile = e.target.value;
   resetDspErrorStreak();
   if (state.dspProfile) {
@@ -8178,7 +8930,7 @@ UI['dsp-select'].addEventListener('change', e => {
   }
   persistDspProfileId(state.dspProfile);
   const selected = state.dspProfiles.find(profile => String(profile.id) === String(state.dspProfile));
-  showToast(selected ? `DSP: ${selected.name}` : 'DSP: Dry');
+  showToast(selected ? `DSP: ${selected.name}` : 'DSP: Off');
   document.querySelectorAll('.dsp-preset-card').forEach(card => {
     const isActive = String(card.dataset.profileId) === String(state.dspProfile || '');
     card.style.borderColor = isActive ? 'var(--gold)' : 'var(--border)';
@@ -8282,6 +9034,10 @@ async function navigate(view, params = {}, push = true) {
   log(`[VELVET] Navigating to: ${view}`, params);
   const prevView = state.view;
   const prevParams = state.viewParams;
+
+  // Page changes must not carry an active editor into the next view. This also
+  // dismisses tablet keyboards in landscape, where viewport width looks desktop-like.
+  if (view !== 'search') blurActiveEditor();
 
   if (view === 'search' && prevView !== 'search') {
     state.prevView = prevView || 'home';
@@ -8715,7 +9471,7 @@ const ALBUMS_PER_PAGE = 400;
 const ARTISTS_PER_PAGE = 400;
 
 async function renderAlbums(vc) {
-  const isMobile = window.innerWidth <= 768;
+  const isMobile = isCompactLayout();
   // Fetch all albums but render only current page
   const allAlbums = await api('/albums?limit=15000');
   const genres = [...new Set(allAlbums.map(album => (album.genre || '').trim()).filter(Boolean))].sort((a, b) => a.localeCompare(b));
@@ -9049,9 +9805,8 @@ async function renderAlbums(vc) {
     }
   });
 
-  // Focus and set cursor
-  input.focus();
-  input.setSelectionRange(input.value.length, input.value.length);
+  // Search fields on library pages only focus after an explicit user tap.
+  input.blur();
 
   // Pagination buttons (disabled in search mode)
   prevBtn.addEventListener('click', () => {
@@ -9300,9 +10055,8 @@ async function renderArtists(vc) {
     }
   });
 
-  input.focus();
-  const val = input.value;
-  input.setSelectionRange(val.length, val.length);
+  // Search fields on library pages only focus after an explicit user tap.
+  input.blur();
 
   // Pagination buttons (disabled in search mode)
   prevBtn.addEventListener('click', () => {
@@ -10698,7 +11452,7 @@ async function renderAlbum(vc, { id }) {
   const albumMetaToggle = UI['album-meta-toggle'];
   const albumMetaPanel = UI['album-mobile-meta'];
   if (albumMetaToggle && albumMetaPanel) {
-    const isMobile = window.matchMedia('(max-width: 768px), (orientation: landscape) and (max-height: 500px)').matches;
+    const isMobile = isCompactLayout() || isShortLandscapeLayout();
     const setAlbumMetaExpanded = (expanded) => {
       albumMetaToggle.setAttribute('aria-expanded', expanded ? 'true' : 'false');
       albumMetaPanel.classList.toggle('is-collapsed', !expanded);
@@ -10952,26 +11706,142 @@ async function renderSearch(vc, { q }) {
 
 // ── Settings ──────────────────────────────────────────────────────────────────
 
+function renderLibraryRows(libraries = []) {
+  if (!libraries.length) {
+    return '<div style="color:var(--muted);font-size:13px;padding:10px 0">No folders added yet.</div>';
+  }
+  return libraries.map(lib => `
+    <div class="library-item" data-library-id="${lib.id}">
+      <div class="library-path" title="${escHtml(lib.path)}">${escHtml(lib.path)}</div>
+      <div class="library-item-actions">
+        <button class="btn btn-gold scan-lib" data-path="${escHtml(lib.path)}" data-id="${lib.id}" title="Import new music from this folder">Scan Folder</button>
+        <button class="btn btn-ghost refresh-lib" data-path="${escHtml(lib.path)}" data-id="${lib.id}" style="color:var(--gold)" title="Re-read metadata from files already imported from this folder">Re-read Tags</button>
+        <button class="btn btn-ghost remove-lib" data-id="${lib.id}" style="color:var(--muted)">Remove</button>
+      </div>
+    </div>
+  `).join('');
+}
+
+function renderScanStatusPanel(s = {}) {
+  const progress = Number(s.progress || 0);
+  const total = Number(s.total || 0);
+  const pct = total ? Math.min(100, Math.round((progress / total) * 100)) : 0;
+  const albumsAdded = Number(s.albums_added || 0);
+  const tracksAdded = Number(s.tracks_added || 0);
+  const libraryAlbums = Number(s.library_albums || 0);
+  const libraryTracks = Number(s.library_tracks || 0);
+  const filesFailed = Number(s.files_failed || 0);
+  const currentFile = escHtml(s.current_file || (s.running ? 'Discovering audio files…' : ''));
+  const source = escHtml(s.music_dir || 'All configured folders');
+
+  if (s.running) {
+    return `
+      <div class="scan-status-card" role="status">
+        <div class="scan-status-head">
+          <div>
+            <div class="scan-status-title"><span class="scan-status-dot"></span>${total ? 'Importing music library' : 'Discovering music files'}</div>
+            <div class="scan-status-sub" title="${source}">${source}</div>
+          </div>
+          <div class="scan-status-percent">${total ? `${pct}%` : '…'}</div>
+        </div>
+        <div class="scan-progress-bar">
+          <div class="scan-progress-fill${total ? '' : ' indeterminate'}" style="width:${pct}%"></div>
+        </div>
+        <div class="scan-current-file" title="${currentFile}">${currentFile}</div>
+        <div class="scan-status-metrics">
+          <div class="scan-status-metric"><div class="scan-status-value">${albumsAdded.toLocaleString()}</div><div class="scan-status-label">New albums</div></div>
+          <div class="scan-status-metric"><div class="scan-status-value">${tracksAdded.toLocaleString()}</div><div class="scan-status-label">New tracks</div></div>
+          <div class="scan-status-metric"><div class="scan-status-value">${total ? `${progress.toLocaleString()} / ${total.toLocaleString()}` : progress.toLocaleString()}</div><div class="scan-status-label">Files processed</div></div>
+          <div class="scan-status-metric"><div class="scan-status-value">${filesFailed.toLocaleString()}</div><div class="scan-status-label">Files failed</div></div>
+        </div>
+        ${s.error ? `<div class="scan-error-text">Latest issue: ${escHtml(s.error)}</div>` : ''}
+      </div>
+    `;
+  }
+
+  if (s.finished_at) {
+    return `
+      <div class="scan-status-card${s.error ? '' : ' idle'}" role="status">
+        <div class="scan-status-head">
+          <div>
+            <div class="scan-status-title">${s.error ? '⚠ Import completed with issues' : '✓ Import complete'}</div>
+            <div class="scan-status-sub">Library now contains ${libraryAlbums.toLocaleString()} albums and ${libraryTracks.toLocaleString()} tracks.</div>
+          </div>
+        </div>
+        <div class="scan-status-metrics">
+          <div class="scan-status-metric"><div class="scan-status-value">${albumsAdded.toLocaleString()}</div><div class="scan-status-label">Albums imported</div></div>
+          <div class="scan-status-metric"><div class="scan-status-value">${tracksAdded.toLocaleString()}</div><div class="scan-status-label">Tracks imported</div></div>
+          <div class="scan-status-metric"><div class="scan-status-value">${Number(s.tracks_skipped || 0).toLocaleString()}</div><div class="scan-status-label">Already indexed</div></div>
+          <div class="scan-status-metric"><div class="scan-status-value">${filesFailed.toLocaleString()}</div><div class="scan-status-label">Files failed</div></div>
+        </div>
+        ${s.error ? `<div class="scan-error-text">Latest issue: ${escHtml(s.error)}</div>` : ''}
+      </div>
+    `;
+  }
+
+  return `
+    <div class="scan-status-card idle">
+      <div class="scan-status-title">Ready to import</div>
+      <div class="scan-status-sub">Add as many folders as you need, then scan one folder or import all folders together.</div>
+      <div class="scan-status-metrics">
+        <div class="scan-status-metric"><div class="scan-status-value">${libraryAlbums.toLocaleString()}</div><div class="scan-status-label">Albums</div></div>
+        <div class="scan-status-metric"><div class="scan-status-value">${libraryTracks.toLocaleString()}</div><div class="scan-status-label">Tracks</div></div>
+        <div class="scan-status-metric"><div class="scan-status-value">${Number(s.library_artists || 0).toLocaleString()}</div><div class="scan-status-label">Artists</div></div>
+      </div>
+    </div>
+  `;
+}
+
+function updateScanStatusPanel(status) {
+  _latestScanStatus = status || {};
+  const panel = $('scan-status-panel');
+  if (panel) panel.innerHTML = renderScanStatusPanel(_latestScanStatus);
+  setScanControlsRunning(!!_latestScanStatus.running);
+}
+
+function setScanControlsRunning(running) {
+  const fullScanButton = $('save-and-scan');
+  if (fullScanButton) {
+    fullScanButton.disabled = running;
+    fullScanButton.innerHTML = running
+      ? '<span class="scan-status-dot"></span> Importing…'
+      : '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:14px;height:14px"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15"/></svg> Scan &amp; Import All';
+  }
+  $$('.scan-lib, .refresh-lib, .remove-lib').forEach(button => {
+    button.disabled = running;
+  });
+}
+
 async function renderSettings(vc) {
   const [config, scanStatus, dspProfiles] = await Promise.all([
     api('/config'), api('/scan/status'), api('/dsp/profiles')
   ]);
-  const settingsDspProfiles = dspProfiles || [];
+  const settingsDspProfiles = visibleDspProfiles(dspProfiles || []);
   const activeDspId = String(state.dspProfile || '');
-  const dspCategoryLabels = {
-    reference: 'Reference',
-    correction: 'Correction',
-    taste: 'Taste',
-    genre: 'Genre',
-    custom: 'My Presets',
-  };
-  const dspCategoryOrder = ['reference', 'correction', 'taste', 'genre', 'custom'];
+  const dspCategoryOrder = ['reference', 'tone', 'genre', 'custom'];
+  const renderDspOffCard = () => `
+    <div class="dsp-preset-card" data-profile-id="" style="background:var(--s2);border:1px solid ${!activeDspId ? 'var(--gold)' : 'var(--border)'};border-radius:var(--radius);padding:14px 16px;margin-bottom:10px">
+      <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:8px">
+        <div>
+          <div style="font-size:14px;color:var(--text);font-weight:600">Off</div>
+          <div style="font-size:11px;color:var(--gold);text-transform:uppercase;letter-spacing:.08em;margin-top:4px">Bit-perfect</div>
+        </div>
+        <div style="display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end">
+          ${!activeDspId ? '<span style="font-size:10px;padding:4px 8px;border-radius:999px;background:rgba(201,168,76,.18);color:var(--gold)">Active</span>' : ''}
+        </div>
+      </div>
+      <div style="font-size:12px;color:var(--muted);line-height:1.55;margin-top:8px">No EQ or DSP processing.</div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px">
+        <button class="btn btn-ghost dsp-apply-btn" data-profile-id="" style="padding:8px 10px">Apply</button>
+      </div>
+    </div>
+  `;
   const renderDspPresetCard = (profile) => `
     <div class="dsp-preset-card" data-profile-id="${profile.id}" style="background:var(--s2);border:1px solid ${String(profile.id) === activeDspId ? 'var(--gold)' : 'var(--border)'};border-radius:var(--radius);padding:14px 16px;margin-bottom:10px">
       <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:8px">
         <div>
           <div style="font-size:14px;color:var(--text);font-weight:600">${escHtml(profile.name)}</div>
-          <div style="font-size:11px;color:var(--gold);text-transform:uppercase;letter-spacing:.08em;margin-top:4px">${escHtml(profile.category || 'custom')}</div>
+          <div style="font-size:11px;color:var(--gold);text-transform:uppercase;letter-spacing:.08em;margin-top:4px">${escHtml(dspProfileRoleLabel(profile))}</div>
         </div>
         <div style="display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end">
           ${String(profile.id) === activeDspId ? '<span style="font-size:10px;padding:4px 8px;border-radius:999px;background:rgba(201,168,76,.18);color:var(--gold)">Active</span>' : ''}
@@ -10981,19 +11851,22 @@ async function renderSettings(vc) {
       <div style="font-size:12px;color:var(--muted);line-height:1.55;margin-top:8px">${escHtml(profile.description || 'No description')}</div>
       <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px">
         <button class="btn btn-ghost dsp-apply-btn" data-profile-id="${profile.id}" style="padding:8px 10px">Apply</button>
-        <button class="btn btn-ghost dsp-open-btn" data-profile-id="${profile.id}" style="padding:8px 10px">Open</button>
+        <button class="btn btn-ghost dsp-open-btn" data-profile-id="${profile.id}" style="padding:8px 10px">${profile.is_factory ? 'Edit Copy' : 'Edit'}</button>
         ${profile.is_factory
           ? `<button class="btn btn-ghost dsp-clone-btn" data-profile-id="${profile.id}" style="padding:8px 10px;color:var(--gold)">Duplicate</button>`
-          : `<button class="btn btn-ghost dsp-delete-btn" data-profile-id="${profile.id}" style="padding:8px 10px;color:#ff8d8d">Delete</button>`}
+          : ''}
       </div>
     </div>
   `;
-  const renderDspPresetGroups = () => dspCategoryOrder
-    .map(category => {
-      const profiles = settingsDspProfiles.filter(profile => (profile.category || 'custom') === category);
+  const renderDspPresetGroups = () => `
+      <div class="dsp-category-heading">Off / Bit-perfect</div>
+      ${renderDspOffCard()}
+    ` + dspCategoryOrder
+    .map(group => {
+      const profiles = settingsDspProfiles.filter(profile => dspProfileGroup(profile) === group);
       if (!profiles.length) return '';
       return `
-        <div class="dsp-category-heading">${dspCategoryLabels[category] || category}</div>
+        <div class="dsp-category-heading">${dspProfileGroupLabel(group)}</div>
         ${profiles.map(renderDspPresetCard).join('')}
       `;
     })
@@ -11010,25 +11883,22 @@ async function renderSettings(vc) {
 
     <div class="settings-form">
       <div class="form-group">
-        <label class="form-label">Music Library Folders</label>
-        <div id="libraries-list" style="display:flex;flex-direction:column;gap:12px;margin-bottom:16px">
-          ${config.libraries.map(lib => `
-            <div class="library-item" style="display:flex;align-items:center;background:var(--s2);border:1px solid var(--border);border-radius:var(--radius);padding:10px 16px">
-              <div style="flex:1;font-size:13px;color:var(--text);font-family:'DM Mono',monospace">${escHtml(lib.path)}</div>
-              <button class="btn btn-ghost refresh-lib" data-path="${escHtml(lib.path)}" data-id="${lib.id}" style="padding:6px 10px;color:var(--gold)" title="Re-read metadata from files in this folder">Re-read Tags</button>
-              <button class="btn btn-ghost remove-lib" data-id="${lib.id}" style="padding:6px 10px;color:var(--muted)">Remove</button>
-            </div>
-          `).join('')}
-          ${!config.libraries.length ? '<div style="color:var(--muted);font-size:13px">No folders added yet.</div>' : ''}
+        <div class="library-section-head">
+          <label class="form-label">Music Library Folders</label>
+          <span class="library-count-badge" id="library-count">${config.libraries.length} folder${config.libraries.length === 1 ? '' : 's'}</span>
         </div>
-        
-        <div style="display:flex;gap:10px;margin-bottom:8px">
+        <div id="libraries-list" class="libraries-list">
+          ${renderLibraryRows(config.libraries)}
+        </div>
+
+        <form class="library-add-row" id="library-add-form">
           <input class="form-input" id="music-dir-input" type="text"
-                 style="flex:1;margin-bottom:0"
+                 autocomplete="off" spellcheck="false"
                  placeholder="e.g. D:\\Music">
-          <button class="btn btn-gold" id="add-lib-btn" style="white-space:nowrap">Add Folder</button>
-        </div>
-        <div class="form-hint">Path to your music folder (2–3TB supported). All subfolders will be scanned.</div>
+          <button class="btn btn-gold" id="add-lib-btn" type="submit" style="white-space:nowrap">Add Folder</button>
+        </form>
+        <div class="library-add-feedback" id="library-add-feedback">You can add multiple folders before importing. All subfolders will be included.</div>
+        <div class="form-hint">Enter a folder path on this VELVET server, such as E:\\Roon2.</div>
       </div>
 
       <div style="display:flex;gap:10px;margin-bottom:32px">
@@ -11037,7 +11907,7 @@ async function renderSettings(vc) {
             <polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/>
             <path d="M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15"/>
           </svg>
-          Full Rescan
+          Scan &amp; Import All
         </button>
         <button class="btn btn-ghost" id="reset-library-btn" style="color:#ff6b6b;font-weight:600">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:14px;height:14px;margin-right:4px">
@@ -11047,28 +11917,18 @@ async function renderSettings(vc) {
         </button>
       </div>
 
-      ${scanStatus.running ? renderScanProgress(scanStatus) : ''}
-
-      <div id="scan-status-panel">
-        ${!scanStatus.running && scanStatus.finished_at ? `
-          <div style="background:var(--s2);border:1px solid var(--border);border-radius:var(--radius);padding:16px 20px;margin-bottom:24px">
-            <div style="font-size:13px;margin-bottom:4px">✅ Last scan completed</div>
-            <div style="font-size:11px;color:var(--muted)">
-              Added ${scanStatus.tracks_added} tracks · Skipped ${scanStatus.tracks_skipped} (already indexed)
-            </div>
-          </div>
-        ` : ''}
+      <div id="scan-status-panel" aria-live="polite">
+        ${renderScanStatusPanel(scanStatus)}
       </div>
 
       <div class="form-group" style="border-top:1px solid var(--border);padding-top:24px">
-        <label class="form-label">DSP Presets</label>
+        <label class="form-label">Sound / DSP Presets</label>
         <div style="font-size:13px;color:var(--muted);line-height:1.6;margin-bottom:16px">
-          Apply a factory preset directly in the playback bar, or build your own custom EQ here with preamp and parametric filters.
-          Factory presets are read-only; duplicate them into a custom preset before editing.
+          Choose a listening preset, or duplicate a factory preset into your own editable version.
         </div>
         <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:16px">
-          <button class="btn btn-gold" id="dsp-new-custom-btn">New Custom</button>
-          <button class="btn btn-ghost" id="dsp-duplicate-active-btn">Duplicate Active Preset</button>
+          <button class="btn btn-gold" id="dsp-new-custom-btn">New Custom Preset</button>
+          <button class="btn btn-ghost" id="dsp-duplicate-active-btn">Duplicate Current</button>
         </div>
         <div class="dsp-settings-grid">
           <div id="dsp-preset-grid">
@@ -11078,8 +11938,8 @@ async function renderSettings(vc) {
           <div id="dsp-editor-panel" style="background:#000;border:1px solid rgba(255,255,255,0.1);border-radius:20px;padding:24px;position:sticky;top:88px">
             <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:20px">
               <div>
-                <div style="font-size:16px;color:var(--gold);font-weight:600;font-family:'Cormorant Garamond',serif;font-style:italic">Custom DSP Editor</div>
-                <div id="dsp-editor-status" style="font-size:11px;color:var(--muted);margin-top:4px">Refine your sonic signature with precision filters.</div>
+                <div style="font-size:16px;color:var(--gold);font-weight:600;font-family:'Cormorant Garamond',serif;font-style:italic">Preset Editor</div>
+                <div id="dsp-editor-status" style="font-size:11px;color:var(--muted);margin-top:4px">Create or edit a custom preset.</div>
               </div>
               <span id="dsp-editor-badge" style="font-size:10px;padding:4px 10px;border-radius:4px;border:1px solid rgba(255,255,255,0.1);background:rgba(255,255,255,0.03);color:var(--muted);text-transform:uppercase;letter-spacing:1px">Blank</span>
             </div>
@@ -11118,9 +11978,9 @@ async function renderSettings(vc) {
               </div>
 
               <div style="display:flex;gap:10px;flex-wrap:wrap">
-                <button class="btn btn-gold" id="dsp-save-btn">Save Custom</button>
-                <button class="btn btn-ghost" id="dsp-apply-editor-btn">Apply In Player</button>
-                <button class="btn btn-ghost" id="dsp-reset-editor-btn">Reset Editor</button>
+                <button class="btn btn-gold" id="dsp-save-btn">Save</button>
+                <button class="btn btn-ghost" id="dsp-apply-editor-btn">Save & Apply</button>
+                <button class="btn btn-ghost" id="dsp-reset-editor-btn">New Blank</button>
                 <button class="btn btn-ghost" id="dsp-delete-editor-btn" style="color:#ff8d8d;display:none">Delete Custom</button>
               </div>
             </div>
@@ -11314,11 +12174,11 @@ function applyDspProfile(profileId) {
     UI['dsp-editor-category'].value = profile?.category || 'custom';
     UI['dsp-editor-preamp'].value = String(profile?.preamp_db ?? 0);
     UI['dsp-editor-status'].textContent = isBlank
-      ? 'Build a new custom profile from scratch.'
+      ? 'Create a custom preset from scratch.'
       : isFactory
-        ? 'Factory presets are read-only. Save will create a custom copy.'
+        ? 'Editing a factory preset as a new custom copy.'
         : 'Editing a custom preset.';
-    UI['dsp-editor-badge'].textContent = isBlank ? 'Blank' : (isFactory ? 'Factory Source' : 'Custom');
+    UI['dsp-editor-badge'].textContent = isBlank ? 'Blank' : (isFactory ? 'Copy Source' : 'Custom');
     UI['dsp-delete-editor-btn'].style.display = !isBlank && !isFactory ? 'inline-flex' : 'none';
     renderFilterRows(parseJsonArray(profile?.filter_chain_json, []));
   }
@@ -11468,61 +12328,144 @@ function applyDspProfile(profileId) {
     }
   });
 
-  $('add-lib-btn').addEventListener('click', async () => {
-    const path = $('music-dir-input').value.trim();
-    if (!path) return showToast('Please enter a folder path');
-    const res = await api('/config/libraries', { 
-        method: 'POST', 
-        headers: {'Content-Type':'application/json'},
-        body: JSON.stringify({ path }) 
-    });
-    if (res.libraries) {
-        renderSettings(vc);
+  const libraryListEl = $('libraries-list');
+  const addLibraryForm = $('library-add-form');
+  const libraryInput = $('music-dir-input');
+  const addLibraryButton = $('add-lib-btn');
+  const libraryFeedback = $('library-add-feedback');
+
+  const setLibraryFeedback = (message, type = '') => {
+    if (!libraryFeedback) return;
+    libraryFeedback.textContent = message;
+    libraryFeedback.className = `library-add-feedback${type ? ` ${type}` : ''}`;
+  };
+
+  const updateLibraryList = libraries => {
+    if (libraryListEl) libraryListEl.innerHTML = renderLibraryRows(libraries || []);
+    const count = $('library-count');
+    if (count) {
+      const total = (libraries || []).length;
+      count.textContent = `${total} folder${total === 1 ? '' : 's'}`;
+    }
+    setScanControlsRunning(!!_latestScanStatus?.running);
+  };
+
+  const beginLibraryScan = async folders => {
+    const payload = folders?.length ? { folders } : {};
+    const res = await api('/scan', { method: 'POST', body: JSON.stringify(payload) });
+    if (!res) return false;
+    if (res.state) updateScanStatusPanel(res.state);
+    if (res.error) {
+      showToast(res.message || 'Unable to start import');
+      return false;
+    }
+    if (res.cooldown_remaining) {
+      showToast(res.message);
+      return false;
+    }
+    showToast(res.message || 'Library import started');
+    startScanPolling(res.state);
+    return true;
+  };
+
+  addLibraryForm?.addEventListener('submit', async event => {
+    event.preventDefault();
+    const path = libraryInput?.value.trim() || '';
+    if (!path) {
+      setLibraryFeedback('Enter a folder path first.', 'error');
+      libraryInput?.focus();
+      return;
+    }
+
+    const originalLabel = addLibraryButton.textContent;
+    addLibraryButton.disabled = true;
+    addLibraryButton.textContent = 'Adding…';
+    setLibraryFeedback(`Adding ${path}…`);
+
+    try {
+      const res = await api('/config/libraries', { method: 'POST', body: JSON.stringify({ path }) });
+      const normalizePath = value => String(value || '')
+        .trim()
+        .replace(/\//g, '\\')
+        .replace(/\\+$/, '')
+        .toLocaleLowerCase();
+      let libraries = Array.isArray(res?.libraries) ? res.libraries : null;
+
+      // Confirm the saved state instead of displaying success from a stale response.
+      if (!libraries?.some(lib => normalizePath(lib.path) === normalizePath(path))) {
+        const freshConfig = await api('/config');
+        libraries = Array.isArray(freshConfig?.libraries) ? freshConfig.libraries : libraries;
+      }
+
+      if (!libraries?.some(lib => normalizePath(lib.path) === normalizePath(path))) {
+        setLibraryFeedback(`Could not save ${path}. Check the server connection and try again.`, 'error');
+        return;
+      }
+
+      updateLibraryList(libraries);
+      libraryInput.value = '';
+      libraryInput.blur();
+      if (res?.added === false) {
+        setLibraryFeedback('That folder is already in the library. Enter a different path to continue.', 'error');
+        showToast('Folder already added');
+      } else {
+        setLibraryFeedback(`${path} added. ${libraries.length} folders configured.`, 'success');
         showToast('Library folder added');
+      }
+    } finally {
+      addLibraryButton.disabled = false;
+      addLibraryButton.textContent = originalLabel;
     }
   });
 
-  $$('.remove-lib').forEach(btn => {
-    btn.addEventListener('click', async () => {
-        const id = btn.dataset.id;
-        const res = await api(`/config/libraries/${id}`, { method: 'DELETE' });
-        if (res.libraries) {
-            renderSettings(vc);
-            showToast('Library folder removed');
-        }
-    });
+  libraryInput?.addEventListener('input', () => {
+    setLibraryFeedback('Ready to add this folder. Tap Add Folder to save it.');
   });
 
-  $$('.refresh-lib').forEach(btn => {
-    btn.addEventListener('click', async () => {
-        const path = btn.dataset.path;
-        const btnText = btn.textContent;
-        btn.textContent = '...';
-        btn.disabled = true;
-        try {
-            // Use refresh-folder endpoint to re-read metadata from files
-            const res = await api('/scan/refresh-folder', {
-                method: 'POST',
-                headers: {'Content-Type':'application/json'},
-                body: JSON.stringify({ folder: path })
-            });
-            showToast(`Refreshing: ${path}`);
-            startScanPolling();
-        } catch (e) {
-            showToast('Refresh failed: ' + e.message);
-        } finally {
-            btn.textContent = btnText;
-            btn.disabled = false;
-        }
-    });
+  libraryListEl?.addEventListener('click', async event => {
+    const button = event.target instanceof Element ? event.target.closest('button') : null;
+    if (!button || button.disabled) return;
+
+    if (button.classList.contains('remove-lib')) {
+      button.disabled = true;
+      const res = await api(`/config/libraries/${button.dataset.id}`, { method: 'DELETE' });
+      if (!res?.libraries) {
+        button.disabled = false;
+        return;
+      }
+      updateLibraryList(res.libraries);
+      setLibraryFeedback('Folder removed. You can add a replacement path at any time.', 'success');
+      showToast('Library folder removed');
+      return;
+    }
+
+    const path = button.dataset.path;
+    if (button.classList.contains('scan-lib')) {
+      await beginLibraryScan([path]);
+      return;
+    }
+
+    if (button.classList.contains('refresh-lib')) {
+      button.disabled = true;
+      button.textContent = 'Starting…';
+      const res = await api('/scan/refresh-folder', {
+        method: 'POST',
+        body: JSON.stringify({ folder: path })
+      });
+      if (res?.state) updateScanStatusPanel(res.state);
+      if (res) {
+        showToast(res.message || `Refreshing: ${path}`);
+        startScanPolling(res.state);
+      } else {
+        button.disabled = false;
+        button.textContent = 'Re-read Tags';
+      }
+    }
   });
 
-  $('save-and-scan').addEventListener('click', async () => {
-    await api('/scan', { method: 'POST', headers: {'Content-Type':'application/json'},
-                         body: JSON.stringify({}) });
-    showToast('Full scan started! This may take a while for large libraries.');
-    startScanPolling();
-  });
+  $('save-and-scan')?.addEventListener('click', () => beginLibraryScan());
+  updateScanStatusPanel(scanStatus);
+  if (scanStatus.running) startScanPolling(scanStatus);
 
   // Reset library logic
   $('reset-library-btn')?.addEventListener('click', async () => {
@@ -11594,25 +12537,6 @@ function applyDspProfile(profileId) {
     }
   }
 }
-
-function renderScanProgress(s) {
-  const pct = s.total ? Math.round((s.progress / s.total) * 100) : 0;
-  return `
-    <div class="scan-banner" id="scan-progress-banner">
-      <div class="scan-banner-title">🔍 Scanning library…</div>
-      <div class="scan-progress-bar">
-        <div class="scan-progress-fill" style="width:${pct}%"></div>
-      </div>
-      <div class="scan-progress-text">
-        ${s.progress.toLocaleString()} / ${s.total.toLocaleString()} files
-        · ${s.tracks_added.toLocaleString()} added
-        · ${s.current_file}
-      </div>
-    </div>
-  `;
-}
-
-
 
 // ─── Card Makers ──────────────────────────────────────────────────────────────
 
@@ -11778,14 +12702,19 @@ function exitSearch() {
   history.replaceState({ view: fallbackView, params: fallbackParams }, '', routeHash(fallbackView, fallbackParams));
   navigate(fallbackView, fallbackParams, false);
 }
-function setupSearch() {
+function setupSearch({ autoFocus = state.view === 'search' } = {}) {
   const input = $('search-input');
   if (!input) return;
-  input.focus();
-  
-  // Keep cursor at end if focused
-  const val = input.value;
-  input.setSelectionRange(val.length, val.length);
+
+  // Home/discover search waits for a real tap. The dedicated search results view
+  // preserves focus because it was reached by typing into that same field.
+  if (autoFocus) {
+    input.focus({ preventScroll: true });
+    const val = input.value;
+    input.setSelectionRange(val.length, val.length);
+  } else {
+    input.blur();
+  }
 
   input.addEventListener('compositionstart', () => { state.isComposing = true; });
   input.addEventListener('compositionend', () => { 
@@ -11831,6 +12760,7 @@ const GEQ_BANDS = [31.5, 63, 125, 250, 500, 1000, 2000, 4000, 8000, 16000];
 const GEQ_DEFAULT_Q = 1.41;
 let currentEqGains = new Array(10).fill(0);
 let currentEqProfileId = null;
+let currentEqDirty = false;
 
 function formatFreq(f) {
   return f >= 1000 ? (f/1000) + 'kHz' : f + 'Hz';
@@ -11840,10 +12770,10 @@ function renderEQPresets() {
   const container = $('eq-presets-container');
   if (!container || !state.dspProfiles) return;
   
-  let html = `<button class="eq-preset-btn ${!currentEqProfileId ? 'active' : ''}" onclick="selectEQPreset('')">Dry (Flat)</button>`;
-  const usedLabels = new Map([['Dry (Flat)', 1]]);
+  let html = `<button class="eq-preset-btn ${!currentEqProfileId ? 'active' : ''}" onclick="selectEQPreset('')">Off</button>`;
+  const usedLabels = new Map([['Off', 1]]);
   
-  state.dspProfiles.forEach((profile, i) => {
+  visibleDspProfiles(state.dspProfiles).forEach((profile, i) => {
     const isActive = String(currentEqProfileId || '') === String(profile.id);
     const shortLabel = uniqueDspLabel(dspDisplayLabel(profile, `DSP ${i + 1}`), usedLabels);
     html += `<button class="eq-preset-btn ${isActive ? 'active' : ''}" title="${escHtml(profile.name || shortLabel)}" onclick="selectEQPreset('${profile.id}')">${escHtml(shortLabel)}</button>`;
@@ -11864,17 +12794,48 @@ function updateEQHeadroomNote() {
   note.textContent = preamp < 0 ? `Auto headroom: ${preamp.toFixed(1)} dB` : 'Headroom: 0.0 dB';
 }
 
+function updateEQSaveButtonLabel() {
+  const btn = UI['eq-btn-save'];
+  if (!btn) return;
+  const selectedProfile = state.dspProfiles?.find(p => String(p.id) === String(currentEqProfileId));
+  if (!currentEqDirty && selectedProfile) {
+    btn.textContent = 'Apply';
+  } else if (!currentEqDirty && !currentEqProfileId) {
+    btn.textContent = 'Apply Off';
+  } else if (selectedProfile && !selectedProfile.is_factory) {
+    btn.textContent = 'Save & Apply';
+  } else {
+    btn.textContent = 'Save as Custom';
+  }
+}
+
+function applyEqProfileToPlayer(profileId) {
+  const normalizedId = String(profileId || '');
+  state.dspProfile = normalizedId;
+  if (normalizedId) state.lastEqProfile = normalizedId;
+  const select = $('dsp-select');
+  if (select) {
+    select.value = normalizedId;
+    select.dispatchEvent(new Event('change', { bubbles: true }));
+    return true;
+  } else {
+    persistDspProfileId(normalizedId);
+    return false;
+  }
+}
+
 window.selectEQPreset = async function(id) {
   currentEqProfileId = id;
+  currentEqDirty = false;
   log('[VELVET] Selecting EQ Preset:', id);
   
   if (!id) {
     currentEqGains.fill(0);
-    $('eq-current-name').textContent = 'Dry (Flat)';
+    $('eq-current-name').textContent = 'Off';
   } else {
     const profile = state.dspProfiles.find(p => String(p.id) === String(id));
     if (profile) {
-      $('eq-current-name').textContent = profile.name || 'Custom Preset';
+      $('eq-current-name').textContent = profile.name || 'Custom EQ';
       currentEqGains.fill(0);
       
       let filters = profile.filters;
@@ -11922,6 +12883,7 @@ window.selectEQPreset = async function(id) {
   renderEQSliders();
   updateEQCurve();
   updateEQHeadroomNote();
+  updateEQSaveButtonLabel();
 }
 
 function renderEQSliders() {
@@ -11959,11 +12921,16 @@ window.handleEQSliderInput = function(i, value) {
     if (val > 0) gainEl.classList.add('positive');
     else gainEl.classList.remove('positive');
   }
-  $('eq-current-name').textContent = 'Custom Profile';
-  currentEqProfileId = 'custom';
+  $('eq-current-name').textContent = 'Custom EQ';
+  currentEqDirty = true;
+  const selectedProfile = state.dspProfiles.find(p => String(p.id) === String(currentEqProfileId));
+  if (!selectedProfile || selectedProfile.is_factory) {
+    currentEqProfileId = 'custom';
+  }
   renderEQPresets(); 
   updateEQCurve();
   updateEQHeadroomNote();
+  updateEQSaveButtonLabel();
 };
 
 function updateEQCurve() {
@@ -12007,7 +12974,7 @@ window.openGraphicEQ = async function() {
   }
   const activeProfileId = state.dspProfile || state.lastEqProfile || '';
   const hasProfile = activeProfileId
-    ? state.dspProfiles.some(profile => String(profile.id) === String(activeProfileId))
+    ? visibleDspProfiles(state.dspProfiles).some(profile => String(profile.id) === String(activeProfileId))
     : false;
   currentEqProfileId = hasProfile ? String(activeProfileId) : '';
   selectEQPreset(currentEqProfileId);
@@ -12025,14 +12992,23 @@ async function loadDspProfiles() {
     if (!profiles) return;
 
     state.dspProfiles = profiles;
-    const usedLabels = new Map([['Dry', 1]]);
-    select.innerHTML = '<option value="">Dry</option>' + profiles.map((profile, index) => {
-      const shortLabel = uniqueDspLabel(dspDisplayLabel(profile, `DSP ${index + 1}`), usedLabels);
-      return `<option value="${profile.id}" title="${escHtml(profile.name || shortLabel)}" data-category="${escHtml(profile.category || 'custom')}">${escHtml(shortLabel)}</option>`;
-    }).join('');
+    const selectableProfiles = visibleDspProfiles(profiles);
+    const usedLabels = new Map([['Off', 1]]);
+    const optionsByGroup = ['reference', 'tone', 'genre', 'custom']
+      .map(group => {
+        const groupProfiles = selectableProfiles.filter(profile => dspProfileGroup(profile) === group);
+        if (!groupProfiles.length) return '';
+        const options = groupProfiles.map((profile, index) => {
+          const shortLabel = uniqueDspLabel(dspDisplayLabel(profile, `DSP ${index + 1}`), usedLabels);
+          return `<option value="${profile.id}" title="${escHtml(profile.name || shortLabel)}" data-category="${escHtml(profile.category || 'custom')}">${escHtml(shortLabel)}</option>`;
+        }).join('');
+        return `<optgroup label="${escHtml(dspProfileGroupLabel(group))}">${options}</optgroup>`;
+      })
+      .join('');
+    select.innerHTML = '<option value="">Off</option>' + optionsByGroup + '<option value="__open_eq__">Open EQ Editor</option>';
 
-    const hasProfile = (profileId) => profiles.some(profile => String(profile.id) === String(profileId));
-    if (!profiles.length) {
+    const hasProfile = (profileId) => selectableProfiles.some(profile => String(profile.id) === String(profileId));
+    if (!selectableProfiles.length) {
       select.value = '';
       syncMobileLandscapeControls();
       return;
@@ -12902,21 +13878,49 @@ async function loadStats() {
   }
 }
 
-let _scanPollId;
-function startScanPolling() {
-  if (_scanPollId) clearInterval(_scanPollId);
-  _scanPollId = setInterval(async () => {
+let _scanPollId = null;
+let _scanPollToken = 0;
+let _latestScanStatus = {};
+
+function startScanPolling(initialState = null) {
+  if (_scanPollId) clearTimeout(_scanPollId);
+  const token = ++_scanPollToken;
+  let sawRunning = !!initialState?.running;
+  let waitingChecks = 0;
+
+  if (initialState) updateScanStatusPanel(initialState);
+
+  const poll = async () => {
     try {
-      const s = await api('/scan/status') || {};
-      if (!s.running) {
-        clearInterval(_scanPollId);
-        showToast('✅ Library scan complete');
+      const status = await api('/scan/status');
+      if (token !== _scanPollToken || !status) return;
+      updateScanStatusPanel(status);
+
+      if (status.running) {
+        sawRunning = true;
+        _scanPollId = setTimeout(poll, 1200);
+        return;
+      }
+
+      if (!sawRunning && waitingChecks < 3) {
+        waitingChecks += 1;
+        _scanPollId = setTimeout(poll, 700);
+        return;
+      }
+
+      _scanPollId = null;
+      if (sawRunning) {
+        const albums = Number(status.albums_added || 0).toLocaleString();
+        const tracks = Number(status.tracks_added || 0).toLocaleString();
+        showToast(`✓ Import complete — ${albums} albums, ${tracks} tracks`);
         loadStats();
       }
     } catch {
-      clearInterval(_scanPollId);
+      if (token === _scanPollToken) _scanPollId = null;
     }
-  }, 3000);
+  };
+
+  poll();
 }
 
 log('[VELVET] Initializing core services...');
@@ -12928,12 +13932,14 @@ window.addEventListener('DOMContentLoaded', async () => {
   // EQ Controls
   UI['eq-btn-reset']?.addEventListener('click', () => {
     currentEqGains.fill(0);
-    if (UI['eq-current-name']) UI['eq-current-name'].textContent = 'Dry (Flat)';
-    currentEqProfileId = 'custom';
+    if (UI['eq-current-name']) UI['eq-current-name'].textContent = 'Off';
+    currentEqProfileId = '';
+    currentEqDirty = false;
     renderEQSliders();
     renderEQPresets();
     updateEQCurve();
     updateEQHeadroomNote();
+    updateEQSaveButtonLabel();
   });
 
   UI['eq-btn-save']?.addEventListener('click', async () => {
@@ -12947,18 +13953,34 @@ window.addEventListener('DOMContentLoaded', async () => {
       }
     });
     
-    const profile = {
-      name: 'Custom Graphic EQ',
-      description: 'Saved from the 10-band Graphic EQ.',
-      category: 'custom',
-      preamp_db: recommendedGraphicEqPreamp(),
-      filters: filters,
-      tags: ['custom', 'graphic-eq']
-    };
-    
     try {
       const existingProfile = state.dspProfiles.find(p => String(p.id) === String(currentEqProfileId));
       const isExistingCustom = existingProfile && !existingProfile.is_factory;
+      if (!currentEqDirty && (existingProfile || !currentEqProfileId)) {
+        const dispatched = applyEqProfileToPlayer(existingProfile?.id || '');
+        if (!dispatched) showToast(existingProfile ? `DSP: ${existingProfile.name}` : 'DSP: Off');
+        UI['eq-overlay']?.classList.remove('active');
+        updateEQSaveButtonLabel();
+        return;
+      }
+      if (!filters.length && !isExistingCustom) {
+        showToast('No EQ changes to save');
+        updateEQSaveButtonLabel();
+        return;
+      }
+
+      const profile = {
+        name: 'Custom EQ',
+        description: 'Saved from the EQ Editor.',
+        category: 'custom',
+        preamp_db: recommendedGraphicEqPreamp(),
+        filters: filters,
+        tags: ['custom', 'graphic-eq']
+      };
+      if (isExistingCustom) {
+        profile.name = existingProfile.name || profile.name;
+        profile.description = existingProfile.description || profile.description;
+      }
       const endpoint = isExistingCustom ? `/dsp/profiles/${existingProfile.id}` : '/dsp/profiles';
       const method = isExistingCustom ? 'PUT' : 'POST';
       const res = await api(endpoint, { method, body: JSON.stringify(profile) });
@@ -12973,13 +13995,14 @@ window.addEventListener('DOMContentLoaded', async () => {
           select.value = savedProfileId;
           select.dispatchEvent(new Event('change', { bubbles: true }));
         }
-        showToast('EQ Saved & Applied');
+        currentEqDirty = false;
+        showToast('Preset saved and applied');
         UI['eq-overlay']?.classList.remove('active');
       }
     } catch (err) {
       showToast('Failed to save EQ');
     }
-    if (btn) btn.textContent = 'Save & Apply';
+    updateEQSaveButtonLabel();
   });
 
   // Initialization sequence MUST await first navigation
@@ -13000,7 +14023,7 @@ window.addEventListener('DOMContentLoaded', async () => {
 
   // Poll scan status if scan is running
   api('/scan/status').then(s => {
-    if (s && s.running) startScanPolling();
+    if (s && s.running) startScanPolling(s);
   }).catch(() => {});
 });
 

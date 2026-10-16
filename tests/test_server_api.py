@@ -56,6 +56,8 @@ class ServerApiTests(unittest.TestCase):
             current_file="demo.flac",
             tracks_added=2,
             tracks_skipped=1,
+            albums_before=1,
+            artists_before=1,
             error=None,
             music_dir="C:/TestMusic",
         )
@@ -172,8 +174,13 @@ class ServerApiTests(unittest.TestCase):
 
         add_resp = self.client.post("/api/config/libraries", json={"path": "C:/SecondLibrary"})
         self.assertEqual(add_resp.status_code, 200)
+        self.assertTrue(add_resp.json()["added"])
         added_paths = [item["path"] for item in add_resp.json()["libraries"]]
         self.assertIn("C:/SecondLibrary", added_paths)
+
+        duplicate_resp = self.client.post("/api/config/libraries", json={"path": "C:/SecondLibrary"})
+        self.assertEqual(duplicate_resp.status_code, 200)
+        self.assertFalse(duplicate_resp.json()["added"])
 
         remove_resp = self.client.delete("/api/config/libraries/1")
         self.assertEqual(remove_resp.status_code, 200)
@@ -204,6 +211,10 @@ class ServerApiTests(unittest.TestCase):
         self.assertTrue(body["running"])
         self.assertEqual(body["progress"], 3)
         self.assertEqual(body["current_file"], "demo.flac")
+        self.assertEqual(body["library_albums"], 2)
+        self.assertEqual(body["library_tracks"], 2)
+        self.assertEqual(body["albums_added"], 1)
+        self.assertEqual(body["artists_added"], 1)
 
     def test_dsp_profiles_route_returns_seeded_factory_presets(self):
         resp = self.client.get("/api/dsp/profiles")
@@ -219,6 +230,14 @@ class ServerApiTests(unittest.TestCase):
         self.assertIn("sub_bass_boost", preset_keys)
         self.assertIn("pop", preset_keys)
         self.assertIn("classical", preset_keys)
+
+    def test_artist_image_route_uses_no_content_for_missing_local_image(self):
+        missing_image_resp = self.client.get("/api/artists/1/image")
+        self.assertEqual(missing_image_resp.status_code, 204)
+        self.assertEqual(missing_image_resp.headers["cache-control"], "max-age=86400")
+
+        missing_artist_resp = self.client.get("/api/artists/999/image")
+        self.assertEqual(missing_artist_resp.status_code, 404)
 
     def test_create_custom_dsp_profile_persists_ordered_filters(self):
         resp = self.client.post(

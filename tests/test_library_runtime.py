@@ -74,10 +74,12 @@ class LibraryRuntimeTests(unittest.TestCase):
 
     def test_add_library_path_deduplicates_entries(self):
         with self._connect() as conn:
-            add_library_path(conn, "C:/Music/Main")
-            add_library_path(conn, "C:/Music/Main")
+            added_first = add_library_path(conn, "C:/Music/Main")
+            added_second = add_library_path(conn, "C:/Music/Main")
             libraries = fetch_libraries(conn)
 
+        self.assertTrue(added_first)
+        self.assertFalse(added_second)
         self.assertEqual(len(libraries), 1)
 
     def test_remove_library_path_deletes_library(self):

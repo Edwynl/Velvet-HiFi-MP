@@ -3,8 +3,11 @@ from __future__ import annotations
 import os
 import re
 import sqlite3
+import time
 from pathlib import Path
 from typing import Callable, Optional
+
+from path_compat import filesystem_path
 
 
 def sort_name(name: str) -> str:
@@ -61,6 +64,7 @@ def scan_music_dirs(
     on_track_skipped: Callable[[], dict | None],
     on_error: Callable[[str], None],
 ) -> dict:
+    scan_started = time.perf_counter()
     all_files = discover_audio_files(music_dirs, audio_extensions)
     set_total(len(all_files))
 
@@ -70,6 +74,19 @@ def scan_music_dirs(
     }
     artists_cache: dict[str, int] = {}
     albums_cache: dict[tuple[int, str], int] = {}
+    commit_count = 0
+    commit_total_seconds = 0.0
+    interval_stats: list[dict] = []
+    interval_size = 1000
+    next_interval = interval_size
+    interval_started = scan_started
+
+    def commit_with_stats() -> None:
+        nonlocal commit_count, commit_total_seconds
+        commit_started = time.perf_counter()
+        db.commit()
+        commit_total_seconds += time.perf_counter() - commit_started
+        commit_count += 1
 
     for index, file_path in enumerate(all_files, start=1):
         on_progress(index, os.path.basename(file_path))
@@ -101,14 +118,42 @@ def scan_music_dirs(
             _insert_track_and_artists(db, metadata, file_path, album_id, primary_artist_id, individual_artist_ids)
             state = on_track_added()
             if state and state.get("tracks_added", 0) % scan_batch_size == 0:
-                db.commit()
+                commit_with_stats()
         except Exception as exc:
             on_error(f"Error adding track: {exc}")
 
-    db.commit()
+        if index >= next_interval or index == len(all_files):
+            now = time.perf_counter()
+            files_in_interval = index if not interval_stats else index - interval_stats[-1]["processed_files"]
+            seconds_in_interval = max(now - interval_started, 0.0)
+            interval_stats.append(
+                {
+                    "processed_files": index,
+                    "files_in_interval": files_in_interval,
+                    "seconds": round(seconds_in_interval, 3),
+                    "files_per_second": round(files_in_interval / seconds_in_interval, 3) if seconds_in_interval > 0 else 0.0,
+                }
+            )
+            interval_started = now
+            next_interval += interval_size
+
+    commit_with_stats()
     _recount_album_totals(db)
-    db.commit()
-    return {"discovered_files": len(all_files)}
+    commit_with_stats()
+
+    total_seconds = max(time.perf_counter() - scan_started, 0.0)
+    return {
+        "discovered_files": len(all_files),
+        "scan_metrics": {
+            "total_seconds": round(total_seconds, 3),
+            "files_per_second": round(len(all_files) / total_seconds, 3) if total_seconds > 0 else 0.0,
+            "seconds_per_1000_files": round((total_seconds / len(all_files)) * 1000, 3) if all_files else 0.0,
+            "commit_count": commit_count,
+            "commit_total_seconds": round(commit_total_seconds, 3),
+            "commit_avg_ms": round((commit_total_seconds / commit_count) * 1000, 2) if commit_count else 0.0,
+            "intervals": interval_stats,
+        },
+    }
 
 
 def refresh_folder_records(
@@ -299,7 +344,7 @@ def _insert_track_and_artists(
 ) -> None:
     file_size = metadata.get("file_size")
     if file_size is None:
-        file_size = os.path.getsize(file_path)
+        file_size = os.path.getsize(filesystem_path(file_path))
 
     db.execute(
         """

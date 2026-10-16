@@ -6,6 +6,23 @@ from typing import Callable, Optional
 from fastapi import HTTPException
 
 
+def _needs_variant_fallback(
+    q: str,
+    variants: list[str],
+    to_simplified: Callable[[str], str],
+    to_traditional: Callable[[str], str],
+) -> bool:
+    """Only run Python-side fallback when variant expansion actually differs."""
+    if not q or not variants:
+        return False
+
+    normalized = {q}
+    normalized.update(variants)
+    normalized.add(to_simplified(q))
+    normalized.add(to_traditional(q))
+    return len(normalized) > 1
+
+
 def fetch_artist_detail_summary(db: sqlite3.Connection, artist_id: int) -> dict:
     artist = db.execute("SELECT * FROM artists WHERE id=?", (artist_id,)).fetchone()
     if not artist:
@@ -76,7 +93,13 @@ def search_tracks(
         like_pattern = f"%{lower_variant}%"
         conditions.extend([
             "LOWER(t.title) LIKE ?",
-            "LOWER(ar_all.name) LIKE ?",
+            """EXISTS (
+                SELECT 1
+                FROM track_artists ta2
+                JOIN artists ar_all ON ar_all.id = ta2.artist_id
+                WHERE ta2.track_id = t.id
+                  AND LOWER(ar_all.name) LIKE ?
+            )""",
             "LOWER(al.title) LIKE ?",
             "LOWER(COALESCE(t.composer, '')) LIKE ?",
             "LOWER(COALESCE(t.work_title, '')) LIKE ?",
@@ -89,15 +112,13 @@ def search_tracks(
     where_clause = " OR ".join(conditions)
     tracks = db.execute(
         f"""
-        SELECT DISTINCT t.id, t.title, t.duration, t.format, t.track_number,
+        SELECT t.id, t.title, t.duration, t.format, t.track_number,
                t.composer, t.work_title, t.performer, t.conductor, t.ensemble,
                ar_primary.name as artist_name, al.title as album_title,
                al.id as album_id, al.year
         FROM tracks t
         JOIN artists ar_primary ON t.artist_id = ar_primary.id
         JOIN albums al ON t.album_id = al.id
-        LEFT JOIN track_artists ta ON t.id = ta.track_id
-        LEFT JOIN artists ar_all ON ta.artist_id = ar_all.id
         WHERE {where_clause}
         ORDER BY (LOWER(t.title) = ?) DESC, LOWER(t.title)
         LIMIT ?
@@ -106,8 +127,9 @@ def search_tracks(
     ).fetchall()
 
     matched_track_ids = {row["id"] for row in tracks}
+    use_variant_fallback = _needs_variant_fallback(q, variants, to_simplified, to_traditional)
 
-    if len(tracks) < limit:
+    if len(tracks) < limit and use_variant_fallback:
         remaining = max(1, limit - len(tracks))
         exclude_ids = ",".join("?" * len(matched_track_ids))
         if matched_track_ids:
@@ -119,15 +141,13 @@ def search_tracks(
 
         all_tracks: list[sqlite3.Row] = db.execute(
             """
-            SELECT DISTINCT t.id, t.title, t.duration, t.format, t.track_number,
+            SELECT t.id, t.title, t.duration, t.format, t.track_number,
                    t.composer, t.work_title, t.performer, t.conductor, t.ensemble,
                    ar_primary.name as artist_name, al.title as album_title,
                    al.id as album_id, al.year
             FROM tracks t
             JOIN artists ar_primary ON t.artist_id = ar_primary.id
             JOIN albums al ON t.album_id = al.id
-            LEFT JOIN track_artists ta ON t.id = ta.track_id
-            LEFT JOIN artists ar_all ON ta.artist_id = ar_all.id
             """
             + f"\n{filter_clause}\nLIMIT ?",
             (*filter_params, remaining * 3),
@@ -171,7 +191,7 @@ def search_tracks(
             id_placeholders = ",".join("?" * len(matched_track_ids))
             final_rows = db.execute(
                 f"""
-                SELECT DISTINCT t.id, t.title, t.duration, t.format, t.track_number,
+                SELECT t.id, t.title, t.duration, t.format, t.track_number,
                        t.composer, t.work_title, t.performer, t.conductor, t.ensemble,
                        ar_primary.name as artist_name, al.title as album_title,
                        al.id as album_id, al.year
