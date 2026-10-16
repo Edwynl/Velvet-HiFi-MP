@@ -13,11 +13,11 @@ const ALLOWED = new Set([
 
 export function inlineFrontendModules(html) {
   const expanded = html.replace(
-    /<script src="\\/static\\/js\\/([a-z0-9-]+)\\.js"><\\/script>/g,
+    /<script src="\/static\/js\/([a-z0-9-]+)\.js"><\/script>/g,
     (original, name) => {
       if (!ALLOWED.has(name)) throw new Error(`Unexpected frontend module: ${name}`);
       const source = readFileSync(`static/js/${name}.js`, 'utf8');
-      if (/<\\/script\\s*>/i.test(source)) {
+      if (/<\/script\s*>/i.test(source)) {
         throw new Error(`Cannot safely inline ${name}`);
       }
       return `<script>\n${source}\n</script>`;
@@ -28,7 +28,7 @@ export function inlineFrontendModules(html) {
   // still exercise the real source. Production keeps them on demand.
   const lazyScripts = ['settings-view', 'remote-settings'].map(name => {
     const source = readFileSync(`static/js/${name}.js`, 'utf8');
-    if (/<\\/script\\s*>/i.test(source)) throw new Error(`Unsafe module: ${name}`);
+    if (/<\/script\s*>/i.test(source)) throw new Error(`Unsafe module: ${name}`);
     return `<script>\n${source}\n</script>\n`;
   }).join('');
   const bootstrap = '<script>\n// ─── Utilities';
