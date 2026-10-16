@@ -5,6 +5,8 @@ A Roon-like music management system for Windows
 """
 
 import asyncio
+import gzip
+from functools import lru_cache
 import io
 import ipaddress
 import json
@@ -3813,32 +3815,61 @@ async def request_id_middleware(request: Request, call_next):
 
 # ─── Frontend ─────────────────────────────────────────────────────────────────
 
+@lru_cache(maxsize=18)
+def _compressed_static_asset(file_path: str, mtime_ns: int, file_size: int) -> bytes:
+    """Compress versioned public assets once per file revision, never audio."""
+    return gzip.compress(Path(file_path).read_bytes(), compresslevel=5)
+
+
+def _accepts_gzip(request: Request) -> bool:
+    for item in request.headers.get("Accept-Encoding", "").split(","):
+        token, *params = item.strip().split(";")
+        if token.strip().lower() != "gzip":
+            continue
+        for param in params:
+            if param.strip().startswith("q="):
+                try:
+                    return float(param.strip()[2:]) > 0
+                except ValueError:
+                    return False
+        return True
+    return False
+
+
+def _serve_static_text(request: Request, file_path: Path, media_type: str,
+                       cache_control: str) -> Response:
+    headers = {"Cache-Control": cache_control, "Vary": "Accept-Encoding"}
+    if _accepts_gzip(request):
+        stat = file_path.stat()
+        payload = _compressed_static_asset(str(file_path), stat.st_mtime_ns, stat.st_size)
+        headers["Content-Encoding"] = "gzip"
+        return Response(content=payload, media_type=media_type, headers=headers)
+    return FileResponse(file_path, media_type=media_type, headers=headers)
+
+
 @app.get("/")
-def serve_frontend():
-    html = Path(__file__).parent / "static" / "index.html"
-    return HTMLResponse(
-        content=html.read_text(encoding="utf-8"),
-        headers={
-            "Cache-Control": "no-cache, no-store, must-revalidate",
-            "Pragma": "no-cache",
-            "Expires": "0"
-        }
-    )
+def serve_frontend(request: Request):
+    path = Path(__file__).parent / "static" / "index.html"
+    response = _serve_static_text(request, path, "text/html", "no-cache, no-store, must-revalidate")
+    response.headers["Pragma"] = "no-cache"
+    response.headers["Expires"] = "0"
+    return response
 
 
 @app.get("/static/index.html")
-def serve_public_shell():
-    # No credentials or user data are embedded in the public application shell.
-    html = Path(__file__).parent / "static" / "index.html"
-    return HTMLResponse(html.read_text(encoding="utf-8"), headers={"Cache-Control": "no-cache"})
+def serve_public_shell(request: Request):
+    return _serve_static_text(
+        request, Path(__file__).parent / "static" / "index.html", "text/html", "no-cache"
+    )
+
+
 @app.get("/static/js/{module_name}")
-def serve_frontend_module(module_name: str):
-    """Serve only reviewed browser modules; never expose arbitrary server files."""
+def serve_frontend_module(module_name: str, request: Request):
+    """Allowlisted public JS only; transparent gzip never touches FLAC or artwork."""
     if module_name not in PUBLIC_FRONTEND_JS_MODULES:
         raise HTTPException(404, "Unknown frontend module")
     file_path = Path(__file__).parent / "static" / "js" / module_name
-    return FileResponse(file_path, media_type="text/javascript",
-                        headers={"Cache-Control": "no-cache"})
+    return _serve_static_text(request, file_path, "text/javascript", "no-cache")
 
 
 @app.get("/static/manifest.json")
