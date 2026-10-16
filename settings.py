@@ -31,9 +31,9 @@ class ScanConstants:
     }
 
     UPSAMPLE_QUALITY: dict = {
-        "standard": "soxr_qq",
-        "high": "soxr_hq",
-        "extreme": "soxr_vhq",
+        "standard": "soxr:precision=20",
+        "high": "soxr:precision=28",
+        "extreme": "soxr:precision=33:cheby=1",
     }
 
     DSD_RATES: dict = {
