@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 from functools import lru_cache
 from pathlib import Path
 from typing import Optional
@@ -48,7 +49,39 @@ def _resolve_folder_cover_path(folder_path: str) -> Optional[str]:
         path = folder / name
         if path.exists():
             return str(path)
-    return None
+    # "Album\CD1\track.flac" keeps its artwork in "Album".
+    if DISC_FOLDER.match(folder.name):
+        return _resolve_folder_cover_path(str(folder.parent))
+    for subfolder in ARTWORK_SUBFOLDERS:
+        found = _any_image(folder / subfolder)
+        if found:
+            return found
+    return _any_image(folder)
+
+
+DISC_FOLDER = re.compile(r"^(?:cd|disc|disk)\s*[-_.]?\s*\d{1,2}\b", re.I)
+ARTWORK_SUBFOLDERS = ("Artwork", "Covers", "Cover", "Scans")
+_FRONT_HINT = re.compile(r"cover|front|folder|封面", re.I)
+_NOT_FRONT_HINT = re.compile(r"back|inlay|tray|booklet|disc|cd\d|inside|背", re.I)
+
+
+def _any_image(folder: Path) -> Optional[str]:
+    """Pick the likeliest front cover among arbitrarily named images."""
+    try:
+        images = [
+            entry for entry in folder.iterdir()
+            if entry.suffix.lower() in (".jpg", ".jpeg", ".png")
+            and not entry.name.startswith("._") and entry.is_file()
+        ]
+    except OSError:
+        return None
+    if not images:
+        return None
+    images.sort(key=lambda p: (
+        0 if _FRONT_HINT.search(p.stem) else 2 if _NOT_FRONT_HINT.search(p.stem) else 1,
+        p.name.lower(),
+    ))
+    return str(images[0])
 
 
 def save_cover_bytes(cover_data: bytes, key: str, covers_dir: Path) -> str:
