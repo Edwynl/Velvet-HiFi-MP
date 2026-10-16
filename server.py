@@ -93,6 +93,7 @@ from library_runtime import (
     remove_library_path,
     sync_music_dir_library,
 )
+from path_compat import filesystem_path
 from scanner_service import refresh_folder_records, scan_music_dirs
 from library_stats import (
     fetch_genre_albums,
@@ -355,6 +356,15 @@ def get_request_logger(request_id: Optional[str] = None) -> logging.LoggerAdapte
     )
 
 
+def _log_baseline_metric(metric: str, started_at: float, **fields) -> None:
+    """Emit lightweight baseline performance metrics to structured logs."""
+    elapsed_ms = (time.perf_counter() - started_at) * 1000.0
+    payload = [f"metric={metric}", f"elapsed_ms={elapsed_ms:.2f}"]
+    for key, value in fields.items():
+        payload.append(f"{key}={value}")
+    log.warning("[BASELINE] %s", " ".join(payload))
+
+
 @asynccontextmanager
 async def app_lifespan(app: FastAPI):
     """Prime network renderer discovery in the background after app startup."""
@@ -479,6 +489,7 @@ def _get_raw_tag(tags, *keys) -> Optional[str]:
 
 def extract_metadata(file_path: str) -> dict:
     path = Path(file_path)
+    readable_path = filesystem_path(file_path)
     meta = {
         'title': path.stem, 'artist': 'Unknown Artist',
         'album': 'Unknown Album', 'album_artist': None,
@@ -494,8 +505,8 @@ def extract_metadata(file_path: str) -> dict:
 
     try:
         # Easy=True normalises tag names across formats
-        audio_easy = MutagenFile(file_path, easy=True)
-        audio_raw  = MutagenFile(file_path)
+        audio_easy = MutagenFile(readable_path, easy=True)
+        audio_raw  = MutagenFile(readable_path)
 
         if audio_easy:
             # Audio technical info
@@ -631,8 +642,10 @@ def find_folder_cover(file_path: str) -> Optional[bytes]:
     """Look for common cover filenames in the same folder."""
     return find_folder_cover_bytes(file_path, logger=log)
 
-def scan_libraries(music_dirs: list[str]):
-    _scan_job.begin(", ".join(music_dirs))
+def scan_libraries(music_dirs: list[str], *, already_started: bool = False):
+    if not already_started:
+        _scan_job.begin(", ".join(music_dirs))
+    started_at = time.perf_counter()
 
     log.warning(f"[SCAN] Starting scan of {music_dirs}")
 
@@ -642,11 +655,23 @@ def scan_libraries(music_dirs: list[str]):
         pre_scan_tracks = db.execute("SELECT COUNT(*) FROM tracks").fetchone()[0]
         pre_scan_albums = db.execute("SELECT COUNT(*) FROM albums").fetchone()[0]
         pre_scan_artists = db.execute("SELECT COUNT(*) FROM artists").fetchone()[0]
+        _scan_job.update(
+            albums_before=pre_scan_albums,
+            artists_before=pre_scan_artists,
+            library_tracks=pre_scan_tracks,
+            library_albums=pre_scan_albums,
+            library_artists=pre_scan_artists,
+        )
         log.warning(
             f"[SCAN] DB state before scan: {pre_scan_tracks} tracks, {pre_scan_albums} albums, {pre_scan_artists} artists"
         )
 
-        scan_music_dirs(
+        def record_scan_file_error(message: str) -> None:
+            log.warning(message)
+            _scan_job.update(error=message)
+            _scan_job.increment("files_failed")
+
+        scan_result = scan_music_dirs(
             db,
             music_dirs,
             audio_extensions=AUDIO_EXTENSIONS,
@@ -659,7 +684,22 @@ def scan_libraries(music_dirs: list[str]):
             on_track_added=lambda: _scan_job.increment("tracks_added"),
             on_track_skipped=lambda: _scan_job.increment("tracks_skipped"),
             on_track_updated=lambda: _scan_job.increment("tracks_updated"),
-            on_error=lambda message: _scan_job.set("error", message),
+            on_error=record_scan_file_error,
+        )
+        state = _scan_job.snapshot()
+        scan_metrics = scan_result.get("scan_metrics", {})
+        _log_baseline_metric(
+            "scan_libraries",
+            started_at,
+            files=scan_result.get("discovered_files", 0),
+            tracks_added=state.get("tracks_added", 0),
+            tracks_updated=state.get("tracks_updated", 0),
+            tracks_skipped=state.get("tracks_skipped", 0),
+            batch_size=SCAN_BATCH_SIZE,
+            commit_count=scan_metrics.get("commit_count", 0),
+            commit_avg_ms=scan_metrics.get("commit_avg_ms", 0.0),
+            files_per_sec=scan_metrics.get("files_per_second", 0.0),
+            sec_per_1000=scan_metrics.get("seconds_per_1000_files", 0.0),
         )
 
     except Exception as e:
@@ -1069,7 +1109,7 @@ async def get_artist_image(artist_id: int):
             headers={"Cache-Control": "max-age=86400"},
         )
 
-    raise HTTPException(404, "No local image found")
+    return Response(status_code=204, headers={"Cache-Control": "max-age=86400"})
 
 @app.get("/api/artists/{artist_id}/details")
 async def get_artist_details(artist_id: int):
@@ -1099,9 +1139,10 @@ async def get_artist_details(artist_id: int):
 
 @app.get("/api/search")
 def search(q: str, limit: int = 80):
+    started_at = time.perf_counter()
     db = get_db()
     try:
-        return search_tracks(
+        result = search_tracks(
             db,
             q=q,
             limit=limit,
@@ -1109,6 +1150,14 @@ def search(q: str, limit: int = 80):
             to_simplified=to_simplified,
             to_traditional=to_traditional,
         )
+        _log_baseline_metric(
+            "search_tracks",
+            started_at,
+            q_len=len((q or "").strip()),
+            limit=limit,
+            result_count=len(result.get("tracks", [])),
+        )
+        return result
     finally:
         db.close()
 
@@ -1805,7 +1854,8 @@ def _dlna_stream_headers(request: Request, mime: str, fmt: str) -> dict:
 
 def _stream_file_direct(file_path: str, request: Request, fmt: str = ""):
     """Send an original audio file with RFC 9110 single-range semantics."""
-    size = os.path.getsize(file_path)
+    readable_path = filesystem_path(file_path)
+    size = os.path.getsize(readable_path)
     ext = Path(file_path).suffix.lower()
     mime = MIME_MAP.get(ext, "application/octet-stream")
     dlna_headers = _dlna_stream_headers(request, mime, fmt)
@@ -1835,7 +1885,7 @@ def _stream_file_direct(file_path: str, request: Request, fmt: str = ""):
             return Response(status_code=206, media_type=mime, headers=range_headers)
 
         def gen():
-            with open(file_path, "rb") as audio_file:
+            with open(readable_path, "rb") as audio_file:
                 audio_file.seek(start)
                 remaining = length
                 while remaining > 0:
@@ -1848,7 +1898,7 @@ def _stream_file_direct(file_path: str, request: Request, fmt: str = ""):
         return StreamingResponse(gen(), status_code=206, media_type=mime, headers=range_headers)
 
     return FileResponse(
-        file_path,
+        readable_path,
         media_type=mime,
         headers={"Accept-Ranges": "bytes", "Cache-Control": "no-cache", **dlna_headers},
     )
@@ -1954,7 +2004,7 @@ async def _stream_upsampled(file_path: str, target_rate: str, quality: str = "hi
     # 2. output without compression for lower latency
     # 3. Use 32-bit integer for maximum precision in pipeline
     cmd = [
-        "ffmpeg", "-nostdin", "-i", file_path,
+        "ffmpeg", "-nostdin", "-i", filesystem_path(file_path),
         "-af", filter_chain,
         "-c:a", "pcm_s32le",      # 32-bit integer for best precision
         "-f", "wav",
@@ -1985,7 +2035,7 @@ async def _stream_with_dsp(file_path: str, dsp_filter: str, timeout_seconds: int
     """
     lease = await _acquire_transcode_slot()
     cmd = [
-        "ffmpeg", "-nostdin", "-i", file_path,
+        "ffmpeg", "-nostdin", "-i", filesystem_path(file_path),
         "-af", dsp_filter,
         "-c:a", "flac",
         "-compression_level", "0",
@@ -2092,7 +2142,7 @@ async def stream_track(
     if not in_allowed_root:
         raise HTTPException(403, "Access denied: path outside configured libraries")
 
-    if not resolved_path.exists():
+    if not Path(filesystem_path(fp)).exists():
         raise HTTPException(404, f"File not found on disk: {fp}")
 
     # Build DSP filter chain
@@ -2145,7 +2195,18 @@ async def _scan_libraries_async(music_dirs: list[str]):
     Uses asyncio.to_thread() to run the synchronous file system operations
     in a thread pool, preventing blocking of the event loop.
     """
-    await asyncio.to_thread(scan_libraries, music_dirs)
+    await asyncio.to_thread(scan_libraries, music_dirs, already_started=True)
+
+def _record_library_totals(tracks: int, albums: int, artists: int) -> None:
+    """Library totals before a scan; the import progress panel diffs against them."""
+    _scan_job.update(
+        albums_before=albums,
+        artists_before=artists,
+        library_tracks=tracks,
+        library_albums=albums,
+        library_artists=artists,
+    )
+
 
 def _claim_library_scan(begin) -> str | None:
     """Mark a scan/refresh running before it is queued, or return why not.
@@ -2179,6 +2240,9 @@ async def start_scan(background_tasks: BackgroundTasks, body: dict = None):
 
     db = get_db()
     all_libraries = [row["path"] for row in db.execute("SELECT path FROM libraries").fetchall()]
+    pre_scan_tracks = db.execute("SELECT COUNT(*) FROM tracks").fetchone()[0]
+    pre_scan_albums = db.execute("SELECT COUNT(*) FROM albums").fetchone()[0]
+    pre_scan_artists = db.execute("SELECT COUNT(*) FROM artists").fetchone()[0]
     db.close()
 
     if requested_folders:
@@ -2194,11 +2258,19 @@ async def start_scan(background_tasks: BackgroundTasks, body: dict = None):
         # Fallback to default if nothing in DB yet (for first scan)
         libraries = [MUSIC_DIR]
 
-    busy = _claim_library_scan(lambda: _scan_job.begin(", ".join(libraries)))
+    def begin_scan() -> None:
+        _scan_job.begin(", ".join(libraries))
+        _record_library_totals(pre_scan_tracks, pre_scan_albums, pre_scan_artists)
+
+    busy = _claim_library_scan(begin_scan)
     if busy:
         return {"message": busy, "state": _scan_job.snapshot()}
     background_tasks.add_task(_scan_libraries_async, libraries)
-    return {"message": f"Scan started ({len(libraries)} folder{'s' if len(libraries) > 1 else ''})", "libraries": libraries}
+    return {
+        "message": f"Scan started ({len(libraries)} folder{'s' if len(libraries) > 1 else ''})",
+        "libraries": libraries,
+        "state": _scan_job.snapshot(),
+    }
 
 @app.post("/api/scan/refresh-folder")
 async def refresh_folder_metadata(background_tasks: BackgroundTasks, body: dict = None):
@@ -2215,26 +2287,34 @@ async def refresh_folder_metadata(background_tasks: BackgroundTasks, body: dict 
     # Validate folder exists in library config
     db = get_db()
     all_libraries = [row["path"] for row in db.execute("SELECT path FROM libraries").fetchall()]
+    pre_scan_tracks = db.execute("SELECT COUNT(*) FROM tracks").fetchone()[0]
+    pre_scan_albums = db.execute("SELECT COUNT(*) FROM albums").fetchone()[0]
+    pre_scan_artists = db.execute("SELECT COUNT(*) FROM artists").fetchone()[0]
     db.close()
 
     if folder_path not in all_libraries:
         raise HTTPException(400, "Folder not found in library configuration")
 
-    busy = _claim_library_scan(lambda: _scan_job.begin_refresh(folder_path))
+    def begin_refresh() -> None:
+        _scan_job.begin_refresh(folder_path)
+        _record_library_totals(pre_scan_tracks, pre_scan_albums, pre_scan_artists)
+
+    busy = _claim_library_scan(begin_refresh)
     if busy:
         return {"message": busy, "state": _scan_job.snapshot()}
     background_tasks.add_task(_refresh_folder_async, folder_path)
-    return {"message": f"Refresh started for folder: {folder_path}"}
+    return {"message": f"Refresh started for folder: {folder_path}", "state": _scan_job.snapshot()}
 
 async def _refresh_folder_async(folder_path: str):
     """Async wrapper for folder metadata refresh."""
-    await asyncio.to_thread(_refresh_folder_sync, folder_path)
+    await asyncio.to_thread(_refresh_folder_sync, folder_path, already_started=True)
 
-def _refresh_folder_sync(folder_path: str):
+def _refresh_folder_sync(folder_path: str, *, already_started: bool = False):
     """
     Synchronous folder metadata refresh - deletes and re-inserts all tracks.
     """
-    _scan_job.begin_refresh(folder_path)
+    if not already_started:
+        _scan_job.begin_refresh(folder_path)
 
     log.warning(f"[REFRESH] Starting metadata refresh of {folder_path}")
 
@@ -2322,7 +2402,23 @@ def duplicate_scan_status():
 
 @app.get("/api/scan/status")
 def scan_status():
-    return _scan_job.snapshot()
+    state = _scan_job.snapshot()
+    db = get_db()
+    try:
+        library_tracks = db.execute("SELECT COUNT(*) FROM tracks").fetchone()[0]
+        library_albums = db.execute("SELECT COUNT(*) FROM albums").fetchone()[0]
+        library_artists = db.execute("SELECT COUNT(*) FROM artists").fetchone()[0]
+    finally:
+        db.close()
+
+    state.update(
+        library_tracks=library_tracks,
+        library_albums=library_albums,
+        library_artists=library_artists,
+        albums_added=max(0, library_albums - int(state.get("albums_before") or 0)),
+        artists_added=max(0, library_artists - int(state.get("artists_before") or 0)),
+    )
+    return state
 
 @app.post("/api/scan/enrich-covers")
 async def enrich_covers(background_tasks: BackgroundTasks):
@@ -2537,9 +2633,10 @@ def list_tracks(
     favorites_only: bool = False,
 ):
     """Get list of tracks with pagination, joins, and lightweight filtering."""
+    started_at = time.perf_counter()
     db = get_db()
     try:
-        return fetch_tracks(
+        result = fetch_tracks(
             db,
             limit=limit,
             offset=offset,
@@ -2547,6 +2644,18 @@ def list_tracks(
             sort=sort,
             favorites_only=favorites_only,
         )
+        _log_baseline_metric(
+            "list_tracks",
+            started_at,
+            limit=limit,
+            offset=offset,
+            sort=sort,
+            favorites_only=int(bool(favorites_only)),
+            search_len=len((search or "").strip()),
+            result_count=len(result.get("tracks", [])),
+            total=result.get("total", 0),
+        )
+        return result
     finally:
         db.close()
 
@@ -2693,16 +2802,18 @@ def get_config():
 
 @app.post("/api/config/libraries")
 def add_library(body: dict):
-    path = body.get("path")
+    path = str(body.get("path") or "").strip()
     if not path:
         raise HTTPException(400, "Missing path")
     
     db = get_db()
     try:
-        add_library_path(db, path)
+        added = add_library_path(db, path)
     finally:
         db.close()
-    return get_config()
+    payload = get_config()
+    payload.update({"added": added, "path": path})
+    return payload
 
 @app.delete("/api/config/libraries/{lib_id}")
 def remove_library(lib_id: int):

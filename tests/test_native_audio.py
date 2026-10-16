@@ -12,6 +12,7 @@ from unittest.mock import patch
 import numpy
 
 import local_playback
+from path_compat import filesystem_path
 
 
 class _FakeProcess:
@@ -144,7 +145,8 @@ class NativeAudioTests(unittest.TestCase):
                     )
                 self.assertTrue(ok)
                 command = commands[0]
-                self.assertLess(command.index(str(audio)), command.index("-af"))
+                # Input is passed in extended-length form (Windows long paths).
+                self.assertLess(command.index(filesystem_path(audio)), command.index("-af"))
                 self.assertEqual(command[command.index("-af") + 1], "volume=-2dB")
                 self.assertEqual(command[command.index("-acodec") + 1], "pcm_f32le")
                 self.assertEqual(command[command.index("-ar") + 1], "96000")

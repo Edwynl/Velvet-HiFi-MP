@@ -10,10 +10,10 @@ function renderEQPresets() {
   const container = $('eq-presets-container');
   if (!container || !state.dspProfiles) return;
   
-  let html = `<button class="eq-preset-btn ${!currentEqProfileId ? 'active' : ''}" onclick="selectEQPreset('')">Dry (Flat)</button>`;
-  const usedLabels = new Map([['Dry (Flat)', 1]]);
+  let html = `<button class="eq-preset-btn ${!currentEqProfileId ? 'active' : ''}" onclick="selectEQPreset('')">Off</button>`;
+  const usedLabels = new Map([['Off', 1]]);
   
-  state.dspProfiles.forEach((profile, i) => {
+  visibleDspProfiles(state.dspProfiles).forEach((profile, i) => {
     const isActive = String(currentEqProfileId || '') === String(profile.id);
     const shortLabel = uniqueDspLabel(dspDisplayLabel(profile, `DSP ${i + 1}`), usedLabels);
     html += `<button class="eq-preset-btn ${isActive ? 'active' : ''}" title="${escHtml(profile.name || shortLabel)}" onclick="selectEQPreset('${profile.id}')">${escHtml(shortLabel)}</button>`;
@@ -34,17 +34,48 @@ function updateEQHeadroomNote() {
   note.textContent = preamp < 0 ? `Auto headroom: ${preamp.toFixed(1)} dB` : 'Headroom: 0.0 dB';
 }
 
+function updateEQSaveButtonLabel() {
+  const btn = UI['eq-btn-save'];
+  if (!btn) return;
+  const selectedProfile = state.dspProfiles?.find(p => String(p.id) === String(currentEqProfileId));
+  if (!currentEqDirty && selectedProfile) {
+    btn.textContent = 'Apply';
+  } else if (!currentEqDirty && !currentEqProfileId) {
+    btn.textContent = 'Apply Off';
+  } else if (selectedProfile && !selectedProfile.is_factory) {
+    btn.textContent = 'Save & Apply';
+  } else {
+    btn.textContent = 'Save as Custom';
+  }
+}
+
+function applyEqProfileToPlayer(profileId) {
+  const normalizedId = String(profileId || '');
+  state.dspProfile = normalizedId;
+  if (normalizedId) state.lastEqProfile = normalizedId;
+  const select = $('dsp-select');
+  if (select) {
+    select.value = normalizedId;
+    select.dispatchEvent(new Event('change', { bubbles: true }));
+    return true;
+  } else {
+    persistDspProfileId(normalizedId);
+    return false;
+  }
+}
+
 window.selectEQPreset = async function(id) {
   currentEqProfileId = id;
+  currentEqDirty = false;
   log('[VELVET] Selecting EQ Preset:', id);
   
   if (!id) {
     currentEqGains.fill(0);
-    $('eq-current-name').textContent = 'Dry (Flat)';
+    $('eq-current-name').textContent = 'Off';
   } else {
     const profile = state.dspProfiles.find(p => String(p.id) === String(id));
     if (profile) {
-      $('eq-current-name').textContent = profile.name || 'Custom Preset';
+      $('eq-current-name').textContent = profile.name || 'Custom EQ';
       currentEqGains.fill(0);
       
       let filters = profile.filters;
@@ -92,6 +123,7 @@ window.selectEQPreset = async function(id) {
   renderEQSliders();
   updateEQCurve();
   updateEQHeadroomNote();
+  updateEQSaveButtonLabel();
 }
 
 function renderEQSliders() {
@@ -129,11 +161,16 @@ window.handleEQSliderInput = function(i, value) {
     if (val > 0) gainEl.classList.add('positive');
     else gainEl.classList.remove('positive');
   }
-  $('eq-current-name').textContent = 'Custom Profile';
-  currentEqProfileId = 'custom';
+  $('eq-current-name').textContent = 'Custom EQ';
+  currentEqDirty = true;
+  const selectedProfile = state.dspProfiles.find(p => String(p.id) === String(currentEqProfileId));
+  if (!selectedProfile || selectedProfile.is_factory) {
+    currentEqProfileId = 'custom';
+  }
   renderEQPresets(); 
   updateEQCurve();
   updateEQHeadroomNote();
+  updateEQSaveButtonLabel();
 };
 
 function updateEQCurve() {
@@ -177,7 +214,7 @@ window.openGraphicEQ = async function() {
   }
   const activeProfileId = state.dspProfile || state.lastEqProfile || '';
   const hasProfile = activeProfileId
-    ? state.dspProfiles.some(profile => String(profile.id) === String(activeProfileId))
+    ? visibleDspProfiles(state.dspProfiles).some(profile => String(profile.id) === String(activeProfileId))
     : false;
   currentEqProfileId = hasProfile ? String(activeProfileId) : '';
   selectEQPreset(currentEqProfileId);
@@ -195,14 +232,23 @@ async function loadDspProfiles() {
     if (!profiles) return;
 
     state.dspProfiles = profiles;
-    const usedLabels = new Map([['Dry', 1]]);
-    select.innerHTML = '<option value="">Dry</option>' + profiles.map((profile, index) => {
-      const shortLabel = uniqueDspLabel(dspDisplayLabel(profile, `DSP ${index + 1}`), usedLabels);
-      return `<option value="${profile.id}" title="${escHtml(profile.name || shortLabel)}" data-category="${escHtml(profile.category || 'custom')}">${escHtml(shortLabel)}</option>`;
-    }).join('');
+    const selectableProfiles = visibleDspProfiles(profiles);
+    const usedLabels = new Map([['Off', 1]]);
+    const optionsByGroup = ['reference', 'tone', 'genre', 'custom']
+      .map(group => {
+        const groupProfiles = selectableProfiles.filter(profile => dspProfileGroup(profile) === group);
+        if (!groupProfiles.length) return '';
+        const options = groupProfiles.map((profile, index) => {
+          const shortLabel = uniqueDspLabel(dspDisplayLabel(profile, `DSP ${index + 1}`), usedLabels);
+          return `<option value="${profile.id}" title="${escHtml(profile.name || shortLabel)}" data-category="${escHtml(profile.category || 'custom')}">${escHtml(shortLabel)}</option>`;
+        }).join('');
+        return `<optgroup label="${escHtml(dspProfileGroupLabel(group))}">${options}</optgroup>`;
+      })
+      .join('');
+    select.innerHTML = '<option value="">Off</option>' + optionsByGroup + '<option value="__open_eq__">Open EQ Editor</option>';
 
-    const hasProfile = (profileId) => profiles.some(profile => String(profile.id) === String(profileId));
-    if (!profiles.length) {
+    const hasProfile = (profileId) => selectableProfiles.some(profile => String(profile.id) === String(profileId));
+    if (!selectableProfiles.length) {
       select.value = '';
       syncMobileLandscapeControls();
       return;

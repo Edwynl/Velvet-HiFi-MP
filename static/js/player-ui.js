@@ -12,7 +12,7 @@ function syncMobileLandscapeControls() {
   }
   if (dspEl) {
     const selected = $('dsp-select')?.selectedOptions?.[0]?.textContent?.trim();
-    dspEl.textContent = state.dspProfile ? (selected || 'DSP') : 'DSP';
+    dspEl.textContent = state.dspProfile ? (selected || 'DSP') : 'Off';
   }
   castEl?.classList.toggle('active', isCastZone() || isNativeZone());
 }
@@ -115,7 +115,7 @@ function openMobileUpsamplePicker() {
 }
 
 function openMobileDspPicker() {
-  showMobileSelectPicker('dsp-select', 'DSP Profile');
+  showMobileSelectPicker('dsp-select', 'Sound Preset');
 }
 
 function getPlayerThumbUrl(albumId) {
@@ -199,7 +199,7 @@ function bindDesktopPlayerSelectPopover(selectId, options = {}) {
   if (!select) return;
 
   const openPopover = (event) => {
-    if (window.innerWidth <= 768) return;
+    if (isCompactLayout()) return;
     event.preventDefault?.();
     event.stopPropagation?.();
     showPlayerSelectPopover(select, selectId, options);
@@ -234,12 +234,14 @@ function updatePlayerUI(track) {
   if (track.bit_depth)   fmt_label += ` · ${track.bit_depth}bit`;
   if (state.upsample !== 'none') fmt_label += ` → ${state.upsample.toUpperCase()} Upsampled`;
   const dspProfile = state.dspProfiles.find(profile => String(profile.id) === String(state.dspProfile));
-  fmt_label += ` · ${dspProfile ? `DSP ${dspProfile.name}` : 'DSP Flat'}`;
+  fmt_label += ` · ${dspProfile ? `DSP ${dspProfile.name}` : 'DSP Off'}`;
   const activeZone = getActiveZone();
   fmt_label += ` · Output ${activeZone.name}`;
   const formatEl = UI['player-format'];
-  formatEl.innerHTML = `${showHiRes ? '<img src="/static/logo-hires.png" class="player-format-badge" alt="Hi-Res">' : ''}${compactFormat ? `<span class="player-format-lines">${bitLabel ? `<span class="player-format-line">${escHtml(bitLabel)}</span>` : ''}${rateLabel ? `<span class="player-format-line">${escHtml(rateLabel)}</span>` : ''}</span>` : ''}`;
-  formatEl.style.display = (showHiRes || compactFormat) ? '' : 'none';
+  formatEl.innerHTML = showHiRes
+    ? '<img src="/static/logo-hires.png" class="player-format-badge" alt="Hi-Res">'
+    : '';
+  formatEl.style.display = showHiRes ? '' : 'none';
   formatEl.title = fmt_label || 'Open Signal Path';
 
   const albumId = track.album_id ? String(track.album_id) : '';

@@ -28,6 +28,8 @@ call "%~dp0venv\Scripts\activate.bat"
 
 echo.
 echo [*] Starting VELVET server...
+echo [*] Frontend UI will open automatically when the server is ready.
+start "" /b "%~dp0venv\Scripts\pythonw.exe" "%~dp0open_ui_when_ready.py"
 python "%~dp0server.py" %*
 
 echo.

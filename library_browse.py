@@ -38,6 +38,23 @@ def _matches_variants(
     return False
 
 
+def _needs_variant_fallback(
+    search: str,
+    variants: list[str],
+    to_simplified: Callable[[str], str],
+    to_traditional: Callable[[str], str],
+) -> bool:
+    """Only run expensive Python-side matching when variant expansion diverges."""
+    if not search or not variants:
+        return False
+
+    normalized = {search}
+    normalized.update(variants)
+    normalized.add(to_simplified(search))
+    normalized.add(to_traditional(search))
+    return len(normalized) > 1
+
+
 def fetch_artists(
     db: sqlite3.Connection,
     search: str,
@@ -84,6 +101,11 @@ def fetch_artists(
             """,
             like_patterns,
         ).fetchall()
+
+    if not _needs_variant_fallback(search, variants, to_simplified, to_traditional):
+        direct_dicts = [dict(row) for row in direct_rows]
+        direct_dicts.sort(key=lambda item: item.get("sort_name", item.get("name", "")))
+        return direct_dicts[offset:offset + limit]
 
     all_rows = db.execute(
         """
@@ -165,6 +187,9 @@ def fetch_albums(
         """,
         params,
     ).fetchall()
+
+    if not _needs_variant_fallback(search, variants, to_simplified, to_traditional):
+        return [dict(row) for row in direct_rows[offset:offset + limit]]
 
     if not search or len(direct_rows) >= limit:
         return [dict(row) for row in direct_rows[offset:offset + limit]]
@@ -251,16 +276,28 @@ def fetch_tracks(
 
     where_clause = f"WHERE {' AND '.join(where_parts)}" if where_parts else ""
 
-    total = db.execute(
-        f"""
-        SELECT COUNT(*)
-        FROM tracks t
-        JOIN artists ar ON t.artist_id = ar.id
-        JOIN albums al ON t.album_id = al.id
-        {where_clause}
-        """,
-        count_params,
-    ).fetchone()[0]
+    if not search and not favorites_only:
+        total = db.execute("SELECT COUNT(*) FROM tracks").fetchone()[0]
+    elif not search and favorites_only:
+        total = db.execute(
+            """
+            SELECT COUNT(*)
+            FROM tracks t
+            JOIN albums al ON t.album_id = al.id
+            WHERE al.is_favorite = 1
+            """
+        ).fetchone()[0]
+    else:
+        total = db.execute(
+            f"""
+            SELECT COUNT(*)
+            FROM tracks t
+            JOIN artists ar ON t.artist_id = ar.id
+            JOIN albums al ON t.album_id = al.id
+            {where_clause}
+            """,
+            count_params,
+        ).fetchone()[0]
 
     rows = db.execute(
         f"""

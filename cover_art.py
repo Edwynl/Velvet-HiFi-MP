@@ -5,6 +5,8 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Optional
 
+from path_compat import filesystem_path
+
 
 COMMON_COVER_FILENAMES = (
     "cover.jpg",
@@ -22,7 +24,7 @@ COMMON_COVER_FILENAMES = (
 
 def find_folder_cover(file_path: str, logger=None) -> Optional[bytes]:
     """Look for common cover filenames in the same folder."""
-    folder = Path(file_path).parent
+    folder = Path(filesystem_path(file_path)).parent
     cover_path = _resolve_folder_cover_path(str(folder))
     if not cover_path:
         return None

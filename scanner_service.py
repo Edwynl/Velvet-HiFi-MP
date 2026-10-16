@@ -3,8 +3,11 @@ from __future__ import annotations
 import os
 import re
 import sqlite3
+import time
 from pathlib import Path
 from typing import Callable, Optional
+
+from path_compat import filesystem_path
 
 
 def sort_name(name: str) -> str:
@@ -98,7 +101,7 @@ def _update_existing_track(
         metadata["duration"], metadata["format"], metadata["sample_rate"],
         metadata["bit_depth"], metadata["channels"], metadata["bitrate"],
         metadata.get("file_size") if metadata.get("file_size") is not None
-        else os.path.getsize(file_path),
+        else os.path.getsize(filesystem_path(file_path)),
     )
     assignments = ", ".join(f"{column}=?" for column in columns)
     db.execute(f"UPDATE tracks SET {assignments} WHERE id=?", (*values, track_id))
@@ -148,6 +151,7 @@ def scan_music_dirs(
     mtime. Future scans detect changed size/mtime. Missing/deleted files are
     intentionally not pruned; a removable drive may be temporarily offline.
     """
+    scan_started = time.perf_counter()
     all_files = discover_audio_files(music_dirs, audio_extensions)
     set_total(len(all_files))
     existing = {}
@@ -172,11 +176,44 @@ def scan_music_dirs(
     tracks_updated = 0
     pending_changes = 0
     commit_every = max(int(scan_batch_size), 1)
+    # Scan diagnostics: commit timing and throughput per 1,000 files.
+    commit_count = 0
+    commit_total_seconds = 0.0
+    interval_stats: list[dict] = []
+    interval_size = 1000
+    next_interval = interval_size
+    interval_started = scan_started
+
+    def commit_with_stats() -> None:
+        nonlocal commit_count, commit_total_seconds
+        commit_started = time.perf_counter()
+        db.commit()
+        commit_total_seconds += time.perf_counter() - commit_started
+        commit_count += 1
+
+    def record_interval(processed: int) -> None:
+        nonlocal interval_started, next_interval
+        now = time.perf_counter()
+        files_in_interval = processed - (interval_stats[-1]["processed_files"] if interval_stats else 0)
+        seconds_in_interval = max(now - interval_started, 0.0)
+        interval_stats.append(
+            {
+                "processed_files": processed,
+                "files_in_interval": files_in_interval,
+                "seconds": round(seconds_in_interval, 3),
+                "files_per_second": round(files_in_interval / seconds_in_interval, 3) if seconds_in_interval > 0 else 0.0,
+            }
+        )
+        interval_started = now
+        next_interval += interval_size
 
     for index, file_path in enumerate(all_files, start=1):
         on_progress(index, os.path.basename(file_path))
+        if index - 1 >= next_interval:
+            record_interval(index - 1)
         try:
-            file_stat = os.stat(file_path)
+            # Extended-length form: library paths can exceed MAX_PATH on Windows.
+            file_stat = os.stat(filesystem_path(file_path))
         except OSError as exc:
             on_error(f"File unavailable while scanning {file_path}: {exc}")
             continue
@@ -249,12 +286,30 @@ def scan_music_dirs(
             pending_changes += 1
 
         if pending_changes >= commit_every:
-            db.commit()
+            commit_with_stats()
             pending_changes = 0
 
+    # Files that are skipped `continue` past the loop tail, so close the last
+    # interval here rather than inside the loop.
+    if all_files and (not interval_stats or interval_stats[-1]["processed_files"] < len(all_files)):
+        record_interval(len(all_files))
     _recount_album_totals(db)
-    db.commit()
-    return {"discovered_files": len(all_files), "tracks_updated": tracks_updated}
+    commit_with_stats()
+
+    total_seconds = max(time.perf_counter() - scan_started, 0.0)
+    return {
+        "discovered_files": len(all_files),
+        "tracks_updated": tracks_updated,
+        "scan_metrics": {
+            "total_seconds": round(total_seconds, 3),
+            "files_per_second": round(len(all_files) / total_seconds, 3) if total_seconds > 0 else 0.0,
+            "seconds_per_1000_files": round((total_seconds / len(all_files)) * 1000, 3) if all_files else 0.0,
+            "commit_count": commit_count,
+            "commit_total_seconds": round(commit_total_seconds, 3),
+            "commit_avg_ms": round((commit_total_seconds / commit_count) * 1000, 2) if commit_count else 0.0,
+            "intervals": interval_stats,
+        },
+    }
 
 
 def refresh_folder_records(
@@ -405,7 +460,7 @@ def _insert_track_and_artists(
 ) -> None:
     file_size = metadata.get("file_size")
     if file_size is None:
-        file_size = os.path.getsize(file_path)
+        file_size = os.path.getsize(filesystem_path(file_path))
 
     db.execute(
         """

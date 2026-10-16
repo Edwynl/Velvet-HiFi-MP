@@ -214,7 +214,7 @@ const ALBUMS_PER_PAGE = 400;
 const ARTISTS_PER_PAGE = 400;
 
 async function renderAlbums(vc) {
-  const isMobile = window.innerWidth <= 768;
+  const isMobile = isCompactLayout();
   // Fetch all albums but render only current page
   const allAlbums = await api('/albums?limit=15000');
   const genres = [...new Set(allAlbums.map(album => (album.genre || '').trim()).filter(Boolean))].sort((a, b) => a.localeCompare(b));
@@ -548,9 +548,8 @@ async function renderAlbums(vc) {
     }
   });
 
-  // Focus and set cursor
-  input.focus();
-  input.setSelectionRange(input.value.length, input.value.length);
+  // Search fields on library pages only focus after an explicit user tap.
+  input.blur();
 
   // Pagination buttons (disabled in search mode)
   prevBtn.addEventListener('click', () => {
@@ -799,9 +798,8 @@ async function renderArtists(vc) {
     }
   });
 
-  input.focus();
-  const val = input.value;
-  input.setSelectionRange(val.length, val.length);
+  // Search fields on library pages only focus after an explicit user tap.
+  input.blur();
 
   // Pagination buttons (disabled in search mode)
   prevBtn.addEventListener('click', () => {
@@ -2197,7 +2195,7 @@ async function renderAlbum(vc, { id }) {
   const albumMetaToggle = UI['album-meta-toggle'];
   const albumMetaPanel = UI['album-mobile-meta'];
   if (albumMetaToggle && albumMetaPanel) {
-    const isMobile = window.matchMedia('(max-width: 768px), (orientation: landscape) and (max-height: 500px)').matches;
+    const isMobile = isCompactLayout() || isShortLandscapeLayout();
     const setAlbumMetaExpanded = (expanded) => {
       albumMetaToggle.setAttribute('aria-expanded', expanded ? 'true' : 'false');
       albumMetaPanel.classList.toggle('is-collapsed', !expanded);

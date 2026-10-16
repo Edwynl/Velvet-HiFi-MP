@@ -298,6 +298,23 @@ async function main() {
 
     await dom.window.openGraphicEQ();
     await waitFor(() => document.querySelector('#eq-current-name')?.textContent?.trim() === 'Black Background');
+    const requestCountBeforeFactoryApply = harness.requests.length;
+    const profileCountBeforeFactoryApply = harness.dspProfiles.length;
+    document.querySelector('#eq-btn-save').click();
+    await waitFor(() => document.querySelector('#dsp-select').value === '2');
+    assert.equal(
+      harness.dspProfiles.length,
+      profileCountBeforeFactoryApply,
+      'expected applying an unchanged factory EQ to avoid creating a custom profile'
+    );
+    assert.ok(
+      harness.requests
+        .slice(requestCountBeforeFactoryApply)
+        .every(request => request.method !== 'POST' && request.method !== 'PUT'),
+      'expected applying an unchanged factory EQ to avoid DSP profile mutations'
+    );
+    await dom.window.openGraphicEQ();
+    await waitFor(() => document.querySelector('#eq-current-name')?.textContent?.trim() === 'Black Background');
     document.querySelector('#eq-overlay')?.classList.remove('active');
 
     const requestCountBeforeEqSave = harness.requests.length;
@@ -317,14 +334,44 @@ async function main() {
       eqSaveRequests.every(request => request.path !== '/api/dsp/presets/custom' && request.path !== '/api/dsp/apply'),
       'expected graphic EQ save to avoid deprecated DSP endpoints'
     );
+    const createdEqProfile = harness.dspProfiles.find(profile =>
+      !profile.is_factory && profile.name === 'Custom EQ' && /graphic-eq/.test(profile.tags || '')
+    );
+    assert.ok(createdEqProfile, 'expected graphic EQ save to create a custom EQ profile');
+
+    await dom.window.loadDspProfiles();
+    await dom.window.selectEQPreset(String(createdEqProfile.id));
+    const profileCountBeforeEqUpdate = harness.dspProfiles.length;
+    const requestCountBeforeEqUpdate = harness.requests.length;
+    dom.window.handleEQSliderInput(1, '-1.0');
+    document.querySelector('#eq-btn-save').click();
+    await waitFor(() =>
+      harness.requests
+        .slice(requestCountBeforeEqUpdate)
+        .some(request => request.method === 'PUT' && request.path === `/api/dsp/profiles/${createdEqProfile.id}`)
+    );
+    assert.ok(
+      harness.requests
+        .slice(requestCountBeforeEqUpdate)
+        .some(request => request.method === 'PUT' && request.path === `/api/dsp/profiles/${createdEqProfile.id}`),
+      'expected editing an existing custom EQ to update it instead of creating another profile'
+    );
+    assert.equal(
+      harness.dspProfiles.length,
+      profileCountBeforeEqUpdate,
+      'expected existing custom EQ save to avoid duplicate custom profiles'
+    );
 
     // The graphic EQ save may change which profile is loaded in the editor.
     // Delete the exact custom preset created above, not whichever preset
-    // happens to be selected in the editor at this moment.
-    const customDeleteButton = await waitFor(() =>
-      document.querySelector(`.dsp-delete-btn[data-profile-id="${savedProfile.id}"]`)
+    // happens to be selected in the editor at this moment: load it into the
+    // editor through its own card first (cards no longer carry Delete).
+    const customEditButton = await waitFor(() =>
+      document.querySelector(`.dsp-open-btn[data-profile-id="${savedProfile.id}"]`)
     );
-    customDeleteButton.click();
+    customEditButton.click();
+    await waitFor(() => document.querySelector('#dsp-delete-editor-btn')?.style.display === 'inline-flex');
+    document.querySelector('#dsp-delete-editor-btn').click();
     await waitFor(() => !harness.dspProfiles.some(profile => profile.id === savedProfile.id));
 
     assert.ok(

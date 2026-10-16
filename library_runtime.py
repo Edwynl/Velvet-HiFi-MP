@@ -18,9 +18,10 @@ def fetch_libraries(db: sqlite3.Connection) -> list[dict]:
     return [dict(row) for row in rows]
 
 
-def add_library_path(db: sqlite3.Connection, path: str) -> None:
-    db.execute("INSERT OR IGNORE INTO libraries (path) VALUES (?)", (path,))
+def add_library_path(db: sqlite3.Connection, path: str) -> bool:
+    cursor = db.execute("INSERT OR IGNORE INTO libraries (path) VALUES (?)", (path.strip(),))
     db.commit()
+    return cursor.rowcount > 0
 
 
 def remove_library_path(db: sqlite3.Connection, lib_id: int) -> None:
