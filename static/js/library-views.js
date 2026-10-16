@@ -210,7 +210,7 @@ async function renderDiscover(vc) {
 
 // ── Albums ────────────────────────────────────────────────────────────────────
 
-const ALBUMS_PER_PAGE = 400;
+const ALBUMS_PER_PAGE = 60;  // Bounded remote page; avoid 15k records per Tailscale request.
 const ARTISTS_PER_PAGE = 400;
 
 // #main outlives every view, so each re-render replaces its view's previous
@@ -224,10 +224,13 @@ function setViewScrollHandler(view, mainEl, handler) {
 
 async function renderAlbums(vc) {
   const isMobile = isCompactLayout();
-  // Fetch all albums but render only current page
-  const allAlbums = await api('/albums?limit=15000');
-  const genres = [...new Set(allAlbums.map(album => (album.genre || '').trim()).filter(Boolean))].sort((a, b) => a.localeCompare(b));
-  const decades = [...new Set(allAlbums.map(album => decadeLabel(album.year)).filter(label => label !== 'Unknown'))].sort((a, b) => Number(b) - Number(a));
+  // Server filters and returns only one page; the device never receives 15k albums.
+  const firstPage = await api('/albums/page?limit=' + ALBUMS_PER_PAGE + '&offset=0');
+  let allAlbums = firstPage?.albums || [];
+  let totalAlbums = Number(firstPage?.total || 0);
+  const genres = firstPage?.genres || [];
+  const decades = firstPage?.decades || [];
+  let pageRequestSerial = 0;
   let showFavoritesOnly = false;
   let currentSort = 'title';
   let currentPage = 1;
@@ -293,7 +296,7 @@ async function renderAlbums(vc) {
     </div>
     <div class="section-header" id="albums-header" title="Click to scroll to top">
       <div class="section-title">Albums</div>
-      <div class="section-sub" id="albums-count">${allAlbums.length} albums</div>
+      <div class="section-sub" id="albums-count">${totalAlbums} albums</div>
     </div>
     <div class="grid" id="albums-grid"></div>
     <div class="back-to-top" id="back-to-top-btn" style="display:none">↑</div>
@@ -337,49 +340,42 @@ async function renderAlbums(vc) {
     mainEl.scrollTo({ top: 0, behavior: 'smooth' });
   });
 
-  // Sort albums helper
-  function sortAlbums(data, sortBy) {
-    return [...data].sort((a, b) => {
-      switch (sortBy) {
-        case 'title': return (a.title || '').localeCompare(b.title || '');
-        case 'year': return (b.year || 0) - (a.year || 0);
-        case 'artist': return (a.artist_name || '').localeCompare(b.artist_name || '');
-        case 'added': return new Date(b.created_at || 0) - new Date(a.created_at || 0);
-        default: return 0;
-      }
-    });
-  }
-
-  function getFilteredData() {
-    return allAlbums.filter(album => {
-      if (showFavoritesOnly && !album.is_favorite) return false;
-      if (currentGenre && (album.genre || '') !== currentGenre) return false;
-      if (currentDecade && decadeLabel(album.year) !== currentDecade) return false;
-      return true;
-    });
-  }
-
-  function getPagedData() {
-    const filtered = sortAlbums(getFilteredData(), currentSort);
-    const totalPages = Math.ceil(filtered.length / ALBUMS_PER_PAGE) || 1;
-    if (currentPage > totalPages) currentPage = totalPages;
-    const start = (currentPage - 1) * ALBUMS_PER_PAGE;
-    const end = start + ALBUMS_PER_PAGE;
-    return filtered.slice(start, end);
-  }
+  function getFilteredData() { return allAlbums; }
+  function getPagedData() { return allAlbums; }
 
   function updatePagination() {
-    const filtered = sortAlbums(getFilteredData(), currentSort);
-    const totalPages = Math.ceil(filtered.length / ALBUMS_PER_PAGE) || 1;
-
+    const totalPages = Math.max(1, Math.ceil(totalAlbums / ALBUMS_PER_PAGE));
     prevBtn.disabled = currentPage <= 1;
     nextBtn.disabled = currentPage >= totalPages;
     pageInfo.textContent = `Page ${currentPage} / ${totalPages}`;
-
     countEl.textContent = showFavoritesOnly
-      ? `${filtered.length} favorite albums · ${totalPages} pages`
-      : `${filtered.length} albums · ${totalPages} pages`;
+      ? `${totalAlbums} favorite albums · ${totalPages} pages`
+      : `${totalAlbums} albums · ${totalPages} pages`;
     clearFocusBtn.style.opacity = (currentGenre || currentDecade) ? '1' : '0.6';
+  }
+
+  async function loadPage({ reset = false } = {}) {
+    if (reset) currentPage = 1;
+    const serial = ++pageRequestSerial;
+    const params = new URLSearchParams({
+      limit: String(ALBUMS_PER_PAGE),
+      offset: String((currentPage - 1) * ALBUMS_PER_PAGE),
+      sort: currentSort,
+      genre: currentGenre,
+      decade: currentDecade,
+      favorites_only: String(showFavoritesOnly),
+    });
+    prevBtn.disabled = true;
+    nextBtn.disabled = true;
+    try {
+      const page = await api('/albums/page?' + params.toString());
+      if (serial !== pageRequestSerial || state.view !== 'albums' || searchMode) return;
+      totalAlbums = Number(page.total || 0);
+      allAlbums = page.albums || [];
+      renderGrid();
+    } catch (err) {
+      if (serial === pageRequestSerial) showToast('Unable to load albums. Try again.');
+    }
   }
 
   // Make a track row for search results (links to album)
@@ -479,56 +475,38 @@ async function renderAlbums(vc) {
 
   renderGrid();
 
-  // Search functionality
+  // Search the actual query server-side; never fetch an empty search as a library dump.
   let searchTimer;
+  let searchSerial = 0;
   async function performSearch(q) {
-    if (!q.trim()) {
-      // Clear search mode
+    const serial = ++searchSerial;
+    q = q.trim();
+    if (!q) {
       searchMode = false;
       searchResults = [];
       searchAlbums = [];
       sectionTitle.textContent = 'Albums';
-      countEl.textContent = `${allAlbums.length} albums`;
       pagination.style.display = 'flex';
-      renderGrid();
+      await loadPage({ reset: true });
       return;
     }
-
-    // Fetch tracks if not loaded
-    if (!allTracks.length) {
-      const result = await api('/search?q=');
-      allTracks = result.tracks || [];
+    try {
+      const [tracksResponse, albumsResponse] = await Promise.all([
+        api('/search?q=' + encodeURIComponent(q) + '&limit=80'),
+        api('/albums/page?search=' + encodeURIComponent(q) + '&limit=60&offset=0'),
+      ]);
+      if (serial !== searchSerial || state.view !== 'albums' || input.value.trim() !== q) return;
+      searchResults = tracksResponse?.tracks || [];
+      searchAlbums = albumsResponse?.albums || [];
+      searchMode = true;
+      sectionTitle.textContent = searchAlbums.length ? 'Albums' : 'Tracks';
+      countEl.textContent = `${albumsResponse?.total || 0} albums, ${searchResults.length} tracks found`;
+      pagination.style.display = 'none';
+      scrollToTop();
+      renderGrid();
+    } catch (err) {
+      if (serial === searchSerial) showToast('Search unavailable. Try again.');
     }
-
-    // First, search albums by album title (using chineseMatch for S/T support)
-    const matchedAlbums = allAlbums.filter(a => {
-      const title = a.title || '';
-      const artist = a.artist_name || '';
-      return chineseMatch(title, q) || chineseMatch(artist, q);
-    });
-
-    // Then, search tracks by track title
-    if (!allTracks.length) {
-      const result = await api('/search?q=');
-      allTracks = result.tracks || [];
-    }
-    const matchedTracks = allTracks.filter(t => {
-      const title = t.title || '';
-      const artist = t.artist_name || '';
-      return chineseMatch(title, q) || chineseMatch(artist, q);
-    });
-
-    // Store both results
-    searchResults = matchedTracks;
-    searchAlbums = matchedAlbums;
-    searchMode = true;
-
-    // Show albums section header
-    sectionTitle.textContent = matchedAlbums.length > 0 ? 'Albums' : 'Tracks';
-    countEl.textContent = `${matchedAlbums.length} albums, ${matchedTracks.length} tracks found`;
-    pagination.style.display = 'none';
-    scrollToTop();
-    renderGrid();
   }
 
   // Input event handler
@@ -561,17 +539,16 @@ async function renderAlbums(vc) {
     if (searchMode || currentPage <= 1) return;
     currentPage--;
     scrollToTop();
-    renderGrid();
+    loadPage();
   });
 
   nextBtn.addEventListener('click', () => {
     if (searchMode) return;
-    const filtered = sortAlbums(getFilteredData(), currentSort);
-    const totalPages = Math.ceil(filtered.length / ALBUMS_PER_PAGE) || 1;
+    const totalPages = Math.max(1, Math.ceil(totalAlbums / ALBUMS_PER_PAGE));
     if (currentPage < totalPages) {
       currentPage++;
       scrollToTop();
-      renderGrid();
+      loadPage();
     }
   });
 
@@ -579,10 +556,9 @@ async function renderAlbums(vc) {
   favBtn.addEventListener('click', () => {
     if (searchMode) return;
     showFavoritesOnly = !showFavoritesOnly;
-    currentPage = 1;
     favBtn.style.color = showFavoritesOnly ? '#ff6b6b' : 'var(--muted)';
     favBtn.textContent = showFavoritesOnly ? '♥ Favorites' : '♡ Favorites';
-    renderGrid();
+    loadPage({ reset: true });
   });
 
   // Custom Select Interaction Logic
@@ -613,22 +589,19 @@ async function renderAlbums(vc) {
   setupVSelect(sortSelect, val => {
     if (searchMode) return;
     currentSort = val;
-    currentPage = 1;
-    renderGrid();
+    loadPage({ reset: true });
   });
 
   setupVSelect(genreSelect, val => {
     if (searchMode) return;
     currentGenre = val;
-    currentPage = 1;
-    renderGrid();
+    loadPage({ reset: true });
   });
 
   setupVSelect(decadeSelect, val => {
     if (searchMode) return;
     currentDecade = val;
-    currentPage = 1;
-    renderGrid();
+    loadPage({ reset: true });
   });
 
   // Global click to close v-selects (use AbortController to prevent listener leak across page navigations)
@@ -648,8 +621,7 @@ async function renderAlbums(vc) {
     decadeSelect.querySelector('.v-select-label').textContent = 'All decades';
     genreSelect.querySelectorAll('.v-option').forEach(o => o.classList.remove('active'));
     decadeSelect.querySelectorAll('.v-option').forEach(o => o.classList.remove('active'));
-    currentPage = 1;
-    renderGrid();
+    loadPage({ reset: true });
   });
 }
 
