@@ -751,5 +751,35 @@ class ServerApiTests(unittest.TestCase):
             self.assertEqual(self.client.post("/api/library/duplicates/scan").status_code, 409)
         finder.assert_not_called()
 
+    def test_album_files_archive_and_restore_without_permanent_deletion(self):
+        album_path = self.root / "music" / "one.flac"
+        original = album_path.read_bytes()
+        with patch.object(server, "_resolve_library_roots", return_value=[album_path.parent.resolve()]), \
+             patch.object(server._scan_job, "is_running", return_value=False), \
+             patch.object(server._duplicate_job, "is_running", return_value=False):
+            deletion = self.client.delete("/api/albums/1?delete_files=true")
+            self.assertEqual(deletion.status_code, 200, deletion.text)
+            self.assertFalse(album_path.exists())
+            self.assertEqual(deletion.json()["archived_files"], 1)
+            with self._connect() as db:
+                self.assertEqual(db.execute("SELECT COUNT(*) FROM albums WHERE id=1").fetchone()[0], 0)
+                self.assertEqual(db.execute("SELECT COUNT(*) FROM albums WHERE id=2").fetchone()[0], 1)
+            listing = self.client.get("/api/library/trash")
+            self.assertTrue(listing.json()["archives"])
+            token = deletion.json()["archive_token"]
+            restored = self.client.post(f"/api/library/trash/{token}/restore")
+            self.assertEqual(restored.status_code, 200, restored.text)
+            self.assertEqual(album_path.read_bytes(), original)
+
+    def test_album_delete_refuses_while_library_scan_is_running(self):
+        audio = self.root / "music" / "one.flac"
+        with patch.object(server._scan_job, "is_running", return_value=True):
+            response = self.client.delete("/api/albums/1?delete_files=true")
+        self.assertEqual(response.status_code, 409)
+        self.assertTrue(audio.exists())
+        with self._connect() as db:
+            self.assertIsNotNone(db.execute("SELECT id FROM albums WHERE id=1").fetchone())
+
+
 if __name__ == "__main__":
     unittest.main()
