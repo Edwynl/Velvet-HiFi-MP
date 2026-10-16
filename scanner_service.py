@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ntpath
 import os
 import re
 import sqlite3
@@ -7,6 +8,7 @@ import time
 from pathlib import Path
 from typing import Callable, Optional
 
+from album_grouping import UNKNOWN_ARTIST, VARIOUS_ARTISTS, album_folder_of, plan_album_folder
 from path_compat import filesystem_path
 
 
@@ -78,16 +80,27 @@ def _update_existing_track(
     *,
     find_folder_cover: Callable[[str], Optional[bytes]],
     save_cover: Callable[[bytes, str], str],
+    vacated_albums: Optional[set[int]] = None,
 ) -> None:
     """Refresh metadata without changing the track ID or deleting history."""
     artist_ids, primary_artist = _resolve_artist_ids(db, metadata, artists_cache)
+    owner_id = _resolve_album_owner_id(db, metadata, artists_cache, primary_artist)
     album_id = _resolve_album_id(
-        db, metadata, file_path, primary_artist, albums_cache,
+        db, metadata, file_path, owner_id, albums_cache,
         find_folder_cover=find_folder_cover, save_cover=save_cover,
         update_existing_cover_if_missing=True,
     )
     if album_id is None:
         raise ValueError("Cannot resolve album for changed track")
+    old = db.execute(
+        "SELECT t.album_id, al.is_favorite FROM tracks t LEFT JOIN albums al ON al.id=t.album_id WHERE t.id=?",
+        (track_id,),
+    ).fetchone()
+    if old and old[0] is not None and old[0] != album_id:
+        if vacated_albums is not None:
+            vacated_albums.add(old[0])
+        if old[1]:
+            db.execute("UPDATE albums SET is_favorite=1 WHERE id=?", (album_id,))
     columns = (
         "album_id", "artist_id", "title", "composer", "work_title",
         "performer", "conductor", "ensemble", "track_number", "disc_number",
@@ -173,6 +186,8 @@ def scan_music_dirs(
     }
     artists_cache: dict[str, int] = {}
     albums_cache: dict[tuple[int, str], int] = {}
+    vacated_albums: set[int] = set()
+    read_metadata = _folder_metadata_reader(db, all_files, extract_metadata)
     tracks_updated = 0
     pending_changes = 0
     commit_every = max(int(scan_batch_size), 1)
@@ -233,11 +248,11 @@ def scan_music_dirs(
                     if track_id in needs_backfill:
                         _backfill_track_artists(db, file_path)
                 else:
-                    metadata = extract_metadata(file_path)
+                    metadata = read_metadata(file_path)
                     _update_existing_track(
                         db, track_id, metadata, file_path, albums_cache,
                         artists_cache, find_folder_cover=find_folder_cover,
-                        save_cover=save_cover,
+                        save_cover=save_cover, vacated_albums=vacated_albums,
                     )
                 _store_file_state(db, track_id, file_stat)
                 db.execute("RELEASE SAVEPOINT velvet_scan_file")
@@ -255,12 +270,13 @@ def scan_music_dirs(
         else:
             db.execute("SAVEPOINT velvet_scan_file")
             try:
-                metadata = extract_metadata(file_path)
+                metadata = read_metadata(file_path)
                 individual_artist_ids, primary_artist_id = _resolve_artist_ids(
                     db, metadata, artists_cache,
                 )
+                owner_id = _resolve_album_owner_id(db, metadata, artists_cache, primary_artist_id)
                 album_id = _resolve_album_id(
-                    db, metadata, file_path, primary_artist_id, albums_cache,
+                    db, metadata, file_path, owner_id, albums_cache,
                     find_folder_cover=find_folder_cover, save_cover=save_cover,
                     update_existing_cover_if_missing=False,
                 )
@@ -293,6 +309,7 @@ def scan_music_dirs(
     # interval here rather than inside the loop.
     if all_files and (not interval_stats or interval_stats[-1]["processed_files"] < len(all_files)):
         record_interval(len(all_files))
+    _drop_vacated_albums(db, vacated_albums)
     _recount_album_totals(db)
     commit_with_stats()
 
@@ -380,24 +397,118 @@ def _resolve_artist_ids(
     artists_cache: dict[str, int],
 ) -> tuple[list[int], int]:
     raw_artist = (metadata["album_artist"] or metadata["artist"]).strip() or "Unknown Artist"
-    artist_names = split_artists(raw_artist)
-    individual_artist_ids: list[int] = []
-
-    for artist_name in artist_names:
-        if artist_name not in artists_cache:
-            existing = db.execute("SELECT id FROM artists WHERE name=?", (artist_name,)).fetchone()
-            if existing:
-                artist_id = existing["id"] if isinstance(existing, sqlite3.Row) else existing[0]
-            else:
-                db.execute(
-                    "INSERT INTO artists (name, sort_name) VALUES (?, ?)",
-                    (artist_name, sort_name(artist_name)),
-                )
-                artist_id = db.execute("SELECT last_insert_rowid()").fetchone()[0]
-            artists_cache[artist_name] = artist_id
-        individual_artist_ids.append(artists_cache[artist_name])
-
+    individual_artist_ids = [
+        _artist_id(db, artist_name, artists_cache) for artist_name in split_artists(raw_artist)
+    ]
     return individual_artist_ids, individual_artist_ids[0]
+
+
+def _artist_id(db: sqlite3.Connection, artist_name: str, artists_cache: dict[str, int]) -> int:
+    if artist_name not in artists_cache:
+        existing = db.execute("SELECT id FROM artists WHERE name=?", (artist_name,)).fetchone()
+        if existing:
+            artist_id = existing["id"] if isinstance(existing, sqlite3.Row) else existing[0]
+        else:
+            db.execute(
+                "INSERT INTO artists (name, sort_name) VALUES (?, ?)",
+                (artist_name, sort_name(artist_name)),
+            )
+            artist_id = db.execute("SELECT last_insert_rowid()").fetchone()[0]
+        artists_cache[artist_name] = artist_id
+    return artists_cache[artist_name]
+
+
+def _resolve_album_owner_id(
+    db: sqlite3.Connection,
+    metadata: dict,
+    artists_cache: dict[str, int],
+    primary_artist_id: int,
+) -> int:
+    """Album artist chosen for the whole folder, else the track's primary artist."""
+    owner = metadata.get("album_owner")
+    return _artist_id(db, owner, artists_cache) if owner else primary_artist_id
+
+
+def _folder_metadata_reader(
+    db: sqlite3.Connection,
+    all_files: list[str],
+    extract_metadata: Callable[[str], dict],
+) -> Callable[[str], dict]:
+    """Read tags for a whole album folder at once and apply the folder plan.
+
+    Files are decoded only when one of them needs (re)reading, and each file
+    at most once per scan. Only one album folder is held in memory.
+    """
+    folder_files: dict[str, list[str]] = {}
+    for path in all_files:
+        folder_files.setdefault(album_folder_of(path)[0], []).append(path)
+    sibling_cache: dict[str, Optional[str]] = {}
+    state: dict = {"folder": None, "metadata": {}, "plans": {}}
+
+    def sibling_artist(album_folder: str) -> Optional[str]:
+        parent = ntpath.dirname(album_folder)
+        if parent not in sibling_cache:
+            sep = "\\" if "\\" in album_folder else "/"
+            rows = db.execute(
+                """
+                SELECT ar.name, COUNT(*) FROM tracks t
+                JOIN albums al ON al.id=t.album_id JOIN artists ar ON ar.id=al.artist_id
+                WHERE t.file_path LIKE ? ESCAPE '!' AND t.file_path NOT LIKE ? ESCAPE '!'
+                  AND ar.name NOT IN (?, ?)
+                GROUP BY ar.name ORDER BY COUNT(*) DESC
+                """,
+                (_like_prefix(parent + sep), _like_prefix(album_folder + sep),
+                 UNKNOWN_ARTIST, VARIOUS_ARTISTS),
+            ).fetchall()
+            total = sum(row[1] for row in rows)
+            sibling_cache[parent] = rows[0][0] if rows and rows[0][1] * 2 >= total else None
+        return sibling_cache[parent]
+
+    def read(file_path: str) -> dict:
+        album_folder = album_folder_of(file_path)[0]
+        if state["folder"] != album_folder:
+            entries, results = [], {}
+            for path in folder_files[album_folder]:
+                try:
+                    results[path] = extract_metadata(path)
+                    entries.append((path, results[path]))
+                except Exception as exc:
+                    results[path] = exc
+            state.update(
+                folder=album_folder, metadata=results,
+                plans=plan_album_folder(entries, sibling_artist=sibling_artist),
+            )
+        result = state["metadata"][file_path]
+        if isinstance(result, Exception):
+            raise result
+        return {**result, **state["plans"].get(file_path, {})}
+
+    return read
+
+
+def _like_prefix(prefix: str) -> str:
+    return prefix.replace("!", "!!").replace("%", "!%").replace("_", "!_") + "%"
+
+
+def _drop_vacated_albums(db: sqlite3.Connection, album_ids: set[int]) -> None:
+    """Delete albums a rescan emptied (e.g. per-artist splits that were merged)."""
+    for album_id in album_ids:
+        row = db.execute(
+            "SELECT artist_id FROM albums WHERE id=? AND NOT EXISTS (SELECT 1 FROM tracks WHERE album_id=?)",
+            (album_id, album_id),
+        ).fetchone()
+        if row is None:
+            continue
+        db.execute("DELETE FROM albums WHERE id=?", (album_id,))
+        db.execute(
+            """
+            DELETE FROM artists WHERE id=?
+              AND NOT EXISTS (SELECT 1 FROM albums WHERE artist_id=?)
+              AND NOT EXISTS (SELECT 1 FROM tracks WHERE artist_id=?)
+              AND NOT EXISTS (SELECT 1 FROM track_artists WHERE artist_id=?)
+            """,
+            (row[0],) * 4,
+        )
 
 
 def _resolve_album_id(

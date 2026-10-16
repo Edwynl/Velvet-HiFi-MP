@@ -29,6 +29,7 @@ from collections import deque
 
 import httpx
 from mutagen import File as MutagenFile
+from mutagen.id3 import ID3
 from PIL import Image
 from fastapi import FastAPI, HTTPException, Request, BackgroundTasks, Query, File, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse, HTMLResponse, JSONResponse, Response
@@ -95,6 +96,7 @@ from library_runtime import (
 )
 from path_compat import filesystem_path
 from scanner_service import refresh_folder_records, scan_music_dirs
+from album_grouping import strip_ad_marks
 from library_stats import (
     fetch_genre_albums,
     fetch_history,
@@ -528,7 +530,7 @@ def extract_metadata(file_path: str) -> dict:
 
             # Tags
             if audio_easy.tags:
-                t = audio_easy.tags
+                t = _easy_view_of_id3(audio_easy.tags)
                 meta['title']       = _get_tag(t, 'title')        or meta['title']
                 meta['artist']      = _get_tag(t, 'artist')       or meta['artist']
                 meta['album']       = _get_tag(t, 'album')        or meta['album']
@@ -591,7 +593,30 @@ def extract_metadata(file_path: str) -> dict:
     except Exception as e:
         log.warning(f"Failed to extract metadata from {file_path}: {e}")
 
+    for key in ('title', 'artist', 'album', 'album_artist', 'genre'):
+        meta[key] = strip_ad_marks(meta[key])
+    meta['title'] = meta['title'] or path.stem
+    meta['artist'] = meta['artist'] or 'Unknown Artist'
+    meta['album'] = meta['album'] or 'Unknown Album'
     return meta
+
+# Easy-tag names for raw ID3 frames; WAV/AIFF return raw ID3 even with easy=True.
+_ID3_EASY_FRAMES = {
+    'title': 'TIT2', 'artist': 'TPE1', 'album': 'TALB', 'albumartist': 'TPE2',
+    'genre': 'TCON', 'organization': 'TPUB', 'composer': 'TCOM', 'grouping': 'TIT1',
+    'tracknumber': 'TRCK', 'discnumber': 'TPOS', 'date': 'TDRC', 'year': 'TYER',
+}
+
+def _easy_view_of_id3(tags):
+    """Return tags addressable by easy names (raw ID3 frames are mapped)."""
+    if not isinstance(tags, ID3):
+        return tags
+    view = {}
+    for easy_key, frame_id in _ID3_EASY_FRAMES.items():
+        frame = tags.get(frame_id)
+        if frame is not None and getattr(frame, 'text', None):
+            view[easy_key] = [str(value) for value in frame.text]
+    return view
 
 def _extract_cover(audio) -> Optional[bytes]:
     """Extract embedded cover art from any mutagen-supported format."""
