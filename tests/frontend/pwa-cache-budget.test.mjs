@@ -58,22 +58,22 @@ async function fetchPath(path) {
 const has = (name, path) => stores.get(name)?.has(urlFor(path)) || false;
 
 await fetchPath('/api/covers/1/thumb');
-assert.equal(has('velvet-thumbs-v5', '/api/covers/1/thumb'), true);
+assert.equal(has('velvet-thumbs-v6', '/api/covers/1/thumb'), true);
 await fetchPath('/api/covers/2/thumb');
-assert.equal(has('velvet-thumbs-v5', '/api/covers/1/thumb'), false, 'Old thumbnail evicted by 12B budget');
-assert.equal(has('velvet-thumbs-v5', '/api/covers/2/thumb'), true);
+assert.equal(has('velvet-thumbs-v6', '/api/covers/1/thumb'), false, 'Old thumbnail evicted by 12B budget');
+assert.equal(has('velvet-thumbs-v6', '/api/covers/2/thumb'), true);
 
 await fetchPath('/api/covers/3?ticket=short-lived-secret');
-assert.equal(has('velvet-covers-v3', '/api/covers/3?ticket=short-lived-secret'), false,
+assert.equal(has('velvet-covers-v4', '/api/covers/3?ticket=short-lived-secret'), false,
   'Scoped bearer-ticket covers must never be persisted');
 body = '12345678901234567890';
 await fetchPath('/api/covers/4/thumb');
-assert.equal(has('velvet-thumbs-v5', '/api/covers/4/thumb'), false, 'Oversize cover is not cached');
+assert.equal(has('velvet-thumbs-v6', '/api/covers/4/thumb'), false, 'Oversize cover is not cached');
 body = '12345678';
 await fetchPath('/api/covers/4');
 await fetchPath('/api/covers/5');
-assert.equal(has('velvet-covers-v3', '/api/covers/4'), false, 'Full-cover budget removes oldest');
-assert.equal(has('velvet-covers-v3', '/api/covers/5'), true);
+assert.equal(has('velvet-covers-v4', '/api/covers/4'), false, 'Full-cover budget removes oldest');
+assert.equal(has('velvet-covers-v4', '/api/covers/5'), true);
 
 // A real browser takes a reader on the response body as soon as respondWith()
 // settles, so the cache copy must be cloned before the response is handed over.
@@ -87,11 +87,11 @@ assert.equal(has('velvet-covers-v3', '/api/covers/5'), true);
   });
   await result;
   await Promise.all(wait);
-  assert.equal(has('velvet-covers-v3', '/api/covers/7'), true,
+  assert.equal(has('velvet-covers-v4', '/api/covers/7'), true,
     'Full cover is cached even though the page consumes the response body');
 }
 
 cacheControl = 'private, no-store';
 await fetchPath('/api/covers/6/thumb');
-assert.equal(has('velvet-thumbs-v5', '/api/covers/6/thumb'), false);
+assert.equal(has('velvet-thumbs-v6', '/api/covers/6/thumb'), false);
 console.log('frontend_pwa_byte_budget_check=OK');
