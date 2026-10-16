@@ -94,3 +94,50 @@ def fetch_album_page(
         "limit": limit,
         "offset": offset,
     }
+
+
+def fetch_artist_page(
+    db: sqlite3.Connection,
+    *,
+    search: str = "",
+    limit: int = 60,
+    offset: int = 0,
+    get_all_variants: Callable[[str], list[str]] | None = None,
+) -> dict:
+    """Count before slicing; only aggregate credits for the requested artists."""
+    if not 1 <= limit <= 200 or offset < 0:
+        raise ValueError("Page size must be 1..200 and offset nonnegative")
+    q = search.strip()
+    variants = list(dict.fromkeys(
+        [q, *(get_all_variants(q) if get_all_variants and q else [])]
+    ))[:12] if q else []
+    params: list[str] = []
+    where = ""
+    if variants:
+        backslash = chr(92)
+        params = [
+            "%" + v.replace(backslash, backslash + backslash)
+                   .replace("%", backslash + "%").replace("_", backslash + "_") + "%"
+            for v in variants
+        ]
+        where = "WHERE " + " OR ".join(
+            "ar.name LIKE ? ESCAPE '\\'" for _ in params
+        )
+    total = db.execute(f"SELECT COUNT(*) FROM artists ar {where}", params).fetchone()[0]
+    rows = db.execute(
+        f"""
+        SELECT ar.*,
+               (SELECT COUNT(DISTINCT t.album_id)
+                FROM track_artists ta JOIN tracks t ON ta.track_id=t.id
+                WHERE ta.artist_id=ar.id) AS album_count,
+               (SELECT COUNT(*) FROM track_artists ta WHERE ta.artist_id=ar.id) AS track_count
+        FROM artists ar {where}
+        ORDER BY ar.sort_name COLLATE NOCASE ASC, ar.id ASC
+        LIMIT ? OFFSET ?
+        """,
+        (*params, limit, offset),
+    ).fetchall()
+    return {
+        "artists": [dict(row) for row in rows],
+        "total": total, "limit": limit, "offset": offset,
+    }
