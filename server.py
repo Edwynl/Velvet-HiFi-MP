@@ -3615,12 +3615,19 @@ async def auth_middleware(request: Request, call_next):
         # logs, history and renderer metadata. Media URLs use tickets above.
         password = request.headers.get("X-Password")
         api_key = request.headers.get("X-API-Key")
-        if not api_key and request.method == "GET" and _IMAGE_COOKIE_PATH.fullmatch(path):
+        from_cookie = (not api_key and not password and request.method == "GET"
+                       and bool(_IMAGE_COOKIE_PATH.fullmatch(path)))
+        if from_cookie:
             api_key = request.cookies.get("velvet_cover_key")
+        # A page of <img> tags replays one stale cookie (e.g. after the key
+        # was rotated on another device) dozens of times. Those are not
+        # guesses: counting them would lock the owner out before they can
+        # log in again. A 256-bit key gains nothing from the exemption.
         auth_result = security.verify_auth(
             password=password,
             api_key=api_key,
             ip=client_ip,
+            record_failure=not from_cookie,
         )
         if not auth_result["allowed"]:
             return JSONResponse(

@@ -290,6 +290,26 @@ class ServerApiTests(unittest.TestCase):
                 with self.subTest(method=method, path=path):
                     self.assertEqual(self.client.request(method, path).status_code, 401)
 
+    def test_stale_image_cookie_does_not_lock_out_the_owner(self):
+        # After a key rotation elsewhere, every <img> replays the old cookie.
+        self.assertTrue(server.security.setup_password("long-test-password")["success"])
+        manager = server.security.get_security_manager()
+        attempts = manager._config.max_failed_attempts
+        self.client.cookies.set("velvet_cover_key", "stale-key")
+        with patch.object(server.security, "is_auth_enabled", return_value=True):
+            for _ in range(attempts * 2):
+                self.assertEqual(self.client.get("/api/artists/1/image").status_code, 401)
+                self.assertEqual(self.client.get("/api/covers/1/thumb").status_code, 401)
+            self.assertTrue(manager.check_rate_limit("127.0.0.1"))
+            login = self.client.post("/api/security/login",
+                                     headers={"X-Password": "long-test-password"})
+            self.assertEqual(login.status_code, 200)
+
+            # Credentials sent in headers still count, even on image paths.
+            for _ in range(attempts):
+                self.client.get("/api/artists/1/image", headers={"X-Password": "wrong-password"})
+            self.assertFalse(manager.check_rate_limit("127.0.0.1"))
+
     def test_create_custom_dsp_profile_persists_ordered_filters(self):
         resp = self.client.post(
             "/api/dsp/profiles",
