@@ -11,7 +11,7 @@ const ALLOWED = new Set([
   'library-cards', 'dsp-controls', 'remote-settings',
 ]);
 
-export function inlineFrontendModules(html) {
+export function inlineFrontendModules(html, { includeLazy = true } = {}) {
   const expanded = html.replace(
     /<script src="\/static\/js\/([a-z0-9-]+)\.js"><\/script>/g,
     (original, name) => {
@@ -23,6 +23,8 @@ export function inlineFrontendModules(html) {
       return `<script>\n${source}\n</script>`;
     },
   );
+  // Production shape: lazy modules stay on demand (see lazy-modules.test.mjs).
+  if (!includeLazy) return expanded;
   // Tests run without a browser network stack. Eagerly hydrate the two
   // production-lazy modules, so existing navigation/Settings regressions
   // still exercise the real source. Production keeps them on demand.
@@ -31,7 +33,10 @@ export function inlineFrontendModules(html) {
     if (/<\/script\s*>/i.test(source)) throw new Error(`Unsafe module: ${name}`);
     return `<script>\n${source}\n</script>\n`;
   }).join('');
-  const bootstrap = '<script>\n// ─── Utilities';
-  if (!expanded.includes(bootstrap)) throw new Error('Inline app bootstrap marker missing');
-  return expanded.replace(bootstrap, lazyScripts + bootstrap);
+  // Anchor on the lazy loader itself rather than on comment text or a fixed
+  // newline: Windows checkouts use CRLF, and the loader precedes Utilities.
+  const loader = expanded.indexOf('function ensureFrontendModule(');
+  const bootstrap = loader < 0 ? -1 : expanded.lastIndexOf('<script>', loader);
+  if (bootstrap < 0) throw new Error('Inline app bootstrap marker missing');
+  return expanded.slice(0, bootstrap) + lazyScripts + expanded.slice(bootstrap);
 }

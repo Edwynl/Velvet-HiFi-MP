@@ -9657,19 +9657,26 @@ let _scanPollId = null;
 let _scanPollToken = 0;
 let _latestScanStatus = {};
 
+// The scan panel lives in the lazily loaded Settings module. Startup polling
+// runs on every view, so record the status and paint only once it exists.
+function reportScanStatus(status) {
+  _latestScanStatus = status || {};
+  if (typeof updateScanStatusPanel === 'function') updateScanStatusPanel(_latestScanStatus);
+}
+
 function startScanPolling(initialState = null) {
   if (_scanPollId) clearTimeout(_scanPollId);
   const token = ++_scanPollToken;
   let sawRunning = !!initialState?.running;
   let waitingChecks = 0;
 
-  if (initialState) updateScanStatusPanel(initialState);
+  if (initialState) reportScanStatus(initialState);
 
   const poll = async () => {
     try {
       const status = await api('/scan/status');
       if (token !== _scanPollToken || !status) return;
-      updateScanStatusPanel(status);
+      reportScanStatus(status);
 
       if (status.running) {
         sawRunning = true;
