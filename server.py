@@ -1912,6 +1912,22 @@ async def _stream_with_dsp(file_path: str, dsp_filter: str, timeout_minutes: int
     )
 
 
+def _select_pcm_upsample_rate(source_rate: int | None, multiplier: str) -> str | None:
+    """Preserve the source's 44.1k/48k sample-rate family when upsampling."""
+    factors = {"none": 1, "2x": 2, "4x": 4, "8x": 8, "16x": 16}
+    if multiplier not in factors:
+        raise ValueError("Unsupported upsampling multiplier")
+    if multiplier == "none":
+        return None
+    if source_rate is None or int(source_rate) <= 0:
+        raise ValueError("Source sample rate is unknown; rescan audio metadata")
+    output_rate = int(source_rate) * factors[multiplier]
+    # Protect against accidental very high-rate transcoding and wasted CPU.
+    if output_rate > 768000 or output_rate < 8000:
+        raise ValueError("Requested PCM output sample rate is unsupported")
+    return str(output_rate)
+
+
 @app.get("/api/stream/{track_id}")
 async def stream_track(
     track_id: int,
@@ -1982,9 +1998,15 @@ async def stream_track(
             "DoP output is not implemented. Choose PCM output (dop=none).",
         )
 
-    # Handle PCM upsampling with optional DSP
-    target_rate = UPSAMPLE_RATES.get(upsample)
+    # Handle PCM upsampling with optional DSP. A 48k source played at
+    # 2x must become 96k, not a hard-coded 88.2k.
+    try:
+        target_rate = _select_pcm_upsample_rate(track["sample_rate"], upsample)
+    except (ValueError, TypeError, OverflowError) as exc:
+        raise HTTPException(422, str(exc))
     if target_rate:
+        if quality not in UPSAMPLE_QUALITY:
+            raise HTTPException(422, "Unsupported upsampling quality")
         return await _stream_upsampled(fp, target_rate, quality, timeout_minutes, dsp_filter)
 
     # Handle DSP-only (no upsampling)
