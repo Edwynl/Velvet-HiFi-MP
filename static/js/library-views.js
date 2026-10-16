@@ -211,7 +211,7 @@ async function renderDiscover(vc) {
 // ── Albums ────────────────────────────────────────────────────────────────────
 
 const ALBUMS_PER_PAGE = 60;  // Bounded remote page; avoid 15k records per Tailscale request.
-const ARTISTS_PER_PAGE = 400;
+const ARTISTS_PER_PAGE = 60;  // Same bounded page budget as albums.
 
 // #main outlives every view, so each re-render replaces its view's previous
 // scroll handler instead of stacking another one.
