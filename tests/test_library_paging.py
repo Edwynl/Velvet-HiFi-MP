@@ -53,6 +53,13 @@ class AlbumPagingTests(unittest.TestCase):
         self.assertEqual([a["id"] for a in favorites["albums"]],[151])
         self.assertIn("1990s", album_catalog_filters(self.db)["decades"])
 
+    def test_genre_filter_matches_the_trimmed_label_it_offers(self):
+        self.db.execute("UPDATE albums SET genre=' Soundtrack ' WHERE id=5")
+        self.db.commit()
+        self.assertIn("Soundtrack", album_catalog_filters(self.db)["genres"])
+        result = self.page(genre="Soundtrack")
+        self.assertEqual([a["id"] for a in result["albums"]], [5])
+
     def test_search_escapes_like_metacharacters(self):
         self.db.execute("UPDATE albums SET title='100% FLAC' WHERE id=3")
         self.db.commit()

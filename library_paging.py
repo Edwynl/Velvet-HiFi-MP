@@ -60,7 +60,7 @@ def fetch_album_page(
         for item in like:
             args.extend((item, item))
     if genre:
-        parts.append("al.genre = ?")
+        parts.append("trim(al.genre) = ?")  # same normalization as the offered labels
         args.append(genre)
     if decade:
         if not decade.endswith("s") or not decade[:-1].isdigit():
