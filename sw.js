@@ -1,5 +1,5 @@
 // VELVET - Service Worker for PWA
-const CACHE_NAME = 'velvet-v3';
+const CACHE_NAME = 'velvet-v4';
 const STATIC_ASSETS = [
   '/',
   '/static/index.html',
@@ -8,7 +8,10 @@ const STATIC_ASSETS = [
 ];
 
 // Separate cache for thumbnails to avoid polluting main cache
-const THUMB_CACHE_NAME = 'velvet-thumbs-v2';
+const THUMB_CACHE_NAME = 'velvet-thumbs-v3';
+const COVER_CACHE_NAME = 'velvet-covers-v1';
+const MAX_THUMBS = 400;
+const MAX_COVERS = 80;
 
 // Install event - cache static assets
 self.addEventListener('install', event => {
@@ -26,7 +29,7 @@ self.addEventListener('activate', event => {
       .then(keys => {
         return Promise.all(
           keys
-            .filter(key => key !== CACHE_NAME && key !== THUMB_CACHE_NAME)
+            .filter(key => key !== CACHE_NAME && key !== THUMB_CACHE_NAME && key !== COVER_CACHE_NAME)
             .map(key => caches.delete(key))
         );
       })
@@ -50,8 +53,8 @@ self.addEventListener('fetch', event => {
   const { request } = event;
   const url = new URL(request.url);
 
-  // Skip non-GET requests
-  if (request.method !== 'GET') return;
+  // Service workers should never cache cross-origin content or mutations.
+  if (request.method !== 'GET' || url.origin !== self.location.origin) return;
 
   // Skip API requests except for covers (always network first)
   if (url.pathname.startsWith('/api/') && !url.pathname.startsWith('/api/covers/')) {
@@ -66,12 +69,6 @@ self.addEventListener('fetch', event => {
     return;
   }
 
-  // For audio streams - network only
-  if (url.pathname.startsWith('/api/stream/')) {
-    event.respondWith(fetch(request));
-    return;
-  }
-
   // Thumbnail caching - cache first, then network
   // This makes thumbnails load instantly from cache
   if (url.pathname.startsWith('/api/covers/') && url.pathname.includes('/thumb')) {
@@ -82,11 +79,14 @@ self.addEventListener('fetch', event => {
 
         try {
           const response = await fetch(request);
-          if (response.ok) {
-            // Clone and cache the response
-            cache.put(request, response.clone());
-            // Trim cache to prevent it from growing too large
-            trimCache(THUMB_CACHE_NAME, 500);
+          if (response.ok && response.type === 'basic' &&
+              !response.headers.get('Cache-Control')?.includes('no-store')) {
+            try {
+              await cache.put(request, response.clone());
+              await trimCache(THUMB_CACHE_NAME, MAX_THUMBS);
+            } catch (cacheError) {
+              // Storage quota exhaustion must not interrupt cover display.
+            }
           }
           return response;
         } catch (err) {
@@ -109,14 +109,21 @@ self.addEventListener('fetch', event => {
     event.respondWith(
       fetch(request)
         .then(response => {
-          if (response.ok) {
+          if (response.ok && response.type === 'basic' &&
+              !response.headers.get('Cache-Control')?.includes('no-store')) {
             const clone = response.clone();
-            caches.open(CACHE_NAME).then(cache => cache.put(request, clone));
+            event.waitUntil(
+              caches.open(COVER_CACHE_NAME)
+                .then(async cache => {
+                  await cache.put(request, clone);
+                  await trimCache(COVER_CACHE_NAME, MAX_COVERS);
+                }).catch(() => {})
+            );
           }
           return response;
         })
         .catch(() => {
-          return caches.match(request).then(cached => {
+          return caches.open(COVER_CACHE_NAME).then(cache => cache.match(request)).then(cached => {
             if (cached) return cached;
             // Fallback placeholder for missing covers
             return new Response(
