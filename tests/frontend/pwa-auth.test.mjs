@@ -53,7 +53,7 @@ function request(path, method = 'GET') { return { url: key(path), method }; }
 
 await dispatch('install');
 assert.ok(await caches.match('/static/index.html'));
-assert.equal(networkCalls, 3, 'Install fetches only existing cacheable public assets');
+assert.equal(networkCalls, 9, 'Install fetches only existing cacheable public assets');
 cacheControl = 'private, NO-STORE';
 await dispatch('fetch', request('/'));
 assert.equal(await caches.match('/'), undefined, 'Root no-store must be respected');
@@ -69,12 +69,12 @@ assert.equal(await caches.match('/api/stream/1?api_key=secret'), undefined);
 await dispatch('fetch', request('/api/covers/1?api_key=secret'));
 assert.equal(await caches.match('/api/covers/1?api_key=secret'), undefined);
 for (let i = 0; i < 410; i++) await dispatch('fetch', request(`/api/covers/${i}/thumb`));
-assert.equal(stores.get('velvet-thumbs-v4').size, 400);
+assert.equal(stores.get('velvet-thumbs-v5').size, 400);
 const before = networkCalls;
 await dispatch('fetch', request('/api/covers/409/thumb'));
 assert.equal(networkCalls, before, 'Cached thumbnail avoids a new request');
 for (let i = 0; i < 90; i++) await dispatch('fetch', request(`/api/covers/${i}`));
-assert.equal(stores.get('velvet-covers-v2').size, 80);
+assert.equal(stores.get('velvet-covers-v3').size, 80);
 await dispatch('fetch', request('https://external.example/image'));
 await dispatch('fetch', request('/api/covers/1', 'POST'));
 assert.equal(networkCalls, before + 90, 'Cross-origin and mutation requests are untouched');
