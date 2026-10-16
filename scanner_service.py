@@ -37,18 +37,28 @@ def split_artists(artist_string: str) -> list[str]:
 
 
 def discover_audio_files(paths: list[str], audio_extensions: set[str]) -> list[str]:
+    """Walk deep Windows folders with extended paths, persist plain paths.
+
+    The extended prefix is for filesystem calls only. SQLite paths remain
+    plain and stable so the incremental scanner does not re-import everything.
+    """
     all_files: list[str] = []
     for root_path in paths:
-        if not os.path.exists(root_path):
+        walk_path = filesystem_path(root_path)
+        if not os.path.isdir(walk_path):
             continue
-        for root, dirs, files in os.walk(root_path):
-            dirs[:] = sorted(directory for directory in dirs if not directory.startswith("."))
+        for real_root, dirs, files in os.walk(walk_path):
+            dirs[:] = sorted(d for d in dirs if not d.startswith("."))
+            rel = (ntpath.relpath(real_root, walk_path) if os.name == "nt"
+                   else os.path.relpath(real_root, walk_path))
+            plain_root = root_path if rel == "." else os.path.join(root_path, rel)
             for name in sorted(files):
-                if name.startswith("._") or name.startswith("."):
-                    continue
+                if name.startswith("."):
+                    continue  # also skip staged .velvet-recycle-* FLAC
                 if Path(name).suffix.lower() in audio_extensions:
-                    all_files.append(os.path.join(root, name))
+                    all_files.append(os.path.join(plain_root, name))
     return all_files
+
 
 
 def _store_file_state(db: sqlite3.Connection, track_id: int, stat: os.stat_result) -> None:
