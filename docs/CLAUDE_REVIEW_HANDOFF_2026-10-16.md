@@ -41,8 +41,8 @@ Review the ENTIRE PR diff rather than individual commits. Look for feature integ
 
 - True DoP is **not implemented** and needs suitable hardware, marker packaging and DAC acceptance tests. Do not claim DSD output works.
 - Browser playback is not automatically bit-perfect; device, DSP, volume and resampling behavior matter. Native float32 audio is likewise not guaranteed bit-perfect.
-- `LocalPlayer` still synchronously reads FFmpeg stdout inside a PortAudio callback; an asynchronous ring buffer would lower underrun risk but warrants an isolated Windows hardware-tested change.
-- URL query-string API key is still used for HTMLMediaElement streaming; propose a short-lived per-stream signed authorization design before internet-facing deployment.
+- ~~`LocalPlayer` reads FFmpeg stdout inside the PortAudio callback~~ — fixed in the second review round: a decoder thread fills a bounded PCM ring buffer and the callback only copies memory. Still needs Windows hardware validation (see release-readiness report).
+- ~~URL query-string API key for HTMLMediaElement streaming~~ — replaced in the second review round by HMAC tickets scoped to one track/cover; query-string credentials are no longer accepted.
 - Full frontend migration away from a ~450KB single HTML file, synchronized multi-room playback, device-capability negotiation and real ASIO exclusive output are **not included** in this patch. These are separate architecture/hardware projects, not fixes that can safely be claimed complete in a general regression PR.
 - GitHub CI is not equivalent to validating Windows audio devices, Tailscale, iOS or Hi-Fi DACs.
 

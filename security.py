@@ -4,7 +4,9 @@ VELVET Security Module
 Provides authentication and security features for remote access
 """
 
+import base64
 import hashlib
+import hmac
 import secrets
 import time
 import json
@@ -30,6 +32,15 @@ CONFIG_FILE = CONFIG_DIR / "security.json"
 
 CONFIG_DIR.mkdir(exist_ok=True)
 
+# Media tickets authorize GET of ONE track or cover without exposing the
+# long-lived API key in URLs (HTMLMediaElement and DLNA renderers cannot send
+# headers). Lifetime follows track length so long-form music can finish.
+MEDIA_SCOPES = frozenset({"stream", "cover"})
+MEDIA_TICKET_GRACE_SECONDS = 30 * 60
+MEDIA_TICKET_MAX_SECONDS = 12 * 3600
+DLNA_BROWSE_DEFAULT_MINUTES = 60
+DLNA_BROWSE_MAX_MINUTES = 8 * 60
+
 
 @dataclass
 class SecurityConfig:
@@ -41,6 +52,7 @@ class SecurityConfig:
     lockout_duration: int = 300  # seconds
     created_at: float = 0
     updated_at: float = 0
+    media_secret: str = ""
 
 
 class SecurityManager:
@@ -50,6 +62,7 @@ class SecurityManager:
         self._config = SecurityConfig()
         self._failed_attempts: dict[str, list[float]] = {}  # IP -> list of timestamps
         self._lock = Lock()
+        self._dlna_browse_until = 0.0  # in-memory: a restart revokes the grant
         self._load_config()
 
     def _load_config(self):
@@ -70,7 +83,8 @@ class SecurityManager:
             "max_failed_attempts": self._config.max_failed_attempts,
             "lockout_duration": self._config.lockout_duration,
             "created_at": self._config.created_at,
-            "updated_at": time.time()
+            "updated_at": time.time(),
+            "media_secret": self._config.media_secret,
         }
         CONFIG_FILE.write_text(json.dumps(data, indent=2), encoding="utf-8")
 
@@ -108,6 +122,7 @@ class SecurityManager:
             self._config.enabled = True
             # A password change revokes previously issued credentials.
             self._config.api_key = ""
+            self._rotate_media_secret_locked()
             self._config.created_at = time.time()
             self._save_config()
         return True
@@ -147,6 +162,7 @@ class SecurityManager:
         api_key = secrets.token_urlsafe(32)
         with self._lock:
             self._config.api_key = api_key
+            self._rotate_media_secret_locked()
             self._save_config()
         return api_key
 
@@ -217,12 +233,73 @@ class SecurityManager:
         """Disable security (for local network use only)"""
         with self._lock:
             self._config.enabled = False
+            self._rotate_media_secret_locked()
+            self._dlna_browse_until = 0.0
             self._save_config()
         return True
 
     def reset_api_key(self) -> str:
         """Reset API key"""
         return self.generate_api_key()
+
+    # ─── Scoped media tickets ────────────────────────────────────────────────
+
+    def _rotate_media_secret_locked(self):
+        """Invalidate every outstanding media ticket. Caller holds the lock."""
+        self._config.media_secret = secrets.token_hex(32)
+        self._dlna_browse_until = 0.0
+
+    def _media_key(self) -> bytes:
+        with self._lock:
+            if not self._config.media_secret:
+                self._config.media_secret = secrets.token_hex(32)
+                self._save_config()
+            return bytes.fromhex(self._config.media_secret)
+
+    def _sign_media(self, scope: str, resource_id: int, expires: int) -> str:
+        message = f"velvet-media-v1|{scope}|{resource_id}|{expires}".encode("ascii")
+        digest = hmac.new(self._media_key(), message, hashlib.sha256).digest()
+        return base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
+
+    def issue_media_ticket(self, scope: str, resource_id: int, ttl_seconds: int) -> tuple[str, int]:
+        """Return (ticket, expires_at) for read-only access to one resource."""
+        if scope not in MEDIA_SCOPES:
+            raise ValueError("Unsupported media ticket scope")
+        ttl = int(min(max(int(ttl_seconds), 60), MEDIA_TICKET_MAX_SECONDS))
+        expires = int(time.time()) + ttl
+        return f"{expires}.{self._sign_media(scope, int(resource_id), expires)}", expires
+
+    def verify_media_ticket(self, ticket: str, scope: str, resource_id) -> bool:
+        if not ticket or scope not in MEDIA_SCOPES:
+            return False
+        try:
+            expires_text, signature = ticket.split(".", 1)
+            expires = int(expires_text)
+            resource = int(resource_id)
+        except (TypeError, ValueError):
+            return False
+        if expires < time.time():
+            return False
+        expected = self._sign_media(scope, resource, expires)
+        return secrets.compare_digest(signature, expected)
+
+    # ─── DLNA control-point browse window ────────────────────────────────────
+
+    def grant_dlna_browse(self, minutes: int) -> float:
+        """Let LAN DLNA controllers browse for a bounded window (set by an authenticated user)."""
+        minutes = min(max(int(minutes), 1), DLNA_BROWSE_MAX_MINUTES)
+        with self._lock:
+            self._dlna_browse_until = time.time() + minutes * 60
+            return self._dlna_browse_until
+
+    def revoke_dlna_browse(self):
+        with self._lock:
+            self._dlna_browse_until = 0.0
+
+    def dlna_browse_expires_at(self) -> float:
+        """Expiry timestamp of the active browse grant, or 0 when inactive."""
+        until = self._dlna_browse_until
+        return until if until > time.time() else 0.0
 
 
 # Global instance
@@ -282,6 +359,23 @@ def verify_auth(password: str = None, api_key: str = None, ip: str = None) -> di
         manager.record_failed_attempt(ip)
 
     return {"allowed": False, "error": "Invalid password or API key"}
+
+
+def media_ticket_ttl(duration_seconds=None) -> int:
+    """Ticket lifetime: track length plus grace, bounded for long-form music."""
+    try:
+        duration = max(float(duration_seconds or 0), 0.0)
+    except (TypeError, ValueError):
+        duration = 0.0
+    return min(int(duration) + MEDIA_TICKET_GRACE_SECONDS, MEDIA_TICKET_MAX_SECONDS)
+
+
+def issue_media_ticket(scope: str, resource_id: int, ttl_seconds: int) -> tuple[str, int]:
+    return get_security_manager().issue_media_ticket(scope, resource_id, ttl_seconds)
+
+
+def verify_media_ticket(ticket: str, scope: str, resource_id) -> bool:
+    return get_security_manager().verify_media_ticket(ticket, scope, resource_id)
 
 
 def get_security_status() -> dict:

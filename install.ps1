@@ -172,9 +172,29 @@ Write-Ok "venv is ready"
 $venvPython = Join-Path $Root "venv\Scripts\python.exe"
 
 Write-Step "Installing Python dependencies"
+# Native commands do not honour $ErrorActionPreference; check exit codes so a
+# failed install is never reported as success.
 & $venvPython -m pip install --upgrade pip
+if ($LASTEXITCODE -ne 0) { Write-Warn "pip self-upgrade failed; continuing with the installed pip." }
 & $venvPython -m pip install --disable-pip-version-check -r requirements.txt
+if ($LASTEXITCODE -ne 0) {
+    throw "Python dependency installation failed (pip exit code $LASTEXITCODE). See the pip output above."
+}
 Write-Ok "Python dependencies installed"
+
+Write-Step "Checking Windows native audio (sounddevice / PortAudio)"
+$nativeAudioCheck = "import local_playback as lp, sys; print(lp.SOUNDDEVICE_ERROR or 'ok'); sys.exit(0 if lp.SOUNDDEVICE_AVAILABLE else 1)"
+& $venvPython -c $nativeAudioCheck
+if ($LASTEXITCODE -ne 0) {
+    Write-Warn "sounddevice is not importable in venv; reinstalling it."
+    & $venvPython -m pip install --disable-pip-version-check --force-reinstall "sounddevice>=0.4.6,<1.0.0"
+    & $venvPython -c $nativeAudioCheck
+}
+if ($LASTEXITCODE -eq 0) {
+    Write-Ok "Native audio output is available"
+} else {
+    Write-Warn "Native audio output is unavailable. Browser and DLNA playback still work."
+}
 
 Write-Step "Checking FFmpeg"
 if (-not (Test-ToolOnPath "ffmpeg")) {

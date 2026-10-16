@@ -77,7 +77,7 @@ class VelvetSettings(BaseSettings):
     default_album_limit: int = Field(default=200, ge=1, le=10000)
     default_track_limit: int = Field(default=50, ge=1, le=10000)
 
-    stream_timeout_minutes: int = Field(default=60, ge=5, le=120)
+    stream_timeout_minutes: int = Field(default=60, ge=5, le=720)
     stream_chunk_size: int = Field(default=65536, ge=8192, le=1048576)
 
     cover_cache_max_size: int = Field(default=1000, ge=0)

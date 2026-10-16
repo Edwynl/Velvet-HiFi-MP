@@ -6785,11 +6785,23 @@ function getAudioLevel() {
 // This is the VU meter needle driving logic — removing it causes a
 // ReferenceError that silently crashes the animation and freezes the needles.
 
-function streamUrl(trackId, upsample) {
+function streamUrl(trackId, upsample, ticket = '') {
   const u = upsample || state.upsample;
   const dsp = state.dspProfile ? `&dsp=${encodeURIComponent(state.dspProfile)}` : '';
-  const apiKeyParam = authState.apiKey ? `&api_key=${encodeURIComponent(authState.apiKey)}` : '';
-  return `/api/stream/${trackId}?upsample=${u}${dsp}${apiKeyParam}`;
+  // Never put the long-lived API key in a media URL; use a per-track ticket.
+  const ticketParam = ticket ? `&ticket=${encodeURIComponent(ticket)}` : '';
+  return `/api/stream/${trackId}?upsample=${u}${dsp}${ticketParam}`;
+}
+
+// <audio> cannot send X-API-Key. When protection is on, fetch a short-lived
+// ticket scoped to this one track instead of exposing the API key.
+async function fetchStreamTicket(trackId) {
+  if (!authState.apiKey) return '';
+  const result = await api('/stream-ticket', {
+    method: 'POST',
+    body: JSON.stringify({ track_id: trackId })
+  });
+  return result?.ticket || '';
 }
 
 // DO NOT call initAudioAnalyser() here — audio must stay decoupled from AudioContext
@@ -6798,7 +6810,7 @@ function streamUrl(trackId, upsample) {
 
 async function startBrowserPlayback(track, { resumeTime = null, token = null } = {}) {
   const playbackToken = token ?? ++browserPlaybackToken;
-  const targetUrl = streamUrl(track.id);
+  const targetUrl = streamUrl(track.id, undefined, await fetchStreamTicket(track.id));
   if (playbackToken !== browserPlaybackToken) return false;
   clearDspStartupHealthCheck();
 
@@ -7045,10 +7057,10 @@ function stopCastPolling() {
 async function castTo(track, device) {
   showToast(`Casting to ${device.name}...`);
   try {
-    const url = `${location.origin}${streamUrl(track.id)}`;
-    const res = await api(`/cast/${device.udn}`, { 
+    // The server hands the renderer its own ticketed URL for this track.
+    const res = await api(`/cast/${device.udn}`, {
       method: 'POST',
-      body: JSON.stringify({ stream_url: url, track_id: track.id })
+      body: JSON.stringify({ track_id: track.id })
     });
     if (res.success) {
       markExpectedBrowserPause(1200);
@@ -12572,6 +12584,15 @@ async function renderRemote(vc) {
         </div>
         ` : ''}
 
+        <div style="border-top:1px solid var(--border);padding-top:20px;margin-bottom:20px">
+          <div class="settings-title" style="margin-bottom:8px">DLNA Library Browsing</div>
+          <div class="settings-desc" id="dlna-browse-status" style="margin-bottom:12px">${dlnaBrowseStatusText(null)}</div>
+          <div style="display:flex;gap:12px;flex-wrap:wrap">
+            <button class="btn btn-gold" onclick="setDlnaBrowseAccess(true)">Allow for 1 Hour</button>
+            <button class="btn" style="background:var(--s3)" onclick="setDlnaBrowseAccess(false)">Stop Browsing</button>
+          </div>
+        </div>
+
         <div style="border-top:1px solid var(--border);padding-top:20px">
           <div class="settings-title" style="margin-bottom:12px">${securityEnabled ? 'Change Password' : 'Set Password'}</div>
           <input type="password" id="new-password" placeholder="Enter new password (min 8 chars)" class="settings-input" style="width:100%;margin-bottom:12px;background:var(--s3)">
@@ -12649,6 +12670,31 @@ async function renderRemote(vc) {
 
   // Update sidebar status dot
   updateRemoteStatusDot(isTailscaleRunning);
+  api('/dlna/browse-access').then(renderDlnaBrowseStatus).catch(() => {});
+}
+
+function dlnaBrowseStatusText(result) {
+  if (result?.active && result.expires_at) {
+    const until = new Date(result.expires_at * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    return `DLNA apps on your home network can browse and play until ${until}.`;
+  }
+  return 'Off. HEOS, StreamMagic and other DLNA apps on your home network cannot sign in, so allow browsing for a limited time.';
+}
+
+function renderDlnaBrowseStatus(result) {
+  const el = document.getElementById('dlna-browse-status');
+  if (el && result) el.textContent = dlnaBrowseStatusText(result);
+}
+
+async function setDlnaBrowseAccess(enable) {
+  try {
+    const result = await api('/dlna/browse-access', enable
+      ? { method: 'POST', body: JSON.stringify({ minutes: 60 }) }
+      : { method: 'DELETE' });
+    renderDlnaBrowseStatus(result);
+  } catch (e) {
+    alert('Failed to update DLNA browsing: ' + e.message);
+  }
 }
 
 function updateRemoteStatusDot(connected) {

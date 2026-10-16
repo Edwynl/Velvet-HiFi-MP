@@ -1,5 +1,6 @@
 """Native sounddevice command and float32 sample-format regressions."""
 import io
+import sys
 import tempfile
 import unittest
 import threading
@@ -152,6 +153,242 @@ class NativeAudioTests(unittest.TestCase):
                     _FakeStream.callback_result, [[0.125, -0.125]], atol=1e-6
                 ))
                 player.stop()
+
+
+class _CallbackStop(Exception):
+    pass
+
+
+class _RecordingProcess:
+    """FFmpeg stand-in that records which thread reads or terminates it."""
+
+    def __init__(self, frames=0, endless=False):
+        self.read_threads, self.terminate_threads, self.wait_threads = [], [], []
+        self._payload = io.BytesIO(numpy.full((frames, 2), 0.5, dtype="<f4").tobytes())
+        self.endless = endless
+        self.closed = False
+        self.returncode = None
+        self.stdout = self
+
+    def read(self, size):
+        self.read_threads.append(threading.current_thread().name)
+        if self.endless:
+            time.sleep(0.001)
+            return b"" if self.closed else b"\0" * size
+        return self._payload.read(size)
+
+    def close(self):
+        self.closed = True
+
+    def poll(self):
+        return self.returncode
+
+    def terminate(self):
+        self.terminate_threads.append(threading.current_thread().name)
+        self.closed = True
+        self.returncode = -15
+
+    kill = terminate
+
+    def wait(self, timeout=None):
+        self.wait_threads.append(threading.current_thread().name)
+        if self.returncode is None:
+            self.returncode = 0
+        return self.returncode
+
+
+class _CallbackThreadStream:
+    """Runs the audio callback on its own thread, like PortAudio."""
+
+    def __init__(self, **kwargs):
+        self.callback = kwargs["callback"]
+        self.running = False
+        self.thread = None
+
+    def start(self):
+        self.running = True
+
+        def loop():
+            while self.running:
+                out = numpy.zeros((256, 2), dtype="float32")
+                try:
+                    self.callback(out, 256, None, None)
+                except _CallbackStop:
+                    self.running = False
+                time.sleep(0.001)
+
+        self.thread = threading.Thread(target=loop, name="portaudio-callback", daemon=True)
+        self.thread.start()
+
+    def stop(self):
+        self.running = False
+        if self.thread:
+            self.thread.join(1)
+
+    def close(self):
+        pass
+
+
+class PcmRingBufferTests(unittest.TestCase):
+    def test_wraps_around_and_applies_gain(self):
+        ring = local_playback.PcmRingBuffer(4)
+        ring.write(numpy.array([[1, -1], [2, -2], [3, -3]], dtype="float32"))
+        out = numpy.zeros((2, 2), dtype="float32")
+        self.assertEqual(ring.read_into(out), 2)
+        ring.write(numpy.array([[4, -4], [5, -5], [6, -6]], dtype="float32"))  # wraps
+        out = numpy.zeros((4, 2), dtype="float32")
+        self.assertEqual(ring.read_into(out, gain=0.5), 4)
+        self.assertTrue(numpy.allclose(out[:, 0], [1.5, 2, 2.5, 3]))
+
+    def test_read_never_waits_for_the_producer(self):
+        ring = local_playback.PcmRingBuffer(8)
+        out = numpy.ones((4, 2), dtype="float32")
+        started = time.monotonic()
+        self.assertEqual(ring.read_into(out), 0)
+        self.assertLess(time.monotonic() - started, 0.05)
+        self.assertFalse(ring.drained)
+        ring.mark_eof()
+        self.assertTrue(ring.drained)
+
+    def test_writer_is_bounded_and_close_releases_it(self):
+        ring = local_playback.PcmRingBuffer(4)
+        result = []
+        writer = threading.Thread(target=lambda: result.append(
+            ring.write(numpy.zeros((10, 2), dtype="float32"))))
+        writer.start()
+        time.sleep(0.1)
+        self.assertTrue(writer.is_alive())       # blocked: memory stays bounded
+        self.assertEqual(ring.available, 4)
+        ring.read_into(numpy.zeros((4, 2), dtype="float32"))
+        time.sleep(0.1)
+        self.assertEqual(ring.available, 4)      # producer resumed after space appeared
+        ring.close()
+        writer.join(1)
+        self.assertFalse(writer.is_alive())
+        self.assertEqual(result, [False])
+
+
+class DecoderWorkerTests(unittest.TestCase):
+    def _play(self, process, state=None):
+        with tempfile.TemporaryDirectory() as root:
+            source = Path(root) / "source.flac"
+            source.write_bytes(b"test")
+            patches = [
+                patch.object(local_playback, "SOUNDDEVICE_AVAILABLE", True),
+                patch.object(local_playback, "sd", create=True),
+                patch.object(local_playback.subprocess, "Popen", return_value=process),
+                patch.object(local_playback, "_playback_state", state if state is not None else {}),
+            ]
+            for active in patches:
+                active.start()
+            self.addCleanup(lambda: [active.stop() for active in reversed(patches)])
+            sd = local_playback.sd
+            sd.CallbackStop = _CallbackStop
+            sd.PortAudioError = RuntimeError
+            sd.OutputStream.side_effect = _CallbackThreadStream
+            player = local_playback.LocalPlayer()
+            self.addCleanup(player.stop)
+            with patch.object(player, "_get_device_info", return_value={"name": "DAC", "sample_rate": 48000}):
+                self.assertTrue(player.play_file(str(source), output_sample_rate=48000))
+            return player
+
+    def test_callback_never_reads_the_pipe_or_controls_the_process(self):
+        process = _RecordingProcess(endless=True)
+        player = self._play(process)
+        time.sleep(0.2)
+        player.stop()
+        self.assertTrue(process.read_threads)
+        self.assertEqual(set(process.read_threads), {"velvet-ffmpeg-decoder"})
+        self.assertNotIn("portaudio-callback", process.terminate_threads + process.wait_threads)
+
+    def test_natural_end_is_finished_off_the_audio_thread(self):
+        state = {"playing": True, "paused": False, "track_id": 5, "position": 0}
+        process = _RecordingProcess(frames=2000)
+        self._play(process, state)
+        deadline = time.monotonic() + 3
+        while state["track_id"] is not None and time.monotonic() < deadline:
+            time.sleep(0.01)
+        self.assertIsNone(state["track_id"])
+        self.assertFalse(state["playing"])
+        self.assertEqual(process.wait_threads, ["velvet-ffmpeg-decoder"])
+
+    def test_stop_returns_promptly_with_a_decoder_blocked_on_a_full_buffer(self):
+        process = _RecordingProcess(endless=True)
+        player = self._play(process)
+        decoder = player._decoder
+        time.sleep(0.2)  # ring fills; producer waits for space
+        player.stream.stop()  # paused: callback no longer drains
+        started = time.monotonic()
+        player.stop()
+        self.assertLess(time.monotonic() - started, 3)
+        self.assertFalse(decoder.is_alive())
+        self.assertTrue(process.terminate_threads)
+
+    def test_explicit_stop_does_not_clear_a_newer_tracks_state(self):
+        state = {"playing": True, "paused": False, "track_id": 9, "position": 0}
+        player = self._play(_RecordingProcess(endless=True), state)
+        player.stop()
+        time.sleep(0.2)
+        self.assertEqual(state["track_id"], 9)
+
+
+class NativeAudioInstallTests(unittest.TestCase):
+    def test_requirements_install_sounddevice_on_windows(self):
+        from packaging.requirements import Requirement
+
+        root = Path(__file__).resolve().parents[1]
+        lines = [line.split("#", 1)[0].strip()
+                 for line in (root / "requirements.txt").read_text(encoding="utf-8").splitlines()]
+        matches = [Requirement(line) for line in lines if line.startswith("sounddevice")]
+        self.assertEqual(len(matches), 1)
+        self.assertTrue(matches[0].marker.evaluate({"sys_platform": "win32"}))
+
+    def test_installer_fails_on_pip_errors_and_verifies_native_audio(self):
+        script = (Path(__file__).resolve().parents[1] / "install.ps1").read_text(encoding="utf-8")
+        install = script.index("-r requirements.txt")
+        self.assertIn("$LASTEXITCODE", script[install:install + 200])
+        self.assertIn("SOUNDDEVICE_AVAILABLE", script)
+
+    def test_missing_portaudio_library_is_reported_not_fatal(self):
+        import builtins
+        import importlib
+        import sys
+
+        real_import = builtins.__import__
+
+        def fake_import(name, *args, **kwargs):
+            if name == "sounddevice":
+                raise OSError("PortAudio library not found")
+            return real_import(name, *args, **kwargs)
+
+        with patch.dict(sys.modules):
+            sys.modules.pop("local_playback", None)
+            sys.modules.pop("sounddevice", None)
+            with patch("builtins.__import__", side_effect=fake_import):
+                module = importlib.import_module("local_playback")
+        self.assertFalse(module.SOUNDDEVICE_AVAILABLE)
+        self.assertIn("PortAudio library not found", module.SOUNDDEVICE_ERROR)
+
+    @unittest.skipUnless(sys.platform == "win32", "Windows native audio path")
+    def test_windows_install_provides_working_sounddevice(self):
+        import sounddevice
+
+        self.assertTrue(local_playback.SOUNDDEVICE_AVAILABLE, local_playback.SOUNDDEVICE_ERROR)
+        self.assertTrue(sounddevice.get_portaudio_version()[1])
+
+    def test_zones_report_why_native_audio_is_unavailable(self):
+        from fastapi.testclient import TestClient
+        import server
+
+        with patch.object(local_playback, "SOUNDDEVICE_AVAILABLE", False), \
+             patch.object(local_playback, "SOUNDDEVICE_ERROR", "OSError: PortAudio library not found"), \
+             patch.object(server.security, "is_auth_enabled", return_value=False), \
+             patch.object(server, "get_client_ip", return_value="127.0.0.1"), \
+             patch.object(server.upnp_server, "get_cached_renderers", return_value=[{"udn": "x"}]):
+            with TestClient(server.app) as client:
+                native = client.get("/api/zones").json()["native"]
+        self.assertFalse(native["available"])
+        self.assertEqual(native["error"], "OSError: PortAudio library not found")
 
 
 if __name__ == "__main__":

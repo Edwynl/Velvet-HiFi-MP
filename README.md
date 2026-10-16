@@ -24,7 +24,7 @@ VELVET is a premium, minimalist personal music server designed for audiophiles. 
 - **Cinematic UI**: A refined, dark-mode-first interface inspired by luxury editorial design.
 - **Hi-Fi Ready**: Original-file streaming for supported formats such as FLAC, plus optional PCM resampling and DSP. Bit-perfect DAC output is device/driver dependent; true DoP output is not yet implemented.
 - **PWA Support**: Install VELVET on your iOS or Android device for a standalone, app-like experience.
-- **UPnP/DLNA**: Renderer discovery is available. Protected DLNA playback needs scoped media authorization and is not implemented; use browser or native playback with authentication enabled.
+- **UPnP/DLNA**: Cast to renderers from the web player, or let HEOS/StreamMagic/BubbleUPnP browse after opening a time-limited window in Remote → Security Protection → DLNA Library Browsing. Renderers receive per-track tickets that expire after the track length, never the API key.
 - **Smart Management**: Automatic metadata enrichment and high-resolution cover art fetching.
 
 ## Quick Start
@@ -79,7 +79,7 @@ VELVET 是一款专为音乐发烧友打造的高级简约私人音乐服务器�
 - **电影级界面**：受奢侈品画报设计的启发，提供极致考究的深色模式界面。
 - **发烧级支持**：支持 FLAC 等原始音频文件串流，并可选 PCM 升采样及 DSP。是否达到 DAC 端 Bit-perfect 取决于设备与驱动；真正的 DoP 尚未实现。
 - **PWA 支持**：可在 iOS 或 Android 设备上通过“添加到主屏幕”作为独立 App 使用，享受沉浸式体验。
-- **UPnP/DLNA**：支持渲染器发现；受保护的 DLNA 播放仍需实现限定范围的媒体授权，目前请使用浏览器或本机播放。普通 DLNA 客户端无法匿名浏览受保护的音乐库。
+- **UPnP/DLNA**：可从网页播放器投送到渲染器；HEOS/StreamMagic/BubbleUPnP 等 App 需先在「远程 → 安全保护 → DLNA Library Browsing」开启限时浏览窗口（仅限家庭局域网私有地址）。渲染器拿到的是按单曲限定、随曲长过期的票据，而不是 API key。
 - **智能库管理**：自动元数据增强及高分辨率封面获取。
 
 ## 快速开始

@@ -317,7 +317,9 @@ VELVET 输出的是**高采样率 PCM（FLAC 格式封装）**，而非原生 DS
 
 **方式一：UPnP/DLNA（推荐，最高音质）**
 
-VELVET 启动时自动广播 UPnP 设备，无需任何额外配置。
+VELVET 启动时自动广播 UPnP 设备。HEOS 等控制 App 无法输入 VELVET 密码，
+所以浏览曲库前需先在 VELVET 网页「远程 → 安全保护 → DLNA Library Browsing」点 **Allow for 1 Hour**
+（只对家庭局域网私有地址生效，到期或点 Stop Browsing 即关闭；在窗口内列出的曲目可播放到结束）。
 
 1. 打开手机 **HEOS app**
 2. 音乐来源 → 音乐服务器（My VELVET）
@@ -337,9 +339,10 @@ VELVET 启动时自动广播 UPnP 设备，无需任何额外配置。
 
 **方式一：UPnP/DLNA（推荐）**
 
-1. 打开 **StreamMagic app**
-2. Library → Music Servers → 找到 **"VELVET"**
-3. 浏览播放，支持高达 32-bit/768kHz PCM
+1. 在 VELVET 网页开启 DLNA Library Browsing 限时窗口（见 9.1）
+2. 打开 **StreamMagic app**
+3. Library → Music Servers → 找到 **"VELVET"**
+4. 浏览播放，支持高达 32-bit/768kHz PCM
 
 **方式二：Chromecast（最简单）**
 
@@ -358,7 +361,8 @@ VELVET 启动时自动广播 UPnP 设备，无需任何额外配置。
 ### 9.3 其他 DLNA 设备
 
 任何支持 DLNA/UPnP 的设备（Sony、Denon、Pioneer、KEF、Naim 等）均可使用。
-使用手机 App 如 **mconnect Player**、**BubbleUPnP**（Android）或 **Serenade**（iOS）控制。
+使用手机 App 如 **mconnect Player**、**BubbleUPnP**（Android）或 **Serenade**（iOS）控制（同样需先开启限时浏览窗口）。
+也可以不开窗口：在 VELVET 播放器的投送菜单直接选择渲染器，由服务器下发单曲限定票据。
 
 ---
 

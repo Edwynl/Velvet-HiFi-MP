@@ -14,8 +14,11 @@ request WASAPI exclusive mode or negotiate ASIO/DSD capabilities.
 import os
 import subprocess
 import threading
+import time
 from pathlib import Path
 from typing import Optional
+
+import numpy
 
 import env_loader  # noqa: F401 - load .env for direct module use
 from dsp_engine import build_dsp_filter_chain
@@ -23,9 +26,13 @@ from dsp_engine import build_dsp_filter_chain
 try:
     import sounddevice as sd
     SOUNDDEVICE_AVAILABLE = True
-except ImportError:
+    SOUNDDEVICE_ERROR = None
+except (ImportError, OSError) as exc:
+    # OSError: the wheel is present but the PortAudio library is not
+    # (e.g. Linux without libportaudio2). Report it instead of crashing.
     SOUNDDEVICE_AVAILABLE = False
-    print("WARNING: sounddevice not installed. Local playback disabled.")
+    SOUNDDEVICE_ERROR = f"{type(exc).__name__}: {exc}"
+    print(f"WARNING: sounddevice unavailable ({SOUNDDEVICE_ERROR}). Local playback disabled.")
     print("Install with: pip install sounddevice")
 
 log = __import__("logging").getLogger("velvet.playback")
@@ -43,7 +50,15 @@ _playback_state = {
 _state_lock = threading.Lock()
 _playback_thread: Optional[threading.Thread] = None
 _player_lock = threading.Lock()
+# Orders a natural end-of-track against stop()/a new track on the same player.
+_player_state_guard = threading.Lock()
 _active_player: Optional["LocalPlayer"] = None
+
+FRAME_BYTES = 8                # stereo float32
+DECODE_CHUNK_FRAMES = 4096
+RING_BUFFER_SECONDS = 2.0
+PREBUFFER_SECONDS = 0.25
+PREBUFFER_TIMEOUT_SECONDS = 2.0
 
 UPSAMPLE_MULTIPLIERS = {
     "none": 1,
@@ -110,6 +125,82 @@ def _audio_stream_callback(outdata, frames, time_info, status):
     outdata.fill(0)
 
 
+class PcmRingBuffer:
+    """Bounded single-producer/single-consumer float32 frame FIFO.
+
+    The decoder thread blocks in ``write`` while the buffer is full; the
+    PortAudio callback uses ``read_into``, which never waits on I/O or on the
+    producer — it copies whatever is available and reports the count.
+    """
+
+    def __init__(self, capacity_frames: int, channels: int = 2):
+        if capacity_frames <= 0:
+            raise ValueError("capacity_frames must be positive")
+        self._buffer = numpy.zeros((capacity_frames, channels), dtype="float32")
+        self.capacity = capacity_frames
+        self._start = 0
+        self._count = 0
+        self._eof = False
+        self._closed = False
+        self._lock = threading.Lock()
+        self._space = threading.Condition(self._lock)
+
+    @property
+    def available(self) -> int:
+        return self._count
+
+    @property
+    def eof(self) -> bool:
+        return self._eof
+
+    @property
+    def drained(self) -> bool:
+        """True once the producer finished and every frame was consumed."""
+        return self._eof and self._count == 0
+
+    def write(self, frames) -> bool:
+        """Append frames, waiting for space. Returns False once closed."""
+        offset = 0
+        total = len(frames)
+        while offset < total:
+            with self._space:
+                while self._count == self.capacity and not self._closed:
+                    self._space.wait(0.25)
+                if self._closed:
+                    return False
+                end = (self._start + self._count) % self.capacity
+                n = min(total - offset, self.capacity - self._count, self.capacity - end)
+                self._buffer[end:end + n] = frames[offset:offset + n]
+                self._count += n
+            offset += n
+        return True
+
+    def read_into(self, out, gain: float = 1.0) -> int:
+        """Copy up to len(out) frames into ``out`` (scaled by gain); never blocks on I/O."""
+        with self._lock:
+            n = min(len(out), self._count)
+            first = min(n, self.capacity - self._start)
+            out[:first] = self._buffer[self._start:self._start + first]
+            if n > first:
+                out[first:n] = self._buffer[:n - first]
+            self._start = (self._start + n) % self.capacity
+            self._count -= n
+            self._space.notify()
+        if gain != 1.0 and n:
+            out[:n] *= gain
+        return n
+
+    def mark_eof(self):
+        with self._lock:
+            self._eof = True
+
+    def close(self):
+        """Wake and stop a producer blocked on a full buffer."""
+        with self._space:
+            self._closed = True
+            self._space.notify_all()
+
+
 def _resolve_output_sample_rate(source_rate: Optional[float], upsample: str, device_rate: float) -> int:
     base_rate = int(source_rate or device_rate or 48000)
     if upsample not in UPSAMPLE_MULTIPLIERS:
@@ -140,7 +231,10 @@ class LocalPlayer:
         self.process = None
         self.current_file = None
         self.output_sample_rate = None
-        self._playback_finished = False
+        self.underruns = 0
+        self._ring: Optional[PcmRingBuffer] = None
+        self._stop_event: Optional[threading.Event] = None
+        self._decoder: Optional[threading.Thread] = None
 
         # Latency settings (in seconds)
         self.latency_map = {
@@ -213,7 +307,6 @@ class LocalPlayer:
                             resolved_rate, fallback_rate)
                 resolved_rate = fallback_rate
                 cmd[cmd.index("-ar") + 1] = str(resolved_rate)
-            self._playback_finished = False
             self.process = subprocess.Popen(
                 cmd,
                 stdout=subprocess.PIPE,
@@ -221,34 +314,36 @@ class LocalPlayer:
             )
             log.info(f"Playing via device: {device_info['name']}")
 
-            # Create output stream
+            ring = PcmRingBuffer(max(int(resolved_rate * RING_BUFFER_SECONDS), DECODE_CHUNK_FRAMES))
+            stop_event = threading.Event()
+            drained = threading.Event()
+            self._ring, self._stop_event = ring, stop_event
+            self._decoder = threading.Thread(
+                target=self._decode_worker,
+                args=(self.process, ring, stop_event, drained),
+                name="velvet-ffmpeg-decoder",
+                daemon=True,
+            )
+            self._decoder.start()
+            gain = float(volume)
+
+            # PortAudio real-time thread: memory copy only. Pipe reads, process
+            # control, logging and playback-state updates happen elsewhere.
             def callback(outdata, frames, time_info, status):
                 if status:
-                    log.warning(f"Audio callback status: {status}")
+                    self.underruns += 1
+                copied = ring.read_into(outdata, gain)
+                if copied < frames:
+                    outdata[copied:] = 0
+                    if ring.drained:
+                        drained.set()
+                        raise sd.CallbackStop()
 
-                process = self.process
-                if process is None or process.stdout is None:
-                    outdata.fill(0)
-                    raise sd.CallbackStop()
-
-                data = process.stdout.read(frames * 8)  # 2 channels * float32
-                if not data:
-                    outdata.fill(0)
-                    self._mark_finished()
-                    raise sd.CallbackStop()
-
-                frame_count = len(data) // 8
-                pcm = numpy.frombuffer(data[: frame_count * 8], dtype='<f4')
-                if frame_count <= 0 or pcm.size == 0:
-                    outdata.fill(0)
-                    self._mark_finished()
-                    raise sd.CallbackStop()
-
-                samples = numpy.zeros((frames, 2), dtype='float32')
-                samples[:frame_count] = pcm.reshape(frame_count, 2)
-                outdata[:] = samples * float(volume)
-
-            import numpy
+            # Let the decoder get ahead so the first callbacks do not underrun.
+            target = min(ring.capacity, int(resolved_rate * PREBUFFER_SECONDS))
+            deadline = time.monotonic() + PREBUFFER_TIMEOUT_SECONDS
+            while ring.available < target and not ring.eof and time.monotonic() < deadline:
+                time.sleep(0.005)
 
             self.stream = sd.OutputStream(
                 device=self.device_id,
@@ -269,16 +364,48 @@ class LocalPlayer:
             log.error(f"Playback error: {e}")
             return False
 
-    def _mark_finished(self):
-        if self._playback_finished:
-            return
-        self._playback_finished = True
-        with _state_lock:
-            _playback_state["playing"] = False
-            _playback_state["paused"] = False
-            _playback_state["position"] = 0
-            _playback_state["track_id"] = None
-        self._terminate_process()
+    def _decode_worker(self, process, ring: PcmRingBuffer, stop_event: threading.Event,
+                       drained: threading.Event):
+        """Read FFmpeg PCM into the ring buffer; finish playback after drain."""
+        pending = b""
+        try:
+            while not stop_event.is_set():
+                data = process.stdout.read(DECODE_CHUNK_FRAMES * FRAME_BYTES)
+                if not data:
+                    break
+                data = pending + data
+                usable = len(data) - len(data) % FRAME_BYTES
+                pending = data[usable:]
+                if usable:
+                    frames = numpy.frombuffer(data[:usable], dtype="<f4").reshape(-1, 2)
+                    if not ring.write(frames):
+                        break
+        except (OSError, ValueError):
+            pass  # stop() closed the pipe
+        finally:
+            ring.mark_eof()
+
+        # Wait for the callback to play out the tail, then finish here rather
+        # than in the PortAudio thread.
+        while not stop_event.is_set():
+            if drained.wait(0.1):
+                self._finish_playback(process, stop_event)
+                return
+
+    def _finish_playback(self, process, stop_event: threading.Event):
+        """Natural end of track: reap the decoder and clear playback state."""
+        try:
+            process.wait(timeout=2)
+        except Exception:
+            pass
+        with _player_state_guard:
+            if self._stop_event is not stop_event or stop_event.is_set():
+                return  # a newer track or an explicit stop owns the state
+            with _state_lock:
+                _playback_state["playing"] = False
+                _playback_state["paused"] = False
+                _playback_state["position"] = 0
+                _playback_state["track_id"] = None
 
     def _terminate_process(self):
         process = self.process
@@ -304,7 +431,13 @@ class LocalPlayer:
 
     def stop(self):
         """Stop playback."""
-        # Unblock a callback waiting for FFmpeg before waiting for PortAudio.
+        with _player_state_guard:
+            stop_event, self._stop_event = self._stop_event, None
+        if stop_event is not None:
+            stop_event.set()
+        if self._ring is not None:
+            self._ring.close()  # wake a decoder blocked on a full buffer
+        # Close the pipe so a decoder blocked in read() returns.
         self._terminate_process()
         if self.stream:
             try:
@@ -313,7 +446,10 @@ class LocalPlayer:
             except:
                 pass
             self.stream = None
-        self._playback_finished = False
+        decoder, self._decoder = self._decoder, None
+        if decoder is not None and decoder is not threading.current_thread():
+            decoder.join(timeout=2)
+        self._ring = None
         self.current_file = None
         self.output_sample_rate = None
 

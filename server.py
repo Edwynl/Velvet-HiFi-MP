@@ -39,7 +39,7 @@ import remote_access
 import security
 from cover_art import find_folder_cover as find_folder_cover_bytes, save_cover_bytes
 from dsp_engine import build_dsp_filter_chain, profile_filters, sanitize_dsp_filters
-from audio_streaming import iter_ffmpeg_stdout, ffmpeg_supports_soxr
+from audio_streaming import StreamLease, StreamSlots, iter_ffmpeg_stdout, ffmpeg_supports_soxr
 from db_pool import (
     DatabaseConnection,
     _return_db,
@@ -700,6 +700,7 @@ def get_zones(refresh: bool = Query(False, description="Force a fresh network re
         import local_playback
 
         native_available = local_playback.SOUNDDEVICE_AVAILABLE
+        native_error = local_playback.SOUNDDEVICE_ERROR
         for idx, dev in enumerate(local_playback.get_output_devices()):
             max_output_channels = int(dev.get("max_output_channels") or 0)
             if max_output_channels <= 0:
@@ -733,11 +734,39 @@ def get_zones(refresh: bool = Query(False, description="Force a fresh network re
         },
     }
 
+@app.get("/api/dlna/browse-access")
+def get_dlna_browse_access():
+    """Whether LAN DLNA control points may currently browse the library."""
+    expires_at = security.get_security_manager().dlna_browse_expires_at()
+    return {"active": bool(expires_at), "expires_at": int(expires_at) or None}
+
+
+@app.post("/api/dlna/browse-access")
+def grant_dlna_browse_access(body: dict = None):
+    """Open a bounded window in which LAN control points (HEOS, StreamMagic,
+    BubbleUPnP) may browse. They cannot send credentials, so access is limited
+    to private-network clients and track/cover URLs carry scoped tickets."""
+    minutes = (body or {}).get("minutes", security.DLNA_BROWSE_DEFAULT_MINUTES)
+    if (not isinstance(minutes, int) or isinstance(minutes, bool)
+            or not 1 <= minutes <= security.DLNA_BROWSE_MAX_MINUTES):
+        raise HTTPException(422, f"minutes must be 1-{security.DLNA_BROWSE_MAX_MINUTES}")
+    expires_at = security.get_security_manager().grant_dlna_browse(minutes)
+    return {"active": True, "expires_at": int(expires_at)}
+
+
+@app.delete("/api/dlna/browse-access")
+def revoke_dlna_browse_access():
+    security.get_security_manager().revoke_dlna_browse()
+    return {"active": False, "expires_at": None}
+
+
 @app.post("/api/cast/{device_udn}")
 async def cast_to_device(device_udn: str, request: Request):
-    """Tell a DLNA device to play a specific track."""
-    if security.is_auth_enabled():
-        raise HTTPException(501, "Authenticated DLNA playback requires scoped media tickets and is not implemented. Use browser or native playback.")
+    """Tell a DLNA device to play a specific track.
+
+    Renderers cannot send API headers, so the URLs handed to them carry
+    tickets scoped to this track/cover that expire after the track length.
+    """
     data = await request.json()
     track_id = data.get("track_id")
     if not track_id:
@@ -754,14 +783,13 @@ async def cast_to_device(device_udn: str, request: Request):
     if not track:
         raise HTTPException(404, "Track not found")
         
-    local_ip = upnp_server.LOCAL_IP
-    stream_url = f"http://{local_ip}:{PORT}/api/stream/{track_id}"
+    track = dict(track)
+    stream_url, _ = upnp_server.media_urls(track)
     # Use upnp_server's DIDL-Lite builder for rich metadata (important for some hi-fi players)
-    # track is a sqlite3.Row, which track_xml can handle (behaves like a dict)
-    track_xml_body = upnp_server.track_xml(dict(track), "0")
-    meta = upnp_server._didl_wrap(track_xml_body)
-    
-    success = upnp_server.cast_track(device_udn, stream_url, meta)
+    meta = upnp_server._didl_wrap(upnp_server.track_xml(track, "0"))
+
+    # cast_track performs blocking SOAP calls and sleeps; keep the event loop free.
+    success = await asyncio.to_thread(upnp_server.cast_track, device_udn, stream_url, meta)
     return {"success": success}
 
 @app.post("/api/cast/control/{device_udn}/{action}")
@@ -1832,8 +1860,41 @@ def _resolve_library_roots(db) -> list[Path]:
         roots.append(resolved)
     return roots
 
+TRANSCODE_SLOTS = StreamSlots(settings.max_concurrent_streams)
+TRANSCODE_DURATION_MARGIN_SECONDS = 30 * 60
+TRANSCODE_MAX_SECONDS = 12 * 3600
+
+
+def _transcode_time_limit_seconds(duration_seconds, timeout_minutes: int | None = None) -> int:
+    """Wall-clock cap for one FFmpeg response.
+
+    The configured (or requested) limit is a floor: a track longer than it,
+    such as a live set or opera act, still gets its full duration plus pause
+    margin. A stalled decoder is ended separately by the idle timeout.
+    """
+    configured = (timeout_minutes or settings.stream_timeout_minutes) * 60
+    try:
+        duration = max(float(duration_seconds or 0), 0.0)
+    except (TypeError, ValueError):
+        duration = 0.0
+    needed = int(duration) + TRANSCODE_DURATION_MARGIN_SECONDS if duration else 0
+    return min(max(configured, needed), TRANSCODE_MAX_SECONDS)
+
+
+def _acquire_transcode_slot() -> StreamLease:
+    lease = TRANSCODE_SLOTS.try_acquire()
+    if lease is None:
+        raise HTTPException(
+            503,
+            f"Too many concurrent transcoded streams (limit {TRANSCODE_SLOTS.limit}). "
+            "Stop another stream or play without DSP/upsampling.",
+            headers={"Retry-After": "5"},
+        )
+    return lease
+
+
 async def _stream_upsampled(file_path: str, target_rate: str, quality: str = "high",
-                           timeout_minutes: int = 60, dsp_filter: str = ""):
+                           timeout_seconds: int = 3600, dsp_filter: str = ""):
     """
     Upsample via FFmpeg + SoXR resampler, stream as WAV.
 
@@ -1844,11 +1905,12 @@ async def _stream_upsampled(file_path: str, target_rate: str, quality: str = "hi
         file_path: Path to the source audio file
         target_rate: Target sample rate as string (e.g., "705600" for 705.6kHz)
         quality: standard, high, extreme (libsoxr precision presets)
-        timeout_minutes: Max duration for stream in minutes (5-60)
+        timeout_seconds: Wall-clock cap for the response
         dsp_filter: Additional DSP filter chain to apply
     """
     if not await asyncio.to_thread(ffmpeg_supports_soxr):
         raise HTTPException(503, "PCM upsampling requires FFmpeg with libsoxr. Install a full build and restart VELVET.")
+    lease = _acquire_transcode_slot()
     # Get SoXR quality setting
     soxr_quality = UPSAMPLE_QUALITY.get(quality, "soxr:precision=28")
 
@@ -1874,7 +1936,7 @@ async def _stream_upsampled(file_path: str, target_rate: str, quality: str = "hi
     ]
 
     return StreamingResponse(
-        iter_ffmpeg_stdout(cmd, timeout_seconds=timeout_minutes * 60),
+        iter_ffmpeg_stdout(cmd, timeout_seconds=timeout_seconds, on_close=lease.release),
         media_type="audio/wav",
         headers={
             "X-Upsampled-Rate": target_rate,
@@ -1885,15 +1947,16 @@ async def _stream_upsampled(file_path: str, target_rate: str, quality: str = "hi
     )
 
 
-async def _stream_with_dsp(file_path: str, dsp_filter: str, timeout_minutes: int = 60):
+async def _stream_with_dsp(file_path: str, dsp_filter: str, timeout_seconds: int = 3600):
     """
     Stream audio with DSP processing only (no upsampling).
 
     Args:
         file_path: Path to the source audio file
         dsp_filter: FFmpeg filter chain to apply
-        timeout_minutes: Max duration for stream in minutes
+        timeout_seconds: Wall-clock cap for the response
     """
+    lease = _acquire_transcode_slot()
     cmd = [
         "ffmpeg", "-nostdin", "-i", file_path,
         "-af", dsp_filter,
@@ -1905,7 +1968,7 @@ async def _stream_with_dsp(file_path: str, dsp_filter: str, timeout_minutes: int
     ]
 
     return StreamingResponse(
-        iter_ffmpeg_stdout(cmd, timeout_seconds=timeout_minutes * 60),
+        iter_ffmpeg_stdout(cmd, timeout_seconds=timeout_seconds, on_close=lease.release),
         media_type="audio/flac",
         headers={
             "X-Output-Mode": "DSP",
@@ -1930,6 +1993,31 @@ def _select_pcm_upsample_rate(source_rate: int | None, multiplier: str) -> str |
     return str(output_rate)
 
 
+@app.post("/api/stream-ticket")
+def create_stream_ticket(body: dict):
+    """Issue a short-lived ticket for ONE track's audio URL.
+
+    Media elements cannot send X-API-Key, so the browser appends this ticket
+    instead of the long-lived API key. It authorizes only GET of this track
+    and expires after the track length plus a grace period.
+    """
+    track_id = (body or {}).get("track_id")
+    if not isinstance(track_id, int) or isinstance(track_id, bool) or track_id <= 0:
+        raise HTTPException(422, "track_id must be a positive integer")
+    db = get_db()
+    try:
+        track = db.execute("SELECT duration FROM tracks WHERE id=?", (track_id,)).fetchone()
+    finally:
+        db.close()
+    if not track:
+        raise HTTPException(404, "Track not found")
+    ticket, expires_at = security.issue_media_ticket(
+        "stream", track_id, security.media_ticket_ttl(track["duration"])
+    )
+    return JSONResponse({"ticket": ticket, "expires_at": expires_at},
+                        headers={"Cache-Control": "no-store"})
+
+
 @app.get("/api/stream/{track_id}")
 async def stream_track(
     track_id: int,
@@ -1938,7 +2026,11 @@ async def stream_track(
     quality: str = Query("high", description="standard|high|extreme - upsampling quality"),
     dop: str = Query("none", description="none|dsd64|dsd128|dsd256 - DSD over PCM output"),
     dsp: int = Query(None, description="DSP profile ID to apply"),
-    timeout_minutes: int = Query(60, ge=5, le=60, description="Stream timeout (5-60 min)")
+    timeout_minutes: int | None = Query(
+        None, ge=5, le=720,
+        description="Transcode time limit in minutes (default: VELVET_STREAM_TIMEOUT_MINUTES); "
+                    "always extended to cover the track duration",
+    ),
 ):
     """
     Stream a track with optional upsampling and DSP processing.
@@ -1948,7 +2040,7 @@ async def stream_track(
     - quality: SoXR quality preset (standard=quick, high=balanced, extreme=best)
     - dop: DSD over PCM output (none, dsd64, dsd128, dsd256)
     - dsp: DSP profile ID to apply (parametric EQ, volume, etc.)
-    - timeout_minutes: Maximum stream duration
+    - timeout_minutes: Minimum transcode time limit; long tracks get their full length
     """
     db = get_db()
     track = db.execute("SELECT * FROM tracks WHERE id=?", (track_id,)).fetchone()
@@ -2009,11 +2101,13 @@ async def stream_track(
     if target_rate:
         if quality not in UPSAMPLE_QUALITY:
             raise HTTPException(422, "Unsupported upsampling quality")
-        return await _stream_upsampled(fp, target_rate, quality, timeout_minutes, dsp_filter)
+        limit = _transcode_time_limit_seconds(track["duration"], timeout_minutes)
+        return await _stream_upsampled(fp, target_rate, quality, limit, dsp_filter)
 
     # Handle DSP-only (no upsampling)
     if dsp_filter:
-        return await _stream_with_dsp(fp, dsp_filter, timeout_minutes)
+        limit = _transcode_time_limit_seconds(track["duration"], timeout_minutes)
+        return await _stream_with_dsp(fp, dsp_filter, limit)
 
     return _stream_file_direct(fp, request)
 
@@ -3192,6 +3286,21 @@ def allow_all_origins():
 
 # ─── Authentication Middleware ──────────────────────────────────────────────────
 
+_MEDIA_TICKET_ROUTES = (
+    (re.compile(r"/api/stream/(\d+)"), "stream"),
+    (re.compile(r"/api/covers/(\d+)(?:/thumb)?"), "cover"),
+)
+
+
+def _media_ticket_target(path: str):
+    """Return (scope, resource_id) when a path may be read with a media ticket."""
+    for pattern, scope in _MEDIA_TICKET_ROUTES:
+        match = pattern.fullmatch(path)
+        if match:
+            return scope, int(match.group(1))
+    return None
+
+
 @app.middleware("http")
 async def auth_middleware(request: Request, call_next):
     """Middleware to check authentication for remote requests."""
@@ -3202,6 +3311,16 @@ async def auth_middleware(request: Request, call_next):
 
     # CORS preflight carries no credentials and must reach CORSMiddleware.
     if request.method == "OPTIONS" and request.headers.get("Access-Control-Request-Method"):
+        return await call_next(request)
+
+    # Media elements and DLNA renderers cannot send headers. Their URLs carry
+    # a ticket minted by an authenticated client and scoped to exactly this
+    # track or cover; it authorizes this read and nothing else.
+    ticket = request.query_params.get("ticket")
+    media_target = _media_ticket_target(path) if request.method in ("GET", "HEAD") else None
+    if ticket and media_target:
+        if not security.verify_media_ticket(ticket, *media_target):
+            return JSONResponse(status_code=401, content={"error": "Media ticket expired or invalid"})
         return await call_next(request)
 
     # Before protection is enabled, a network guest must not be able to claim
@@ -3256,7 +3375,8 @@ async def auth_middleware(request: Request, call_next):
         path in public_get_paths or path.startswith("/docs/")
     )
     sensitive_security_route = (
-        path.startswith("/api/security/") and path != "/api/security/status"
+        (path.startswith("/api/security/") and path != "/api/security/status")
+        or path.startswith("/api/dlna/")
     )
 
     # Explicitly opting out of LAN auth does not bypass credential management.
@@ -3268,8 +3388,10 @@ async def auth_middleware(request: Request, call_next):
     )
 
     if auth_enabled and not should_skip and (sensitive_security_route or not local_bypass):
-        password = request.headers.get("X-Password") or request.query_params.get("password")
-        api_key = request.headers.get("X-API-Key") or request.query_params.get("api_key")
+        # Credentials are accepted only in headers: query strings end up in
+        # logs, history and renderer metadata. Media URLs use tickets above.
+        password = request.headers.get("X-Password")
+        api_key = request.headers.get("X-API-Key")
         if not api_key and request.method == "GET" and path.startswith("/api/covers/"):
             api_key = request.cookies.get("velvet_cover_key")
         auth_result = security.verify_auth(

@@ -10,8 +10,9 @@ import logging
 import anyio
 import shutil
 import subprocess
+import threading
 from functools import lru_cache
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncIterator, Callable, Sequence
 
 log = logging.getLogger("velvet.audio_streaming")
 
@@ -33,20 +34,69 @@ def ffmpeg_supports_soxr() -> bool:
         return False
 
 
+class StreamLease:
+    """One occupied transcode slot. Release is idempotent and also runs on GC,
+    so a response whose body was never iterated cannot leak its slot."""
+
+    def __init__(self, slots: "StreamSlots"):
+        self._slots = slots
+        self._released = False
+
+    def release(self) -> None:
+        if not self._released:
+            self._released = True
+            self._slots._release()
+
+    def __del__(self):
+        self.release()
+
+
+class StreamSlots:
+    """Bound the number of simultaneous FFmpeg transcodes."""
+
+    def __init__(self, limit: int):
+        if limit < 1:
+            raise ValueError("limit must be at least 1")
+        self.limit = limit
+        self._active = 0
+        self._lock = threading.Lock()
+
+    @property
+    def active(self) -> int:
+        return self._active
+
+    def try_acquire(self) -> StreamLease | None:
+        with self._lock:
+            if self._active >= self.limit:
+                return None
+            self._active += 1
+        return StreamLease(self)
+
+    def _release(self) -> None:
+        with self._lock:
+            self._active = max(0, self._active - 1)
+
+
 async def iter_ffmpeg_stdout(
     command: Sequence[str],
     *,
     timeout_seconds: float,
     chunk_size: int = 262144,
+    idle_timeout_seconds: float = 120,
+    on_close: Callable[[], None] | None = None,
 ) -> AsyncIterator[bytes]:
     """Yield encoded audio bytes; reap the FFmpeg subprocess on every exit path.
+
+    ``timeout_seconds`` caps the whole response; ``idle_timeout_seconds`` ends
+    a decoder that produces no output (time spent waiting for a paused client
+    is not counted). ``on_close`` runs once the process has been reaped.
 
     Raises on cancellation so Starlette can release response resources.
     On a transcode failure the HTTP response may have already started, so the
     non-zero exit status is logged for diagnosis rather than raising mid-body.
     """
-    if timeout_seconds <= 0:
-        raise ValueError("timeout_seconds must be positive")
+    if timeout_seconds <= 0 or idle_timeout_seconds <= 0:
+        raise ValueError("timeouts must be positive")
     if chunk_size <= 0:
         raise ValueError("chunk_size must be positive")
 
@@ -59,7 +109,14 @@ async def iter_ffmpeg_stdout(
         )
         async with asyncio.timeout(timeout_seconds):
             while True:
-                block = await process.stdout.read(chunk_size)
+                try:
+                    block = await asyncio.wait_for(
+                        process.stdout.read(chunk_size), idle_timeout_seconds
+                    )
+                except TimeoutError:
+                    # Stalled decoder: the finally block terminates it.
+                    log.warning("FFmpeg produced no audio for %ss", idle_timeout_seconds)
+                    return
                 if not block:
                     break
                 yield block
@@ -93,3 +150,5 @@ async def iter_ffmpeg_stdout(
                     except ProcessLookupError:
                         pass
                     await process.communicate()
+        if on_close is not None:
+            on_close()

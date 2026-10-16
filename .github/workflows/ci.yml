@@ -44,6 +44,24 @@ jobs:
           VELVET_AUTH_ENFORCE_ALL_NETWORKS: 'true'
         run: python -m pytest tests -q
 
+  windows-install:
+    name: Windows installer and native audio detection
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Run the user-facing installer path
+        shell: pwsh
+        run: .\install.ps1 -SkipNode
+      - name: Native audio must be importable from the installed venv
+        shell: pwsh
+        run: |
+          .\venv\Scripts\python.exe -c "import local_playback as lp; assert lp.SOUNDDEVICE_AVAILABLE, lp.SOUNDDEVICE_ERROR; print('sounddevice', lp.sd.__version__, lp.sd.get_portaudio_version()[1])"
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+
   frontend:
     name: Frontend regression tests
     strategy:
