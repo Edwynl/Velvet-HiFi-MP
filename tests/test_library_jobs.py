@@ -34,6 +34,9 @@ class LibraryJobsTests(unittest.TestCase):
         self.assertEqual(state["current_file"], "track.flac")
         self.assertEqual(state["tracks_added"], 1)
         self.assertEqual(state["tracks_skipped"], 2)
+        self.assertEqual(state["files_failed"], 0)
+        self.assertEqual(state["albums_before"], 0)
+        self.assertEqual(state["library_albums"], 0)
         self.assertIsNotNone(state["finished_at"])
 
     def test_scan_job_begin_refresh_sets_refresh_status(self):

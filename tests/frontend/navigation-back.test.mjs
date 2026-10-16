@@ -160,6 +160,12 @@ function createHarness({ initialHash = '#home' } = {}) {
       return Promise.resolve(makeJsonResponse(albumList));
     }
 
+    if (parsedUrl.pathname === '/api/artists' && method === 'GET') {
+      return Promise.resolve(makeJsonResponse([
+        { id: 7, name: 'Back Test Artist', album_count: 1 },
+      ]));
+    }
+
     if (parsedUrl.pathname === '/api/genres' && method === 'GET') {
       return Promise.resolve(makeJsonResponse([
         { genre: 'Rock', count: 1 },
@@ -332,6 +338,51 @@ async function testNavigateClosesMobileSidebarOverlay() {
   }
 }
 
+async function testTabletMenuNavigationDoesNotFocusSearch() {
+  const harness = createHarness();
+  const dom = await harness.createDom();
+
+  try {
+    // OPPO Pad landscape is wide enough to look desktop-like to width-only checks.
+    Object.defineProperty(dom.window, 'innerWidth', { configurable: true, writable: true, value: 1131 });
+    Object.defineProperty(dom.window, 'innerHeight', { configurable: true, writable: true, value: 800 });
+    const document = dom.window.document;
+    const homeSearch = await waitFor(() => document.querySelector('#search-input'));
+    assert.notEqual(document.activeElement, homeSearch, 'home search must wait for an explicit tap');
+
+    homeSearch.focus();
+    assert.equal(document.activeElement, homeSearch);
+
+    document.querySelector('#mobile-menu-btn').click();
+    assert.notEqual(document.activeElement, homeSearch, 'opening the menu should dismiss the tablet keyboard');
+
+    document.querySelector('.nav-item[data-view="albums"]').click();
+    await waitFor(() => dom.window.eval('state.view') === 'albums');
+    const albumSearch = await waitFor(() => document.querySelector('#search-input[placeholder="Search albums or tracks…"]'));
+    assert.notEqual(
+      document.activeElement,
+      albumSearch,
+      'album menu navigation must not focus the new search field',
+    );
+
+    albumSearch.focus();
+    document.querySelector('#mobile-menu-btn').click();
+    document.querySelector('.nav-item[data-view="artists"]').click();
+    await waitFor(() => dom.window.eval('state.view') === 'artists');
+    const artistSearch = await waitFor(() => document.querySelector('#search-input[placeholder="Search artists…"]'));
+    assert.notEqual(document.activeElement, artistSearch, 'artist menu navigation must not focus search');
+
+    artistSearch.focus();
+    document.querySelector('#mobile-menu-btn').click();
+    document.querySelector('.nav-item[data-view="home"]').click();
+    await waitFor(() => dom.window.eval('state.view') === 'home');
+    const nextHomeSearch = await waitFor(() => document.querySelector('#search-input[placeholder="Search artists, albums, tracks…"]'));
+    assert.notEqual(document.activeElement, nextHomeSearch, 'home menu navigation must not focus search');
+  } finally {
+    await new Promise(resolve => dom.window.setTimeout(resolve, 10));
+  }
+}
+
 async function testSearchTrackOpensAlbumAndPlaysMatchedTrack() {
   const harness = createHarness();
   const dom = await harness.createDom();
@@ -381,6 +432,7 @@ async function main() {
   await testGenreViewDoesNotReuseCachedMarkupAcrossIds();
   await testExitSearchReplacesHistoryEntryInsteadOfPushingAnother();
   await testNavigateClosesMobileSidebarOverlay();
+  await testTabletMenuNavigationDoesNotFocusSearch();
   await testSearchTrackOpensAlbumAndPlaysMatchedTrack();
   testLandscapeAlbumLayoutCssGuards();
 }

@@ -2,26 +2,142 @@
  * Loaded before inline bootstrap; global function declarations preserve existing handlers.
  * Keep the module classic (not type=module) until the application state is migrated.
  */
+function renderLibraryRows(libraries = []) {
+  if (!libraries.length) {
+    return '<div style="color:var(--muted);font-size:13px;padding:10px 0">No folders added yet.</div>';
+  }
+  return libraries.map(lib => `
+    <div class="library-item" data-library-id="${lib.id}">
+      <div class="library-path" title="${escHtml(lib.path)}">${escHtml(lib.path)}</div>
+      <div class="library-item-actions">
+        <button class="btn btn-gold scan-lib" data-path="${escHtml(lib.path)}" data-id="${lib.id}" title="Import new music from this folder">Scan Folder</button>
+        <button class="btn btn-ghost refresh-lib" data-path="${escHtml(lib.path)}" data-id="${lib.id}" style="color:var(--gold)" title="Re-read metadata from files already imported from this folder">Re-read Tags</button>
+        <button class="btn btn-ghost remove-lib" data-id="${lib.id}" style="color:var(--muted)">Remove</button>
+      </div>
+    </div>
+  `).join('');
+}
+
+function renderScanStatusPanel(s = {}) {
+  const progress = Number(s.progress || 0);
+  const total = Number(s.total || 0);
+  const pct = total ? Math.min(100, Math.round((progress / total) * 100)) : 0;
+  const albumsAdded = Number(s.albums_added || 0);
+  const tracksAdded = Number(s.tracks_added || 0);
+  const libraryAlbums = Number(s.library_albums || 0);
+  const libraryTracks = Number(s.library_tracks || 0);
+  const filesFailed = Number(s.files_failed || 0);
+  const currentFile = escHtml(s.current_file || (s.running ? 'Discovering audio files…' : ''));
+  const source = escHtml(s.music_dir || 'All configured folders');
+
+  if (s.running) {
+    return `
+      <div class="scan-status-card" role="status">
+        <div class="scan-status-head">
+          <div>
+            <div class="scan-status-title"><span class="scan-status-dot"></span>${total ? 'Importing music library' : 'Discovering music files'}</div>
+            <div class="scan-status-sub" title="${source}">${source}</div>
+          </div>
+          <div class="scan-status-percent">${total ? `${pct}%` : '…'}</div>
+        </div>
+        <div class="scan-progress-bar">
+          <div class="scan-progress-fill${total ? '' : ' indeterminate'}" style="width:${pct}%"></div>
+        </div>
+        <div class="scan-current-file" title="${currentFile}">${currentFile}</div>
+        <div class="scan-status-metrics">
+          <div class="scan-status-metric"><div class="scan-status-value">${albumsAdded.toLocaleString()}</div><div class="scan-status-label">New albums</div></div>
+          <div class="scan-status-metric"><div class="scan-status-value">${tracksAdded.toLocaleString()}</div><div class="scan-status-label">New tracks</div></div>
+          <div class="scan-status-metric"><div class="scan-status-value">${total ? `${progress.toLocaleString()} / ${total.toLocaleString()}` : progress.toLocaleString()}</div><div class="scan-status-label">Files processed</div></div>
+          <div class="scan-status-metric"><div class="scan-status-value">${filesFailed.toLocaleString()}</div><div class="scan-status-label">Files failed</div></div>
+        </div>
+        ${s.error ? `<div class="scan-error-text">Latest issue: ${escHtml(s.error)}</div>` : ''}
+      </div>
+    `;
+  }
+
+  if (s.finished_at) {
+    return `
+      <div class="scan-status-card${s.error ? '' : ' idle'}" role="status">
+        <div class="scan-status-head">
+          <div>
+            <div class="scan-status-title">${s.error ? '⚠ Import completed with issues' : '✓ Import complete'}</div>
+            <div class="scan-status-sub">Library now contains ${libraryAlbums.toLocaleString()} albums and ${libraryTracks.toLocaleString()} tracks.</div>
+          </div>
+        </div>
+        <div class="scan-status-metrics">
+          <div class="scan-status-metric"><div class="scan-status-value">${albumsAdded.toLocaleString()}</div><div class="scan-status-label">Albums imported</div></div>
+          <div class="scan-status-metric"><div class="scan-status-value">${tracksAdded.toLocaleString()}</div><div class="scan-status-label">Tracks imported</div></div>
+          <div class="scan-status-metric"><div class="scan-status-value">${Number(s.tracks_skipped || 0).toLocaleString()}</div><div class="scan-status-label">Already indexed</div></div>
+          <div class="scan-status-metric"><div class="scan-status-value">${filesFailed.toLocaleString()}</div><div class="scan-status-label">Files failed</div></div>
+        </div>
+        ${s.error ? `<div class="scan-error-text">Latest issue: ${escHtml(s.error)}</div>` : ''}
+      </div>
+    `;
+  }
+
+  return `
+    <div class="scan-status-card idle">
+      <div class="scan-status-title">Ready to import</div>
+      <div class="scan-status-sub">Add as many folders as you need, then scan one folder or import all folders together.</div>
+      <div class="scan-status-metrics">
+        <div class="scan-status-metric"><div class="scan-status-value">${libraryAlbums.toLocaleString()}</div><div class="scan-status-label">Albums</div></div>
+        <div class="scan-status-metric"><div class="scan-status-value">${libraryTracks.toLocaleString()}</div><div class="scan-status-label">Tracks</div></div>
+        <div class="scan-status-metric"><div class="scan-status-value">${Number(s.library_artists || 0).toLocaleString()}</div><div class="scan-status-label">Artists</div></div>
+      </div>
+    </div>
+  `;
+}
+
+function updateScanStatusPanel(status) {
+  _latestScanStatus = status || {};
+  const panel = $('scan-status-panel');
+  if (panel) panel.innerHTML = renderScanStatusPanel(_latestScanStatus);
+  setScanControlsRunning(!!_latestScanStatus.running);
+}
+
+function setScanControlsRunning(running) {
+  const fullScanButton = $('save-and-scan');
+  if (fullScanButton) {
+    fullScanButton.disabled = running;
+    fullScanButton.innerHTML = running
+      ? '<span class="scan-status-dot"></span> Importing…'
+      : '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:14px;height:14px"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15"/></svg> Scan &amp; Import All';
+  }
+  $$('.scan-lib, .refresh-lib, .remove-lib').forEach(button => {
+    button.disabled = running;
+  });
+}
+
 async function renderSettings(vc) {
   const [config, scanStatus, dspProfiles] = await Promise.all([
     api('/config'), api('/scan/status'), api('/dsp/profiles')
   ]);
-  const settingsDspProfiles = dspProfiles || [];
+  const settingsDspProfiles = visibleDspProfiles(dspProfiles || []);
   const activeDspId = String(state.dspProfile || '');
-  const dspCategoryLabels = {
-    reference: 'Reference',
-    correction: 'Correction',
-    taste: 'Taste',
-    genre: 'Genre',
-    custom: 'My Presets',
-  };
-  const dspCategoryOrder = ['reference', 'correction', 'taste', 'genre', 'custom'];
+  const dspCategoryOrder = ['reference', 'tone', 'genre', 'custom'];
+  const renderDspOffCard = () => `
+    <div class="dsp-preset-card" data-profile-id="" style="background:var(--s2);border:1px solid ${!activeDspId ? 'var(--gold)' : 'var(--border)'};border-radius:var(--radius);padding:14px 16px;margin-bottom:10px">
+      <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:8px">
+        <div>
+          <div style="font-size:14px;color:var(--text);font-weight:600">Off</div>
+          <div style="font-size:11px;color:var(--gold);text-transform:uppercase;letter-spacing:.08em;margin-top:4px">Bit-perfect</div>
+        </div>
+        <div style="display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end">
+          ${!activeDspId ? '<span style="font-size:10px;padding:4px 8px;border-radius:999px;background:rgba(201,168,76,.18);color:var(--gold)">Active</span>' : ''}
+        </div>
+      </div>
+      <div style="font-size:12px;color:var(--muted);line-height:1.55;margin-top:8px">No EQ or DSP processing.</div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px">
+        <button class="btn btn-ghost dsp-apply-btn" data-profile-id="" style="padding:8px 10px">Apply</button>
+      </div>
+    </div>
+  `;
   const renderDspPresetCard = (profile) => `
     <div class="dsp-preset-card" data-profile-id="${profile.id}" style="background:var(--s2);border:1px solid ${String(profile.id) === activeDspId ? 'var(--gold)' : 'var(--border)'};border-radius:var(--radius);padding:14px 16px;margin-bottom:10px">
       <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:8px">
         <div>
           <div style="font-size:14px;color:var(--text);font-weight:600">${escHtml(profile.name)}</div>
-          <div style="font-size:11px;color:var(--gold);text-transform:uppercase;letter-spacing:.08em;margin-top:4px">${escHtml(profile.category || 'custom')}</div>
+          <div style="font-size:11px;color:var(--gold);text-transform:uppercase;letter-spacing:.08em;margin-top:4px">${escHtml(dspProfileRoleLabel(profile))}</div>
         </div>
         <div style="display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end">
           ${String(profile.id) === activeDspId ? '<span style="font-size:10px;padding:4px 8px;border-radius:999px;background:rgba(201,168,76,.18);color:var(--gold)">Active</span>' : ''}
@@ -31,19 +147,22 @@ async function renderSettings(vc) {
       <div style="font-size:12px;color:var(--muted);line-height:1.55;margin-top:8px">${escHtml(profile.description || 'No description')}</div>
       <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px">
         <button class="btn btn-ghost dsp-apply-btn" data-profile-id="${profile.id}" style="padding:8px 10px">Apply</button>
-        <button class="btn btn-ghost dsp-open-btn" data-profile-id="${profile.id}" style="padding:8px 10px">Open</button>
+        <button class="btn btn-ghost dsp-open-btn" data-profile-id="${profile.id}" style="padding:8px 10px">${profile.is_factory ? 'Edit Copy' : 'Edit'}</button>
         ${profile.is_factory
           ? `<button class="btn btn-ghost dsp-clone-btn" data-profile-id="${profile.id}" style="padding:8px 10px;color:var(--gold)">Duplicate</button>`
-          : `<button class="btn btn-ghost dsp-delete-btn" data-profile-id="${profile.id}" style="padding:8px 10px;color:#ff8d8d">Delete</button>`}
+          : ''}
       </div>
     </div>
   `;
-  const renderDspPresetGroups = () => dspCategoryOrder
-    .map(category => {
-      const profiles = settingsDspProfiles.filter(profile => (profile.category || 'custom') === category);
+  const renderDspPresetGroups = () => `
+      <div class="dsp-category-heading">Off / Bit-perfect</div>
+      ${renderDspOffCard()}
+    ` + dspCategoryOrder
+    .map(group => {
+      const profiles = settingsDspProfiles.filter(profile => dspProfileGroup(profile) === group);
       if (!profiles.length) return '';
       return `
-        <div class="dsp-category-heading">${dspCategoryLabels[category] || category}</div>
+        <div class="dsp-category-heading">${dspProfileGroupLabel(group)}</div>
         ${profiles.map(renderDspPresetCard).join('')}
       `;
     })
@@ -60,25 +179,22 @@ async function renderSettings(vc) {
 
     <div class="settings-form">
       <div class="form-group">
-        <label class="form-label">Music Library Folders</label>
-        <div id="libraries-list" style="display:flex;flex-direction:column;gap:12px;margin-bottom:16px">
-          ${config.libraries.map(lib => `
-            <div class="library-item" style="display:flex;align-items:center;background:var(--s2);border:1px solid var(--border);border-radius:var(--radius);padding:10px 16px">
-              <div style="flex:1;font-size:13px;color:var(--text);font-family:'DM Mono',monospace">${escHtml(lib.path)}</div>
-              <button class="btn btn-ghost refresh-lib" data-path="${escHtml(lib.path)}" data-id="${lib.id}" style="padding:6px 10px;color:var(--gold)" title="Re-read metadata from files in this folder">Re-read Tags</button>
-              <button class="btn btn-ghost remove-lib" data-id="${lib.id}" style="padding:6px 10px;color:var(--muted)">Remove</button>
-            </div>
-          `).join('')}
-          ${!config.libraries.length ? '<div style="color:var(--muted);font-size:13px">No folders added yet.</div>' : ''}
+        <div class="library-section-head">
+          <label class="form-label">Music Library Folders</label>
+          <span class="library-count-badge" id="library-count">${config.libraries.length} folder${config.libraries.length === 1 ? '' : 's'}</span>
         </div>
-        
-        <div style="display:flex;gap:10px;margin-bottom:8px">
+        <div id="libraries-list" class="libraries-list">
+          ${renderLibraryRows(config.libraries)}
+        </div>
+
+        <form class="library-add-row" id="library-add-form">
           <input class="form-input" id="music-dir-input" type="text"
-                 style="flex:1;margin-bottom:0"
+                 autocomplete="off" spellcheck="false"
                  placeholder="e.g. D:\\Music">
-          <button class="btn btn-gold" id="add-lib-btn" style="white-space:nowrap">Add Folder</button>
-        </div>
-        <div class="form-hint">Path to your music folder (2–3TB supported). All subfolders will be scanned.</div>
+          <button class="btn btn-gold" id="add-lib-btn" type="submit" style="white-space:nowrap">Add Folder</button>
+        </form>
+        <div class="library-add-feedback" id="library-add-feedback">You can add multiple folders before importing. All subfolders will be included.</div>
+        <div class="form-hint">Enter a folder path on this VELVET server, such as E:\\Roon2.</div>
       </div>
 
       <div style="display:flex;gap:10px;margin-bottom:32px">
@@ -87,7 +203,7 @@ async function renderSettings(vc) {
             <polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/>
             <path d="M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15"/>
           </svg>
-          Full Rescan
+          Scan &amp; Import All
         </button>
         <button class="btn btn-ghost" id="reset-library-btn" style="color:#ff6b6b;font-weight:600">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:14px;height:14px;margin-right:4px">
@@ -97,28 +213,18 @@ async function renderSettings(vc) {
         </button>
       </div>
 
-      ${scanStatus.running ? renderScanProgress(scanStatus) : ''}
-
-      <div id="scan-status-panel">
-        ${!scanStatus.running && scanStatus.finished_at ? `
-          <div style="background:var(--s2);border:1px solid var(--border);border-radius:var(--radius);padding:16px 20px;margin-bottom:24px">
-            <div style="font-size:13px;margin-bottom:4px">✅ Last scan completed</div>
-            <div style="font-size:11px;color:var(--muted)">
-              Added ${scanStatus.tracks_added} tracks · Skipped ${scanStatus.tracks_skipped} (already indexed)
-            </div>
-          </div>
-        ` : ''}
+      <div id="scan-status-panel" aria-live="polite">
+        ${renderScanStatusPanel(scanStatus)}
       </div>
 
       <div class="form-group" style="border-top:1px solid var(--border);padding-top:24px">
-        <label class="form-label">DSP Presets</label>
+        <label class="form-label">Sound / DSP Presets</label>
         <div style="font-size:13px;color:var(--muted);line-height:1.6;margin-bottom:16px">
-          Apply a factory preset directly in the playback bar, or build your own custom EQ here with preamp and parametric filters.
-          Factory presets are read-only; duplicate them into a custom preset before editing.
+          Choose a listening preset, or duplicate a factory preset into your own editable version.
         </div>
         <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:16px">
-          <button class="btn btn-gold" id="dsp-new-custom-btn">New Custom</button>
-          <button class="btn btn-ghost" id="dsp-duplicate-active-btn">Duplicate Active Preset</button>
+          <button class="btn btn-gold" id="dsp-new-custom-btn">New Custom Preset</button>
+          <button class="btn btn-ghost" id="dsp-duplicate-active-btn">Duplicate Current</button>
         </div>
         <div class="dsp-settings-grid">
           <div id="dsp-preset-grid">
@@ -128,8 +234,8 @@ async function renderSettings(vc) {
           <div id="dsp-editor-panel" style="background:#000;border:1px solid rgba(255,255,255,0.1);border-radius:20px;padding:24px;position:sticky;top:88px">
             <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:20px">
               <div>
-                <div style="font-size:16px;color:var(--gold);font-weight:600;font-family:'Cormorant Garamond',serif;font-style:italic">Custom DSP Editor</div>
-                <div id="dsp-editor-status" style="font-size:11px;color:var(--muted);margin-top:4px">Refine your sonic signature with precision filters.</div>
+                <div style="font-size:16px;color:var(--gold);font-weight:600;font-family:'Cormorant Garamond',serif;font-style:italic">Preset Editor</div>
+                <div id="dsp-editor-status" style="font-size:11px;color:var(--muted);margin-top:4px">Create or edit a custom preset.</div>
               </div>
               <span id="dsp-editor-badge" style="font-size:10px;padding:4px 10px;border-radius:4px;border:1px solid rgba(255,255,255,0.1);background:rgba(255,255,255,0.03);color:var(--muted);text-transform:uppercase;letter-spacing:1px">Blank</span>
             </div>
@@ -168,9 +274,9 @@ async function renderSettings(vc) {
               </div>
 
               <div style="display:flex;gap:10px;flex-wrap:wrap">
-                <button class="btn btn-gold" id="dsp-save-btn">Save Custom</button>
-                <button class="btn btn-ghost" id="dsp-apply-editor-btn">Apply In Player</button>
-                <button class="btn btn-ghost" id="dsp-reset-editor-btn">Reset Editor</button>
+                <button class="btn btn-gold" id="dsp-save-btn">Save</button>
+                <button class="btn btn-ghost" id="dsp-apply-editor-btn">Save & Apply</button>
+                <button class="btn btn-ghost" id="dsp-reset-editor-btn">New Blank</button>
                 <button class="btn btn-ghost" id="dsp-delete-editor-btn" style="color:#ff8d8d;display:none">Delete Custom</button>
               </div>
             </div>
@@ -364,11 +470,11 @@ function applyDspProfile(profileId) {
     UI['dsp-editor-category'].value = profile?.category || 'custom';
     UI['dsp-editor-preamp'].value = String(profile?.preamp_db ?? 0);
     UI['dsp-editor-status'].textContent = isBlank
-      ? 'Build a new custom profile from scratch.'
+      ? 'Create a custom preset from scratch.'
       : isFactory
-        ? 'Factory presets are read-only. Save will create a custom copy.'
+        ? 'Editing a factory preset as a new custom copy.'
         : 'Editing a custom preset.';
-    UI['dsp-editor-badge'].textContent = isBlank ? 'Blank' : (isFactory ? 'Factory Source' : 'Custom');
+    UI['dsp-editor-badge'].textContent = isBlank ? 'Blank' : (isFactory ? 'Copy Source' : 'Custom');
     UI['dsp-delete-editor-btn'].style.display = !isBlank && !isFactory ? 'inline-flex' : 'none';
     renderFilterRows(parseJsonArray(profile?.filter_chain_json, []));
   }
@@ -518,61 +624,144 @@ function applyDspProfile(profileId) {
     }
   });
 
-  $('add-lib-btn').addEventListener('click', async () => {
-    const path = $('music-dir-input').value.trim();
-    if (!path) return showToast('Please enter a folder path');
-    const res = await api('/config/libraries', { 
-        method: 'POST', 
-        headers: {'Content-Type':'application/json'},
-        body: JSON.stringify({ path }) 
-    });
-    if (res.libraries) {
-        renderSettings(vc);
+  const libraryListEl = $('libraries-list');
+  const addLibraryForm = $('library-add-form');
+  const libraryInput = $('music-dir-input');
+  const addLibraryButton = $('add-lib-btn');
+  const libraryFeedback = $('library-add-feedback');
+
+  const setLibraryFeedback = (message, type = '') => {
+    if (!libraryFeedback) return;
+    libraryFeedback.textContent = message;
+    libraryFeedback.className = `library-add-feedback${type ? ` ${type}` : ''}`;
+  };
+
+  const updateLibraryList = libraries => {
+    if (libraryListEl) libraryListEl.innerHTML = renderLibraryRows(libraries || []);
+    const count = $('library-count');
+    if (count) {
+      const total = (libraries || []).length;
+      count.textContent = `${total} folder${total === 1 ? '' : 's'}`;
+    }
+    setScanControlsRunning(!!_latestScanStatus?.running);
+  };
+
+  const beginLibraryScan = async folders => {
+    const payload = folders?.length ? { folders } : {};
+    const res = await api('/scan', { method: 'POST', body: JSON.stringify(payload) });
+    if (!res) return false;
+    if (res.state) updateScanStatusPanel(res.state);
+    if (res.error) {
+      showToast(res.message || 'Unable to start import');
+      return false;
+    }
+    if (res.cooldown_remaining) {
+      showToast(res.message);
+      return false;
+    }
+    showToast(res.message || 'Library import started');
+    startScanPolling(res.state);
+    return true;
+  };
+
+  addLibraryForm?.addEventListener('submit', async event => {
+    event.preventDefault();
+    const path = libraryInput?.value.trim() || '';
+    if (!path) {
+      setLibraryFeedback('Enter a folder path first.', 'error');
+      libraryInput?.focus();
+      return;
+    }
+
+    const originalLabel = addLibraryButton.textContent;
+    addLibraryButton.disabled = true;
+    addLibraryButton.textContent = 'Adding…';
+    setLibraryFeedback(`Adding ${path}…`);
+
+    try {
+      const res = await api('/config/libraries', { method: 'POST', body: JSON.stringify({ path }) });
+      const normalizePath = value => String(value || '')
+        .trim()
+        .replace(/\//g, '\\')
+        .replace(/\\+$/, '')
+        .toLocaleLowerCase();
+      let libraries = Array.isArray(res?.libraries) ? res.libraries : null;
+
+      // Confirm the saved state instead of displaying success from a stale response.
+      if (!libraries?.some(lib => normalizePath(lib.path) === normalizePath(path))) {
+        const freshConfig = await api('/config');
+        libraries = Array.isArray(freshConfig?.libraries) ? freshConfig.libraries : libraries;
+      }
+
+      if (!libraries?.some(lib => normalizePath(lib.path) === normalizePath(path))) {
+        setLibraryFeedback(`Could not save ${path}. Check the server connection and try again.`, 'error');
+        return;
+      }
+
+      updateLibraryList(libraries);
+      libraryInput.value = '';
+      libraryInput.blur();
+      if (res?.added === false) {
+        setLibraryFeedback('That folder is already in the library. Enter a different path to continue.', 'error');
+        showToast('Folder already added');
+      } else {
+        setLibraryFeedback(`${path} added. ${libraries.length} folders configured.`, 'success');
         showToast('Library folder added');
+      }
+    } finally {
+      addLibraryButton.disabled = false;
+      addLibraryButton.textContent = originalLabel;
     }
   });
 
-  $$('.remove-lib').forEach(btn => {
-    btn.addEventListener('click', async () => {
-        const id = btn.dataset.id;
-        const res = await api(`/config/libraries/${id}`, { method: 'DELETE' });
-        if (res.libraries) {
-            renderSettings(vc);
-            showToast('Library folder removed');
-        }
-    });
+  libraryInput?.addEventListener('input', () => {
+    setLibraryFeedback('Ready to add this folder. Tap Add Folder to save it.');
   });
 
-  $$('.refresh-lib').forEach(btn => {
-    btn.addEventListener('click', async () => {
-        const path = btn.dataset.path;
-        const btnText = btn.textContent;
-        btn.textContent = '...';
-        btn.disabled = true;
-        try {
-            // Use refresh-folder endpoint to re-read metadata from files
-            const res = await api('/scan/refresh-folder', {
-                method: 'POST',
-                headers: {'Content-Type':'application/json'},
-                body: JSON.stringify({ folder: path })
-            });
-            showToast(`Refreshing: ${path}`);
-            startScanPolling();
-        } catch (e) {
-            showToast('Refresh failed: ' + e.message);
-        } finally {
-            btn.textContent = btnText;
-            btn.disabled = false;
-        }
-    });
+  libraryListEl?.addEventListener('click', async event => {
+    const button = event.target instanceof Element ? event.target.closest('button') : null;
+    if (!button || button.disabled) return;
+
+    if (button.classList.contains('remove-lib')) {
+      button.disabled = true;
+      const res = await api(`/config/libraries/${button.dataset.id}`, { method: 'DELETE' });
+      if (!res?.libraries) {
+        button.disabled = false;
+        return;
+      }
+      updateLibraryList(res.libraries);
+      setLibraryFeedback('Folder removed. You can add a replacement path at any time.', 'success');
+      showToast('Library folder removed');
+      return;
+    }
+
+    const path = button.dataset.path;
+    if (button.classList.contains('scan-lib')) {
+      await beginLibraryScan([path]);
+      return;
+    }
+
+    if (button.classList.contains('refresh-lib')) {
+      button.disabled = true;
+      button.textContent = 'Starting…';
+      const res = await api('/scan/refresh-folder', {
+        method: 'POST',
+        body: JSON.stringify({ folder: path })
+      });
+      if (res?.state) updateScanStatusPanel(res.state);
+      if (res) {
+        showToast(res.message || `Refreshing: ${path}`);
+        startScanPolling(res.state);
+      } else {
+        button.disabled = false;
+        button.textContent = 'Re-read Tags';
+      }
+    }
   });
 
-  $('save-and-scan').addEventListener('click', async () => {
-    await api('/scan', { method: 'POST', headers: {'Content-Type':'application/json'},
-                         body: JSON.stringify({}) });
-    showToast('Full scan started! This may take a while for large libraries.');
-    startScanPolling();
-  });
+  $('save-and-scan')?.addEventListener('click', () => beginLibraryScan());
+  updateScanStatusPanel(scanStatus);
+  if (scanStatus.running) startScanPolling(scanStatus);
 
   // Reset library logic
   $('reset-library-btn')?.addEventListener('click', async () => {

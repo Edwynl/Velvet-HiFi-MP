@@ -7,6 +7,7 @@ from pathlib import Path
 
 from db_schema import LATEST_SCHEMA_VERSION, apply_migrations
 from library_duplicates import find_exact_duplicates
+from path_compat import filesystem_path
 from scanner_service import scan_music_dirs
 
 
@@ -180,6 +181,38 @@ class IncrementalLibraryTests(LibraryFixture):
         self.assertEqual(credits["02 new"], ("Renamed", "Retagged"))
         self.assertEqual(credits["03 newer"], ("Other", "Album"))
         self.assertEqual(self.db.execute("PRAGMA foreign_key_check").fetchall(), [])
+
+    @unittest.skipUnless(os.name == "nt", "MAX_PATH applies to Windows only")
+    def test_scan_reads_files_whose_full_path_exceeds_max_path(self):
+        """Folder under 260 chars, file path over it (31 tracks in a real library)."""
+        folder = self.music
+        while len(str(folder)) < 200:
+            folder = folder / ("Album Folder " + "x" * 20)
+        os.makedirs(filesystem_path(folder))
+        name = "01 - " + "Long Track Title " * 4 + ".flac"
+        track = folder / name
+        self.assertGreater(len(str(track)), 260)
+        with open(filesystem_path(track), "wb") as handle:
+            handle.write(b"long path audio")
+        try:
+            self._scan_long_path_file(track)
+        finally:
+            os.remove(filesystem_path(track))  # TemporaryDirectory cannot delete it
+
+    def _scan_long_path_file(self, track):
+        def extract(path):
+            data = metadata(self.music / "placeholder")
+            data["file_size"] = os.path.getsize(filesystem_path(path))
+            return data
+
+        (self.music / "placeholder").write_bytes(b"x")
+        self._scan_with(extract)
+        self.assertEqual(self.counters["errors"], [])
+        stored = self.db.execute(
+            "SELECT t.file_path, s.size_bytes FROM tracks t JOIN track_file_state s ON s.track_id=t.id "
+            "WHERE t.file_path LIKE ?", ("%Long Track Title%",)).fetchone()
+        self.assertEqual(stored["file_path"], str(track), "path is stored in its plain form")
+        self.assertEqual(stored["size_bytes"], len(b"long path audio"))
 
     def test_migration_9_has_file_state_and_target_indexes(self):
         self.assertEqual(apply_migrations(self.db), LATEST_SCHEMA_VERSION)

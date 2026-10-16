@@ -8,6 +8,12 @@ import { JSDOM } from 'jsdom';
 const ROOT = process.cwd();
 const HTML_PATH = path.join(ROOT, 'static', 'index.html');
 
+function hasCssRule(html, selector, declarations) {
+  const escapedSelector = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const rule = new RegExp(`${escapedSelector}\\s*\\{[^}]*${declarations}`, 's');
+  return rule.test(html);
+}
+
 function makeJsonResponse(body, status = 200) {
   const payload = structuredClone(body);
   return {
@@ -316,7 +322,7 @@ function testLandscapeMiniPlayerProgressCssGuards() {
     'Expected landscape mini-player to keep the compact player height',
   );
   assert.ok(
-    /\.progress-time\s*\{\s*display: none !important;/.test(html),
+    hasCssRule(html, '.progress-time', 'display:\\s*none\\s*!important;'),
     'Expected landscape mini-player progress to stay edge-aligned without inline time labels',
   );
   assert.ok(
@@ -337,11 +343,15 @@ function testLandscapeMobileVolumeStripHidden() {
   const html = inlineFrontendModules(readFileSync(HTML_PATH, 'utf8')).replace(/\r\n/g, '\n');
 
   assert.ok(
-    html.includes('.mobile-player-volume-strip {\n      display: none !important;'),
+    hasCssRule(html, '.mobile-player-volume-strip', 'display:\\s*none\\s*!important;'),
     'Expected the mobile landscape volume strip to stay hidden',
   );
   assert.ok(
-    html.includes('.mobile-player-landscape-utility {\n      display: flex !important;\n      order: 4 !important;\n      margin-top: 2px !important;\n      justify-content: flex-end !important;'),
+    hasCssRule(
+      html,
+      '.mobile-player-landscape-utility',
+      'display:\\s*flex\\s*!important;[^}]*order:\\s*4\\s*!important;[^}]*margin-top:\\s*2px\\s*!important;[^}]*justify-content:\\s*flex-end\\s*!important;',
+    ),
     'Expected landscape utility actions to right-align after hiding the volume strip',
   );
 }
@@ -350,16 +360,82 @@ function testLandscapeFullscreenLayoutBalanceGuards() {
   const html = inlineFrontendModules(readFileSync(HTML_PATH, 'utf8')).replace(/\r\n/g, '\n');
 
   assert.ok(
-    html.includes('.mobile-player-main {\n      flex-direction: row !important;\n      align-items: center !important;\n      justify-content: center !important;\n      gap: 28px !important;'),
+    hasCssRule(
+      html,
+      '.mobile-player-main',
+      'flex-direction:\\s*row\\s*!important;[^}]*align-items:\\s*center\\s*!important;[^}]*justify-content:\\s*center\\s*!important;[^}]*gap:\\s*28px\\s*!important;',
+    ),
     'Expected landscape fullscreen player columns to stay centered instead of pushing metadata upward',
   );
   assert.ok(
-    html.includes('.mobile-player-art-section {\n      width: 44% !important;'),
+    hasCssRule(html, '.mobile-player-art-section', 'width:\\s*44%\\s*!important;'),
     'Expected landscape fullscreen cover art column to remain visually substantial',
   );
   assert.ok(
-    html.includes('.mobile-player-controls-section {\n      width: 56% !important;'),
+    hasCssRule(html, '.mobile-player-controls-section', 'width:\\s*56%\\s*!important;'),
     'Expected landscape fullscreen controls column to stay balanced with the cover art column',
+  );
+}
+
+function testConstrainedDesktopPlayerPriorityGuards() {
+  const html = readFileSync(HTML_PATH, 'utf8').replace(/\r\n/g, '\n');
+
+  assert.ok(
+    html.includes('@media (min-width: 769px) and (max-width: 1120px)'),
+    'Expected a constrained desktop breakpoint above the mobile layout',
+  );
+  assert.ok(
+    hasCssRule(
+      html,
+      '.player-body',
+      'grid-template-columns:\\s*minmax\\(280px,\\s*1fr\\)\\s*auto\\s*auto;',
+    ),
+    'Expected constrained desktop player to prioritize now-playing text over controls',
+  );
+  assert.ok(
+    html.includes('#upsample-select,\n  #dsp-select,\n  .volume-wrap'),
+    'Expected constrained desktop player to hide Source, DSP preset, and volume controls together',
+  );
+  assert.ok(
+    html.includes('#upsample-select,\n    #dsp-select,\n    .player-right .volume-wrap'),
+    'Expected constrained desktop player to override compact landscape volume controls later in the cascade',
+  );
+}
+
+function testConstrainedDesktopAlbumLayoutGuards() {
+  const html = readFileSync(HTML_PATH, 'utf8').replace(/\r\n/g, '\n');
+
+  assert.ok(
+    hasCssRule(
+      html,
+      '.view-album .album-hero',
+      'grid-template-columns:\\s*clamp\\(260px,\\s*34vw,\\s*320px\\)\\s*minmax\\(210px,\\s*1fr\\);',
+    ),
+    'Expected constrained desktop album hero to shrink cover art and preserve readable metadata',
+  );
+  assert.ok(
+    hasCssRule(
+      html,
+      '.view-album .album-actions',
+      'grid-template-columns:\\s*repeat\\(2,\\s*minmax\\(0,\\s*1fr\\)\\);',
+    ),
+    'Expected constrained desktop album actions to use a compact two-column layout',
+  );
+  assert.ok(
+    hasCssRule(
+      html,
+      '.view-album .credits-grid',
+      'grid-template-columns:\\s*repeat\\(2,\\s*minmax\\(0,\\s*1fr\\)\\);',
+    ),
+    'Expected constrained desktop album credits to remain a tidy two-column grid',
+  );
+  assert.ok(
+    hasCssRule(
+      html,
+      '.view-album .credits-grid > .credits-card:last-child:nth-child(odd)',
+      'grid-column:\\s*1\\s*/\\s*-1;',
+    ),
+    'Expected an odd final album credit card to span the constrained desktop grid',
   );
 }
 
@@ -371,6 +447,8 @@ async function main() {
   testLandscapeMiniPlayerProgressCssGuards();
   testLandscapeMobileVolumeStripHidden();
   testLandscapeFullscreenLayoutBalanceGuards();
+  testConstrainedDesktopPlayerPriorityGuards();
+  testConstrainedDesktopAlbumLayoutGuards();
 }
 
 try {

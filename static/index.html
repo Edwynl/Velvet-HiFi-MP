@@ -2,7 +2,7 @@
 <html lang="zh">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <title>VELVET</title>
 <link rel="manifest" href="/static/manifest.json">
 <meta name="apple-mobile-web-app-capable" content="yes">
@@ -1159,7 +1159,7 @@ html, body {
 }
 
 .player-format-badge {
-  height: 42px !important; /* Balanced size: Not too small, not too large */
+  height: 36px !important;
   width: auto;
   object-fit: contain;
   opacity: 0.95;
@@ -1169,12 +1169,6 @@ html, body {
 }
 .player-format:empty {
   display: none;
-}
-.player-format-badge {
-  height: 13px;
-  width: auto;
-  flex-shrink: 0;
-  display: block;
 }
 .player-format-lines {
   min-width: 0;
@@ -1323,6 +1317,111 @@ input[type=range]::-webkit-slider-thumb {
 }
 input[type=range]::-webkit-slider-thumb:hover { background: var(--gold); }
 
+@media (min-width: 769px) and (max-width: 1120px) {
+  .player-body {
+    grid-template-columns: minmax(280px, 1fr) auto auto;
+    gap: 12px;
+    padding: 0 16px;
+  }
+
+  .player-info {
+    min-width: 0;
+  }
+
+  .player-controls {
+    justify-self: center;
+  }
+
+  .player-right {
+    gap: 4px;
+    min-width: 0;
+  }
+
+  #upsample-select,
+  #dsp-select,
+  .volume-wrap {
+    display: none !important;
+  }
+
+  .player-icon-btn {
+    padding: 6px;
+  }
+}
+
+@media (min-width: 769px) and (max-width: 1120px) {
+  .view-album .topbar {
+    padding: 24px 32px 8px;
+  }
+
+  .view-album .album-hero {
+    display: grid;
+    grid-template-columns: clamp(260px, 34vw, 320px) minmax(210px, 1fr);
+    align-items: start;
+    gap: clamp(22px, 3vw, 32px);
+    padding: 20px 32px 28px;
+  }
+
+  .view-album .album-hero-art {
+    width: 100%;
+    height: auto;
+    aspect-ratio: 1;
+    max-width: 320px;
+    margin: 0;
+  }
+
+  .view-album .album-hero-info {
+    padding-top: 8px;
+    min-width: 0;
+  }
+
+  .view-album .album-hero-title {
+    font-size: clamp(30px, 4.8vw, 40px);
+    line-height: 1.05;
+    margin-bottom: 10px;
+  }
+
+  .view-album .hires-badge-detail {
+    height: 32px;
+  }
+
+  .view-album .album-hero-artist {
+    font-size: 16px;
+    margin-bottom: 14px;
+  }
+
+  .view-album .album-meta-row {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px 14px;
+    margin-bottom: 18px;
+  }
+
+  .view-album .album-actions {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+    width: min(100%, 260px);
+  }
+
+  .view-album .album-actions .btn,
+  .view-album .album-actions .album-more-btn,
+  .view-album .album-actions .album-more-btn > .btn {
+    width: 100%;
+    min-width: 0;
+    justify-content: center;
+  }
+
+  .view-album .credits-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    padding: 0 32px 18px;
+    gap: 14px;
+  }
+
+  .view-album .credits-grid > .credits-card:last-child:nth-child(odd) {
+    grid-column: 1 / -1;
+  }
+}
+
 /* ─── Home View ─── */
 .home-hero {
   padding: 40px 32px 32px;
@@ -1380,6 +1479,193 @@ input[type=range]::-webkit-slider-thumb:hover { background: var(--gold); }
 }
 .form-input:focus { border-color: var(--gold); }
 .form-hint { font-size: 11px; color: var(--dim); margin-top: 6px; }
+
+.library-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+.library-section-head .form-label { margin-bottom: 0; }
+.library-count-badge {
+  padding: 4px 9px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--gold);
+  background: rgba(201,168,76,0.07);
+  font-family: 'DM Mono', monospace;
+  font-size: 10px;
+}
+.libraries-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+.library-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 54px;
+  padding: 9px 12px 9px 16px;
+  background: var(--s2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+.library-path {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text);
+  font-family: 'DM Mono', monospace;
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.library-item-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+.library-item-actions .btn { padding: 7px 10px; }
+.library-add-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  margin-bottom: 6px;
+}
+.library-add-feedback {
+  min-height: 18px;
+  margin-top: 6px;
+  color: var(--muted);
+  font-size: 11px;
+}
+.library-add-feedback.success { color: var(--gold); }
+.library-add-feedback.error { color: #ff8e8e; }
+
+.scan-status-card {
+  margin-bottom: 28px;
+  padding: 18px 20px;
+  overflow: hidden;
+  background: linear-gradient(145deg, rgba(201,168,76,0.08), var(--s2) 42%);
+  border: 1px solid rgba(201,168,76,0.18);
+  border-radius: 14px;
+}
+.scan-status-card.idle {
+  background: var(--s2);
+  border-color: var(--border);
+}
+.scan-status-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 18px;
+  margin-bottom: 14px;
+}
+.scan-status-title {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 600;
+}
+.scan-status-sub {
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 11px;
+}
+.scan-status-percent {
+  color: var(--gold);
+  font-family: 'DM Mono', monospace;
+  font-size: 18px;
+}
+.scan-status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--gold);
+  box-shadow: 0 0 0 0 rgba(201,168,76,0.4);
+  animation: scanStatusPulse 1.8s infinite;
+}
+@keyframes scanStatusPulse {
+  70% { box-shadow: 0 0 0 7px rgba(201,168,76,0); }
+  100% { box-shadow: 0 0 0 0 rgba(201,168,76,0); }
+}
+.scan-status-card .scan-progress-bar {
+  height: 5px;
+  margin-bottom: 12px;
+}
+.scan-progress-fill.indeterminate {
+  width: 36% !important;
+  animation: scanIndeterminate 1.4s ease-in-out infinite;
+}
+@keyframes scanIndeterminate {
+  0% { transform: translateX(-120%); }
+  100% { transform: translateX(340%); }
+}
+.scan-status-metrics {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 10px;
+  margin-top: 14px;
+}
+.scan-status-metric {
+  padding: 11px 12px;
+  background: rgba(0,0,0,0.18);
+  border: 1px solid var(--border);
+  border-radius: 9px;
+}
+.scan-status-value {
+  color: var(--text);
+  font-family: 'DM Mono', monospace;
+  font-size: 17px;
+}
+.scan-status-label {
+  margin-top: 2px;
+  color: var(--dim);
+  font-size: 9px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+.scan-current-file {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--muted);
+  font-family: 'DM Mono', monospace;
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.scan-error-text {
+  margin-top: 12px;
+  padding: 9px 11px;
+  color: #ff9b9b;
+  background: rgba(255,107,107,0.08);
+  border-radius: 8px;
+  font-size: 11px;
+}
+
+@media (max-width: 768px), (orientation: portrait) and (min-width: 769px) and (max-width: 900px) {
+  .library-item {
+    align-items: stretch;
+    flex-direction: column;
+    gap: 9px;
+    padding: 13px;
+  }
+  .library-path { white-space: normal; overflow-wrap: anywhere; }
+  .library-item-actions {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+  .library-item-actions .btn { justify-content: center; min-height: 42px; }
+  .library-add-row { grid-template-columns: 1fr; }
+  .library-add-row .btn { min-height: 46px; justify-content: center; }
+  .scan-status-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .scan-status-card { padding: 16px; }
+}
 
 /* ─── DSP Editor Form Fixes ─── */
 .dsp-filter-row .form-input, #dsp-editor-preamp {
@@ -1941,7 +2227,7 @@ input[type=range]::-webkit-slider-thumb:hover { background: var(--gold); }
   }
 
   /* ─── Mobile Responsive Styles ─── */
-  @media (max-width: 768px) {
+  @media (max-width: 768px), (orientation: portrait) and (min-width: 769px) and (max-width: 900px) {
     /* Variables for mobile */
     :root {
       --sidebar-w: 260px;
@@ -4526,6 +4812,30 @@ input[type=range]::-webkit-slider-thumb:hover { background: var(--gold); }
       height: 3px !important;
     }
   }
+
+  @media (min-width: 769px) and (max-width: 1120px) {
+    .player-body {
+      grid-template-columns: minmax(280px, 1fr) auto auto !important;
+      gap: 12px !important;
+      padding: 0 16px !important;
+    }
+
+    .player-info {
+      min-width: 0 !important;
+    }
+
+    .player-right {
+      gap: 4px !important;
+      min-width: 0 !important;
+    }
+
+    #upsample-select,
+    #dsp-select,
+    .player-right .volume-wrap {
+      display: none !important;
+    }
+  }
+
     /* GRAPHIC EQ STYLES */
     .eq-overlay {
       display: none;
@@ -4594,7 +4904,7 @@ input[type=range]::-webkit-slider-thumb:hover { background: var(--gold); }
           linear-gradient(to bottom, rgba(230, 195, 100, 0.05) 1px, transparent 1px);
       background-size: 40px 40px;
     }
-    @media (max-width: 768px) {
+    @media (max-width: 768px), (orientation: portrait) and (min-width: 769px) and (max-width: 900px) {
       .eq-curve-container {
         aspect-ratio: 16 / 9;
       }
@@ -4822,7 +5132,7 @@ input[type=range]::-webkit-slider-thumb:hover { background: var(--gold); }
         position: static !important;
       }
     }
-    @media (max-width: 768px) {
+    @media (max-width: 768px), (orientation: portrait) and (min-width: 769px) and (max-width: 900px) {
       .eq-overlay {
         padding: calc(env(safe-area-inset-top, 0px) + 14px) 14px calc(env(safe-area-inset-bottom, 0px) + 92px);
       }
@@ -4894,6 +5204,382 @@ input[type=range]::-webkit-slider-thumb:hover { background: var(--gold); }
         padding: 12px 16px calc(env(safe-area-inset-bottom, 0px) + 12px);
         background: rgba(14, 14, 16, 0.96);
         backdrop-filter: blur(16px);
+      }
+    }
+
+    /* OPPO Pad 5 Pro portrait: expected CSS viewport is roughly 800 x 1131. */
+    @media (orientation: portrait) and (min-width: 769px) and (max-width: 900px) {
+      :root {
+        --sidebar-w: 320px;
+        --player-h: 96px;
+      }
+
+      #app {
+        min-height: 100svh;
+      }
+
+      #sidebar {
+        width: min(var(--sidebar-w), 82vw);
+        padding-top: env(safe-area-inset-top, 0px);
+        padding-bottom: env(safe-area-inset-bottom, 0px);
+      }
+
+      .logo {
+        padding: 30px 28px 22px;
+      }
+
+      .nav-item {
+        min-height: 48px;
+        padding: 11px 24px;
+        font-size: 14px;
+      }
+
+      .topbar {
+        padding: calc(env(safe-area-inset-top, 0px) + 14px) 20px 12px;
+        padding-left: 80px;
+        gap: 12px;
+        min-height: calc(env(safe-area-inset-top, 0px) + 72px);
+        background: rgba(7, 7, 9, 0.92);
+        backdrop-filter: blur(18px);
+      }
+
+      .mobile-menu-btn {
+        position: fixed;
+        top: calc(env(safe-area-inset-top, 0px) + 14px);
+        left: 20px;
+        z-index: 30;
+        width: 48px;
+        height: 48px;
+        padding: 12px;
+        margin-right: 0;
+        flex-shrink: 0;
+        border-radius: 50%;
+        background: rgba(19, 19, 22, 0.94);
+      }
+
+      .mobile-menu-btn svg {
+        width: 24px;
+        height: 24px;
+      }
+
+      #search-input {
+        min-height: 46px;
+        font-size: 16px;
+      }
+
+      .home-hero,
+      .discover-hero {
+        padding-left: 24px;
+        padding-right: 24px;
+      }
+
+      .section-header,
+      .discover-section-head,
+      .discover-track-list,
+      .zones-grid,
+      .credits-grid {
+        padding-left: 24px;
+        padding-right: 24px;
+      }
+
+      .grid {
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 18px 16px;
+        padding: 4px 20px 28px;
+      }
+
+      .artist-grid {
+        grid-template-columns: repeat(5, minmax(0, 1fr));
+        gap: 18px 14px;
+      }
+
+      .card-title {
+        font-size: 13px;
+      }
+
+      .card-sub {
+        font-size: 11px;
+      }
+
+      .card-play-btn {
+        width: 38px;
+        height: 38px;
+        right: 8px;
+        bottom: 8px;
+      }
+
+      .album-hero {
+        grid-template-columns: minmax(240px, 300px) minmax(0, 1fr);
+        gap: 24px;
+        padding: 16px 24px 24px;
+      }
+
+      .album-hero-title {
+        font-size: clamp(30px, 5vw, 42px);
+      }
+
+      .track-list {
+        padding-left: 20px;
+        padding-right: 20px;
+      }
+
+      .track-item {
+        min-height: 52px;
+        padding: 10px 14px;
+      }
+
+      #player {
+        padding: 10px 20px calc(10px + env(safe-area-inset-bottom, 0px));
+      }
+
+      .player-body {
+        gap: 16px;
+      }
+
+      .player-art {
+        width: 52px;
+        height: 52px;
+      }
+
+      .play-btn {
+        width: 48px;
+        height: 48px;
+      }
+
+      .ctrl-btn,
+      .player-icon-btn {
+        min-width: 44px;
+        min-height: 44px;
+      }
+
+      .mobile-player-header {
+        padding: calc(env(safe-area-inset-top, 0px) + 18px) 28px 10px;
+      }
+
+      .mobile-player-header-actions {
+        display: flex;
+      }
+
+      .mobile-player-main {
+        justify-content: flex-start;
+        gap: 24px;
+        padding: 14px 48px calc(env(safe-area-inset-bottom, 0px) + 36px);
+      }
+
+      .mobile-player-art-section {
+        gap: 22px;
+        margin-top: 0;
+      }
+
+      .mobile-player-art-wrapper {
+        width: min(58vw, 440px);
+        max-width: 440px;
+      }
+
+      .mobile-player-info,
+      .mobile-player-controls-section {
+        width: min(100%, 500px);
+        max-width: 500px;
+      }
+
+      .mobile-player-title-row h2 {
+        font-size: clamp(36px, 5.5vw, 46px);
+      }
+
+      .mobile-player-controls-section {
+        gap: 24px;
+      }
+
+      .mobile-vu-meter {
+        width: min(42vw, 320px);
+        height: 180px;
+      }
+
+      .eq-overlay {
+        padding-left: 24px;
+        padding-right: 24px;
+      }
+    }
+
+    /* OPPO Pad 5 Pro landscape: expected CSS viewport is roughly 1131 x 800. */
+    @media (orientation: landscape) and (min-width: 901px) and (max-width: 1366px) and (min-height: 650px) {
+      :root {
+        --sidebar-w: 196px;
+        --player-h: 80px;
+      }
+
+      .logo {
+        padding: 24px 20px 18px;
+      }
+
+      .nav-item {
+        min-height: 44px;
+        padding: 10px 18px;
+      }
+
+      .stats-panel {
+        padding: 14px 18px;
+      }
+
+      .topbar {
+        padding: calc(env(safe-area-inset-top, 0px) + 18px) 24px 12px;
+        gap: 18px;
+      }
+
+      .home-hero {
+        padding: 30px 24px 26px;
+      }
+
+      .home-section-title,
+      .section-header,
+      .discover-section-head,
+      .discover-track-list,
+      .zones-grid,
+      .credits-grid {
+        padding-left: 24px;
+        padding-right: 24px;
+      }
+
+      .grid {
+        grid-template-columns: repeat(auto-fill, minmax(148px, 1fr));
+        gap: 18px 16px;
+        padding: 0 24px 28px;
+      }
+
+      .artist-grid {
+        grid-template-columns: repeat(auto-fill, minmax(118px, 1fr));
+      }
+
+      .player-body {
+        grid-template-columns: minmax(280px, 1fr) auto auto !important;
+        gap: 10px !important;
+        padding: 0 14px !important;
+      }
+
+      #upsample-select,
+      #dsp-select,
+      .player-right .volume-wrap {
+        display: none !important;
+      }
+
+      .player-info {
+        min-width: 0;
+      }
+
+      .player-right {
+        gap: 3px;
+      }
+
+      .player-icon-btn,
+      .ctrl-btn {
+        min-width: 42px;
+        min-height: 42px;
+      }
+
+      .view-album .album-hero {
+        display: grid;
+        grid-template-columns: minmax(240px, 290px) minmax(0, 1fr);
+        align-items: start;
+        gap: 28px;
+        padding: 16px 24px 26px;
+      }
+
+      .view-album .album-hero-art {
+        width: 100%;
+        height: auto;
+        max-width: 290px;
+        aspect-ratio: 1;
+      }
+
+      .view-album .album-hero-title {
+        font-size: clamp(34px, 4vw, 46px);
+      }
+
+      .track-list {
+        padding-left: 24px;
+        padding-right: 24px;
+      }
+
+      .mobile-player-header {
+        padding: calc(env(safe-area-inset-top, 0px) + 14px) 24px 8px !important;
+      }
+
+      .mobile-player-main {
+        flex-direction: row !important;
+        align-items: center !important;
+        justify-content: center !important;
+        gap: clamp(32px, 4vw, 52px) !important;
+        padding: 18px 44px calc(env(safe-area-inset-bottom, 0px) + 28px) !important;
+      }
+
+      .mobile-player-art-section {
+        width: min(36vw, 340px) !important;
+        gap: 16px !important;
+        margin-top: 0 !important;
+        flex-shrink: 0 !important;
+      }
+
+      .mobile-player-art-wrapper {
+        width: 100% !important;
+        max-width: 340px !important;
+      }
+
+      .mobile-player-info {
+        display: none !important;
+      }
+
+      .mobile-player-controls-section {
+        width: min(48vw, 520px) !important;
+        max-width: 520px !important;
+        gap: 20px !important;
+      }
+
+      .mobile-player-landscape-meta,
+      .mobile-player-landscape-utility,
+      .mobile-player-header-actions {
+        display: flex !important;
+      }
+
+      .mobile-player-landscape-meta {
+        display: block !important;
+        text-align: left !important;
+      }
+
+      .mobile-player-landscape-title {
+        font-size: clamp(36px, 4.2vw, 52px) !important;
+        margin-bottom: 10px !important;
+      }
+
+      .mobile-player-main-controls {
+        gap: 28px !important;
+        margin: 6px 0 !important;
+      }
+
+      .mobile-play-btn {
+        width: 68px !important;
+        height: 68px !important;
+      }
+
+      .mobile-player-progress-container {
+        margin-top: 6px !important;
+      }
+
+      .mobile-vu-overlay {
+        padding: calc(env(safe-area-inset-top, 0px) + 18px) 24px calc(env(safe-area-inset-bottom, 0px) + 18px) !important;
+      }
+
+      .mobile-vu-container {
+        gap: 28px !important;
+      }
+
+      .mobile-vu-meter,
+      .mobile-vu-overlay.style-2 .mobile-vu-meter {
+        width: min(38vw, 390px) !important;
+        height: 218px !important;
+      }
+
+      .eq-overlay {
+        padding: 24px;
       }
     }
 </style>
@@ -5200,8 +5886,8 @@ input[type=range]::-webkit-slider-thumb:hover { background: var(--gold); }
           <option value="8x">8×</option>
           <option value="16x">16×</option>
         </select>
-        <select class="upsample-select" id="dsp-select" title="DSP Profile">
-          <option value="">Dry</option>
+        <select class="upsample-select" id="dsp-select" title="Sound Preset">
+          <option value="">Off</option>
         </select>
         <div class="volume-wrap">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
@@ -5504,13 +6190,13 @@ input[type=range]::-webkit-slider-thumb:hover { background: var(--gold); }
 
 <div id="eq-overlay" class="eq-overlay">
   <div class="eq-header">
-    <h1 class="eq-title">Velvet | Graphic EQ</h1>
+    <h1 class="eq-title">VELVET | EQ Editor</h1>
     <button class="eq-close-btn" id="eq-close-btn">
       <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
     </button>
   </div>
   <div class="eq-container">
-    <!-- Left Sidebar: EQ Presets -->
+    <!-- Left Sidebar: Sound Presets -->
     <aside style="display: flex; flex-direction: column; gap: 16px;">
       <div id="eq-presets-container" class="eq-presets-list">
         <!-- Render preset buttons here dynamically via JS -->
@@ -5559,8 +6245,8 @@ input[type=range]::-webkit-slider-thumb:hover { background: var(--gold); }
       <div class="eq-controls-panel">
         <div style="display:flex; gap: 32px">
             <div>
-              <p style="font-family: 'DM Mono', monospace; font-size: 10px; text-transform: uppercase; color: var(--text-muted); margin-bottom: 4px;">DSP Name</p>
-              <p id="eq-current-name" style="font-family: 'Cormorant Garamond', serif; font-size: 1.125rem; font-style: italic; color: var(--text-color);">Custom Profile</p>
+              <p style="font-family: 'DM Mono', monospace; font-size: 10px; text-transform: uppercase; color: var(--text-muted); margin-bottom: 4px;">Preset</p>
+              <p id="eq-current-name" style="font-family: 'Cormorant Garamond', serif; font-size: 1.125rem; font-style: italic; color: var(--text-color);">Custom EQ</p>
               <p id="eq-headroom-note" class="eq-headroom-note">Headroom: 0.0 dB</p>
             </div>
         </div>
@@ -5590,6 +6276,30 @@ const $$ = sel => {
   const doc = typeof document !== 'undefined' ? document : null;
   return doc?.querySelectorAll ? doc.querySelectorAll(sel) : [];
 };
+
+const COMPACT_PHONE_MAX = 768;
+const COMPACT_TABLET_PORTRAIT_MAX = 900;
+
+function isCompactLayout() {
+  const win = typeof window !== 'undefined' ? window : null;
+  if (!win) return false;
+  return win.innerWidth <= COMPACT_PHONE_MAX || (
+    win.innerWidth <= COMPACT_TABLET_PORTRAIT_MAX &&
+    win.innerHeight >= win.innerWidth
+  );
+}
+
+function isShortLandscapeLayout() {
+  const win = typeof window !== 'undefined' ? window : null;
+  return !!win && win.innerWidth > win.innerHeight && win.innerHeight <= 500;
+}
+
+function blurActiveEditor() {
+  const active = typeof document !== 'undefined' ? document.activeElement : null;
+  if (active instanceof HTMLElement && active.matches('input, textarea, select, [contenteditable="true"]')) {
+    active.blur();
+  }
+}
 
 // UI Element Cache for performance (On-demand caching via Proxy)
 // In an SPA environment where elements are recreated via innerHTML, 
@@ -5838,7 +6548,7 @@ function showSignalPath() {
 
 
 function compactDspLabel(name) {
-  if (!name) return 'Dry';
+  if (!name) return 'Off';
   const cleaned = String(name)
     .replace(/\b(dsp|profile|preset)\b/ig, '')
     .replace(/[()]/g, ' ')
@@ -5846,7 +6556,7 @@ function compactDspLabel(name) {
   if (!cleaned) return 'Tone';
   const normalized = cleaned.toLowerCase();
   const knownLabels = {
-    'flat': 'Flat',
+    'flat': 'Off',
     'reference neutral': 'Reference',
     'black background': 'Black',
     'vocal forward warm': 'Vocal Warm',
@@ -5864,6 +6574,39 @@ function compactDspLabel(name) {
 function dspDisplayLabel(profile, fallback = 'DSP') {
   if (!profile) return fallback;
   return compactDspLabel(profile.short_name || profile.name || fallback);
+}
+
+function isFlatDspProfile(profile) {
+  const presetKey = String(profile?.preset_key || '').toLowerCase();
+  const name = String(profile?.name || '').trim().toLowerCase();
+  return presetKey === 'flat' || name === 'flat';
+}
+
+function visibleDspProfiles(profiles = []) {
+  return (profiles || []).filter(profile => !isFlatDspProfile(profile));
+}
+
+function dspProfileGroup(profile) {
+  const category = String(profile?.category || 'custom').toLowerCase();
+  if (category === 'reference' || category === 'correction') return 'reference';
+  if (category === 'genre') return 'genre';
+  if (profile?.is_factory) return 'tone';
+  return 'custom';
+}
+
+function dspProfileGroupLabel(group) {
+  return {
+    reference: 'Reference',
+    tone: 'Tone Shaping',
+    genre: 'Genre',
+    custom: 'My Presets',
+  }[group] || 'Presets';
+}
+
+function dspProfileRoleLabel(profile) {
+  if (!profile) return 'Preset';
+  if (!profile.is_factory) return 'Custom';
+  return dspProfileGroupLabel(dspProfileGroup(profile));
 }
 
 function uniqueDspLabel(label, usedLabels) {
@@ -5957,12 +6700,14 @@ function initMobileMenu() {
   if (!menuBtn || !sidebar || !overlay) return;
 
   function openMenu() {
+    blurActiveEditor();
     sidebar.classList.add('open');
     overlay.classList.add('open');
     document.body.style.overflow = 'hidden';
   }
 
   function closeMenu() {
+    blurActiveEditor();
     sidebar.classList.remove('open');
     overlay.classList.remove('open');
     document.body.style.overflow = '';
@@ -5974,7 +6719,7 @@ function initMobileMenu() {
   // Close menu on nav item click (mobile)
   $$('.nav-item').forEach(item => {
     item.addEventListener('click', () => {
-      if (window.innerWidth <= 768) {
+      if (isCompactLayout()) {
         closeMenu();
       }
     });
@@ -5989,7 +6734,7 @@ function initMobileMenu() {
     };
   }
   window.addEventListener('resize', debounce(() => {
-    if (window.innerWidth > 768) {
+    if (!isCompactLayout()) {
       closeMenu();
     }
   }, 150));
@@ -6533,8 +7278,8 @@ function attemptDspAutoFallback(reason = 'stream-error') {
     startBrowserPlayback(state.currentTrack, { resumeTime }).catch(() => {});
   }
 
-  showToast('EQ failed, switched to Dry');
-  console.warn('[VELVET] DSP auto-fallback to Dry:', reason, 'profile=', failedProfileId);
+  showToast('EQ failed, switched Off');
+  console.warn('[VELVET] DSP auto-fallback to Off:', reason, 'profile=', failedProfileId);
   resetDspErrorStreak();
   setTimeout(() => {
     dspAutoFallbackInFlight = false;
@@ -7011,7 +7756,7 @@ async function playTrack(track, queue, idx) {
   }
 
   // Only auto-open the mobile fullscreen player until the user explicitly minimizes it.
-  if (isNewTrack && window.innerWidth <= 768 && !state.mobilePlayerDismissed) {
+  if (isNewTrack && isCompactLayout() && !state.mobilePlayerDismissed) {
     toggleMobilePlayer(true, { source: 'auto' });
   }
 
@@ -7166,7 +7911,7 @@ async function toggleCastMenu() {
     alert('Critical: Cast menu element #cast-menu not found in DOM.');
     return;
   }
-  const mobilePlayerOpen = window.innerWidth <= 768 && UI['mobile-fullscreen-player']?.classList.contains('open');
+  const mobilePlayerOpen = isCompactLayout() && UI['mobile-fullscreen-player']?.classList.contains('open');
   menu.classList.toggle('mobile-player-open', !!mobilePlayerOpen);
   
   // Directly set based on presence of 'open' class to avoid toggle issues
@@ -7847,7 +8592,7 @@ UI['player-art'].addEventListener('click', openFullscreenPlayer);
 
 // Provide a way to manually open only from the now-playing info block on mobile.
 UI['player'].addEventListener('click', e => {
-  if (window.innerWidth > 768 || !state.currentTrack) return;
+  if (!isCompactLayout() || !state.currentTrack) return;
   const target = e.target;
   if (!(target instanceof Element)) return;
   if (!target.closest('.player-info')) return;
@@ -7896,6 +8641,11 @@ UI['upsample-select'].addEventListener('change', e => {
 });
 
 UI['dsp-select'].addEventListener('change', e => {
+  if (e.target.value === '__open_eq__') {
+    e.target.value = state.dspProfile || '';
+    if (window.openGraphicEQ) window.openGraphicEQ();
+    return;
+  }
   state.dspProfile = e.target.value;
   resetDspErrorStreak();
   if (state.dspProfile) {
@@ -7903,7 +8653,7 @@ UI['dsp-select'].addEventListener('change', e => {
   }
   persistDspProfileId(state.dspProfile);
   const selected = state.dspProfiles.find(profile => String(profile.id) === String(state.dspProfile));
-  showToast(selected ? `DSP: ${selected.name}` : 'DSP: Dry');
+  showToast(selected ? `DSP: ${selected.name}` : 'DSP: Off');
   document.querySelectorAll('.dsp-preset-card').forEach(card => {
     const isActive = String(card.dataset.profileId) === String(state.dspProfile || '');
     card.style.borderColor = isActive ? 'var(--gold)' : 'var(--border)';
@@ -8007,6 +8757,10 @@ async function navigate(view, params = {}, push = true) {
   log(`[VELVET] Navigating to: ${view}`, params);
   const prevView = state.view;
   const prevParams = state.viewParams;
+
+  // Page changes must not carry an active editor into the next view. This also
+  // dismisses tablet keyboards in landscape, where viewport width looks desktop-like.
+  if (view !== 'search') blurActiveEditor();
 
   if (view === 'search' && prevView !== 'search') {
     state.prevView = prevView || 'home';
@@ -8234,25 +8988,6 @@ async function render() {
 
 // Full settings editor (including its nested callbacks) lives in /static/js/settings-view.js.
 
-function renderScanProgress(s) {
-  const pct = s.total ? Math.round((s.progress / s.total) * 100) : 0;
-  return `
-    <div class="scan-banner" id="scan-progress-banner">
-      <div class="scan-banner-title">🔍 Scanning library…</div>
-      <div class="scan-progress-bar">
-        <div class="scan-progress-fill" style="width:${pct}%"></div>
-      </div>
-      <div class="scan-progress-text">
-        ${s.progress.toLocaleString()} / ${s.total.toLocaleString()} files
-        · ${s.tracks_added.toLocaleString()} added
-        · ${s.current_file}
-      </div>
-    </div>
-  `;
-}
-
-
-
 // ─── Card Makers ──────────────────────────────────────────────────────────────
 
 // Use smaller thumbnails on mobile for better performance
@@ -8274,14 +9009,19 @@ function exitSearch() {
   history.replaceState({ view: fallbackView, params: fallbackParams }, '', routeHash(fallbackView, fallbackParams));
   navigate(fallbackView, fallbackParams, false);
 }
-function setupSearch() {
+function setupSearch({ autoFocus = state.view === 'search' } = {}) {
   const input = $('search-input');
   if (!input) return;
-  input.focus();
-  
-  // Keep cursor at end if focused
-  const val = input.value;
-  input.setSelectionRange(val.length, val.length);
+
+  // Home/discover search waits for a real tap. The dedicated search results view
+  // preserves focus because it was reached by typing into that same field.
+  if (autoFocus) {
+    input.focus({ preventScroll: true });
+    const val = input.value;
+    input.setSelectionRange(val.length, val.length);
+  } else {
+    input.blur();
+  }
 
   input.addEventListener('compositionstart', () => { state.isComposing = true; });
   input.addEventListener('compositionend', () => { 
@@ -8327,6 +9067,7 @@ const GEQ_BANDS = [31.5, 63, 125, 250, 500, 1000, 2000, 4000, 8000, 16000];
 const GEQ_DEFAULT_Q = 1.41;
 let currentEqGains = new Array(10).fill(0);
 let currentEqProfileId = null;
+let currentEqDirty = false;
 
 // dsp-controls functions are loaded from /static/js/dsp-controls.js.
 
@@ -8860,21 +9601,49 @@ async function loadStats() {
   }
 }
 
-let _scanPollId;
-function startScanPolling() {
-  if (_scanPollId) clearInterval(_scanPollId);
-  _scanPollId = setInterval(async () => {
+let _scanPollId = null;
+let _scanPollToken = 0;
+let _latestScanStatus = {};
+
+function startScanPolling(initialState = null) {
+  if (_scanPollId) clearTimeout(_scanPollId);
+  const token = ++_scanPollToken;
+  let sawRunning = !!initialState?.running;
+  let waitingChecks = 0;
+
+  if (initialState) updateScanStatusPanel(initialState);
+
+  const poll = async () => {
     try {
-      const s = await api('/scan/status') || {};
-      if (!s.running) {
-        clearInterval(_scanPollId);
-        showToast('✅ Library scan complete');
+      const status = await api('/scan/status');
+      if (token !== _scanPollToken || !status) return;
+      updateScanStatusPanel(status);
+
+      if (status.running) {
+        sawRunning = true;
+        _scanPollId = setTimeout(poll, 1200);
+        return;
+      }
+
+      if (!sawRunning && waitingChecks < 3) {
+        waitingChecks += 1;
+        _scanPollId = setTimeout(poll, 700);
+        return;
+      }
+
+      _scanPollId = null;
+      if (sawRunning) {
+        const albums = Number(status.albums_added || 0).toLocaleString();
+        const tracks = Number(status.tracks_added || 0).toLocaleString();
+        showToast(`✓ Import complete — ${albums} albums, ${tracks} tracks`);
         loadStats();
       }
     } catch {
-      clearInterval(_scanPollId);
+      if (token === _scanPollToken) _scanPollId = null;
     }
-  }, 3000);
+  };
+
+  poll();
 }
 
 log('[VELVET] Initializing core services...');
@@ -8891,12 +9660,14 @@ window.addEventListener('DOMContentLoaded', async () => {
   // EQ Controls
   UI['eq-btn-reset']?.addEventListener('click', () => {
     currentEqGains.fill(0);
-    if (UI['eq-current-name']) UI['eq-current-name'].textContent = 'Dry (Flat)';
-    currentEqProfileId = 'custom';
+    if (UI['eq-current-name']) UI['eq-current-name'].textContent = 'Off';
+    currentEqProfileId = '';
+    currentEqDirty = false;
     renderEQSliders();
     renderEQPresets();
     updateEQCurve();
     updateEQHeadroomNote();
+    updateEQSaveButtonLabel();
   });
 
   UI['eq-btn-save']?.addEventListener('click', async () => {
@@ -8910,18 +9681,34 @@ window.addEventListener('DOMContentLoaded', async () => {
       }
     });
     
-    const profile = {
-      name: 'Custom Graphic EQ',
-      description: 'Saved from the 10-band Graphic EQ.',
-      category: 'custom',
-      preamp_db: recommendedGraphicEqPreamp(),
-      filters: filters,
-      tags: ['custom', 'graphic-eq']
-    };
-    
     try {
       const existingProfile = state.dspProfiles.find(p => String(p.id) === String(currentEqProfileId));
       const isExistingCustom = existingProfile && !existingProfile.is_factory;
+      if (!currentEqDirty && (existingProfile || !currentEqProfileId)) {
+        const dispatched = applyEqProfileToPlayer(existingProfile?.id || '');
+        if (!dispatched) showToast(existingProfile ? `DSP: ${existingProfile.name}` : 'DSP: Off');
+        UI['eq-overlay']?.classList.remove('active');
+        updateEQSaveButtonLabel();
+        return;
+      }
+      if (!filters.length && !isExistingCustom) {
+        showToast('No EQ changes to save');
+        updateEQSaveButtonLabel();
+        return;
+      }
+
+      const profile = {
+        name: 'Custom EQ',
+        description: 'Saved from the EQ Editor.',
+        category: 'custom',
+        preamp_db: recommendedGraphicEqPreamp(),
+        filters: filters,
+        tags: ['custom', 'graphic-eq']
+      };
+      if (isExistingCustom) {
+        profile.name = existingProfile.name || profile.name;
+        profile.description = existingProfile.description || profile.description;
+      }
       const endpoint = isExistingCustom ? `/dsp/profiles/${existingProfile.id}` : '/dsp/profiles';
       const method = isExistingCustom ? 'PUT' : 'POST';
       const res = await api(endpoint, { method, body: JSON.stringify(profile) });
@@ -8936,13 +9723,14 @@ window.addEventListener('DOMContentLoaded', async () => {
           select.value = savedProfileId;
           select.dispatchEvent(new Event('change', { bubbles: true }));
         }
-        showToast('EQ Saved & Applied');
+        currentEqDirty = false;
+        showToast('Preset saved and applied');
         UI['eq-overlay']?.classList.remove('active');
       }
     } catch (err) {
       showToast('Failed to save EQ');
     }
-    if (btn) btn.textContent = 'Save & Apply';
+    updateEQSaveButtonLabel();
   });
 
   // Initialization sequence MUST await first navigation
@@ -8963,7 +9751,7 @@ window.addEventListener('DOMContentLoaded', async () => {
 
   // Poll scan status if scan is running
   api('/scan/status').then(s => {
-    if (s && s.running) startScanPolling();
+    if (s && s.running) startScanPolling(s);
   }).catch(() => {});
 });
 
