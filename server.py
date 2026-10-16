@@ -381,13 +381,11 @@ _ALLOWED_ORIGINS_DEFAULT = [
 ]
 
 def _get_cors_origins():
-    """Get CORS origins from env var or use defaults."""
-    env_origins = os.environ.get("CORS_ORIGINS", "")
-    if env_origins:
-        # Parse comma-separated origins
-        origins = [o.strip() for o in env_origins.split(",") if o.strip()]
-        return _ALLOWED_ORIGINS_DEFAULT + origins
-    return _ALLOWED_ORIGINS_DEFAULT
+    """Honor VELVET_CORS_ORIGINS settings and the legacy CORS_ORIGINS list."""
+    configured = [*_ALLOWED_ORIGINS_DEFAULT, *settings.cors_origins]
+    extra = os.environ.get("CORS_ORIGINS", "")
+    configured.extend(o.strip() for o in extra.split(",") if o.strip())
+    return list(dict.fromkeys(configured))
 
 ALLOWED_ORIGINS = _get_cors_origins()
 log.info(f"[CORS] Allowed origins: {ALLOWED_ORIGINS}")
@@ -3377,7 +3375,7 @@ if __name__ == "__main__":
 
     uvicorn.run(
         "server:app",
-        host="0.0.0.0",
+        host=settings.host,
         port=PORT,
         log_level="warning",
         reload=False
