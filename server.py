@@ -2023,6 +2023,84 @@ async def _stream_with_dsp(file_path: str, dsp_filter: str, timeout_minutes: int
     )
 
 
+def _describe_signal_path(track, upsample: str, dop: str, dsp_filter: str) -> dict:
+    """Describe the *server* stream, not the Android/USB hardware output.
+
+    The client can receive original FLAC bytes and still have them resampled or
+    gain-adjusted by its browser, OS, or headphones. Never infer bit-perfect USB
+    playback from the HTTP response alone.
+    """
+    target_rate = UPSAMPLE_RATES.get(upsample)
+    if dop != "none" and dop in DSD_RATES:
+        mode = "dop"
+    elif target_rate:
+        mode = "upsampled"
+    elif dsp_filter:
+        mode = "dsp"
+    else:
+        mode = "direct"
+
+    return {
+        "source": {
+            "format": track["format"],
+            "sample_rate_hz": track["sample_rate"],
+            "bit_depth": track["bit_depth"],
+        },
+        "server_mode": mode,
+        "server_delivers_original_bytes": mode == "direct",
+        "processing": {
+            "dsp_applied": bool(dsp_filter),
+            "upsample_setting": upsample,
+            "dop_setting": dop,
+            "target_sample_rate_hz": target_rate if mode == "upsampled" else None,
+        },
+        "device_output": {
+            "usb_device": None,
+            "sample_rate_hz": None,
+            "bit_depth": None,
+            "bit_perfect_status": "unverified",
+            "reason": (
+                "VELVET cannot inspect the browser/Android audio mixer, USB DAC "
+                "negotiation, or headphone DSP. Original HTTP bytes do not prove "
+                "bit-perfect output."
+            ),
+        },
+    }
+
+
+@app.get("/api/audio/signal-path/{track_id}")
+def get_audio_signal_path(
+    track_id: int,
+    upsample: str = Query("none"),
+    dop: str = Query("none"),
+    dsp: int = Query(None),
+):
+    """Read-only diagnostic for the configured stream path.
+
+    This does not claim to read the client's actual USB output parameters.
+    """
+    db = get_db()
+    try:
+        track = db.execute(
+            "SELECT format, sample_rate, bit_depth FROM tracks WHERE id=?",
+            (track_id,),
+        ).fetchone()
+        if not track:
+            raise HTTPException(404, "Track not found")
+
+        dsp_filter = ""
+        if dsp:
+            profile = db.execute(
+                "SELECT * FROM dsp_profiles WHERE id=?", (dsp,)
+            ).fetchone()
+            if profile:
+                dsp_filter = build_dsp_filter_chain(dict(profile))
+
+        return _describe_signal_path(track, upsample, dop, dsp_filter)
+    finally:
+        db.close()
+
+
 @app.get("/api/stream/{track_id}")
 async def stream_track(
     track_id: int,
@@ -2082,17 +2160,15 @@ async def stream_track(
     if dsp_profile:
         dsp_filter = build_dsp_filter_chain(dsp_profile)
 
-    # Handle DoP (DSD over PCM) output
-    if dop != "none" and dop in DSD_RATES:
+    # Keep playback routing and the diagnostic endpoint on the same policy.
+    signal = _describe_signal_path(track, upsample, dop, dsp_filter)
+    if signal["server_mode"] == "dop":
         return await _stream_dop(fp, dop, quality, timeout_minutes, dsp_filter)
-
-    # Handle PCM upsampling with optional DSP
-    target_rate = UPSAMPLE_RATES.get(upsample)
-    if target_rate:
-        return await _stream_upsampled(fp, target_rate, quality, timeout_minutes, dsp_filter)
-
-    # Handle DSP-only (no upsampling)
-    if dsp_filter:
+    if signal["server_mode"] == "upsampled":
+        return await _stream_upsampled(
+            fp, UPSAMPLE_RATES[upsample], quality, timeout_minutes, dsp_filter
+        )
+    if signal["server_mode"] == "dsp":
         return await _stream_with_dsp(fp, dsp_filter, timeout_minutes)
 
     return _stream_file_direct(fp, request)
