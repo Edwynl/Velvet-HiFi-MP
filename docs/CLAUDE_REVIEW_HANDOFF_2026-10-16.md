@@ -1,33 +1,51 @@
-# Claude review handoff — Velvet audio/security stabilization
+# VELVET Consolidated Claude Review — 2026-10-16
 
-Target: Draft PR #1 on `fix/auth-boundaries-and-soxr-resampling`. **Do not merge before validation.**
+Repository: `Edwynl/Velvet-HiFi-MP`
+Review target: **Draft PR #1**, branch `fix/auth-boundaries-and-soxr-resampling`
+Base: `main`. **No change has been merged.**
 
-## New commits
-- `audio_streaming.py`: shared async FFmpeg stdout generator; closes process on cancellation, generator close, timeout, or exception.
-- `server.py`: validates single RFC 9110 byte ranges including suffix; returns HTTP 416 with `Content-Range: bytes */size`; correct WAV MIME for PCM resampling; removes fake DoP path and explicitly returns 501 for requested DoP.
-- `tests/test_audio_streaming.py`: regressions for ranges, subprocess completion and early stream close.
+## Review once, after this development batch
 
-## Items Claude should review carefully
-1. **Decoder shutdown:** verify asynchronous generator finalization when Starlette's StreamingResponse disconnects or a client closes an audio tab. Simulate a subprocess that produces bytes then hangs and confirm no child process is left behind. Confirm cancellation propagates.
-2. **Range semantics:** tests for `bytes=0-3`, open-ended ranges, suffix ranges, large numbers, empty files, invalid/multi-ranges and 416 response headers. A missing `Range` must keep using the original direct-file response.
-3. **Format correctness:** FFmpeg upsamples into `pcm_s32le` WAV, not FLAC. The endpoint now returns `audio/wav`, whereas DSP-only emits FLAC. Test actual browser and DAC support, particularly iOS/Safari.
-4. **DoP:** the previous implementation emitted PCM while labelling it DoP. `dop != none` now returns HTTP 501 rather than deceptive sound output. Plan true DoP separately with proper marker/bit packing, native DAC transport and hardware acceptance tests.
-5. **Security:** inspect PR's earlier auth changes, including first-time localhost bootstrap, key rotation login flow, proxy/Tailscale behaviour and the difference between local-network bypass and management endpoints.
-6. **Test coverage:** run Python suite (`python -m pytest tests -q`) and frontend suite (`npm run test:frontend`), then manually test play/pause/seek/next/previous and mobile background recovery.
-7. **Potential follow-up:** rate limiting for FFmpeg processes and stream concurrency (present settings don't prove enforcement); limit PWA cover cache; avoid long-lived keys in stream URLs.
+Review the ENTIRE PR diff rather than individual commits. Look for feature integration conflicts, playback regressions, authentication flaws and OS-specific incompatibilities. Where necessary, make focused fixes on the same branch, extend tests, and report results. Do **not** merge without the owner's approval.
 
-## Verification matrix
-| Case | Expected |
+### Completed code areas
+
+| Area | Implemented |
 |---|---|
-| Direct FLAC/MP3 Range `bytes=0-3` | 206, exactly 4 bytes, correct `Content-Range` |
-| Direct suffix Range `bytes=-4` | 206, final 4 bytes |
-| Invalid/out-of-bounds Range | 416 + `Content-Range: bytes */N` |
-| PCM resampling | Valid WAV header, correct output sample rate |
-| DSP-only | FLAC stream and explicit DSP indicator |
-| DoP requested | 501 until true DoP is implemented |
-| Stop streaming midway | FFmpeg child terminated and reaped |
-| Password enabled | All credential-changing endpoints reject missing auth |
-| New first password from external IP | 403 |
-| Login and API key renewal | Browser retains current valid token |
+| Network bootstrap | Remote clients cannot access unconfigured server APIs; first password setup requires loopback |
+| Authentication | Credential mutation endpoints always require authentication; don't trust raw X-Forwarded-For as client identity |
+| Key lifecycle | Frontend login obtains a key via authenticated request; API key rotations update local client state |
+| Password hashing | PBKDF2 with per-password salt when bcrypt is absent; legacy unsalted SHA-256 verification retained only for existing hashes |
+| HTTP direct audio | Single byte ranges including suffix, 206, invalid/out-of-bounds 416, proper Content-Range |
+| FFmpeg streams | Reuse async decoder streaming cleanup; canceled requests and timeouts terminate and reap child processes |
+| Resampling | Correct libsoxr parameters; WAV response matches output bytes; preserve 44.1k vs 48k source families and reject extreme target rates |
+| DSP-only | FLAC response with cleanup |
+| DoP honesty | Requests for unimplemented DoP return 501 rather than ordinary PCM mislabeled as DSD |
+| Native audio | Place `-af` after FFmpeg input; use float32 PCM to avoid 16-bit decoder truncation; regression mock test |
+| Configuration | Honor `VELVET_CORS_ORIGINS` through settings and `VELVET_HOST` in Uvicorn |
+| PWA | Bound thumbnail/cover caches, avoid caching `no-store` responses, and skip all non-cover API/audio |
+| Testing and CI | Python + frontend GitHub Actions workflow, regression tests, corrected stale DSP deletion test, removed invalid `patch.py` |
 
-**Limits:** GitHub files were edited via the connector; the full Python/JS suites have not been executed in the actual project environment. FFmpeg option syntax was validated independently on FFmpeg 7.1.5. No main branch changes.
+### Required validation
+
+1. Run `python -m pytest tests -q` and `npm run test:frontend`. Confirm CI for the **latest** head SHA passes, rather than relying on older green checks.
+2. On Windows test: source FLAC/MP3 16/24 bit, 44.1k/48k, WASAPI shared and exclusive-capable DAC where available, DSP preamp/EQ, stop/pause/resume, repeated rapid switching, hardware disconnect/reconnect, playback end and seek.
+3. On actual iOS/Android browser or PWA: login/renew API key, play/pause, audio in background and lock screen, same-origin cover caching, low connectivity, long playlists.
+4. Check that first-time setup works locally on `http://localhost:8765`, that unauthenticated LAN access is denied, and that configured remote clients can play normally. Verify Tailscale/reverse-proxy client IP handling.
+5. Confirm FFmpeg output headers correspond to the actual WAV/FLAC bytes and that compressed/direct original streams preserve Range requests.
+6. Test an audio client disconnecting while FFmpeg has a long-lived process: there must be no leaked subprocess.
+7. Verify cover cache does not grow without bound after scrolling a large library.
+8. Check dependency audits: an earlier CI npm install warned of one high-severity vulnerability; identify the dependency and fix only with appropriate lockfile tests.
+
+### Remaining limits / honest caveats
+
+- True DoP is **not implemented** and needs suitable hardware, marker packaging and DAC acceptance tests. Do not claim DSD output works.
+- Browser playback is not automatically bit-perfect; device, DSP, volume and resampling behavior matter. Native float32 audio is likewise not guaranteed bit-perfect.
+- `LocalPlayer` still synchronously reads FFmpeg stdout inside a PortAudio callback; an asynchronous ring buffer would lower underrun risk but warrants an isolated Windows hardware-tested change.
+- URL query-string API key is still used for HTMLMediaElement streaming; propose a short-lived per-stream signed authorization design before internet-facing deployment.
+- Full frontend migration away from a ~450KB single HTML file, synchronized multi-room playback, device-capability negotiation and real ASIO exclusive output are **not included** in this patch. These are separate architecture/hardware projects, not fixes that can safely be claimed complete in a general regression PR.
+- GitHub CI is not equivalent to validating Windows audio devices, Tailscale, iOS or Hi-Fi DACs.
+
+### Claude output requested
+
+Provide one final review report with: `P0/P1/P2` findings, direct code fixes, tests run and pass/fail counts, performance and compatibility risks, any migration notes, exact remaining items, and a clear **merge / do-not-merge** recommendation. Keep PR as draft until approved.
