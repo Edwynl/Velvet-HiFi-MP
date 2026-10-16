@@ -38,6 +38,7 @@ async function waitFor(predicate, { timeoutMs = 4000, intervalMs = 20 } = {}) {
 }
 
 function createHarness({ initialHash = '#home' } = {}) {
+  const fetchLog = [];
   const album = {
     id: 11,
     title: 'Back Test Album',
@@ -181,6 +182,10 @@ function createHarness({ initialHash = '#home' } = {}) {
       return Promise.resolve(makeJsonResponse({ albums: genreAlbums.Jazz }));
     }
 
+    if (parsedUrl.pathname === '/api/albums/11/favorite' && method === 'POST') {
+      return Promise.resolve(makeJsonResponse({ success: true, is_favorite: true }));
+    }
+
     if (parsedUrl.pathname === '/api/search' && method === 'GET') {
       const query = parsedUrl.searchParams.get('q') || '';
       return Promise.resolve(makeJsonResponse(searchResults[query] || { tracks: [] }));
@@ -190,6 +195,7 @@ function createHarness({ initialHash = '#home' } = {}) {
   };
 
   return {
+    fetchLog,
     async createDom() {
       const html = inlineFrontendModules(readFileSync(HTML_PATH, 'utf8')).replace(/<link[^>]+>/g, '');
       const dom = new JSDOM(html, {
@@ -197,7 +203,10 @@ function createHarness({ initialHash = '#home' } = {}) {
         runScripts: 'dangerously',
         pretendToBeVisual: true,
         beforeParse(window) {
-          window.fetch = (url, opts) => route(url, opts);
+          window.fetch = (url, opts) => {
+            fetchLog.push(`${(opts?.method || 'GET').toUpperCase()} ${new URL(url, 'http://localhost').pathname}`);
+            return route(url, opts);
+          };
           window.confirm = () => true;
           window.alert = () => {};
           window.scrollTo = () => {};
@@ -271,6 +280,95 @@ async function testAlbumBackFallsBackWhenHistoryBackDoesNothing() {
     assert.equal(backCalls, 1);
     assert.equal(dom.window.eval('state.view'), 'albums');
     assert.equal(dom.window.document.querySelector('#albums-grid') !== null, true);
+  } finally {
+    await new Promise(resolve => dom.window.setTimeout(resolve, 10));
+  }
+}
+
+function albumListFetches(harness) {
+  return harness.fetchLog.filter(entry => entry === 'GET /api/albums').length;
+}
+
+async function openAlbumFromAlbums(dom, harness, scrollTop) {
+  await dom.window.navigate('albums');
+  const grid = await waitFor(() => dom.window.document.querySelector('#albums-grid .album-card, #albums-grid > *')
+    && dom.window.document.querySelector('#albums-grid'));
+  // jsdom does not lay out: emulate a scroll offset that, like a browser's,
+  // clamps to 0 as soon as the view's content is removed.
+  const main = dom.window.document.querySelector('#main');
+  const viewContainer = dom.window.document.querySelector('#view-container');
+  let mainScrollTop = 0;
+  Object.defineProperty(main, 'scrollTop', {
+    configurable: true,
+    get: () => {
+      if (!viewContainer.childElementCount) mainScrollTop = 0;
+      return mainScrollTop;
+    },
+    set: v => { mainScrollTop = viewContainer.childElementCount ? v : 0; },
+  });
+  main.scrollTop = scrollTop;
+  await dom.window.navigate('album', { id: 11 });
+  await waitFor(() => dom.window.document.querySelector('.back-btn'));
+  return { grid, main };
+}
+
+async function testBackToAlbumsRestoresKeptViewWithoutRefetch() {
+  const harness = createHarness();
+  const dom = await harness.createDom();
+
+  try {
+    const { grid, main } = await openAlbumFromAlbums(dom, harness, 640);
+    const fetchesBefore = albumListFetches(harness);
+
+    dom.window.history.back();
+    await waitFor(() => dom.window.eval('state.view') === 'albums' && dom.window.document.querySelector('#albums-grid'));
+
+    assert.equal(albumListFetches(harness), fetchesBefore, 'back must not refetch the album list');
+    assert.equal(dom.window.document.querySelector('#albums-grid'), grid, 'back must reuse the same grid node');
+    assert.equal(main.scrollTop, 640, 'back must restore the scroll position');
+  } finally {
+    await new Promise(resolve => dom.window.setTimeout(resolve, 10));
+  }
+}
+
+async function testMenuNavigationAndMutationsRenderAlbumsFresh() {
+  const harness = createHarness();
+  const dom = await harness.createDom();
+
+  try {
+    await openAlbumFromAlbums(dom, harness, 200);
+    let fetches = albumListFetches(harness);
+    dom.window.document.querySelector('.nav-item[data-view="albums"]').click();
+    await waitFor(() => albumListFetches(harness) === fetches + 1);
+
+    await openAlbumFromAlbums(dom, harness, 200);
+    fetches = albumListFetches(harness);
+    await dom.window.api('/albums/11/favorite', { method: 'POST' });
+    dom.window.history.back();
+    await waitFor(() => albumListFetches(harness) === fetches + 1);
+    assert.equal(dom.window.eval('state.view'), 'albums');
+  } finally {
+    await new Promise(resolve => dom.window.setTimeout(resolve, 10));
+  }
+}
+
+async function testAlbumsReRenderDoesNotStackScrollListeners() {
+  const harness = createHarness();
+  const dom = await harness.createDom();
+
+  try {
+    const main = dom.window.document.querySelector('#main');
+    let scrollListeners = 0;
+    const add = main.addEventListener.bind(main);
+    const remove = main.removeEventListener.bind(main);
+    main.addEventListener = (type, ...rest) => { if (type === 'scroll') scrollListeners += 1; return add(type, ...rest); };
+    main.removeEventListener = (type, ...rest) => { if (type === 'scroll') scrollListeners -= 1; return remove(type, ...rest); };
+
+    for (let i = 0; i < 3; i += 1) {
+      await dom.window.navigate('albums');
+      await waitFor(() => dom.window.document.querySelector('#albums-grid > *'));
+    }
+    assert.equal(scrollListeners, 1, 'albums must keep a single scroll listener on #main');
   } finally {
     await new Promise(resolve => dom.window.setTimeout(resolve, 10));
   }
@@ -429,6 +527,9 @@ function testLandscapeAlbumLayoutCssGuards() {
 
 async function main() {
   await testAlbumBackFallsBackWhenHistoryBackDoesNothing();
+  await testBackToAlbumsRestoresKeptViewWithoutRefetch();
+  await testMenuNavigationAndMutationsRenderAlbumsFresh();
+  await testAlbumsReRenderDoesNotStackScrollListeners();
   await testGenreViewDoesNotReuseCachedMarkupAcrossIds();
   await testExitSearchReplacesHistoryEntryInsteadOfPushingAnother();
   await testNavigateClosesMobileSidebarOverlay();

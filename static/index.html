@@ -6813,7 +6813,14 @@ let authState = {
   apiKey: localStorage.getItem('velvet_api_key') || ''
 };
 
+// Views kept alive across back/forward: going back re-attaches their DOM
+// (listeners, filters, page) and scroll position instead of refetching the
+// whole library. Any mutating API call drops them so nothing stale returns.
+const KEEP_ALIVE_VIEWS = new Set(['albums']);
+const _keptViews = new Map();  // view -> { nodes, scrollTop, savedAt }
+
 async function api(path, opts = {}) {
+  if ((opts.method || 'GET').toUpperCase() !== 'GET') _keptViews.clear();
   const headers = opts.headers || {};
   if (opts.body && !headers['Content-Type']) {
     headers['Content-Type'] = 'application/json';
@@ -8791,7 +8798,13 @@ async function navigate(view, params = {}, push = true) {
 
   // Cache current page before rendering new one
   const vc = UI['view-container'];
-  if (prevView && vc.innerHTML) {
+  if (prevView && KEEP_ALIVE_VIEWS.has(prevView) && vc.firstChild) {
+    // Read the offset first: removing the content clamps it to 0.
+    const scrollTop = UI['main']?.scrollTop || 0;
+    const nodes = document.createDocumentFragment();
+    nodes.append(...vc.childNodes);
+    _keptViews.set(prevView, { nodes, scrollTop, savedAt: Date.now() });
+  } else if (prevView && vc.innerHTML) {
     _cachePage(prevView, vc.innerHTML);
   }
 
@@ -8799,7 +8812,8 @@ async function navigate(view, params = {}, push = true) {
   UI['sidebar-overlay']?.classList.remove('open', 'active');
   UI['sidebar']?.classList.remove('open');
 
-  await render();
+  // Back/forward restores a kept view; menu clicks and links render fresh.
+  await render({ restore: !push });
 }
 
 function routeHash(view, params = {}) {
@@ -8901,7 +8915,7 @@ $$('.player-info').forEach(el => {
 
 // ─── Rendering ───────────────────────────────────────────────────────────────
 
-async function render() {
+async function render({ restore = false } = {}) {
   log('[VELVET] render() started');
   const vc = UI['view-container'];
   if (!vc) {
@@ -8919,6 +8933,17 @@ async function render() {
   // Show loading immediately with smoother transition
   vc.style.opacity = '0.5';
   vc.className = 'view-' + state.view;
+
+  const kept = _keptViews.get(state.view);
+  _keptViews.delete(state.view);
+  if (kept && restore && Date.now() - kept.savedAt < _DATA_CACHE_TTL_MS) {
+    vc.replaceChildren(kept.nodes);
+    vc.style.opacity = '1';
+    const main = UI['main'];
+    if (main) main.scrollTop = kept.scrollTop;
+    log('[VELVET] Render complete (kept view):', state.view);
+    return;
+  }
 
   // Restore from cache if available (faster than re-fetching/re-rendering)
   // Skip cache for views that use addEventListener on rendered cards (album cards,
