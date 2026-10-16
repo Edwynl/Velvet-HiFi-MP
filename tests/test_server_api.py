@@ -793,6 +793,27 @@ class ServerApiTests(unittest.TestCase):
         self.assertNotIn("Content-Encoding", plain.headers)
         self.assertIn("function renderAlbums", plain.text)
 
+    def test_album_delete_keeps_artist_still_referenced_by_other_tracks(self):
+        # tracks.artist_id has no ON DELETE action: removing an artist that is
+        # still the primary artist of a track on another album violates the FK.
+        album_path = self.root / "music" / "one.flac"
+        guest = self.root / "music" / "guest.flac"
+        guest.write_bytes(b"guest")
+        with self._connect() as db:
+            db.execute("INSERT INTO tracks (id, album_id, artist_id, title, file_path) "
+                       "VALUES (3, 2, 1, 'Guest Track', ?)", (str(guest),))
+            db.commit()
+        with patch.object(server, "_resolve_library_roots", return_value=[album_path.parent.resolve()]), \
+             patch.object(server._scan_job, "is_running", return_value=False), \
+             patch.object(server._duplicate_job, "is_running", return_value=False):
+            deletion = self.client.delete("/api/albums/1?delete_files=true")
+        self.assertEqual(deletion.status_code, 200, deletion.text)
+        self.assertFalse(album_path.exists())
+        self.assertTrue(guest.exists())
+        with self._connect() as db:
+            self.assertIsNotNone(db.execute("SELECT id FROM artists WHERE id=1").fetchone())
+            self.assertIsNotNone(db.execute("SELECT id FROM tracks WHERE id=3").fetchone())
+
     def test_album_delete_refuses_while_library_scan_is_running(self):
         audio = self.root / "music" / "one.flac"
         with patch.object(server._scan_job, "is_running", return_value=True):

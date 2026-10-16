@@ -1786,8 +1786,9 @@ def delete_album(album_id: int, delete_files: bool = Query(False)):
             artist_id = album["artist_id"]
             refs = db.execute(
                 "SELECT EXISTS(SELECT 1 FROM albums WHERE artist_id=?) OR "
+                "EXISTS(SELECT 1 FROM tracks WHERE artist_id=?) OR "
                 "EXISTS(SELECT 1 FROM track_artists WHERE artist_id=?)",
-                (artist_id, artist_id),
+                (artist_id, artist_id, artist_id),
             ).fetchone()[0]
             if not refs:
                 db.execute("DELETE FROM artists WHERE id=?", (artist_id,))
