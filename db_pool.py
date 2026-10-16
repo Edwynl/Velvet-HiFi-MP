@@ -36,6 +36,11 @@ class _ManagedSQLiteConnection(sqlite3.Connection):
     """
 
     def close(self):  # type: ignore[override]
+        # Release at the end of each request without leaving a pending write
+        # transaction on a thread-local connection. A no-op close previously
+        # allowed a failed mutation to poison the next unrelated API call.
+        if self.in_transaction:
+            self.rollback()
         return None
 
     def force_close(self) -> None:
@@ -215,36 +220,26 @@ def get_pool_status() -> dict:
 
 
 def _recycle_pool() -> None:
+    """Request a safe recycle; the owning threads close their own connections.
+
+    Python's sqlite3 uses check_same_thread=True. Closing a connection from
+    this maintenance thread raises ProgrammingError (silently ignored by the
+    old code). Instead, mark every connection stale. The next get_db() on the
+    owner thread rolls back, physically closes, and replaces its connection.
+    """
     global _pool_recovery_in_progress, _pool_last_recycle_time
 
     with _pool_recycle_lock:
         if _pool_recovery_in_progress:
             return
         _pool_recovery_in_progress = True
-
     try:
         with _registry_lock:
-            entries = list(_connection_registry.values())
-            _connection_registry.clear()
-
-        closed = 0
-        for info in entries:
-            try:
-                conn = info["connection"]
-                if hasattr(conn, "force_close"):
-                    conn.force_close()  # type: ignore[attr-defined]
-                else:
-                    conn.close()
-                closed += 1
-            except Exception:
-                pass
-
-        # If recycle is initiated from current thread, clear its stale handle.
-        if hasattr(_thread_local, "connection"):
-            _thread_local.connection = None
-
+            scheduled = len(_connection_registry)
+            for entry in _connection_registry.values():
+                entry["stale"] = True
         _pool_last_recycle_time = time.time()
-        log.warning("[DB] Recycled %s thread-local connection(s)", closed)
+        log.info("[DB] Scheduled safe recycle of %s thread-owned connections", scheduled)
     finally:
         _pool_recovery_in_progress = False
 
