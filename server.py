@@ -1737,7 +1737,7 @@ def _parse_range(header: str, size: int) -> tuple[int, int]:
     """
     if size <= 0:
         raise ValueError("empty resource")
-    match = re.fullmatch(r"bytes=(\\d*)-(\\d*)", header.strip())
+    match = re.fullmatch(r"bytes=(\d*)-(\d*)", header.strip())
     if not match:
         raise ValueError("unsupported byte range")
 
