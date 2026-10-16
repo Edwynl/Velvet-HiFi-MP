@@ -125,6 +125,7 @@ def scan_music_dirs(
     on_track_skipped: Callable[[], dict | None],
     on_error: Callable[[str], None],
     on_track_updated: Callable[[], dict | None] | None = None,
+    force_reparse: bool = False,
 ) -> dict:
     """Incremental scan: refresh changed metadata while retaining track identity.
 
@@ -169,13 +170,14 @@ def scan_music_dirs(
         known = existing.get(file_path)
         if known:
             track_id, old_size, old_mtime = known
-            if old_size is not None and old_size == file_stat.st_size and old_mtime == file_stat.st_mtime_ns:
+            if (not force_reparse and old_size is not None and old_size == file_stat.st_size
+                    and old_mtime == file_stat.st_mtime_ns):
                 on_track_skipped()
                 continue
             # Atomic per-file metadata replacement (no partial artist/album links).
             db.execute("SAVEPOINT velvet_scan_file")
             try:
-                if old_size is None or old_mtime is None:
+                if (old_size is None or old_mtime is None) and not force_reparse:
                     # Legacy rows are not blindly reprocessed; establish baseline.
                     if track_id in needs_backfill:
                         _backfill_track_artists(db, file_path)
@@ -193,7 +195,7 @@ def scan_music_dirs(
                 db.execute("RELEASE SAVEPOINT velvet_scan_file")
                 on_error(f"Incremental metadata refresh failed for {file_path}: {exc}")
                 continue
-            if old_size is None or old_mtime is None:
+            if (old_size is None or old_mtime is None) and not force_reparse:
                 on_track_skipped()
             else:
                 tracks_updated += 1
@@ -256,64 +258,24 @@ def refresh_folder_records(
     on_track_added: Callable[[], dict | None],
     on_error: Callable[[str], None],
     scan_batch_size: int = 50,
+    on_track_updated: Callable[[], dict | None] | None = None,
 ) -> dict:
-    tracks_to_delete = db.execute(
-        "SELECT id, file_path FROM tracks WHERE file_path LIKE ?",
-        (f"{folder_path}%",),
-    ).fetchall()
+    """Force metadata re-read while retaining track, playlist and history IDs.
 
-    if not tracks_to_delete:
-        return {"deleted_tracks": 0, "discovered_files": 0}
-
-    track_ids = [row["id"] if isinstance(row, sqlite3.Row) else row[0] for row in tracks_to_delete]
-    placeholders = ",".join("?" * len(track_ids))
-    db.execute(
-        f"DELETE FROM track_artists WHERE track_id IN ({placeholders})",
-        track_ids,
+    Unlike the legacy delete/reinsert path, a folder refresh never removes
+    records for temporarily missing or offline audio files.
+    """
+    result = scan_music_dirs(
+        db, [folder_path], audio_extensions=audio_extensions,
+        scan_batch_size=scan_batch_size, extract_metadata=extract_metadata,
+        find_folder_cover=find_folder_cover, save_cover=save_cover,
+        set_total=set_total, on_progress=on_progress,
+        on_track_added=on_track_added, on_track_skipped=lambda: None,
+        on_track_updated=on_track_updated, on_error=on_error,
+        force_reparse=True,
     )
-    db.execute(f"DELETE FROM tracks WHERE id IN ({placeholders})", track_ids)
-    db.commit()
+    return {"deleted_tracks": 0, **result}
 
-    all_files = discover_audio_files([folder_path], audio_extensions)
-    set_total(len(all_files))
-
-    artists_cache: dict[str, int] = {}
-    albums_cache: dict[tuple[int, str], int] = {}
-
-    pending_commits = 0
-    commit_every = max(10, scan_batch_size)
-
-    for index, file_path in enumerate(all_files, start=1):
-        on_progress(index, os.path.basename(file_path))
-        try:
-            metadata = extract_metadata(file_path)
-            individual_artist_ids, primary_artist_id = _resolve_artist_ids(db, metadata, artists_cache)
-            album_id = _resolve_album_id(
-                db,
-                metadata,
-                file_path,
-                primary_artist_id,
-                albums_cache,
-                find_folder_cover=find_folder_cover,
-                save_cover=save_cover,
-                update_existing_cover_if_missing=True,
-            )
-            if album_id is None:
-                continue
-
-            _insert_track_and_artists(db, metadata, file_path, album_id, primary_artist_id, individual_artist_ids)
-            on_track_added()
-            pending_commits += 1
-            if pending_commits >= commit_every:
-                db.commit()
-                pending_commits = 0
-        except Exception as exc:
-            on_error(f"[REFRESH] Error processing {file_path}: {exc}")
-
-    if pending_commits:
-        db.commit()
-
-    return {"deleted_tracks": len(track_ids), "discovered_files": len(all_files)}
 
 
 def _backfill_track_artists(db: sqlite3.Connection, file_path: str) -> None:
