@@ -1,58 +1,87 @@
-# VELVET PR #1 — Release-Readiness Report (second review round)
+# VELVET PR #1 — Final Merge-Gate Report
 
-Repository `Edwynl/Velvet-HiFi-MP` · branch `fix/auth-boundaries-and-soxr-resampling` · Draft PR #1 · base `main` (not merged)
+Repository `Edwynl/Velvet-HiFi-MP` · branch `fix/auth-boundaries-and-soxr-resampling` · Draft PR #1 · base `main` (not merged). PR #2 was not touched.
 
-## Recommendation
+## Verdict
 
-**Do not merge yet.** The code findings from the second independent review are fixed and covered by regression tests, and CI passes on Linux and Windows (see below). Before merging, the owner should run the hardware/device checks in the last section. They cover real-time audio, DLNA interoperability and mobile background behavior, which CI cannot reproduce. Keep the PR in draft until those pass.
+**GO for code, NO-GO for merge until the hardware acceptance below is done.**
 
-## Findings fixed in this round
+**PR #1 is code-ready; pending hardware acceptance and owner approval.**
 
-| # | Sev | Finding | Fix | Regression tests |
-|---|-----|---------|-----|------------------|
-| 1 | P0 | Long-lived API key embedded in `/api/stream/...?api_key=` URLs (leaks via logs, history, renderer metadata); query-string credentials accepted on every route | HMAC-SHA256 media tickets scoped to **one track** (`stream`) or **one album cover** (`cover`), `expires = now + duration + 30 min` (cap 12 h). Signing secret is rotated on password change, API-key rotation/reset and disable, which revokes every outstanding ticket. Credentials are now accepted **only in headers**. Browser requests a ticket per track via authenticated `POST /api/stream-ticket`. | `test_media_tickets.py::MediaTicketTests` (scope, tamper, expiry, revocation, TTL), `test_server_api.py::test_stream_ticket_requires_authentication_and_is_track_scoped`, `test_auth_middleware_ignores_credentials_in_query_string`, `tests/frontend/stream-ticket.test.mjs` |
-| 2 | P1 | UPnP/DLNA browsing and casting broken under authentication (cast returned 501; control points cannot send headers; unconfigured server blocked LAN renderers) | **Cast:** the server hands the renderer ticketed stream and cover URLs; SOAP calls run in a worker thread instead of blocking the event loop. **Browse:** an authenticated user opens a time-limited window (`POST /api/dlna/browse-access`, default 60 min, max 8 h, in-memory, treated as a sensitive route even with LAN-auth opt-out). During the window only **private/link-local** clients may browse; CGNAT/Tailscale (100.64/10), public and mapped-public IPv6 addresses are refused. Listed tracks carry per-track tickets valid until the window closes plus the track length. The UI control is in Remote → Security Protection → *DLNA Library Browsing*, built with the existing classes. | `test_media_tickets.py::DlnaBrowseAuthorizationTests`, `test_server_api.py::test_protected_cast_hands_renderer_track_scoped_ticket_urls`, `test_ticket_from_unconfigured_host_lets_lan_renderer_play_only_that_track`, `test_cover_ticket_is_scoped_to_cover_reads`, `test_dlna_browse_window_requires_credentials_and_is_bounded`, `test_upnp_server.py` |
-| 3 | P1 | `max_concurrent_streams` setting was never enforced; the transcode limit was a hard 60 minutes (query `le=60`) that ignored `VELVET_STREAM_TIMEOUT_MINUTES` and cut long-form music | `StreamSlots` limits concurrent FFmpeg transcodes (DSP/upsampling) to `VELVET_MAX_CONCURRENT_STREAMS` and returns `503` + `Retry-After: 5` when the limit is reached. A lease is released when the decoder is reaped, or by GC if the body never started. Direct file streams are not limited because a browser preload/seek would otherwise trip it. The time limit now uses `max(configured or requested minutes, duration + 30 min)`, capped at 12 h, and the setting range is raised to 5–720. A separate 120 s **idle** timeout ends stalled decoders without counting time a paused client spends not reading. | `test_server_api.py::test_transcoded_streams_are_limited_to_configured_concurrency`, `test_transcode_time_limit_respects_configuration_and_long_tracks`, `test_media_tickets.py::StreamSlotTests`, `TranscodeLifecycleLimitTests` |
-| 4 | P1 | Windows native audio read the FFmpeg pipe, terminated processes, logged and took state locks **inside the PortAudio callback** | A dedicated `velvet-ffmpeg-decoder` thread fills a bounded `PcmRingBuffer` (2 s). The callback only copies memory, applies gain and zero-fills on underrun (counted, not logged). End of track, process reaping and state updates run on the decoder thread and are ignored if a newer track or an explicit stop owns the state. `stop()` closes the ring, terminates FFmpeg from the control thread and joins the worker. There is a 250 ms prebuffer before the stream starts. | `test_native_audio.py::PcmRingBufferTests`, `DecoderWorkerTests` (pipe reads only on the decoder thread; natural end handled off the audio thread; prompt stop with a blocked producer; no stale-state clobbering) plus the existing native tests |
-| 5 | P1 | `sounddevice` was missing from `requirements.txt`; `install.ps1` reported success even when pip failed; a missing PortAudio library (`OSError`) crashed the import | `sounddevice>=0.4.6,<1.0.0; sys_platform == "win32" or "darwin"`. `install.ps1` checks `$LASTEXITCODE`, verifies `local_playback.SOUNDDEVICE_AVAILABLE` in the venv and force-reinstalls once if needed. `OSError` is caught and its reason is reported in `/api/zones` → `native.error`. CI adds a **Windows installer job** that runs `install.ps1` and asserts native audio imports. | `test_native_audio.py::NativeAudioInstallTests`, CI job `Windows installer and native audio detection` |
+All automatable gates pass: the Python and frontend suites, Linux and Windows CI, Windows installer verification, real-FFmpeg output checks, a live HTTP smoke test, and a native-audio smoke test on this PC's PortAudio. No open P0/P1 remains. The PR stays in Draft.
 
-The UI styling and the music library schema/data are unchanged. The only UI addition is the DLNA browsing row, built from existing `settings-*`/`btn` classes. There are no database migrations.
+## Findings
 
-## Tests run
+### Final review (this round)
 
-| Suite | Environment | Result |
-|-------|-------------|--------|
-| `python -m pytest tests -q` | Local Windows 11, Python 3.12, FFmpeg **without libsoxr** | 135 passed, 12 failed. All 12 failures are `test_actual_wav_flac_and_mp3_transcodes` subtests returning the intended `503` because the local FFmpeg build lacks libsoxr. CI uses full builds. |
-| `npm run test:frontend` | Local, Node | 7/7 scripts OK (including the new `stream-ticket`) |
-| GitHub Actions run [38860960460](https://github.com/Edwynl/Velvet-HiFi-MP/actions/runs/38860960460), code head `37decb5` | Python · ubuntu-latest | **pass** — 134 passed, 1 skipped (Windows-only sounddevice test), 50 subtests passed (FFmpeg with libsoxr, real transcodes) |
-| 〃 | Python · windows-latest | **pass** — 135 passed, 0 skipped, 50 subtests passed (includes real `import sounddevice` + PortAudio) |
-| 〃 | Windows installer job | **pass** — `install.ps1 -SkipNode` installed `sounddevice 0.5.6`; logged `[OK] Native audio output is available`; venv assertion passed |
-| 〃 | Frontend · ubuntu-latest / windows-latest | **pass** / **pass** (7 scripts each) |
+| Sev | Finding | Status |
+|-----|---------|--------|
+| P1 | Round 2 awaited a per-track ticket fetch **before `audio.play()`**. That breaks the user-gesture chain `playTrack` deliberately preserves for mobile Safari, so the first tap-to-play could fail with auth on. | **Fixed** (`5a5585e`). The browser now holds one stream-only ticket, prefetched at startup, login and key change, and renewed in the background. The tap-to-play path has no await when a ticket is cached. A frontend test asserts that the only possible await before `play()` is the no-ticket fallback, and that test fails on the round-2 code. |
+| P1 | Enforcing the transcode limit created a race. A track switch overlaps the closing and new FFmpeg streams (twice over with the VU meter, which mirrors the stream). The transient 503 is caught by the frontend's DSP error path, which **auto-disables DSP**. | **Fixed.** Slot acquisition waits up to 3 s for the previous decoder to be reaped before returning 503. Tested. |
+| P1 | DLNA: `HEAD /api/stream/*` and `/api/covers/*` returned **405**. Renderers commonly probe with HEAD. This predates the PR. | **Fixed.** Both routes accept GET and HEAD. HEAD returns `Content-Length`/`Content-Range` and no body, and a transcoded HEAD never starts FFmpeg. Verified under real uvicorn. |
+| P1 | Renderer URLs used a hard-coded port 8765 instead of `VELVET_PORT`, so casting broke on non-default ports. This was a round-2 regression. | **Fixed.** URLs now use the configured port. Tested. |
+| P2 | At `latency="low"` (5 ms) on the Windows **MME** host API, PortAudio consumes far too slowly and playback crawls. This was measured on real hardware. The UI always requests `medium`, which plays correctly, and the 5 ms map entry predates this PR. | Accepted. Document it, or remove `low` in a follow-up. |
+| P2 | The `underruns` counter counts PortAudio status (xrun) flags, not ring-buffer starvation. It is not exposed anywhere. | Accepted. |
+| P2 | Native `set_volume` is a no-op and `get_position` always returns 0. Volume is applied at track start. Both predate this PR, and the UI does not call them, so no existing function regresses. | Accepted. |
+| P2 | A very short native track can finish before `play_local` marks the state as playing, leaving it "playing". This is an edge case. | Accepted. |
+| P2 | Responses lack DLNA `contentFeatures.dlna.org` / `transferMode.dlna.org` headers. Some strict renderers want them. | Follow-up if renderer testing shows a need. |
+
+Sample-rate reporting was checked and is correct. The UI badges show source metadata. The native API returns the negotiated output rate (verified on hardware: 44.1/48/96 kHz reported as played). Upsampled responses carry `X-Upsampled-Rate`.
+
+### Second review round (`37decb5`, all resolved)
+
+| Sev | Finding | Resolution |
+|-----|---------|------------|
+| P0 | Long-lived API key embedded in stream URLs; credentials accepted in query strings | HMAC media tickets; credentials accepted only in headers. **Browser:** a stream-only ticket (`stream-any`: GET/HEAD `/api/stream/*` only, 4 h). **DLNA:** per-track/per-cover tickets valid for track length + 30 min (12 h cap). Any password change, key rotation or disable revokes all tickets. |
+| P1 | DLNA browse and cast disabled under auth | Cast sends ticketed URLs. Browsing requires a time-limited window (≤ 8 h) opened by an authenticated user, and only private or link-local clients may browse. |
+| P1 | `max_concurrent_streams` not enforced; hard 60-minute transcode cap | The limit is enforced (now with the wait described above). The time limit is the larger of the configured value and duration + 30 min, capped at 12 h. A 120 s idle timeout ends stalled decoders. |
+| P1 | Pipe reads, process kills and logging inside the PortAudio callback | A decoder thread fills a bounded 2 s PCM ring buffer; the callback only copies memory. |
+| P1 | `sounddevice` never installed; installer ignored pip failures; PortAudio `OSError` crashed the import | Fixed, plus a Windows installer CI job. |
+
+## Tests actually run
+
+| Gate | Where | Result |
+|------|-------|--------|
+| Python suite | Local Windows 11 / Python 3.12 | **138 passed**, 12 failed. The 12 are the expected 503s because the local FFmpeg lacks libsoxr; they pass on CI. |
+| Frontend suite | Local | **7/7** scripts OK |
+| CI · Python Linux / Windows | GitHub Actions [run 38863168866](https://github.com/Edwynl/Velvet-HiFi-MP/actions/runs/38863168866) on head `5a5585e` | **pass**: Linux 137 passed, 1 skipped (Windows-only test), 50 subtests; Windows **138 passed**, 50 subtests |
+| CI · Frontend Linux / Windows | 〃 | **pass** / **pass** (7/7 scripts each) |
+| CI · Windows installer + native audio detection | 〃 | **pass**: `install.ps1` → `[OK] Native audio output is available`, sounddevice 0.5.6 / PortAudio V19.7.0 |
+| **FFmpeg output** | CI (real FFmpeg with libsoxr) | SoXR→WAV `pcm_s32le` at 2× the source rate (44.1k/48k families) for 16/24-bit FLAC and MP3, plus DSP→FLAC, all checked with ffprobe |
+| **FFmpeg output** | Local (real FFmpeg) | 24-bit/96 kHz FLAC with DSP → **FLAC, 96 kHz, 24-bit (`s32`)**, checked with ffprobe |
+| **Live HTTP smoke** (real uvicorn) | Local | **16/16**: loopback bootstrap; 401 without credentials and for `?api_key=`; ticket issuance with `no-store`; ticketed GET and Range; HEAD full/range/DSP with empty body; browser ticket rejected for covers and API; honest 503 without libsoxr; DLNA window; key rotation revokes the ticket; no leftover `ffmpeg.exe` |
+| **Native audio smoke** (real PortAudio) | Local PC, Realtek onboard via **MME**, **silent** audio | **11/11** at `medium` latency: 44.1/48/96 kHz playback reports the actual rate; 10 rapid switches; one decoder at a time; pause/resume; natural end clears state; **0 xruns**; no `ffmpeg.exe` or decoder threads left |
+| Auth and stream-ticket regression tests | Local + CI | Included above (`test_media_tickets.py`, `test_server_api.py`, `test_security_boundaries.py`, `test_upnp_server.py`, `stream-ticket.test.mjs`, `pwa-auth.test.mjs`) |
+
+**Not hardware validation:** the mocks, CI runners and the onboard-MME smoke test above do not count as DAC, DLNA or mobile acceptance.
+
+## Remaining hardware acceptance (owner)
+
+| Area | Required checks |
+|------|-----------------|
+| **Hi-Fi DAC (Windows)** | WASAPI shared and exclusive-capable USB DAC at 44.1–192 kHz; 16/24-bit FLAC and MP3; DSP preamp/EQ; rapid switching; USB disconnect/reconnect mid-track; end-of-track advance; audible glitches at `medium` |
+| **DLNA** | HEOS (Marantz M1), StreamMagic (EXN100), BubbleUPnP: browsing refused outside the window and allowed inside it; HEAD/GET probes; cover art; tracks longer than 1 h play to the end; pause over 30 min then resume or seek; cast from the UI with auth on |
+| **iOS Safari + PWA** | First tap-to-play after login and after a cold start; lock-screen auto-advance; resume after a pause longer than the remaining ticket lifetime; DSP stream with VU meter while switching |
+| **Android Chrome + PWA** | Same as iOS, plus switching between Wi-Fi and mobile data mid-track |
+| **Clean Windows machine** | `install.bat` → Zones lists native devices |
+
+## Known limitations and accepted risks
+
+- A leaked browser stream URL lets anyone stream any track for up to 4 h. It grants no covers, API or mutation access, and it is revoked by key rotation. A leaked DLNA URL exposes only one track or cover. Tickets are not bound to a client IP, because mobile clients and renderers change addresses.
+- While the DLNA window is open, any device on the private subnet can browse. Closing the window stops browsing, but URLs already issued stay valid until they expire.
+- If a ticket expires mid-track, the next Range request returns 401. The error-recovery or resume path restarts playback at the current position with the current ticket, which can cause a brief gap.
+- The concurrency limit is per process. Direct (untranscoded) streams are not limited.
+- Not implemented: true DoP/DSD, bit-perfect ASIO/exclusive output, multi-room sync.
 
 ## Migration notes
 
-- **Query-string credentials are no longer accepted.** Scripts using `?api_key=` or `?password=` must send `X-API-Key` / `X-Password` headers. Browser media uses tickets automatically.
-- `VELVET_MAX_CONCURRENT_STREAMS` (default 3) is now **enforced** for DSP/upsampled streams. Raise it (max 10) if several rooms transcode at the same time.
-- `VELVET_STREAM_TIMEOUT_MINUTES` accepts 5–720. It is a floor: longer tracks always get their full duration plus 30 minutes.
-- DLNA control apps (HEOS, StreamMagic, BubbleUPnP) need the browse window opened first. Casting from the VELVET UI does not.
-- `security.json` gains `media_secret`, which is generated on first use. Changing the password or API key invalidates outstanding media tickets, so playing tracks may need a restart.
-- On Windows, re-run `install.bat` (or `start.bat`) to install `sounddevice`.
+- Scripts must send `X-API-Key` / `X-Password` as headers; `?api_key=` is rejected.
+- `VELVET_MAX_CONCURRENT_STREAMS` (default 3) is enforced for DSP/upsampled streams. `VELVET_STREAM_TIMEOUT_MINUTES` accepts 5–720 and acts as a floor.
+- To browse from HEOS or StreamMagic, open Remote → Security Protection → *DLNA Library Browsing*. Casting from the UI needs no window.
+- On Windows, re-run `install.bat` to install `sounddevice`. `security.json` gains a `media_secret` field. There are no database or library changes, and the UI styling is unchanged.
 
-## Residual risks (accepted / follow-up)
+## Commits on this branch since the first review
 
-- A ticket is a bearer token for **one** track or cover until it expires. If a URL leaks, only that file is exposed, for at most track length + 30 min (12 h cap) or the browse window. Tickets are not bound to a client IP, because renderers and mobile clients change addresses.
-- Closing the DLNA window stops new browsing. Tickets it already handed out stay valid until expiry or until credentials are rotated. Any device on the same private subnet (e.g. guest Wi-Fi bridged to the LAN) can browse while the window is open.
-- If a browser track is paused longer than its ticket lifetime and then seeked, the request returns 401. The existing recovery path calls `startBrowserPlayback`, which fetches a fresh ticket. This needs device validation.
-- The ring buffer uses a short `threading.Lock` held only for memcpy, never during I/O. Callback timing under heavy GIL contention is a hardware question.
-- Renderer `HEAD` requests to `/api/stream` return 405. This behavior predates this round, but HEOS/StreamMagic behavior should be confirmed.
-- The concurrency limit is per server process.
-
-## Requires real-device validation (not provable in CI)
-
-| Area | Cases |
-|------|-------|
-| **DAC / Windows native** | WASAPI shared at 44.1/48 kHz sources; exclusive-capable USB DAC at 88.2–192 kHz; 16/24-bit FLAC and MP3; DSP preamp/EQ; rapid track switching (10× in 5 s) with no stuck FFmpeg or audible glitches; pause/resume; end-of-track advances state; USB disconnect/reconnect mid-track; underrun counter at `low` latency on a loaded CPU; clean-machine `install.bat` → native devices listed in Zones |
-| **DLNA** | Marantz M1 (HEOS), Cambridge EXN100 (StreamMagic), BubbleUPnP: browse refused outside the window and allowed inside it; cover art appears; tracks longer than 1 h play to the end; pause over 30 min then resume; cast from the VELVET UI with auth on; seek; whether renderers send `HEAD`; behavior after the window closes mid-queue |
-| **iOS (Safari + PWA)** | Login; ticket fetch per track; lock-screen and background playback beyond ticket lifetime; resume after long pause; DSP/upsampled stream at the concurrency limit (503 path); cover caching |
-| **Android (Chrome + PWA)** | Same as iOS, plus switching between Wi-Fi and mobile data mid-track (ticket is not IP-bound) |
-| **Network** | Unconfigured server: LAN cast works through a ticket while LAN browsing of the API is refused; Tailscale peer refused for DLNA browsing but able to stream with auth |
+- `37decb5` second-round fixes
+- `0ef3aed` report
+- `5a5585e` final-review P1 fixes
