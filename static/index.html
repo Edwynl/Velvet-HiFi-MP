@@ -5790,7 +5790,7 @@ function showSignalPath() {
   ].filter(Boolean).join(' · ');
 
   const processing = [
-    state.upsample === 'none' ? 'Bit-perfect source rate' : `${state.upsample.toUpperCase()} upsampling enabled`,
+    state.upsample === 'none' ? 'No PCM upsampling' : `${state.upsample.toUpperCase()} PCM upsampling enabled`,
     dspProfile ? `DSP ${escHtml(dspProfile.name)}` : 'Flat DSP pipeline'
   ].join('<br>');
 
@@ -8167,7 +8167,7 @@ UI['upsample-select'].addEventListener('change', e => {
     }
     const labels = {none:'Source quality',
       '2x':'2× HiRes (88.2kHz)','4x':'4× HiRes (176.4kHz)',
-      '8x':'8× ≈DSD128 (352.8kHz)','16x':'16× ≈DSD256 (705.6kHz)'};
+      '8x':'8× PCM output','16x':'16× PCM output'};
     showToast(labels[e.target.value] || '');
     updatePlayerUI(state.currentTrack);
   }
@@ -11136,7 +11136,7 @@ async function renderSettings(vc) {
         <label class="form-label">Upsampling</label>
         <div style="font-size:13px;color:var(--muted);line-height:1.6">
           VELVET uses <strong style="color:var(--text)">FFmpeg + SoX resampler</strong> for high-quality PCM upsampling.<br><br>
-          <strong style="color:var(--gold)">16× (≈DSD256)</strong> upsamples to 705.6kHz PCM — equivalent sample rate to DSD256.
+          <strong style="color:var(--gold)">16× PCM</strong> multiplies the source sample rate (44.1 kHz → 705.6 kHz; 48 kHz → 768 kHz). This is not DSD, and browser/device support varies.
           For <em>native</em> DSD bitstream output, you need an ASIO DAC driver and software like HQPlayer.<br><br>
           Select your upsampling mode in the player bar at the bottom.
         </div>
@@ -11149,7 +11149,7 @@ async function renderSettings(vc) {
           <code style="color:var(--gold);font-family:'DM Mono',monospace;font-size:12px">
             http://[your-PC-IP]:8765
           </code><br><br>
-          Open a browser on your phone, tablet, or another PC and you're done. Multi-room ready.
+          Set a password on this PC first, then connect from your phone, tablet or another authorized device. For remote access use Tailscale.
         </div>
       </div>
 
