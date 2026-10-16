@@ -51,6 +51,7 @@ from db_pool import (
 from db_schema import init_db
 from library_browse import fetch_albums, fetch_artists, fetch_tracks
 from library_paging import album_catalog_filters, fetch_album_page
+from library_safety import AlbumFileArchive, ArchiveError, list_album_archives, restore_album_files
 from library_discovery import (
     fetch_album_radio,
     fetch_artist_detail_summary,
@@ -1724,49 +1725,80 @@ async def upload_album_cover(album_id: int, file: UploadFile = File(...)):
 
 @app.delete("/api/albums/{album_id}")
 async def delete_album(album_id: int, delete_files: bool = Query(False)):
-    """Delete an album from the library, optionally deleting physical files."""
-    db = get_db()
-    album = db.execute("SELECT * FROM albums WHERE id=?", (album_id,)).fetchone()
-    if not album:
-        db.close()
-        raise HTTPException(404, "Album not found")
-    
-    tracks = db.execute("SELECT id, file_path FROM tracks WHERE album_id=?", (album_id,)).fetchall()
-    
-    # Physical deletion if requested
-    if delete_files:
-        deleted_dirs = set()
-        for track in tracks:
-            fp = Path(track["file_path"])
-            if fp.exists():
-                try:
-                    fp.unlink()
-                    deleted_dirs.add(fp.parent)
-                except Exception as e:
-                    log.error(f"Failed to delete file {fp}: {e}")
-        
-        # Try to remove empty directories
-        for d in deleted_dirs:
-            if d.exists() and not any(d.iterdir()):
-                try:
-                    d.rmdir()
-                except: pass
+    """Remove an album's index; optionally archive audio to recoverable storage.
 
-    # Database deletion (Cascade should handle tracks if FK is set, but let's be safe or check schema)
-    # The schema usually has ON DELETE CASCADE for tracks.
-    db.execute("DELETE FROM tracks WHERE album_id=?", (album_id,))
-    db.execute("DELETE FROM albums WHERE id=?", (album_id,))
-    
-    # Clean up artist if no tracks left
-    artist_id = album["artist_id"]
-    count = db.execute("SELECT COUNT(*) FROM tracks WHERE artist_id=?", (artist_id,)).fetchone()[0]
-    if count == 0:
-        db.execute("DELETE FROM artists WHERE id=?", (artist_id,))
-        
-    db.commit()
-    db.close()
-    
-    return {"success": True, "message": "Album deleted" + (" and files removed" if delete_files else "")}
+    Audio is never unlinked. If file staging or the SQL transaction fails,
+    rollback restores the original files and retains the music index.
+    """
+    db = get_db()
+    archive = None
+    try:
+        album = db.execute("SELECT * FROM albums WHERE id=?", (album_id,)).fetchone()
+        if not album:
+            raise HTTPException(404, "Album not found")
+        tracks = db.execute("SELECT file_path FROM tracks WHERE album_id=?", (album_id,)).fetchall()
+        if delete_files:
+            try:
+                archive = AlbumFileArchive(
+                    [track["file_path"] for track in tracks],
+                    _resolve_library_roots(db),
+                    Path(DATA_DIR) / "album-trash",
+                )
+                archive.stage()
+            except ArchiveError as exc:
+                raise HTTPException(409, str(exc)) from exc
+
+        try:
+            db.execute("DELETE FROM tracks WHERE album_id=?", (album_id,))
+            db.execute("DELETE FROM albums WHERE id=?", (album_id,))
+            # Other credits/compilations may still reference this artist; do
+            # not delete an artist simply because their primary tracks left.
+            artist_id = album["artist_id"]
+            refs = db.execute(
+                "SELECT EXISTS(SELECT 1 FROM albums WHERE artist_id=?) OR "
+                "EXISTS(SELECT 1 FROM track_artists WHERE artist_id=?)",
+                (artist_id, artist_id),
+            ).fetchone()[0]
+            if not refs:
+                db.execute("DELETE FROM artists WHERE id=?", (artist_id,))
+            db.commit()
+        except Exception:
+            db.rollback()
+            if archive:
+                archive.restore()
+            raise
+
+        result = {"success": True, "message": "Album removed from the library index"}
+        if archive:
+            try:
+                archive.commit()
+            except OSError as exc:
+                log.error("Album archive manifest needs reconciliation: %s", exc)
+                result["warning"] = "Files archived; manifest needs recovery check"
+            result.update({
+                "message": "Album removed; audio moved to recoverable local archive",
+                "archive_token": archive.token,
+                "archived_files": len(archive.entries),
+            })
+        return result
+    finally:
+        db.close()
+
+
+@app.get("/api/library/trash")
+def list_library_trash():
+    """List recoverable archived audio sets (never purge them implicitly)."""
+    return {"archives": list_album_archives(Path(DATA_DIR) / "album-trash")}
+
+
+@app.post("/api/library/trash/{token}/restore")
+def restore_library_trash(token: str):
+    """Restore archived audio files; scanning rebuilds the library index."""
+    try:
+        return restore_album_files(Path(DATA_DIR) / "album-trash", token)
+    except ArchiveError as exc:
+        raise HTTPException(409, str(exc)) from exc
+
 
 @app.post("/api/albums/{album_id}/open-folder")
 async def open_album_folder(album_id: int):
