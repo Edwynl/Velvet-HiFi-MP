@@ -3326,6 +3326,18 @@ def resume_local_playback():
         return {"success": False, "error": str(e)}
 
 
+@app.post("/api/playback/volume")
+def set_native_playback_volume(body: dict):
+    """Optional 0..1 digital attenuation; unity gain preserves the original PCM."""
+    if not isinstance(body, dict) or "volume" not in body:
+        raise HTTPException(422, "volume is required")
+    import local_playback
+    result = local_playback.set_local_volume(body["volume"])
+    if not result["success"]:
+        raise HTTPException(422, result.get("error", "Native audio is unavailable"))
+    return result
+
+
 @app.get("/api/playback/status")
 def get_playback_status():
     """Get current local playback status."""
