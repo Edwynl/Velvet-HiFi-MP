@@ -22,6 +22,17 @@ class ByteRangeTests(unittest.TestCase):
         self.assertEqual(server._parse_range("bytes=-50", 10), (0, 9))
         self.assertEqual(server._parse_range("bytes=0-999", 10), (0, 9))
 
+    def test_upsample_preserves_source_family_and_refuses_unbounded_rates(self):
+        self.assertEqual(server._select_pcm_upsample_rate(44100, "2x"), "88200")
+        self.assertEqual(server._select_pcm_upsample_rate(48000, "2x"), "96000")
+        self.assertEqual(server._select_pcm_upsample_rate(96000, "4x"), "384000")
+        self.assertIsNone(server._select_pcm_upsample_rate(48000, "none"))
+        for source, factor in [(None, "2x"), (0, "2x"), (96000, "16x"),
+                               (48000, "32x")]:
+            with self.subTest(source=source, factor=factor):
+                with self.assertRaises(ValueError):
+                    server._select_pcm_upsample_rate(source, factor)
+
     def test_invalid_ranges(self):
         for header, size in [
             ("bytes=10-", 10), ("bytes=8-2", 10),
