@@ -1,9 +1,9 @@
-"""Inline production classic-script modules into JSDOM fixtures.
+/*Inline production classic-script modules into JSDOM fixtures.
 
 jsdom does not download relative /static URLs by default. Embedding exactly
 the allowlisted scripts in their browser execution order keeps old behavioural
 tests representative without introducing a network test server.
-"""
+*/
 import { readFileSync } from 'node:fs';
 
 const ALLOWED = new Set([
