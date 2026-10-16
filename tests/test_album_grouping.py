@@ -1,4 +1,5 @@
 """Folder-aware album grouping: one folder of songs must become one album."""
+import ntpath
 import sqlite3
 import tempfile
 import unittest
@@ -19,7 +20,8 @@ def meta(path, *, artist=None, album=None, album_artist=None, title=None,
          track=None, disc=1, year=None):
     return {
         "album_artist": album_artist, "artist": artist or "Unknown Artist",
-        "album": album or "Unknown Album", "title": title or Path(path).stem,
+        "album": album or "Unknown Album",
+        "title": title or ntpath.splitext(ntpath.basename(path))[0],
         "year": year, "genre": None, "label": None, "cover_data": None,
         "composer": None, "work_title": None, "performer": None,
         "conductor": None, "ensemble": None, "track_number": track,
@@ -219,9 +221,9 @@ class ScannerIntegrationTests(unittest.TestCase):
 
     def test_compilation_and_disc_folders_become_single_albums(self):
         for i, a in enumerate(["李玟", "刘惜君", "单依纯"]):
-            self.add(rf"show\ep1\{i}.flac", artist=a, album="声生不息 第1期")
-        self.add(r"box\CD1\01.flac", artist="Michael Jackson", album="The Ultimate Collection (disc 1)")
-        self.add(r"box\CD2\01.flac", artist="Michael Jackson", album="The Ultimate Collection (disc 2)")
+            self.add(rf"show/ep1/{i}.flac", artist=a, album="声生不息 第1期")
+        self.add(r"box/CD1/01.flac", artist="Michael Jackson", album="The Ultimate Collection (disc 1)")
+        self.add(r"box/CD2/01.flac", artist="Michael Jackson", album="The Ultimate Collection (disc 2)")
         self.scan()
         self.assertEqual([tuple(r) for r in self.albums()], [
             ("The Ultimate Collection", "Michael Jackson", 2),
@@ -239,7 +241,7 @@ class ScannerIntegrationTests(unittest.TestCase):
         folder = self.root / "music" / "show" / "ep1"
         # Simulate the old behaviour: one album per artist for one folder.
         for i, a in enumerate(["A", "B"]):
-            path = self.add(rf"show\ep1\{i}.flac", artist=a, album="Ep 1")
+            path = self.add(rf"show/ep1/{i}.flac", artist=a, album="Ep 1")
             self.db.execute("INSERT OR IGNORE INTO artists(name, sort_name) VALUES (?, ?)", (a, a))
             artist_id = self.db.execute("SELECT id FROM artists WHERE name=?", (a,)).fetchone()[0]
             self.db.execute("INSERT INTO albums(artist_id, title) VALUES (?, 'Ep 1')", (artist_id,))
@@ -259,8 +261,8 @@ class ScannerIntegrationTests(unittest.TestCase):
         )
 
     def test_unchanged_files_are_still_not_decoded(self):
-        self.add(r"album\1.flac", artist="X", album="Y")
-        self.add(r"album\2.flac", artist="X", album="Y")
+        self.add(r"album/1.flac", artist="X", album="Y")
+        self.add(r"album/2.flac", artist="X", album="Y")
         self.scan()
         self.assertEqual(len(self.calls), 2, "each file decoded once on first scan")
         self.scan()
