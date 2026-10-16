@@ -46,6 +46,10 @@ class ServerApiTests(unittest.TestCase):
 
         self.get_db_patcher = patch.object(server, "get_db", side_effect=self._open_connection)
         self.get_db_patcher.start()
+        # TestClient is not a real host browser. Model local, trusted first-time
+        # setup explicitly; individual auth tests override the client address.
+        self.client_ip_patcher = patch.object(server, "get_client_ip", return_value="127.0.0.1")
+        self.client_ip_patcher.start()
         server.MUSIC_DIR = "C:/TestMusic"
         server.DATA_DIR = self.root / "data"
         server.PORT = 9876
@@ -64,6 +68,7 @@ class ServerApiTests(unittest.TestCase):
     def tearDown(self):
         self.client.close()
         self.get_db_patcher.stop()
+        self.client_ip_patcher.stop()
         server.MUSIC_DIR = self.original_music_dir
         server.DATA_DIR = self.original_data_dir
         server.PORT = self.original_port
