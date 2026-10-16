@@ -3140,11 +3140,10 @@ def get_remote_info():
 # ─── Security (Authentication) ───────────────────────────────────────────────────
 
 def get_client_ip(request: Request) -> str:
-    """Get client IP address, considering proxies"""
-    # Check X-Forwarded-For header (used by tunnel services)
-    forwarded = request.headers.get("X-Forwarded-For")
-    if forwarded:
-        return forwarded.split(",")[0].strip()
+    """Use the ASGI client address, not an untrusted X-Forwarded-For header.
+
+    Configure trusted proxies at the ASGI server/proxy layer if deployed behind one.
+    """
     return request.client.host if request.client else "unknown"
 
 
@@ -3167,6 +3166,14 @@ def _is_local_client_ip(client_ip: str) -> bool:
         return False
 
     return ip_obj.is_loopback or ip_obj.is_private
+
+
+def _is_loopback_client_ip(client_ip: str) -> bool:
+    """Allow first-time password setup only from the server itself."""
+    try:
+        return ipaddress.ip_address(client_ip).is_loopback
+    except ValueError:
+        return client_ip.strip().lower() == "localhost"
 
 
 @app.get("/api/security/status")
@@ -3253,44 +3260,53 @@ def allow_all_origins():
 async def auth_middleware(request: Request, call_next):
     """Middleware to check authentication for remote requests."""
 
-    # Skip auth for local connections (same machine and private network)
-    # Only skip if VELVET_AUTH_ENFORCE_ALL_NETWORKS is not set to True (default secure)
     client_ip = get_client_ip(request)
-    enforce_all_networks = os.getenv("VELVET_AUTH_ENFORCE_ALL_NETWORKS", "true").lower() in ("true", "1", "yes")
-    is_local = (not enforce_all_networks) and _is_local_client_ip(client_ip)
-
-    # For local network requests, skip auth only when enforce_all_networks is False
-    if is_local:
-        return await call_next(request)
-
-    # For external/remote requests, check authentication
     path = request.url.path
+    auth_enabled = security.is_auth_enabled()
 
-    # Skip auth for certain endpoints
-    skip_auth_prefixes = [
-        "/api/security/",
-        "/api/health",
-        "/api/health/",
-        "/docs",
-        "/openapi.json",
-        "/redoc",
-    ]
-    should_skip = (path == "/") or any(path.startswith(prefix) for prefix in skip_auth_prefixes)
+    # Before protection is enabled, a network guest must not be able to claim
+    # ownership by setting the first password. Bootstrap locally on the host.
+    if path == "/api/security/setup-password" and not auth_enabled:
+        if not _is_loopback_client_ip(client_ip):
+            return JSONResponse(
+                status_code=403,
+                content={"error": "Initial password setup must be done on the server itself."},
+            )
 
-    # Require auth for remote access if enabled
-    if security.is_auth_enabled() and not should_skip:
+    # Expose only read-only diagnostics and the security *status* without auth.
+    # Never exempt the entire /api/security/ or /api/health/ namespace:
+    # those namespaces include state-changing and credential-rotation endpoints.
+    public_get_paths = {
+        "/", "/api/security/status", "/api/health",
+        "/api/health/check-ffmpeg", "/docs", "/redoc", "/openapi.json",
+    }
+    should_skip = request.method == "GET" and (
+        path in public_get_paths or path.startswith("/docs/")
+    )
+    sensitive_security_route = (
+        path.startswith("/api/security/") and path != "/api/security/status"
+    )
+
+    # Explicitly opting out of LAN auth does not bypass credential management.
+    enforce_all_networks = os.getenv(
+        "VELVET_AUTH_ENFORCE_ALL_NETWORKS", "true"
+    ).lower() in ("true", "1", "yes")
+    local_bypass = (
+        not enforce_all_networks and _is_local_client_ip(client_ip)
+    )
+
+    if auth_enabled and not should_skip and (sensitive_security_route or not local_bypass):
         password = request.headers.get("X-Password") or request.query_params.get("password")
         api_key = request.headers.get("X-API-Key") or request.query_params.get("api_key")
         auth_result = security.verify_auth(
             password=password,
             api_key=api_key,
-            ip=client_ip
+            ip=client_ip,
         )
-
         if not auth_result["allowed"]:
             return JSONResponse(
                 status_code=401,
-                content={"error": auth_result["error"]}
+                content={"error": auth_result["error"]},
             )
 
     return await call_next(request)
