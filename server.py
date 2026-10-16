@@ -1810,7 +1810,7 @@ async def _stream_upsampled(file_path: str, target_rate: str, quality: str = "hi
         dsp_filter: Additional DSP filter chain to apply
     """
     # Get SoXR quality setting
-    soxr_quality = UPSAMPLE_QUALITY.get(quality, "soxr_hq")
+    soxr_quality = UPSAMPLE_QUALITY.get(quality, "soxr:precision=28")
 
     # Build filter chain: DSP + Upsampling
     filters = []
@@ -1842,7 +1842,7 @@ async def _stream_upsampled(file_path: str, target_rate: str, quality: str = "hi
                 stderr=asyncio.subprocess.DEVNULL
             )
             # 60 秒超时保护，防止卡死
-            async with asyncio.timeout(60):
+            async with asyncio.timeout(timeout_minutes * 60):
                 while True:
                     chunk = await proc.stdout.read(262144)
                     if not chunk:
@@ -1900,7 +1900,7 @@ async def _stream_dop(file_path: str, dop_mode: str, quality: str = "high",
     filters = []
     if dsp_filter:
         filters.append(dsp_filter)
-    filters.append(f"aresample=resampler={UPSAMPLE_QUALITY.get(quality, 'soxr_hq')}")
+    filters.append(f"aresample=resampler={UPSAMPLE_QUALITY.get(quality, 'soxr:precision=28')}")
     filter_chain = ",".join(filters)
 
     # FFmpeg command for DoP output
