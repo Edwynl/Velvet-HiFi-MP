@@ -231,6 +231,7 @@ async function renderAlbums(vc) {
   const genres = firstPage?.genres || [];
   const decades = firstPage?.decades || [];
   let pageRequestSerial = 0;
+  let renderedPage = 1;
   let showFavoritesOnly = false;
   let currentSort = 'title';
   let currentPage = 1;
@@ -372,9 +373,14 @@ async function renderAlbums(vc) {
       if (serial !== pageRequestSerial || state.view !== 'albums' || searchMode) return;
       totalAlbums = Number(page.total || 0);
       allAlbums = page.albums || [];
+      renderedPage = currentPage;
       renderGrid();
     } catch (err) {
-      if (serial === pageRequestSerial) showToast('Unable to load albums. Try again.');
+      if (serial === pageRequestSerial) {
+        currentPage = renderedPage;
+        renderGrid();
+        showToast('Unable to load albums. Try again.');
+      }
     }
   }
 
@@ -399,6 +405,7 @@ async function renderAlbums(vc) {
 
   // Render search results (albums + tracks)
   function renderSearchResults() {
+    grid._velvetCardObserver?.disconnect();
     grid.innerHTML = '';
     grid.classList.remove('grid');
     grid.classList.remove('tracks-list');
@@ -448,6 +455,7 @@ async function renderAlbums(vc) {
 
   // Render albums grid
   function renderGrid() {
+    grid._velvetCardObserver?.disconnect();
     if (searchMode) {
       renderSearchResults();
       return;
@@ -462,6 +470,7 @@ async function renderAlbums(vc) {
     if (!data.length) {
       const msg = showFavoritesOnly ? 'No favorite albums yet.' : 'No albums found.';
       grid.innerHTML = `<div style="padding:0;color:var(--muted);font-size:13px;grid-column:1/-1">${msg}</div>`;
+      updatePagination();
       return;
     }
 
