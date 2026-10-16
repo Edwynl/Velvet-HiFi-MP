@@ -75,6 +75,22 @@ await fetchPath('/api/covers/5');
 assert.equal(has('velvet-covers-v3', '/api/covers/4'), false, 'Full-cover budget removes oldest');
 assert.equal(has('velvet-covers-v3', '/api/covers/5'), true);
 
+// A real browser takes a reader on the response body as soon as respondWith()
+// settles, so the cache copy must be cloned before the response is handed over.
+{
+  let result;
+  const wait = [];
+  listeners.get('fetch')({
+    request: { url: urlFor('/api/covers/7'), method: 'GET' },
+    respondWith(promise) { result = promise.then(res => { res.body.getReader(); return res; }); },
+    waitUntil(promise) { wait.push(promise); },
+  });
+  await result;
+  await Promise.all(wait);
+  assert.equal(has('velvet-covers-v3', '/api/covers/7'), true,
+    'Full cover is cached even though the page consumes the response body');
+}
+
 cacheControl = 'private, no-store';
 await fetchPath('/api/covers/6/thumb');
 assert.equal(has('velvet-thumbs-v5', '/api/covers/6/thumb'), false);

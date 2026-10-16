@@ -168,8 +168,11 @@ self.addEventListener('fetch', event => {
     event.respondWith(
       fetch(request)
         .then(response => {
+          // Clone before handing the response to the page: once respondWith()
+          // settles the body is locked and a later clone() would throw.
+          const copy = response.clone();
           event.waitUntil(
-            putBoundedCover(COVER_CACHE_NAME, request, response,
+            putBoundedCover(COVER_CACHE_NAME, request, copy,
                             MAX_COVERS, MAX_COVER_BYTES).catch(() => {})
           );
           return response;
