@@ -20,7 +20,7 @@ try:
     BCRYPT_AVAILABLE = True
 except ImportError:
     BCRYPT_AVAILABLE = False
-    logging.warning("bcrypt not available. Using SHA-256 fallback. Install with: pip install bcrypt")
+    logging.warning("bcrypt not available. PBKDF2 fallback enabled; install bcrypt for stronger password handling.")
 
 log = logging.getLogger("velvet.security")
 
@@ -94,9 +94,17 @@ class SecurityManager:
                 self._config.password_hash = bcrypt.hashpw(password.encode("utf-8"), salt).decode("utf-8")
                 log.info("Password set using secure bcrypt hashing")
             else:
-                # Fallback to SHA-256 (not recommended for production)
-                self._config.password_hash = hashlib.sha256(password.encode()).hexdigest()
-                log.warning("SECURITY: Using SHA-256 fallback for password hashing. Install bcrypt for security.")
+                # Secure, salted and iterated fallback when bcrypt is unavailable.
+                # Do not store fast, unsalted SHA-256 hashes for new passwords.
+                salt = secrets.token_bytes(16)
+                iterations = 600_000
+                digest = hashlib.pbkdf2_hmac(
+                    "sha256", password.encode("utf-8"), salt, iterations
+                )
+                self._config.password_hash = (
+                    f"pbkdf2_sha256${iterations}${salt.hex()}${digest.hex()}"
+                )
+                log.warning("bcrypt missing; password stored using PBKDF2-HMAC-SHA256")
             self._config.enabled = True
             self._config.created_at = time.time()
             self._save_config()
@@ -114,9 +122,23 @@ class SecurityManager:
             except Exception as e:
                 log.error(f"bcrypt verification failed: {e}")
                 return False
-        else:
-            # Fallback to SHA-256 for backward compatibility
-            return hashlib.sha256(password.encode()).hexdigest() == self._config.password_hash
+        if self._config.password_hash.startswith("pbkdf2_sha256$"):
+            try:
+                _, rounds, salt_hex, digest_hex = self._config.password_hash.split("$", 3)
+                expected = bytes.fromhex(digest_hex)
+                actual = hashlib.pbkdf2_hmac(
+                    "sha256", password.encode("utf-8"),
+                    bytes.fromhex(salt_hex), int(rounds),
+                )
+                return secrets.compare_digest(actual, expected)
+            except (ValueError, TypeError):
+                return False
+        # Existing SHA-256 records are accepted ONLY for backwards
+        # compatibility; new passwords never use unsalted SHA-256.
+        if len(self._config.password_hash) == 64:
+            candidate = hashlib.sha256(password.encode("utf-8")).hexdigest()
+            return secrets.compare_digest(candidate, self._config.password_hash)
+        return False
 
     def generate_api_key(self) -> str:
         """Generate a new API key"""
@@ -254,7 +276,7 @@ def setup_password(password: str) -> dict:
     manager = get_security_manager()
     if manager.set_password(password):
         return {"success": True, "message": "Password set successfully"}
-    return {"success": False, "message": "Password must be at least 4 characters"}
+    return {"success": False, "message": "Password must be at least 8 characters"}
 
 
 def generate_new_api_key() -> dict:
