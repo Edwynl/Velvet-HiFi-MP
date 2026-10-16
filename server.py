@@ -68,7 +68,8 @@ from library_detail import (
     fetch_work_detail,
     fetch_works,
 )
-from library_jobs import ScanJobState, create_bio_job_state, create_fingerprint_job_state
+from library_jobs import JobState, ScanJobState, create_bio_job_state, create_fingerprint_job_state
+from library_duplicates import find_exact_duplicates
 from maintenance_service import (
     enrich_missing_album_covers,
     refresh_album_from_files,
@@ -398,6 +399,8 @@ app.add_middleware(CORSMiddleware, allow_origins=ALLOWED_ORIGINS,
 
 # Global scan state
 _scan_job = ScanJobState(MUSIC_DIR)
+_duplicate_job = JobState({"running": False, "progress": 0, "total": 0, "current_file": "", "groups": [], "error": None, "finished_at": None})
+_duplicate_start_lock = threading.Lock()
 
 # In-memory cover cache with TTL support
 _cover_cache: TTLCache = TTLCache(maxsize=10000, ttl=86400)  # album_id -> path
@@ -652,6 +655,7 @@ def scan_libraries(music_dirs: list[str]):
             on_progress=lambda progress, current_file: _scan_job.update(progress=progress, current_file=current_file),
             on_track_added=lambda: _scan_job.increment("tracks_added"),
             on_track_skipped=lambda: _scan_job.increment("tracks_skipped"),
+            on_track_updated=lambda: _scan_job.increment("tracks_updated"),
             on_error=lambda message: _scan_job.set("error", message),
         )
 
@@ -2236,6 +2240,50 @@ def _refresh_folder_sync(folder_path: str):
     finally:
         _scan_job.finish()
         db.close()
+
+
+def _duplicate_scan_worker() -> None:
+    db = None
+    try:
+        db = get_db()
+        roots = _resolve_library_roots(db)
+        result = find_exact_duplicates(
+            db, roots,
+            on_progress=lambda progress, total, name: _duplicate_job.update(
+                progress=progress, total=total, current_file=name,
+            ),
+        )
+        _duplicate_job.finish(**result, current_file="")
+    except Exception as exc:
+        log.exception("Duplicate scan failed")
+        _duplicate_job.finish(error=str(exc), current_file="")
+    finally:
+        if db is not None:
+            db.close()
+
+
+@app.post("/api/library/duplicates/scan", status_code=202)
+def start_duplicate_scan(background_tasks: BackgroundTasks):
+    """Queue a read-only, byte-exact duplicate check in the background."""
+    if _scan_job.is_running():
+        raise HTTPException(409, "Finish the library scan before checking duplicates")
+    with _duplicate_start_lock:
+        if _duplicate_job.is_running():
+            raise HTTPException(409, "Duplicate scan already running")
+        _duplicate_job.mark_running(
+            progress=0, total=0, current_file="", groups=[], error=None,
+            finished_at=None, candidate_files=0, files_examined=0,
+            cached_hashes=0, truncated=False,
+        )
+    background_tasks.add_task(_duplicate_scan_worker)
+    return {"message": "Duplicate scan started", "status": "running"}
+
+
+@app.get("/api/library/duplicates")
+def duplicate_scan_status():
+    """Return progress and byte-identical groups; never delete music."""
+    return _duplicate_job.snapshot()
+
 
 @app.get("/api/scan/status")
 def scan_status():
