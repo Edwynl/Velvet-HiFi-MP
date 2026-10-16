@@ -6186,16 +6186,20 @@ async function submitLogin() {
 
     if (testResp.ok) {
       // Get API key for future requests
-      const status = await api('/security/status');
-      if (status.has_api_key) {
-        // Generate a new API key after successful login
-        const keyResult = await api('/security/generate-api-key', { method: 'POST' });
-        if (keyResult.success) {
-          authState.apiKey = keyResult.api_key;
-          localStorage.setItem('velvet_api_key', keyResult.api_key);
-        }
+      // Credential management requires authentication. Authenticate this
+      // request with the password just verified, then retain the new key.
+      const keyResp = await fetch('/api/security/generate-api-key', {
+        method: 'POST',
+        headers: { 'X-Password': password }
+      });
+      if (!keyResp.ok) {
+        alert('Login succeeded but the access key could not be obtained.');
+        return;
       }
-
+      const keyResult = await keyResp.json();
+      if (!keyResult.success || !keyResult.api_key) return;
+      authState.apiKey = keyResult.api_key;
+      localStorage.setItem('velvet_api_key', keyResult.api_key);
       authState.isAuthenticated = true;
       document.getElementById('login-modal')?.remove();
       // Refresh current view
@@ -12569,7 +12573,7 @@ async function renderRemote(vc) {
 
         <div style="border-top:1px solid var(--border);padding-top:20px">
           <div class="settings-title" style="margin-bottom:12px">${securityEnabled ? 'Change Password' : 'Set Password'}</div>
-          <input type="password" id="new-password" placeholder="Enter new password (min 4 chars)" class="settings-input" style="width:100%;margin-bottom:12px;background:var(--s3)">
+          <input type="password" id="new-password" placeholder="Enter new password (min 8 chars)" class="settings-input" style="width:100%;margin-bottom:12px;background:var(--s3)">
           <div style="display:flex;gap:12px;flex-wrap:wrap">
             <button class="btn btn-gold" onclick="savePassword()">
               ${securityEnabled ? 'Update Password' : 'Enable Protection'}
@@ -12677,8 +12681,8 @@ function openRemoteUrl() {
 
 async function savePassword() {
   const password = document.getElementById('new-password').value;
-  if (!password || password.length < 4) {
-    alert('Password must be at least 4 characters');
+  if (!password || password.length < 8) {
+    alert('Password must be at least 8 characters');
     return;
   }
 
@@ -12688,9 +12692,20 @@ async function savePassword() {
       body: JSON.stringify({ password })
     });
 
-    if (result.success) {
-      // Generate API key
-      await api('/security/generate-api-key', { method: 'POST' });
+    if (result && result.success) {
+      // When enabling security for the first time the existing API key is
+      // absent. Use the newly configured password for key issuance.
+      const keyResp = await fetch('/api/security/generate-api-key', {
+        method: 'POST',
+        headers: { 'X-Password': password }
+      });
+      if (keyResp.ok) {
+        const keyData = await keyResp.json();
+        if (keyData.success && keyData.api_key) {
+          authState.apiKey = keyData.api_key;
+          localStorage.setItem('velvet_api_key', keyData.api_key);
+        }
+      }
       alert(result.message);
       // Refresh the view
       state.view = 'remote';
@@ -12706,7 +12721,9 @@ async function savePassword() {
 async function generateNewApiKey() {
   try {
     const result = await api('/security/generate-api-key', { method: 'POST' });
-    if (result.success && result.api_key) {
+    if (result && result.success && result.api_key) {
+      authState.apiKey = result.api_key;
+      localStorage.setItem('velvet_api_key', result.api_key);
       // Show the key in an alert (one-time view)
       alert('Your new API Key:\n\n' + result.api_key + '\n\nSave this now! It will not be shown again.');
       // Update the display
