@@ -376,12 +376,14 @@ class ServerApiTests(unittest.TestCase):
     def test_auth_middleware_only_skips_private_network_when_disabled_for_all_networks(self):
         with patch.dict(os.environ, {"VELVET_AUTH_ENFORCE_ALL_NETWORKS": "false"}), \
              patch.object(server.security, "is_auth_enabled", return_value=True), \
-             patch.object(server.security, "verify_auth", return_value={"allowed": False, "error": "denied"}) as verify_auth:
-            private_resp = self.client.get("/api/config", headers={"X-Forwarded-For": "172.16.5.10"})
+             patch.object(server.security, "verify_auth", return_value={"allowed": False, "error": "denied"}) as verify_auth, \
+             patch.object(server, "get_client_ip", return_value="172.16.5.10") as client_ip:
+            private_resp = self.client.get("/api/config")
             self.assertEqual(private_resp.status_code, 200)
             verify_auth.assert_not_called()
 
-            non_private_resp = self.client.get("/api/config", headers={"X-Forwarded-For": "172.15.5.10"})
+            client_ip.return_value = "172.15.5.10"
+            non_private_resp = self.client.get("/api/config")
             self.assertEqual(non_private_resp.status_code, 401)
             verify_auth.assert_called_once()
 
