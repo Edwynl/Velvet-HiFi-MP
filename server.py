@@ -3266,7 +3266,12 @@ async def auth_middleware(request: Request, call_next):
 
     # Before protection is enabled, a network guest must not be able to claim
     # ownership by setting the first password. Bootstrap locally on the host.
-    if path == "/api/security/setup-password" and not auth_enabled:
+    if not auth_enabled and path.startswith("/api/security/") and path != "/api/security/status":
+        if path != "/api/security/setup-password":
+            return JSONResponse(
+                status_code=403,
+                content={"error": "Set an initial password before managing credentials."},
+            )
         if not _is_loopback_client_ip(client_ip):
             return JSONResponse(
                 status_code=403,
