@@ -49,6 +49,12 @@ const dom = new JSDOM(html, {
     window.alert = () => {};
     window.confirm = () => true;
     window.scrollTo = () => {};
+    window.matchMedia = q => ({
+      media: q, matches: false, addListener() {}, removeListener() {},
+      addEventListener() {}, removeEventListener() {}, dispatchEvent() { return false; },
+    });
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: 390 });
+    Object.defineProperty(window, 'innerHeight', { configurable: true, value: 844 });
     window.requestAnimationFrame = cb => window.setTimeout(cb, 0);
     window.cancelAnimationFrame = id => window.clearTimeout(id);
     window.HTMLMediaElement.prototype.play = () => Promise.resolve();
