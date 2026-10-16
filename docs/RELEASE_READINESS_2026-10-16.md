@@ -54,9 +54,9 @@ Sample-rate reporting was checked and is correct. The UI badges show source meta
 |------|-------|--------|
 | Python suite | Local Windows 11 / Python 3.12 | **140 passed**, 12 failed. The 12 are the expected 503s because the local FFmpeg lacks libsoxr; they pass on CI. |
 | Frontend suite | Local | **8/8** scripts OK (adds the jsdom cold-start test) |
-| CI · Python Linux / Windows | GitHub Actions [run 38863168866](https://github.com/Edwynl/Velvet-HiFi-MP/actions/runs/38863168866) on head `5a5585e` | **pass**: Linux 137 passed, 1 skipped (Windows-only test), 50 subtests; Windows **138 passed**, 50 subtests |
-| CI · Frontend Linux / Windows | 〃 | **pass** / **pass** (7/7 scripts each) |
-| CI · Windows installer + native audio detection | 〃 | **pass**: `install.ps1` → `[OK] Native audio output is available`, sounddevice 0.5.6 / PortAudio V19.7.0 |
+| CI · Python Linux / Windows | GitHub Actions [run 38866853138](https://github.com/Edwynl/Velvet-HiFi-MP/actions/runs/38866853138) on head `5904b30` (code identical to this report's commit) | **pass**: Linux 139 passed, 1 skipped (Windows-only test), 50 subtests; Windows **140 passed**, 50 subtests |
+| CI · Frontend Linux / Windows | 〃 | **pass** / **pass** (8/8 scripts each) |
+| CI · Windows installer + native audio detection | 〃 | **pass**: `install.ps1` → `[OK] Native audio output is available` |
 | **FFmpeg output** | CI (real FFmpeg with libsoxr) | SoXR→WAV `pcm_s32le` at 2× the source rate (44.1k/48k families) for 16/24-bit FLAC and MP3, plus DSP→FLAC, all checked with ffprobe |
 | **FFmpeg output** | Local (real FFmpeg) | 24-bit/96 kHz FLAC with DSP → **FLAC, 96 kHz, 24-bit (`s32`)**, checked with ffprobe |
 | **Live HTTP smoke** (real uvicorn) | Local | **16/16**: loopback bootstrap; 401 without credentials and for `?api_key=`; ticket issuance with `no-store`; ticketed GET and Range; HEAD full/range/DSP with empty body; browser ticket rejected for covers and API; honest 503 without libsoxr; DLNA window; key rotation revokes the ticket; no leftover `ffmpeg.exe` |
