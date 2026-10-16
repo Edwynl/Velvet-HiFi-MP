@@ -50,7 +50,7 @@ from db_pool import (
 )
 from db_schema import init_db
 from library_browse import fetch_albums, fetch_artists, fetch_tracks
-from library_paging import album_catalog_filters, fetch_album_page
+from library_paging import album_catalog_filters, fetch_album_page, fetch_artist_page
 from library_safety import AlbumFileArchive, ArchiveError, list_album_archives, restore_album_files
 from library_discovery import (
     fetch_album_radio,
@@ -1010,6 +1010,26 @@ async def set_album_cover(album_id: int, request: Request):
         return {"status": "ok"}
     else:
         raise HTTPException(500, "Failed to download/save cover")
+
+@app.get("/api/artists/page")
+def get_artist_page(
+    limit: int = Query(60, ge=1, le=200), offset: int = Query(0, ge=0),
+    search: str = "",
+):
+    """Serve one artist page instead of all 5000 artist records to a phone."""
+    started = time.perf_counter()
+    db = get_db()
+    try:
+        result = fetch_artist_page(
+            db, search=search, limit=limit, offset=offset,
+            get_all_variants=get_all_variants,
+        )
+        _log_baseline_metric("artist_page", started, limit=limit, offset=offset,
+                             result_count=len(result["artists"]), total=result["total"])
+        return result
+    finally:
+        db.close()
+
 
 @app.get("/api/artists/{artist_id}")
 def get_artist(artist_id: int):
