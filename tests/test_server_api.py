@@ -392,6 +392,14 @@ class ServerApiTests(unittest.TestCase):
             self.assertEqual(non_private_resp.status_code, 401)
             verify_auth.assert_called_once()
 
+    def test_cors_origins_include_documented_settings_and_legacy_override(self):
+        with patch.object(server.settings, "cors_origins", ["https://example.test"]), \
+             patch.dict(os.environ, {"CORS_ORIGINS": "https://legacy.test"}):
+            origins = server._get_cors_origins()
+        self.assertIn("https://example.test", origins)
+        self.assertIn("https://legacy.test", origins)
+        self.assertEqual(len(origins), len(set(origins)))
+
     def test_auth_middleware_accepts_api_key_query_parameter(self):
         with patch.object(server.security, "is_auth_enabled", return_value=True), \
              patch.object(server.security, "verify_auth", return_value={"allowed": True, "error": None}) as verify_auth:
