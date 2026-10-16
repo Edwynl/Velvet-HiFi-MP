@@ -2227,6 +2227,7 @@ def _refresh_folder_sync(folder_path: str):
             set_total=lambda total: _scan_job.set("total", total),
             on_progress=lambda progress, current_file: _scan_job.update(progress=progress, current_file=current_file),
             on_track_added=lambda: _scan_job.increment("tracks_added"),
+            on_track_updated=lambda: _scan_job.increment("tracks_updated"),
             on_error=lambda message: log.error(message),
             scan_batch_size=SCAN_BATCH_SIZE,
         )
