@@ -160,6 +160,13 @@ function createHarness({ initialHash = '#home' } = {}) {
     if (parsedUrl.pathname === '/api/albums' && method === 'GET') {
       return Promise.resolve(makeJsonResponse(albumList));
     }
+    if (parsedUrl.pathname === '/api/albums/page' && method === 'GET') {
+      return Promise.resolve(makeJsonResponse({
+        albums: albumList, total: albumList.length,
+        genres: ['Classical', 'Jazz', 'Rock'], decades: ['2020s'],
+        limit: 60, offset: 0,
+      }));
+    }
 
     if (parsedUrl.pathname === '/api/artists' && method === 'GET') {
       return Promise.resolve(makeJsonResponse([
@@ -286,7 +293,7 @@ async function testAlbumBackFallsBackWhenHistoryBackDoesNothing() {
 }
 
 function albumListFetches(harness) {
-  return harness.fetchLog.filter(entry => entry === 'GET /api/albums').length;
+  return harness.fetchLog.filter(entry => entry === 'GET /api/albums/page').length;
 }
 
 async function openAlbumFromAlbums(dom, harness, scrollTop) {
