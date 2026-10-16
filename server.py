@@ -50,6 +50,7 @@ from db_pool import (
 )
 from db_schema import init_db
 from library_browse import fetch_albums, fetch_artists, fetch_tracks
+from library_paging import album_catalog_filters, fetch_album_page
 from library_discovery import (
     fetch_album_radio,
     fetch_artist_detail_summary,
@@ -1094,6 +1095,34 @@ def get_albums(
         return rows
     finally:
         db.close()
+
+@app.get("/api/albums/page")
+def get_album_page(
+    limit: int = Query(60, ge=1, le=200), offset: int = Query(0, ge=0),
+    search: str = "", sort: str = "title", genre: str = "",
+    decade: str = "", favorites_only: bool = False,
+):
+    """Server-side album paging: never send the entire library to phones."""
+    started = time.perf_counter()
+    db = get_db()
+    try:
+        try:
+            result = fetch_album_page(
+                db, search=search, limit=limit, offset=offset, sort=sort,
+                genre=genre, decade=decade, favorites_only=favorites_only,
+                get_all_variants=get_all_variants,
+            )
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
+        if offset == 0:
+            result.update(album_catalog_filters(db))
+        _prime_cover_cache(result["albums"])
+        _log_baseline_metric("album_page", started, limit=limit, offset=offset,
+                             result_count=len(result["albums"]), total=result["total"])
+        return result
+    finally:
+        db.close()
+
 
 @app.get("/api/albums/{album_id}")
 def get_album(album_id: int, background_tasks: BackgroundTasks):
