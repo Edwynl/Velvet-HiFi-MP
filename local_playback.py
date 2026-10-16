@@ -183,16 +183,17 @@ class LocalPlayer:
 
         device_info = self._get_device_info()
         resolved_rate = int(output_sample_rate or device_info.get("sample_rate") or 48000)
-        cmd = [
-            "ffmpeg", "-i", file_path,
-            "-f", "s16le",  # 16-bit signed integer
-            "-acodec", "pcm_s16le",
-            "-ar", str(resolved_rate),
-            "-ac", "2",      # Stereo
-            "-"
-        ]
+        cmd = ["ffmpeg", "-nostdin", "-loglevel", "error", "-i", file_path]
         if dsp_filter:
-            cmd[2:2] = ["-af", dsp_filter]
+            # Apply filters after the input and before output encoding.
+            cmd.extend(["-af", dsp_filter])
+        cmd.extend([
+            "-f", "f32le",             # Preserve 24-bit PCM precision in float32
+            "-acodec", "pcm_f32le",   # float32 output for sounddevice
+            "-ar", str(resolved_rate),
+            "-ac", "2",
+            "pipe:1",
+        ])
 
         try:
             self._playback_finished = False
@@ -213,21 +214,21 @@ class LocalPlayer:
                     outdata.fill(0)
                     raise sd.CallbackStop()
 
-                data = process.stdout.read(frames * 4)  # 2 channels * 2 bytes
+                data = process.stdout.read(frames * 8)  # 2 channels * float32
                 if not data:
                     outdata.fill(0)
                     self._mark_finished()
                     raise sd.CallbackStop()
 
-                frame_count = len(data) // 4
-                pcm = numpy.frombuffer(data[: frame_count * 4], dtype='int16')
+                frame_count = len(data) // 8
+                pcm = numpy.frombuffer(data[: frame_count * 8], dtype='<f4')
                 if frame_count <= 0 or pcm.size == 0:
                     outdata.fill(0)
                     self._mark_finished()
                     raise sd.CallbackStop()
 
                 samples = numpy.zeros((frames, 2), dtype='float32')
-                samples[:frame_count] = pcm.reshape(frame_count, 2) / 32768.0
+                samples[:frame_count] = pcm.reshape(frame_count, 2)
                 outdata[:] = samples * float(volume)
 
             import numpy
