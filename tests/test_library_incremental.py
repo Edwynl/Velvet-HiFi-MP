@@ -85,7 +85,7 @@ class IncrementalLibraryTests(unittest.TestCase):
         self.assertEqual(result["tracks_updated"], 1)
         track = self.db.execute("SELECT id, album_id, file_size, artist_id FROM tracks").fetchone()
         self.assertEqual(track["id"], track_id)
-        self.assertEqual(track["album_id"], album_id)
+        # Artist changed, so the album is legitimately reassigned; history and\n        # playlist links must still point to the original track ID.\n        self.assertNotEqual(track["album_id"], album_id)
         self.assertEqual(track["file_size"], file_path.stat().st_size)
         self.assertEqual(self.db.execute("SELECT track_id FROM play_history").fetchone()[0], track_id)
         self.assertEqual(self.db.execute("SELECT track_id FROM playlist_tracks").fetchone()[0], track_id)
