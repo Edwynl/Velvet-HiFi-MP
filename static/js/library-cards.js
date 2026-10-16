@@ -2,6 +2,40 @@
  * Loaded before inline bootstrap; global function declarations preserve existing handlers.
  * Keep the module classic (not type=module) until the application state is migrated.
  */
+// Incrementally attach album/artist cards, keeping mobile DOM and painting bounded.
+// Browsers lacking IntersectionObserver (including the old JSDOM harness) see
+// the entire bounded page. The observer never changes artwork resolution.
+function renderCardsOnDemand(container, items, cardFactory, batchSize = 24) {
+  container._velvetCardObserver?.disconnect();
+  container._velvetCardObserver = null;
+  let index = 0;
+  const appendBatch = () => {
+    const frag = document.createDocumentFragment();
+    const end = Math.min(items.length, index + batchSize);
+    while (index < end) frag.appendChild(cardFactory(items[index++]));
+    container.appendChild(frag);
+  };
+  appendBatch();
+  if (index >= items.length) return;
+  if (typeof IntersectionObserver === 'undefined') {
+    while (index < items.length) appendBatch();
+    return;
+  }
+  const sentinel = document.createElement('div');
+  sentinel.className = 'velvet-grid-sentinel';
+  sentinel.style.cssText = 'grid-column:1/-1;height:1px;pointer-events:none';
+  container.appendChild(sentinel);
+  const observer = new IntersectionObserver(entries => {
+    if (!entries.some(entry => entry.isIntersecting)) return;
+    sentinel.remove();
+    appendBatch();
+    if (index >= items.length) observer.disconnect();
+    else container.appendChild(sentinel);
+  }, { root: document.getElementById('main'), rootMargin: '420px' });
+  container._velvetCardObserver = observer;
+  observer.observe(sentinel);
+}
+
 function makeAlbumCard(album) {
   const div = document.createElement('div');
   div.className = 'card';
