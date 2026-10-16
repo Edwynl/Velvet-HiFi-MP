@@ -43,7 +43,7 @@ VELVET is a premium, minimalist personal music server designed for audiophiles. 
 
 The installer creates `venv/`, installs Python packages, optionally installs Node dependencies, creates a machine-local `.env`, and checks FFmpeg/fpcalc availability. Do not move `venv/` or `.env` between computers; regenerate them with `install.bat`.
 
-PCM upsampling requires an FFmpeg **full build with libsoxr**. Windows essentials builds may omit it; `/api/health/check-ffmpeg` reports both `ffmpeg` and `soxr`. Restart VELVET after replacing FFmpeg. Browser support for high-rate WAV and DSP FLAC varies, and live transcoded streams do not provide byte-range seeking. PWA service workers require HTTPS except on localhost. Native playback uses default PortAudio device settings, without an explicit WASAPI exclusive-mode request.
+PCM upsampling requires an FFmpeg **full build with libsoxr**. Windows essentials builds may omit it; `/api/health/check-ffmpeg` reports both `ffmpeg` and `soxr`. Restart VELVET after replacing FFmpeg. Browser support for high-rate WAV and DSP FLAC varies, and live transcoded streams do not provide byte-range seeking. PWA service workers require HTTPS except on localhost. Native playback uses default PortAudio device settings, without an explicit WASAPI exclusive-mode request. For source-rate playback, a device that rejects the source rate uses its default mixer rate; the playback API reports both requested and actual rates. Explicit upsampling fails if the device rejects its target rate.
 
 ### Manual
 

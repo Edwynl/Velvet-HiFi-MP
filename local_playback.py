@@ -139,6 +139,7 @@ class LocalPlayer:
         self.stream = None
         self.process = None
         self.current_file = None
+        self.output_sample_rate = None
         self._playback_finished = False
 
         # Latency settings (in seconds)
@@ -150,11 +151,8 @@ class LocalPlayer:
 
     def _get_device_info(self) -> dict:
         """Get information about the selected device."""
-        if self.device_id is None:
-            return {"name": "Default", "latency": self.latency_map.get(self.latency, 0.02)}
-
         try:
-            dev = sd.query_devices(self.device_id)
+            dev = sd.query_devices(self.device_id, kind="output")
             return {
                 "name": dev["name"],
                 "channels": dev["max_output_channels"],
@@ -170,6 +168,7 @@ class LocalPlayer:
         volume: float = 1.0,
         dsp_filter: str = "",
         output_sample_rate: Optional[int] = None,
+        allow_device_rate_fallback: bool = True,
     ) -> bool:
         """
         Play an audio file using sounddevice.
@@ -198,6 +197,22 @@ class LocalPlayer:
         ])
 
         try:
+            try:
+                sd.check_output_settings(device=self.device_id, samplerate=resolved_rate,
+                                         channels=2, dtype="float32")
+            except sd.PortAudioError:
+                # Shared-mode WASAPI may accept only the Windows mixer rate.
+                # Source-rate playback can use that rate, while an explicit
+                # upsampling request must fail if the device cannot accept it.
+                fallback_rate = int(device_info.get("sample_rate") or 0)
+                if not allow_device_rate_fallback or not fallback_rate or fallback_rate == resolved_rate:
+                    raise
+                sd.check_output_settings(device=self.device_id, samplerate=fallback_rate,
+                                         channels=2, dtype="float32")
+                log.warning("Device rejected %s Hz; using its shared output rate %s Hz",
+                            resolved_rate, fallback_rate)
+                resolved_rate = fallback_rate
+                cmd[cmd.index("-ar") + 1] = str(resolved_rate)
             self._playback_finished = False
             self.process = subprocess.Popen(
                 cmd,
@@ -246,6 +261,7 @@ class LocalPlayer:
 
             self.stream.start()
             self.current_file = file_path
+            self.output_sample_rate = resolved_rate
             return True
 
         except Exception as e:
@@ -299,6 +315,7 @@ class LocalPlayer:
             self.stream = None
         self._playback_finished = False
         self.current_file = None
+        self.output_sample_rate = None
 
     def pause(self) -> bool:
         """Pause playback without destroying the decoder process."""
@@ -402,6 +419,7 @@ def play_local(
                 volume,
                 dsp_filter=dsp_filter,
                 output_sample_rate=output_sample_rate,
+                allow_device_rate_fallback=upsample == "none",
             )
 
             if success:
@@ -420,7 +438,8 @@ def play_local(
                     "track_id": track_id,
                     "dsp_profile_id": dsp_profile_id,
                     "upsample": upsample,
-                    "output_sample_rate": output_sample_rate,
+                    "output_sample_rate": player.output_sample_rate,
+                    "requested_output_sample_rate": output_sample_rate,
                 }
             return {"success": False, "error": "Playback failed"}
 

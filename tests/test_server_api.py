@@ -50,6 +50,10 @@ class ServerApiTests(unittest.TestCase):
         # setup explicitly; individual auth tests override the client address.
         self.client_ip_patcher = patch.object(server, "get_client_ip", return_value="127.0.0.1")
         self.client_ip_patcher.start()
+        # Never depend on a developer's persisted credentials or smoke tests.
+        # Authentication-specific tests override this patch explicitly.
+        self.auth_enabled_patcher = patch.object(server.security, "is_auth_enabled", return_value=False)
+        self.auth_enabled_patcher.start()
         server.MUSIC_DIR = "C:/TestMusic"
         server.DATA_DIR = self.root / "data"
         server.PORT = 9876
@@ -69,6 +73,7 @@ class ServerApiTests(unittest.TestCase):
         self.client.close()
         self.get_db_patcher.stop()
         self.client_ip_patcher.stop()
+        self.auth_enabled_patcher.stop()
         server.MUSIC_DIR = self.original_music_dir
         server.DATA_DIR = self.original_data_dir
         server.PORT = self.original_port

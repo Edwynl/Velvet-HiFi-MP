@@ -41,6 +41,38 @@ class _FakeStream:
 
 
 class NativeAudioTests(unittest.TestCase):
+    def test_shared_device_rate_is_negotiated_before_decoder_starts(self):
+        with tempfile.TemporaryDirectory() as root:
+            source = Path(root) / "source.flac"
+            source.write_bytes(b"test")
+            with patch.object(local_playback, "SOUNDDEVICE_AVAILABLE", True), \
+                 patch.object(local_playback, "sd", create=True) as sd, \
+                 patch.object(local_playback.subprocess, "Popen", return_value=_FakeProcess()) as spawn:
+                sd.PortAudioError = RuntimeError
+                sd.check_output_settings.side_effect = [RuntimeError("Invalid sample rate"), None]
+                sd.OutputStream.side_effect = _FakeStream
+                player = local_playback.LocalPlayer()
+                with patch.object(player, "_get_device_info", return_value={"name": "DAC", "sample_rate": 192000}):
+                    self.assertTrue(player.play_file(str(source), output_sample_rate=44100))
+                self.assertEqual(player.output_sample_rate, 192000)
+                cmd = spawn.call_args.args[0]
+                self.assertEqual(cmd[cmd.index("-ar") + 1], "192000")
+                player.stop()
+
+    def test_explicit_upsampling_does_not_silently_use_another_rate(self):
+        with tempfile.TemporaryDirectory() as root:
+            source = Path(root) / "source.flac"
+            source.write_bytes(b"test")
+            with patch.object(local_playback, "SOUNDDEVICE_AVAILABLE", True), \
+                 patch.object(local_playback, "sd", create=True) as sd, \
+                 patch.object(local_playback.subprocess, "Popen") as spawn:
+                sd.PortAudioError = RuntimeError
+                sd.check_output_settings.side_effect = RuntimeError("Invalid sample rate")
+                player = local_playback.LocalPlayer()
+                self.assertFalse(player.play_file(str(source), output_sample_rate=96000,
+                                                  allow_device_rate_fallback=False))
+                spawn.assert_not_called()
+
     def test_native_rates_are_bounded_like_browser_rates(self):
         self.assertEqual(local_playback._resolve_output_sample_rate(48000, "2x", 44100), 96000)
         for rate, multiplier in [(96000, "16x"), (48000, "32x")]:
