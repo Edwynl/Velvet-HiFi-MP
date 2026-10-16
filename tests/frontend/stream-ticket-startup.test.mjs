@@ -5,6 +5,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { JSDOM } from 'jsdom';
+import { inlineFrontendModules } from './inline-modules.mjs';
 
 const HTML_PATH = path.join(process.cwd(), 'static', 'index.html');
 
@@ -45,7 +46,7 @@ async function bootWithSavedKey({ loginBody, streamTicket, playImpl }) {
     return Promise.resolve(json({}));
   };
 
-  const html = readFileSync(HTML_PATH, 'utf8').replace(/<link[^>]+>/g, '');
+  const html = inlineFrontendModules(readFileSync(HTML_PATH, 'utf8')).replace(/<link[^>]+>/g, '');
   const dom = new JSDOM(html, {
     url: 'http://localhost/#home',
     runScripts: 'dangerously',

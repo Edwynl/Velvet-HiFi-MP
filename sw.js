@@ -1,16 +1,27 @@
 // VELVET - Service Worker for PWA
-const CACHE_NAME = 'velvet-v5';
+const CACHE_NAME = 'velvet-v6';
 const STATIC_ASSETS = [
   '/static/index.html',
   '/static/manifest.json',
-  '/static/icon.png'
+  '/static/icon.png',
+  '/static/js/library-views.js',
+  '/static/js/settings-view.js',
+  '/static/js/player-ui.js',
+  '/static/js/library-cards.js',
+  '/static/js/dsp-controls.js',
+  '/static/js/remote-settings.js'
 ];
 
 // Separate cache for thumbnails to avoid polluting main cache
-const THUMB_CACHE_NAME = 'velvet-thumbs-v4';
-const COVER_CACHE_NAME = 'velvet-covers-v2';
+const THUMB_CACHE_NAME = 'velvet-thumbs-v5';
+const COVER_CACHE_NAME = 'velvet-covers-v3';
 const MAX_THUMBS = 400;
 const MAX_COVERS = 80;
+const MAX_THUMB_BYTES = 24 * 1024 * 1024;
+const MAX_COVER_BYTES = 40 * 1024 * 1024;
+// Keep per-response sizes in memory to avoid repeatedly reading 400 bodies.
+const coverByteSizes = new Map();
+const entryKey = (cacheName, request) => `${cacheName}|${typeof request === 'string' ? request : request.url}`;
 
 // Install event - cache static assets
 self.addEventListener('install', event => {
@@ -41,20 +52,60 @@ self.addEventListener('activate', event => {
   );
 });
 
-// Helper to trim cache to max size
+// Cover caching respects both record count and the total bytes on disk.
 function canCache(response) {
   return response.ok && response.status !== 206 && response.type === 'basic' &&
     !/\bno-store\b/i.test(response.headers.get('Cache-Control') || '');
 }
 
-async function trimCache(cacheName, maxItems) {
+async function cacheResponseBytes(response) {
+  if (!response) return 0;
+  const header = response.headers.get('Content-Length');
+  if (header !== null && /^\d+$/.test(header)) return Number(header);
+  // Streams can be chunked: measure a clone rather than consuming the response.
+  try {
+    return (await response.clone().arrayBuffer()).byteLength;
+  } catch {
+    return Infinity;
+  }
+}
+
+async function trimCache(cacheName, maxItems, maxBytes) {
   const cache = await caches.open(cacheName);
   const keys = await cache.keys();
-  if (keys.length > maxItems) {
-    // Delete oldest items (first in the list)
-    const toDelete = keys.slice(0, keys.length - maxItems);
-    await Promise.all(toDelete.map(key => cache.delete(key)));
+  const entries = [];
+  let total = 0;
+  for (const request of keys) {
+    const key = entryKey(cacheName, request);
+    let bytes = coverByteSizes.get(key);
+    if (bytes === undefined) {
+      bytes = await cacheResponseBytes(await cache.match(request));
+      coverByteSizes.set(key, bytes);
+    }
+    entries.push({ request, bytes, key });
+    total += bytes;
   }
+  let remaining = entries.length;
+  for (const item of entries) {
+    if (remaining <= maxItems && total <= maxBytes) break;
+    await cache.delete(item.request);
+    coverByteSizes.delete(item.key);
+    remaining -= 1;
+    total -= item.bytes;
+  }
+}
+
+async function putBoundedCover(cacheName, request, response, maxItems, maxBytes) {
+  const url = new URL(request.url);
+  // Never persist tickets or credentials that are encoded in URLs.
+  if (!canCache(response) || url.searchParams.has('ticket') ||
+      url.searchParams.has('api_key') || url.searchParams.has('password')) return;
+  const bytes = await cacheResponseBytes(response);
+  if (!Number.isFinite(bytes) || bytes > maxBytes) return;
+  const cache = await caches.open(cacheName);
+  await cache.put(request, response.clone());
+  coverByteSizes.set(entryKey(cacheName, request), bytes);
+  await trimCache(cacheName, maxItems, maxBytes);
 }
 
 // Fetch event - network first, fallback to cache
@@ -90,13 +141,11 @@ self.addEventListener('fetch', event => {
           const response = await fetch(request);
           // Covers use an HttpOnly credential cookie. Never persist a
           // response under a URL containing a long-lived API key.
-          if (canCache(response) && !url.searchParams.has('api_key')) {
-            try {
-              await cache.put(request, response.clone());
-              await trimCache(THUMB_CACHE_NAME, MAX_THUMBS);
-            } catch (cacheError) {
-              // Storage quota exhaustion must not interrupt cover display.
-            }
+          try {
+            await putBoundedCover(THUMB_CACHE_NAME, request, response,
+                                  MAX_THUMBS, MAX_THUMB_BYTES);
+          } catch {
+            // Storage quota errors should never interrupt cover display.
           }
           return response;
         } catch (err) {
@@ -119,16 +168,13 @@ self.addEventListener('fetch', event => {
     event.respondWith(
       fetch(request)
         .then(response => {
-          if (canCache(response) && !url.searchParams.has('api_key')) {
-            const clone = response.clone();
-            event.waitUntil(
-              caches.open(COVER_CACHE_NAME)
-                .then(async cache => {
-                  await cache.put(request, clone);
-                  await trimCache(COVER_CACHE_NAME, MAX_COVERS);
-                }).catch(() => {})
-            );
-          }
+          // Clone before handing the response to the page: once respondWith()
+          // settles the body is locked and a later clone() would throw.
+          const copy = response.clone();
+          event.waitUntil(
+            putBoundedCover(COVER_CACHE_NAME, request, copy,
+                            MAX_COVERS, MAX_COVER_BYTES).catch(() => {})
+          );
           return response;
         })
         .catch(() => {

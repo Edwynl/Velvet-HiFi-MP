@@ -1,4 +1,5 @@
 import { readFileSync } from 'node:fs';
+import { inlineFrontendModules } from './inline-modules.mjs';
 import path from 'node:path';
 import assert from 'node:assert/strict';
 
@@ -113,7 +114,7 @@ function createHarness() {
 
   return {
     async createDom() {
-      const html = readFileSync(HTML_PATH, 'utf8').replace(/<link[^>]+>/g, '');
+      const html = inlineFrontendModules(readFileSync(HTML_PATH, 'utf8')).replace(/<link[^>]+>/g, '');
       const dom = new JSDOM(html, {
         url: 'http://localhost/#home',
         runScripts: 'dangerously',

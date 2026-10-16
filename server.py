@@ -68,7 +68,8 @@ from library_detail import (
     fetch_work_detail,
     fetch_works,
 )
-from library_jobs import ScanJobState, create_bio_job_state, create_fingerprint_job_state
+from library_jobs import JobState, ScanJobState, create_bio_job_state, create_fingerprint_job_state
+from library_duplicates import find_exact_duplicates
 from maintenance_service import (
     enrich_missing_album_covers,
     refresh_album_from_files,
@@ -398,6 +399,11 @@ app.add_middleware(CORSMiddleware, allow_origins=ALLOWED_ORIGINS,
 
 # Global scan state
 _scan_job = ScanJobState(MUSIC_DIR)
+_duplicate_job = JobState({"running": False, "progress": 0, "total": 0, "current_file": "", "groups": [], "error": None, "finished_at": None})
+# One library job at a time: scans, folder refreshes and duplicate hashing all
+# commit per file, and a commit from one job between another job's per-file
+# read and write fails that file with "database is locked" (BUSY_SNAPSHOT).
+_library_task_lock = threading.Lock()
 
 # In-memory cover cache with TTL support
 _cover_cache: TTLCache = TTLCache(maxsize=10000, ttl=86400)  # album_id -> path
@@ -652,6 +658,7 @@ def scan_libraries(music_dirs: list[str]):
             on_progress=lambda progress, current_file: _scan_job.update(progress=progress, current_file=current_file),
             on_track_added=lambda: _scan_job.increment("tracks_added"),
             on_track_skipped=lambda: _scan_job.increment("tracks_skipped"),
+            on_track_updated=lambda: _scan_job.increment("tracks_updated"),
             on_error=lambda message: _scan_job.set("error", message),
         )
 
@@ -2140,6 +2147,21 @@ async def _scan_libraries_async(music_dirs: list[str]):
     """
     await asyncio.to_thread(scan_libraries, music_dirs)
 
+def _claim_library_scan(begin) -> str | None:
+    """Mark a scan/refresh running before it is queued, or return why not.
+
+    Marking it here rather than in the worker thread closes the window in
+    which a duplicate check could start before the scan thread does.
+    """
+    with _library_task_lock:
+        if _scan_job.is_running():
+            return "Scan already in progress"
+        if _duplicate_job.is_running():
+            return "Duplicate check in progress; scan again when it finishes"
+        begin()
+        return None
+
+
 @app.post("/api/scan")
 async def start_scan(background_tasks: BackgroundTasks, body: dict = None):
     allowed, remaining = _scan_job.check_and_mark_request(_SCAN_COOLDOWN_SECONDS)
@@ -2149,9 +2171,6 @@ async def start_scan(background_tasks: BackgroundTasks, body: dict = None):
             "cooldown_remaining": remaining,
             "state": _scan_job.snapshot(),
         }
-
-    if _scan_job.is_running():
-        return {"message": "Scan already in progress", "state": _scan_job.snapshot()}
 
     # Check if specific folders are requested (for single folder refresh)
     requested_folders = None
@@ -2175,6 +2194,9 @@ async def start_scan(background_tasks: BackgroundTasks, body: dict = None):
         # Fallback to default if nothing in DB yet (for first scan)
         libraries = [MUSIC_DIR]
 
+    busy = _claim_library_scan(lambda: _scan_job.begin(", ".join(libraries)))
+    if busy:
+        return {"message": busy, "state": _scan_job.snapshot()}
     background_tasks.add_task(_scan_libraries_async, libraries)
     return {"message": f"Scan started ({len(libraries)} folder{'s' if len(libraries) > 1 else ''})", "libraries": libraries}
 
@@ -2198,9 +2220,9 @@ async def refresh_folder_metadata(background_tasks: BackgroundTasks, body: dict 
     if folder_path not in all_libraries:
         raise HTTPException(400, "Folder not found in library configuration")
 
-    if _scan_job.is_running():
-        return {"message": "Scan already in progress", "state": _scan_job.snapshot()}
-
+    busy = _claim_library_scan(lambda: _scan_job.begin_refresh(folder_path))
+    if busy:
+        return {"message": busy, "state": _scan_job.snapshot()}
     background_tasks.add_task(_refresh_folder_async, folder_path)
     return {"message": f"Refresh started for folder: {folder_path}"}
 
@@ -2239,6 +2261,7 @@ def _refresh_folder_sync(folder_path: str):
             set_total=lambda total: _scan_job.set("total", total),
             on_progress=lambda progress, current_file: _scan_job.update(progress=progress, current_file=current_file),
             on_track_added=lambda: _scan_job.increment("tracks_added"),
+            on_track_updated=lambda: _scan_job.increment("tracks_updated"),
             on_error=lambda message: log.error(message),
             scan_batch_size=SCAN_BATCH_SIZE,
         )
@@ -2252,6 +2275,50 @@ def _refresh_folder_sync(folder_path: str):
     finally:
         _scan_job.finish()
         db.close()
+
+
+def _duplicate_scan_worker() -> None:
+    db = None
+    try:
+        db = get_db()
+        roots = _resolve_library_roots(db)
+        result = find_exact_duplicates(
+            db, roots,
+            on_progress=lambda progress, total, name: _duplicate_job.update(
+                progress=progress, total=total, current_file=name,
+            ),
+        )
+        _duplicate_job.finish(**result, current_file="")
+    except Exception as exc:
+        log.exception("Duplicate scan failed")
+        _duplicate_job.finish(error=str(exc), current_file="")
+    finally:
+        if db is not None:
+            db.close()
+
+
+@app.post("/api/library/duplicates/scan", status_code=202)
+def start_duplicate_scan(background_tasks: BackgroundTasks):
+    """Queue a read-only, byte-exact duplicate check in the background."""
+    with _library_task_lock:
+        if _scan_job.is_running():
+            raise HTTPException(409, "Finish the library scan before checking duplicates")
+        if _duplicate_job.is_running():
+            raise HTTPException(409, "Duplicate scan already running")
+        _duplicate_job.mark_running(
+            progress=0, total=0, current_file="", groups=[], error=None,
+            finished_at=None, candidate_files=0, files_examined=0,
+            cached_hashes=0, truncated=False,
+        )
+    background_tasks.add_task(_duplicate_scan_worker)
+    return {"message": "Duplicate scan started", "status": "running"}
+
+
+@app.get("/api/library/duplicates")
+def duplicate_scan_status():
+    """Return progress and byte-identical groups; never delete music."""
+    return _duplicate_job.snapshot()
+
 
 @app.get("/api/scan/status")
 def scan_status():
@@ -3307,6 +3374,18 @@ def allow_all_origins():
 
 # ─── Authentication Middleware ──────────────────────────────────────────────────
 
+PUBLIC_FRONTEND_JS_MODULES = frozenset({
+    "library-views.js",
+    "settings-view.js",
+    "player-ui.js",
+    "library-cards.js",
+    "dsp-controls.js",
+    "remote-settings.js",
+})
+PUBLIC_FRONTEND_JS_PATHS = frozenset(
+    f"/static/js/{name}" for name in PUBLIC_FRONTEND_JS_MODULES
+)
+
 _MEDIA_TICKET_ROUTES = (
     (re.compile(r"/api/stream/(\d+)"), "stream"),
     (re.compile(r"/api/covers/(\d+)(?:/thumb)?"), "cover"),
@@ -3379,7 +3458,7 @@ async def auth_middleware(request: Request, call_next):
                 "/static/manifest.json", "/static/icon.png",
                 "/static/logo-hires.png",
                 "/static/index.html",
-            }
+            } | PUBLIC_FRONTEND_JS_PATHS
         )
         if not setup_visible:
             return JSONResponse(
@@ -3397,7 +3476,8 @@ async def auth_middleware(request: Request, call_next):
         "/static/icon.png", "/static/logo-hires.png",
     }
     should_skip = request.method == "GET" and (
-        path in public_get_paths or path.startswith("/docs/")
+        path in public_get_paths or path in PUBLIC_FRONTEND_JS_PATHS
+        or path.startswith("/docs/")
     )
     sensitive_security_route = (
         (path.startswith("/api/security/") and path != "/api/security/status")
@@ -3498,6 +3578,16 @@ def serve_public_shell():
     # No credentials or user data are embedded in the public application shell.
     html = Path(__file__).parent / "static" / "index.html"
     return HTMLResponse(html.read_text(encoding="utf-8"), headers={"Cache-Control": "no-cache"})
+@app.get("/static/js/{module_name}")
+def serve_frontend_module(module_name: str):
+    """Serve only reviewed browser modules; never expose arbitrary server files."""
+    if module_name not in PUBLIC_FRONTEND_JS_MODULES:
+        raise HTTPException(404, "Unknown frontend module")
+    file_path = Path(__file__).parent / "static" / "js" / module_name
+    return FileResponse(file_path, media_type="text/javascript",
+                        headers={"Cache-Control": "no-cache"})
+
+
 @app.get("/static/manifest.json")
 def serve_manifest():
     path = Path(__file__).parent / "static" / "manifest.json"

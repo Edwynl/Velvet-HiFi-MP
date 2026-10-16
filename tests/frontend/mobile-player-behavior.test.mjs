@@ -1,4 +1,5 @@
 import { readFileSync } from 'node:fs';
+import { inlineFrontendModules } from './inline-modules.mjs';
 import path from 'node:path';
 import assert from 'node:assert/strict';
 
@@ -83,7 +84,7 @@ function createHarness() {
 
   return {
     async createDom() {
-      const html = readFileSync(HTML_PATH, 'utf8').replace(/<link[^>]+>/g, '');
+      const html = inlineFrontendModules(readFileSync(HTML_PATH, 'utf8')).replace(/<link[^>]+>/g, '');
       const dom = new JSDOM(html, {
         url: 'http://localhost/#home',
         runScripts: 'dangerously',
@@ -287,7 +288,7 @@ async function testMobileProgressMirrorsPlaybackState() {
 }
 
 function testUltraCompactLandscapeCssGuards() {
-  const html = readFileSync(HTML_PATH, 'utf8');
+  const html = inlineFrontendModules(readFileSync(HTML_PATH, 'utf8'));
 
   assert.ok(
     html.includes('@media (orientation: landscape) and (max-height: 430px)'),
@@ -308,7 +309,7 @@ function testUltraCompactLandscapeCssGuards() {
 }
 
 function testLandscapeMiniPlayerProgressCssGuards() {
-  const html = readFileSync(HTML_PATH, 'utf8');
+  const html = inlineFrontendModules(readFileSync(HTML_PATH, 'utf8'));
 
   assert.ok(
     html.includes(':root { --player-h: 48px; --header-h: 42px; }'),
@@ -333,7 +334,7 @@ function testLandscapeMiniPlayerProgressCssGuards() {
 }
 
 function testLandscapeMobileVolumeStripHidden() {
-  const html = readFileSync(HTML_PATH, 'utf8').replace(/\r\n/g, '\n');
+  const html = inlineFrontendModules(readFileSync(HTML_PATH, 'utf8')).replace(/\r\n/g, '\n');
 
   assert.ok(
     html.includes('.mobile-player-volume-strip {\n      display: none !important;'),
@@ -346,7 +347,7 @@ function testLandscapeMobileVolumeStripHidden() {
 }
 
 function testLandscapeFullscreenLayoutBalanceGuards() {
-  const html = readFileSync(HTML_PATH, 'utf8').replace(/\r\n/g, '\n');
+  const html = inlineFrontendModules(readFileSync(HTML_PATH, 'utf8')).replace(/\r\n/g, '\n');
 
   assert.ok(
     html.includes('.mobile-player-main {\n      flex-direction: row !important;\n      align-items: center !important;\n      justify-content: center !important;\n      gap: 28px !important;'),

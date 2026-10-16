@@ -46,6 +46,84 @@ def discover_audio_files(paths: list[str], audio_extensions: set[str]) -> list[s
     return all_files
 
 
+def _store_file_state(db: sqlite3.Connection, track_id: int, stat: os.stat_result) -> None:
+    """Invalidate prior hashes whenever a file revision changes."""
+    db.execute(
+        """
+        INSERT INTO track_file_state (track_id, size_bytes, mtime_ns, sha256, hash_size, hash_mtime_ns)
+        VALUES (?, ?, ?, NULL, NULL, NULL)
+        ON CONFLICT(track_id) DO UPDATE SET
+            size_bytes=excluded.size_bytes, mtime_ns=excluded.mtime_ns,
+            sha256=CASE WHEN size_bytes=excluded.size_bytes AND mtime_ns=excluded.mtime_ns
+                THEN sha256 ELSE NULL END,
+            hash_size=CASE WHEN size_bytes=excluded.size_bytes AND mtime_ns=excluded.mtime_ns
+                THEN hash_size ELSE NULL END,
+            hash_mtime_ns=CASE WHEN size_bytes=excluded.size_bytes AND mtime_ns=excluded.mtime_ns
+                THEN hash_mtime_ns ELSE NULL END
+        """,
+        (track_id, stat.st_size, stat.st_mtime_ns),
+    )
+
+
+def _update_existing_track(
+    db: sqlite3.Connection,
+    track_id: int,
+    metadata: dict,
+    file_path: str,
+    albums_cache: dict[tuple[int, str], int],
+    artists_cache: dict[str, int],
+    *,
+    find_folder_cover: Callable[[str], Optional[bytes]],
+    save_cover: Callable[[bytes, str], str],
+) -> None:
+    """Refresh metadata without changing the track ID or deleting history."""
+    artist_ids, primary_artist = _resolve_artist_ids(db, metadata, artists_cache)
+    album_id = _resolve_album_id(
+        db, metadata, file_path, primary_artist, albums_cache,
+        find_folder_cover=find_folder_cover, save_cover=save_cover,
+        update_existing_cover_if_missing=True,
+    )
+    if album_id is None:
+        raise ValueError("Cannot resolve album for changed track")
+    columns = (
+        "album_id", "artist_id", "title", "composer", "work_title",
+        "performer", "conductor", "ensemble", "track_number", "disc_number",
+        "duration", "format", "sample_rate", "bit_depth", "channels",
+        "bitrate", "file_size",
+    )
+    values = (
+        album_id, primary_artist, metadata["title"], metadata["composer"],
+        metadata["work_title"], metadata["performer"], metadata["conductor"],
+        metadata["ensemble"], metadata["track_number"], metadata["disc_number"],
+        metadata["duration"], metadata["format"], metadata["sample_rate"],
+        metadata["bit_depth"], metadata["channels"], metadata["bitrate"],
+        metadata.get("file_size") if metadata.get("file_size") is not None
+        else os.path.getsize(file_path),
+    )
+    assignments = ", ".join(f"{column}=?" for column in columns)
+    db.execute(f"UPDATE tracks SET {assignments} WHERE id=?", (*values, track_id))
+    db.execute("DELETE FROM track_artists WHERE track_id=?", (track_id,))
+    for artist_id in artist_ids:
+        db.execute(
+            "INSERT OR IGNORE INTO track_artists(track_id, artist_id) VALUES (?, ?)",
+            (track_id, artist_id),
+        )
+
+
+def _rollback_scan_file(
+    db: sqlite3.Connection,
+    artists_cache: dict[str, int],
+    albums_cache: dict[tuple[int, str], int],
+) -> None:
+    """Undo one file's changes, including artist/album IDs cached meanwhile."""
+    db.execute("ROLLBACK TO SAVEPOINT velvet_scan_file")
+    db.execute("RELEASE SAVEPOINT velvet_scan_file")
+    # Rolled-back rows no longer exist and SQLite may reuse their IDs for the
+    # next insert, so cached IDs could point at nothing or at another artist.
+    artists_cache.clear()
+    albums_cache.clear()
+
+
 def scan_music_dirs(
     db: sqlite3.Connection,
     music_dirs: list[str],
@@ -60,55 +138,123 @@ def scan_music_dirs(
     on_track_added: Callable[[], dict | None],
     on_track_skipped: Callable[[], dict | None],
     on_error: Callable[[str], None],
+    on_track_updated: Callable[[], dict | None] | None = None,
+    force_reparse: bool = False,
 ) -> dict:
+    """Incremental scan: refresh changed metadata while retaining track identity.
+
+    Existing tracks added before migration 9 receive a *baseline* stat on
+    their first scan, rather than being reprocessed without a trustworthy old
+    mtime. Future scans detect changed size/mtime. Missing/deleted files are
+    intentionally not pruned; a removable drive may be temporarily offline.
+    """
     all_files = discover_audio_files(music_dirs, audio_extensions)
     set_total(len(all_files))
+    existing = {}
+    for row in db.execute(
+        """
+        SELECT t.id, t.file_path, s.size_bytes, s.mtime_ns
+        FROM tracks t LEFT JOIN track_file_state s ON s.track_id=t.id
+        """
+    ):
+        track_id, path, size, mtime = tuple(row)
+        existing[path] = (track_id, size, mtime)
 
-    existing_fps = {
-        row["file_path"] if isinstance(row, sqlite3.Row) else row[0]
-        for row in db.execute("SELECT file_path FROM tracks")
+    # Backfill old multi-artist relations only where actually missing.
+    needs_backfill = {
+        row[0] for row in db.execute(
+            "SELECT t.id FROM tracks t LEFT JOIN track_artists ta ON ta.track_id=t.id "
+            "WHERE ta.track_id IS NULL"
+        )
     }
     artists_cache: dict[str, int] = {}
     albums_cache: dict[tuple[int, str], int] = {}
+    tracks_updated = 0
+    pending_changes = 0
+    commit_every = max(int(scan_batch_size), 1)
 
     for index, file_path in enumerate(all_files, start=1):
         on_progress(index, os.path.basename(file_path))
-
-        if file_path in existing_fps:
-            try:
-                _backfill_track_artists(db, file_path)
-            except Exception as exc:
-                on_error(f"Backfill failed for {file_path}: {exc}")
-            on_track_skipped()
+        try:
+            file_stat = os.stat(file_path)
+        except OSError as exc:
+            on_error(f"File unavailable while scanning {file_path}: {exc}")
             continue
 
-        try:
-            metadata = extract_metadata(file_path)
-            individual_artist_ids, primary_artist_id = _resolve_artist_ids(db, metadata, artists_cache)
-            album_id = _resolve_album_id(
-                db,
-                metadata,
-                file_path,
-                primary_artist_id,
-                albums_cache,
-                find_folder_cover=find_folder_cover,
-                save_cover=save_cover,
-                update_existing_cover_if_missing=False,
-            )
-            if album_id is None:
+        known = existing.get(file_path)
+        if known:
+            track_id, old_size, old_mtime = known
+            if (not force_reparse and old_size is not None and old_size == file_stat.st_size
+                    and old_mtime == file_stat.st_mtime_ns):
+                on_track_skipped()
                 continue
+            # Atomic per-file metadata replacement (no partial artist/album links).
+            db.execute("SAVEPOINT velvet_scan_file")
+            try:
+                if (old_size is None or old_mtime is None) and not force_reparse:
+                    # Legacy rows are not blindly reprocessed; establish baseline.
+                    if track_id in needs_backfill:
+                        _backfill_track_artists(db, file_path)
+                else:
+                    metadata = extract_metadata(file_path)
+                    _update_existing_track(
+                        db, track_id, metadata, file_path, albums_cache,
+                        artists_cache, find_folder_cover=find_folder_cover,
+                        save_cover=save_cover,
+                    )
+                _store_file_state(db, track_id, file_stat)
+                db.execute("RELEASE SAVEPOINT velvet_scan_file")
+            except Exception as exc:
+                _rollback_scan_file(db, artists_cache, albums_cache)
+                on_error(f"Incremental metadata refresh failed for {file_path}: {exc}")
+                continue
+            if (old_size is None or old_mtime is None) and not force_reparse:
+                on_track_skipped()
+            else:
+                tracks_updated += 1
+                if on_track_updated is not None:
+                    on_track_updated()
+            pending_changes += 1
+        else:
+            db.execute("SAVEPOINT velvet_scan_file")
+            try:
+                metadata = extract_metadata(file_path)
+                individual_artist_ids, primary_artist_id = _resolve_artist_ids(
+                    db, metadata, artists_cache,
+                )
+                album_id = _resolve_album_id(
+                    db, metadata, file_path, primary_artist_id, albums_cache,
+                    find_folder_cover=find_folder_cover, save_cover=save_cover,
+                    update_existing_cover_if_missing=False,
+                )
+                if album_id is None:
+                    raise ValueError("No album ID resolved")
+                _insert_track_and_artists(
+                    db, metadata, file_path, album_id,
+                    primary_artist_id, individual_artist_ids,
+                )
+                new_id = db.execute(
+                    "SELECT id FROM tracks WHERE file_path=?", (file_path,)
+                ).fetchone()
+                if new_id is None:
+                    raise ValueError("Failed to insert new track")
+                _store_file_state(db, new_id[0], file_stat)
+                db.execute("RELEASE SAVEPOINT velvet_scan_file")
+            except Exception as exc:
+                _rollback_scan_file(db, artists_cache, albums_cache)
+                on_error(f"Error adding track {file_path}: {exc}")
+                continue
+            on_track_added()
+            existing[file_path] = (new_id[0], file_stat.st_size, file_stat.st_mtime_ns)
+            pending_changes += 1
 
-            _insert_track_and_artists(db, metadata, file_path, album_id, primary_artist_id, individual_artist_ids)
-            state = on_track_added()
-            if state and state.get("tracks_added", 0) % scan_batch_size == 0:
-                db.commit()
-        except Exception as exc:
-            on_error(f"Error adding track: {exc}")
+        if pending_changes >= commit_every:
+            db.commit()
+            pending_changes = 0
 
-    db.commit()
     _recount_album_totals(db)
     db.commit()
-    return {"discovered_files": len(all_files)}
+    return {"discovered_files": len(all_files), "tracks_updated": tracks_updated}
 
 
 def refresh_folder_records(
@@ -124,64 +270,24 @@ def refresh_folder_records(
     on_track_added: Callable[[], dict | None],
     on_error: Callable[[str], None],
     scan_batch_size: int = 50,
+    on_track_updated: Callable[[], dict | None] | None = None,
 ) -> dict:
-    tracks_to_delete = db.execute(
-        "SELECT id, file_path FROM tracks WHERE file_path LIKE ?",
-        (f"{folder_path}%",),
-    ).fetchall()
+    """Force metadata re-read while retaining track, playlist and history IDs.
 
-    if not tracks_to_delete:
-        return {"deleted_tracks": 0, "discovered_files": 0}
-
-    track_ids = [row["id"] if isinstance(row, sqlite3.Row) else row[0] for row in tracks_to_delete]
-    placeholders = ",".join("?" * len(track_ids))
-    db.execute(
-        f"DELETE FROM track_artists WHERE track_id IN ({placeholders})",
-        track_ids,
+    Unlike the legacy delete/reinsert path, a folder refresh never removes
+    records for temporarily missing or offline audio files.
+    """
+    result = scan_music_dirs(
+        db, [folder_path], audio_extensions=audio_extensions,
+        scan_batch_size=scan_batch_size, extract_metadata=extract_metadata,
+        find_folder_cover=find_folder_cover, save_cover=save_cover,
+        set_total=set_total, on_progress=on_progress,
+        on_track_added=on_track_added, on_track_skipped=lambda: None,
+        on_track_updated=on_track_updated, on_error=on_error,
+        force_reparse=True,
     )
-    db.execute(f"DELETE FROM tracks WHERE id IN ({placeholders})", track_ids)
-    db.commit()
+    return {"deleted_tracks": 0, **result}
 
-    all_files = discover_audio_files([folder_path], audio_extensions)
-    set_total(len(all_files))
-
-    artists_cache: dict[str, int] = {}
-    albums_cache: dict[tuple[int, str], int] = {}
-
-    pending_commits = 0
-    commit_every = max(10, scan_batch_size)
-
-    for index, file_path in enumerate(all_files, start=1):
-        on_progress(index, os.path.basename(file_path))
-        try:
-            metadata = extract_metadata(file_path)
-            individual_artist_ids, primary_artist_id = _resolve_artist_ids(db, metadata, artists_cache)
-            album_id = _resolve_album_id(
-                db,
-                metadata,
-                file_path,
-                primary_artist_id,
-                albums_cache,
-                find_folder_cover=find_folder_cover,
-                save_cover=save_cover,
-                update_existing_cover_if_missing=True,
-            )
-            if album_id is None:
-                continue
-
-            _insert_track_and_artists(db, metadata, file_path, album_id, primary_artist_id, individual_artist_ids)
-            on_track_added()
-            pending_commits += 1
-            if pending_commits >= commit_every:
-                db.commit()
-                pending_commits = 0
-        except Exception as exc:
-            on_error(f"[REFRESH] Error processing {file_path}: {exc}")
-
-    if pending_commits:
-        db.commit()
-
-    return {"deleted_tracks": len(track_ids), "discovered_files": len(all_files)}
 
 
 def _backfill_track_artists(db: sqlite3.Connection, file_path: str) -> None:

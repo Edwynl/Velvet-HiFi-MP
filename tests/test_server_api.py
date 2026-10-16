@@ -672,5 +672,65 @@ class ServerApiTests(unittest.TestCase):
             self.assertEqual(limit(180), 7200)  # configuration above the old hard 60-min cap
 
 
+    def test_modular_frontend_files_are_public_but_allowlisted(self):
+        with patch.object(server.security, "is_auth_enabled", return_value=True), \
+             patch.object(server.security, "verify_auth",
+                          return_value={"allowed": False, "error": "not authorized"}), \
+             patch.object(server, "get_client_ip", return_value="192.168.0.20"):
+            for name in server.PUBLIC_FRONTEND_JS_MODULES:
+                response = self.client.get(f"/static/js/{name}")
+                self.assertEqual(response.status_code, 200, name)
+                self.assertIn("javascript", response.headers["content-type"])
+            self.assertEqual(self.client.get("/api/stats").status_code, 401)
+            self.assertNotEqual(self.client.get("/static/js/server.py").status_code, 200)
+
+    def test_duplicate_scanner_runs_as_background_read_only_job(self):
+        from library_jobs import JobState
+        result = {"groups": [], "groups_found": 0, "candidate_files": 0,
+                  "files_examined": 0, "cached_hashes": 0, "truncated": False}
+        job = JobState({"running": False, "groups": [], "error": None})
+        with patch.object(server, "_duplicate_job", job), \
+             patch.object(server, "find_exact_duplicates", return_value=result) as finder, \
+             patch.object(server._scan_job, "is_running", return_value=False):
+            response = self.client.post("/api/library/duplicates/scan")
+            self.assertEqual(response.status_code, 202)
+            status = self.client.get("/api/library/duplicates").json()
+            self.assertFalse(status["running"])
+            self.assertEqual(status["groups"], [])
+            self.assertIsNone(status["error"])
+            finder.assert_called_once()
+
+
+    def test_library_scan_and_refresh_do_not_start_during_duplicate_check(self):
+        from library_jobs import JobState
+        server._scan_job.finish()
+        with self._connect() as conn:
+            conn.execute("INSERT INTO libraries(path) VALUES ('C:/TestMusic')")
+            conn.commit()
+        job = JobState({"running": True, "groups": [], "error": None})
+        with patch.object(server, "_duplicate_job", job),              patch.object(server._scan_job, "check_and_mark_request", return_value=(True, 0)),              patch.object(server, "scan_libraries") as scan,              patch.object(server, "_refresh_folder_sync") as refresh:
+            response = self.client.post("/api/scan", json={})
+            self.assertIn("Duplicate check in progress", response.json()["message"])
+            response = self.client.post("/api/scan/refresh-folder", json={"folder": "C:/TestMusic"})
+            self.assertIn("Duplicate check in progress", response.json()["message"])
+        scan.assert_not_called()
+        refresh.assert_not_called()
+        self.assertFalse(server._scan_job.is_running())
+
+    def test_started_scan_blocks_duplicate_check_before_its_worker_runs(self):
+        """The scan is marked running when accepted, not when its thread starts."""
+        from library_jobs import JobState
+        server._scan_job.finish()
+        job = JobState({"running": False, "groups": [], "error": None})
+
+        async def worker_not_started_yet(music_dirs):
+            return None
+
+        with patch.object(server, "_duplicate_job", job),              patch.object(server._scan_job, "check_and_mark_request", return_value=(True, 0)),              patch.object(server, "_scan_libraries_async", side_effect=worker_not_started_yet),              patch.object(server, "find_exact_duplicates") as finder:
+            self.assertIn("Scan started", self.client.post("/api/scan", json={}).json()["message"])
+            self.assertTrue(server._scan_job.is_running())
+            self.assertEqual(self.client.post("/api/library/duplicates/scan").status_code, 409)
+        finder.assert_not_called()
+
 if __name__ == "__main__":
     unittest.main()
