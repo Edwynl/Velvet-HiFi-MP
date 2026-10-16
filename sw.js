@@ -19,6 +19,9 @@ const MAX_THUMBS = 400;
 const MAX_COVERS = 80;
 const MAX_THUMB_BYTES = 24 * 1024 * 1024;
 const MAX_COVER_BYTES = 40 * 1024 * 1024;
+// Keep per-response sizes in memory to avoid repeatedly reading 400 bodies.
+const coverByteSizes = new Map();
+const entryKey = (cacheName, request) => `${cacheName}|${typeof request === 'string' ? request : request.url}`;
 
 // Install event - cache static assets
 self.addEventListener('install', event => {
@@ -73,14 +76,20 @@ async function trimCache(cacheName, maxItems, maxBytes) {
   const entries = [];
   let total = 0;
   for (const request of keys) {
-    const bytes = await cacheResponseBytes(await cache.match(request));
-    entries.push({ request, bytes });
+    const key = entryKey(cacheName, request);
+    let bytes = coverByteSizes.get(key);
+    if (bytes === undefined) {
+      bytes = await cacheResponseBytes(await cache.match(request));
+      coverByteSizes.set(key, bytes);
+    }
+    entries.push({ request, bytes, key });
     total += bytes;
   }
   let remaining = entries.length;
   for (const item of entries) {
     if (remaining <= maxItems && total <= maxBytes) break;
     await cache.delete(item.request);
+    coverByteSizes.delete(item.key);
     remaining -= 1;
     total -= item.bytes;
   }
@@ -95,6 +104,7 @@ async function putBoundedCover(cacheName, request, response, maxItems, maxBytes)
   if (!Number.isFinite(bytes) || bytes > maxBytes) return;
   const cache = await caches.open(cacheName);
   await cache.put(request, response.clone());
+  coverByteSizes.set(entryKey(cacheName, request), bytes);
   await trimCache(cacheName, maxItems, maxBytes);
 }
 
