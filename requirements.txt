@@ -4,6 +4,7 @@ uvicorn>=0.27.0,<1.0.0          # ASGI server
 mutagen>=1.47.0                # Audio metadata extraction
 pydantic-settings>=2.2.1        # Settings management
 bcrypt>=4.1.2                   # Password hashing
+numpy>=1.26.0,<3.0.0            # Native audio float32 processing (sounddevice callback)
 
 # --- Network & API -----------------------------------------------------------
 httpx>=0.27.0,<1.0.0            # Async HTTP client for MusicBrainz/LRCLIB
