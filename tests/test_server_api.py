@@ -701,5 +701,36 @@ class ServerApiTests(unittest.TestCase):
             finder.assert_called_once()
 
 
+    def test_library_scan_and_refresh_do_not_start_during_duplicate_check(self):
+        from library_jobs import JobState
+        server._scan_job.finish()
+        with self._connect() as conn:
+            conn.execute("INSERT INTO libraries(path) VALUES ('C:/TestMusic')")
+            conn.commit()
+        job = JobState({"running": True, "groups": [], "error": None})
+        with patch.object(server, "_duplicate_job", job),              patch.object(server._scan_job, "check_and_mark_request", return_value=(True, 0)),              patch.object(server, "scan_libraries") as scan,              patch.object(server, "_refresh_folder_sync") as refresh:
+            response = self.client.post("/api/scan", json={})
+            self.assertIn("Duplicate check in progress", response.json()["message"])
+            response = self.client.post("/api/scan/refresh-folder", json={"folder": "C:/TestMusic"})
+            self.assertIn("Duplicate check in progress", response.json()["message"])
+        scan.assert_not_called()
+        refresh.assert_not_called()
+        self.assertFalse(server._scan_job.is_running())
+
+    def test_started_scan_blocks_duplicate_check_before_its_worker_runs(self):
+        """The scan is marked running when accepted, not when its thread starts."""
+        from library_jobs import JobState
+        server._scan_job.finish()
+        job = JobState({"running": False, "groups": [], "error": None})
+
+        async def worker_not_started_yet(music_dirs):
+            return None
+
+        with patch.object(server, "_duplicate_job", job),              patch.object(server._scan_job, "check_and_mark_request", return_value=(True, 0)),              patch.object(server, "_scan_libraries_async", side_effect=worker_not_started_yet),              patch.object(server, "find_exact_duplicates") as finder:
+            self.assertIn("Scan started", self.client.post("/api/scan", json={}).json()["message"])
+            self.assertTrue(server._scan_job.is_running())
+            self.assertEqual(self.client.post("/api/library/duplicates/scan").status_code, 409)
+        finder.assert_not_called()
+
 if __name__ == "__main__":
     unittest.main()

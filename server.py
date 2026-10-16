@@ -400,7 +400,10 @@ app.add_middleware(CORSMiddleware, allow_origins=ALLOWED_ORIGINS,
 # Global scan state
 _scan_job = ScanJobState(MUSIC_DIR)
 _duplicate_job = JobState({"running": False, "progress": 0, "total": 0, "current_file": "", "groups": [], "error": None, "finished_at": None})
-_duplicate_start_lock = threading.Lock()
+# One library job at a time: scans, folder refreshes and duplicate hashing all
+# commit per file, and a commit from one job between another job's per-file
+# read and write fails that file with "database is locked" (BUSY_SNAPSHOT).
+_library_task_lock = threading.Lock()
 
 # In-memory cover cache with TTL support
 _cover_cache: TTLCache = TTLCache(maxsize=10000, ttl=86400)  # album_id -> path
@@ -2144,6 +2147,21 @@ async def _scan_libraries_async(music_dirs: list[str]):
     """
     await asyncio.to_thread(scan_libraries, music_dirs)
 
+def _claim_library_scan(begin) -> str | None:
+    """Mark a scan/refresh running before it is queued, or return why not.
+
+    Marking it here rather than in the worker thread closes the window in
+    which a duplicate check could start before the scan thread does.
+    """
+    with _library_task_lock:
+        if _scan_job.is_running():
+            return "Scan already in progress"
+        if _duplicate_job.is_running():
+            return "Duplicate check in progress; scan again when it finishes"
+        begin()
+        return None
+
+
 @app.post("/api/scan")
 async def start_scan(background_tasks: BackgroundTasks, body: dict = None):
     allowed, remaining = _scan_job.check_and_mark_request(_SCAN_COOLDOWN_SECONDS)
@@ -2153,9 +2171,6 @@ async def start_scan(background_tasks: BackgroundTasks, body: dict = None):
             "cooldown_remaining": remaining,
             "state": _scan_job.snapshot(),
         }
-
-    if _scan_job.is_running():
-        return {"message": "Scan already in progress", "state": _scan_job.snapshot()}
 
     # Check if specific folders are requested (for single folder refresh)
     requested_folders = None
@@ -2179,6 +2194,9 @@ async def start_scan(background_tasks: BackgroundTasks, body: dict = None):
         # Fallback to default if nothing in DB yet (for first scan)
         libraries = [MUSIC_DIR]
 
+    busy = _claim_library_scan(lambda: _scan_job.begin(", ".join(libraries)))
+    if busy:
+        return {"message": busy, "state": _scan_job.snapshot()}
     background_tasks.add_task(_scan_libraries_async, libraries)
     return {"message": f"Scan started ({len(libraries)} folder{'s' if len(libraries) > 1 else ''})", "libraries": libraries}
 
@@ -2202,9 +2220,9 @@ async def refresh_folder_metadata(background_tasks: BackgroundTasks, body: dict 
     if folder_path not in all_libraries:
         raise HTTPException(400, "Folder not found in library configuration")
 
-    if _scan_job.is_running():
-        return {"message": "Scan already in progress", "state": _scan_job.snapshot()}
-
+    busy = _claim_library_scan(lambda: _scan_job.begin_refresh(folder_path))
+    if busy:
+        return {"message": busy, "state": _scan_job.snapshot()}
     background_tasks.add_task(_refresh_folder_async, folder_path)
     return {"message": f"Refresh started for folder: {folder_path}"}
 
@@ -2282,9 +2300,9 @@ def _duplicate_scan_worker() -> None:
 @app.post("/api/library/duplicates/scan", status_code=202)
 def start_duplicate_scan(background_tasks: BackgroundTasks):
     """Queue a read-only, byte-exact duplicate check in the background."""
-    if _scan_job.is_running():
-        raise HTTPException(409, "Finish the library scan before checking duplicates")
-    with _duplicate_start_lock:
+    with _library_task_lock:
+        if _scan_job.is_running():
+            raise HTTPException(409, "Finish the library scan before checking duplicates")
         if _duplicate_job.is_running():
             raise HTTPException(409, "Duplicate scan already running")
         _duplicate_job.mark_running(
