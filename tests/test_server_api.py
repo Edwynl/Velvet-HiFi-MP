@@ -771,6 +771,28 @@ class ServerApiTests(unittest.TestCase):
             self.assertEqual(restored.status_code, 200, restored.text)
             self.assertEqual(album_path.read_bytes(), original)
 
+    def test_gzip_reduces_static_payload_only_and_honors_opt_out(self):
+        # httpx transparently decodes gzip; the wire header must remain present.
+        response = self.client.get("/", headers={"Accept-Encoding": "gzip"})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.headers.get("Content-Encoding"), "gzip")
+        self.assertIn("text/html", response.headers.get("Content-Type", ""))
+        self.assertIn("VELVET", response.text.upper())
+
+        script = self.client.get(
+            "/static/js/library-views.js", headers={"Accept-Encoding": "gzip"}
+        )
+        self.assertEqual(script.status_code, 200)
+        self.assertEqual(script.headers.get("Content-Encoding"), "gzip")
+        self.assertIn("function renderAlbums", script.text)
+
+        plain = self.client.get(
+            "/static/js/library-views.js", headers={"Accept-Encoding": "gzip;q=0"}
+        )
+        self.assertEqual(plain.status_code, 200)
+        self.assertNotIn("Content-Encoding", plain.headers)
+        self.assertIn("function renderAlbums", plain.text)
+
     def test_album_delete_refuses_while_library_scan_is_running(self):
         audio = self.root / "music" / "one.flac"
         with patch.object(server._scan_job, "is_running", return_value=True):
