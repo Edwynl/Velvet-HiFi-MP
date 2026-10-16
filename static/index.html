@@ -9651,7 +9651,7 @@ loadStats();
 loadDspProfiles();
 
 window.addEventListener('DOMContentLoaded', async () => {
-  // Refresh the cover-only HttpOnly cookie for clients with a saved API key.
+  // Refresh the image-only HttpOnly cookie for clients with a saved API key.
   // Startup session refresh: also delivers the stream ticket before the first
   // navigation renders anything the user can tap.
   if (authState.apiKey) adoptStreamTicket(await api('/security/login', { method: 'POST' }));
