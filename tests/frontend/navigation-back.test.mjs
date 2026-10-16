@@ -173,6 +173,12 @@ function createHarness({ initialHash = '#home' } = {}) {
         { id: 7, name: 'Back Test Artist', album_count: 1 },
       ]));
     }
+    if (parsedUrl.pathname === '/api/artists/page' && method === 'GET') {
+      return Promise.resolve(makeJsonResponse({
+        artists: [{ id: 7, name: 'Back Test Artist', album_count: 1 }],
+        total: 1, limit: 60, offset: 0,
+      }));
+    }
 
     if (parsedUrl.pathname === '/api/genres' && method === 'GET') {
       return Promise.resolve(makeJsonResponse([
