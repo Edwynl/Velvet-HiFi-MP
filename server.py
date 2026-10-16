@@ -1867,8 +1867,10 @@ def _transcode_time_limit_seconds(duration_seconds, timeout_minutes: int | None 
     """Wall-clock cap for one FFmpeg response.
 
     The configured (or requested) limit is a floor: a track longer than it,
-    such as a live set or opera act, still gets its full duration plus pause
-    margin. A stalled decoder is ended separately by the idle timeout.
+    such as a live set or opera act, gets its duration plus a 30-minute
+    margin. The cap is wall-clock, so pauses consume that margin; a client
+    paused longer than the margin is disconnected and the browser's recovery
+    path reconnects. A stalled decoder is ended separately by the idle timeout.
     """
     configured = (timeout_minutes or settings.stream_timeout_minutes) * 60
     try:
@@ -2010,9 +2012,7 @@ def create_stream_ticket():
     The client fetches it ahead of playback so starting a track needs no
     network round trip before audio.play().
     """
-    ticket, expires_at = security.issue_media_ticket(
-        "stream-any", 0, security.BROWSER_STREAM_TICKET_SECONDS
-    )
+    ticket, expires_at = security.issue_browser_stream_ticket()
     return JSONResponse({"ticket": ticket, "expires_at": expires_at},
                         headers={"Cache-Control": "no-store"})
 
@@ -3215,7 +3215,12 @@ def generate_api_key(request: Request):
 
 
 def _credential_response(request: Request, api_key: str):
-    response = JSONResponse({"success": True, "api_key": api_key},
+    # Deliver the browser's stream ticket in the same response as the key, so
+    # the UI never has to fetch one between a tap and audio.play().
+    stream_ticket, stream_expires_at = security.issue_browser_stream_ticket()
+    response = JSONResponse({"success": True, "api_key": api_key,
+                             "stream_ticket": stream_ticket,
+                             "stream_ticket_expires_at": stream_expires_at},
                             headers={"Cache-Control": "no-store"})
     # Image elements cannot attach API headers. Restrict this cookie to cover
     # reads; it never authorizes mutations or the rest of the API.

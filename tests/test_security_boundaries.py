@@ -95,10 +95,26 @@ class SecurityBoundaryTests(unittest.TestCase):
             self.assertEqual(self.client.post("/api/security/disable").status_code, 401)
             self.assertIsNone(calls[-1]["api_key"])
 
+    def test_credential_responses_deliver_a_working_stream_ticket(self):
+        # The browser must hold a stream ticket as soon as it holds a key, so
+        # tap-to-play never fetches one before audio.play().
+        with patch.object(server.security, "is_auth_enabled", return_value=True), \
+             patch.object(server.security, "verify_auth", return_value={"allowed": True}), \
+             patch.object(server.security, "get_security_manager") as manager, \
+             patch.object(server.security, "issue_media_ticket",
+                          return_value=("123.sig", 123)) as issue:  # via issue_browser_stream_ticket
+            manager.return_value.get_or_create_api_key.return_value = "test-key"
+            body = self.client.post("/api/security/login", headers={"X-Password": "pw"}).json()
+        issue.assert_called_once_with("stream-any", 0, server.security.BROWSER_STREAM_TICKET_SECONDS)
+        self.assertEqual(body["stream_ticket"], "123.sig")
+        self.assertEqual(body["stream_ticket_expires_at"], 123)
+        self.assertNotIn("test-key", body["stream_ticket"])
+
     def test_login_response_has_scoped_cookie_and_no_store(self):
         with patch.object(server.security, "is_auth_enabled", return_value=True), \
              patch.object(server.security, "verify_auth", return_value={"allowed": True}), \
-             patch.object(server.security, "get_security_manager") as manager:
+             patch.object(server.security, "get_security_manager") as manager, \
+             patch.object(server.security, "issue_media_ticket", return_value=("1.sig", 1)):
             manager.return_value.get_or_create_api_key.return_value = "test-key"
             response = self.client.post("/api/security/login", headers={"X-Password": "password"})
             self.assertEqual(response.json()["api_key"], "test-key")

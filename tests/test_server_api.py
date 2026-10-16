@@ -525,9 +525,12 @@ class ServerApiTests(unittest.TestCase):
             self.assertEqual(self.client.get(f"/api/tracks?ticket={ticket}").status_code, 401)
             self.assertEqual(self.client.post(f"/api/stream/1?ticket={ticket}").status_code, 401)
             self.assertEqual(self.client.get("/api/stream/1?ticket=1.forged").status_code, 401)
-            # Rotating the API key revokes outstanding browser tickets.
-            server.security.get_security_manager().generate_api_key()
+            # Rotating the API key revokes outstanding browser tickets, and the
+            # rotation response itself carries a ticket valid under the new secret.
+            rotated = self.client.post("/api/security/generate-api-key", headers=key).json()
             self.assertEqual(self.client.get(f"/api/stream/1?ticket={ticket}").status_code, 401)
+            self.assertIn(self.client.get(f"/api/stream/1?ticket={rotated['stream_ticket']}",
+                                          headers={"Range": "bytes=0-1"}).status_code, {200, 206})
 
     def test_dlna_head_probes_are_answered_without_a_body_or_decoder(self):
         self._allow_music_root()

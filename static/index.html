@@ -6202,7 +6202,7 @@ async function submitLogin() {
       localStorage.setItem('velvet_api_key', keyResult.api_key);
       authState.isAuthenticated = true;
       document.getElementById('login-modal')?.remove();
-      maintainStreamTicket();
+      adoptStreamTicket(keyResult);
       // Refresh current view
       await loadDspProfiles();
       await render();
@@ -6795,9 +6795,11 @@ function streamUrl(trackId, upsample, ticket = '') {
 }
 
 // <audio> cannot send X-API-Key. When protection is on, stream URLs carry a
-// short-lived, stream-only ticket instead of the API key. It is fetched ahead
-// of time: awaiting the network before audio.play() would break the mobile
-// user-gesture chain (see playTrack).
+// short-lived, stream-only ticket instead of the API key. Awaiting the network
+// before audio.play() would break the mobile user-gesture chain (see
+// playTrack), so the ticket arrives with every credential response (login,
+// startup session refresh, key rotation) before the UI is interactive, and is
+// renewed in the background.
 const STREAM_TICKET_MIN_REMAINING_MS = 60 * 60 * 1000;   // usable for a new track
 const STREAM_TICKET_REFRESH_BELOW_MS = 2 * 60 * 60 * 1000; // renew in background
 let streamTicket = { value: '', expiresAt: 0, apiKey: '' };
@@ -6812,20 +6814,34 @@ function currentStreamTicket() {
   return streamTicketRemainingMs() > STREAM_TICKET_MIN_REMAINING_MS ? streamTicket.value : '';
 }
 
+function adoptStreamTicket(credentials) {
+  if (!credentials?.stream_ticket || !authState.apiKey) return;
+  streamTicket = {
+    value: credentials.stream_ticket,
+    expiresAt: credentials.stream_ticket_expires_at,
+    apiKey: authState.apiKey,
+  };
+}
+
+// Single flight per API key: a request started under an older key never
+// satisfies, or overwrites, the ticket for the current key.
 function refreshStreamTicket() {
-  if (!authState.apiKey) return Promise.resolve('');
-  if (!streamTicketRequest) {
-    const apiKey = authState.apiKey;
-    streamTicketRequest = api('/stream-ticket', { method: 'POST' })
-      .then(result => {
-        if (!result?.ticket) return '';
-        streamTicket = { value: result.ticket, expiresAt: result.expires_at, apiKey };
-        return result.ticket;
-      })
-      .catch(() => '')
-      .finally(() => { streamTicketRequest = null; });
-  }
-  return streamTicketRequest;
+  const apiKey = authState.apiKey;
+  if (!apiKey) return Promise.resolve('');
+  if (streamTicketRequest?.apiKey === apiKey) return streamTicketRequest.promise;
+  const request = { apiKey, promise: null };
+  request.promise = api('/stream-ticket', { method: 'POST' })
+    .then(result => {
+      if (!result?.ticket || authState.apiKey !== apiKey) return '';
+      streamTicket = { value: result.ticket, expiresAt: result.expires_at, apiKey };
+      return result.ticket;
+    })
+    .catch(() => '')
+    .finally(() => {
+      if (streamTicketRequest === request) streamTicketRequest = null;
+    });
+  streamTicketRequest = request;
+  return request.promise;
 }
 
 function maintainStreamTicket() {
@@ -6845,8 +6861,12 @@ document.addEventListener('visibilitychange', () => {
 
 async function startBrowserPlayback(track, { resumeTime = null, token = null } = {}) {
   const playbackToken = token ?? ++browserPlaybackToken;
-  // Normally synchronous; only awaits when no prefetched ticket is usable.
-  const ticket = authState.apiKey ? (currentStreamTicket() || await refreshStreamTicket()) : '';
+  // Synchronous whenever a credential response delivered a ticket. Awaiting
+  // is a last resort (ticket expired while the page slept); if the browser
+  // then refuses play() for lack of a fresh gesture, ask for one more tap.
+  let ticket = authState.apiKey ? currentStreamTicket() : '';
+  const ticketWasAwaited = !!authState.apiKey && !ticket;
+  if (ticketWasAwaited) ticket = await refreshStreamTicket();
   const targetUrl = streamUrl(track.id, undefined, ticket);
   if (playbackToken !== browserPlaybackToken) return false;
   clearDspStartupHealthCheck();
@@ -6908,6 +6928,9 @@ async function startBrowserPlayback(track, { resumeTime = null, token = null } =
       }
     }
     console.warn('[VELVET] Browser playback failed:', error?.message || error);
+    if (ticketWasAwaited && error?.name === 'NotAllowedError') {
+      showToast('Secure stream ready. Tap play again.');
+    }
     state.playing = false;
     updatePlayBtnUI();
     return false;
@@ -12788,7 +12811,7 @@ async function savePassword() {
         if (keyData.success && keyData.api_key) {
           authState.apiKey = keyData.api_key;
           localStorage.setItem('velvet_api_key', keyData.api_key);
-          maintainStreamTicket();
+          adoptStreamTicket(keyData);
         }
       }
       alert(result.message);
@@ -12809,7 +12832,7 @@ async function generateNewApiKey() {
     if (result && result.success && result.api_key) {
       authState.apiKey = result.api_key;
       localStorage.setItem('velvet_api_key', result.api_key);
-      maintainStreamTicket();
+      adoptStreamTicket(result);
       // Show the key in an alert (one-time view)
       alert('Your new API Key:\n\n' + result.api_key + '\n\nSave this now! It will not be shown again.');
       // Update the display
@@ -13028,7 +13051,9 @@ loadDspProfiles();
 
 window.addEventListener('DOMContentLoaded', async () => {
   // Refresh the cover-only HttpOnly cookie for clients with a saved API key.
-  if (authState.apiKey) await api('/security/login', { method: 'POST' });
+  // Startup session refresh: also delivers the stream ticket before the first
+  // navigation renders anything the user can tap.
+  if (authState.apiKey) adoptStreamTicket(await api('/security/login', { method: 'POST' }));
   maintainStreamTicket();
   log('[VELVET] DOM ready, performing initial navigation...');
   // EQ Controls

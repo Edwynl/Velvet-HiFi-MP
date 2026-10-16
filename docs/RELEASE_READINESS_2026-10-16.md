@@ -16,7 +16,7 @@ All automatable gates pass: the Python and frontend suites, Linux and Windows CI
 
 | Sev | Finding | Status |
 |-----|---------|--------|
-| P1 | Round 2 awaited a per-track ticket fetch **before `audio.play()`**. That breaks the user-gesture chain `playTrack` deliberately preserves for mobile Safari, so the first tap-to-play could fail with auth on. | **Fixed** (`5a5585e`). The browser now holds one stream-only ticket, prefetched at startup, login and key change, and renewed in the background. The tap-to-play path has no await when a ticket is cached. A frontend test asserts that the only possible await before `play()` is the no-ticket fallback, and that test fails on the round-2 code. |
+| P1 | Round 2 awaited a per-track ticket fetch **before `audio.play()`**. That breaks the user-gesture chain `playTrack` deliberately preserves for mobile Safari, so the first tap-to-play could fail with auth on. | **Partly fixed** in `5a5585e` (prefetch); **completed** after the independent review below. The browser now holds one stream-only ticket, prefetched at startup, login and key change, and renewed in the background. The tap-to-play path has no await when a ticket is cached. A frontend test asserts that the only possible await before `play()` is the no-ticket fallback, and that test fails on the round-2 code. |
 | P1 | Enforcing the transcode limit created a race. A track switch overlaps the closing and new FFmpeg streams (twice over with the VU meter, which mirrors the stream). The transient 503 is caught by the frontend's DSP error path, which **auto-disables DSP**. | **Fixed.** Slot acquisition waits up to 3 s for the previous decoder to be reaped before returning 503. Tested. |
 | P1 | DLNA: `HEAD /api/stream/*` and `/api/covers/*` returned **405**. Renderers commonly probe with HEAD. This predates the PR. | **Fixed.** Both routes accept GET and HEAD. HEAD returns `Content-Length`/`Content-Range` and no body, and a transcoded HEAD never starts FFmpeg. Verified under real uvicorn. |
 | P1 | Renderer URLs used a hard-coded port 8765 instead of `VELVET_PORT`, so casting broke on non-default ports. This was a round-2 regression. | **Fixed.** URLs now use the configured port. Tested. |
@@ -25,6 +25,16 @@ All automatable gates pass: the Python and frontend suites, Linux and Windows CI
 | P2 | Native `set_volume` is a no-op and `get_position` always returns 0. Volume is applied at track start. Both predate this PR, and the UI does not call them, so no existing function regresses. | Accepted. |
 | P2 | A very short native track can finish before `play_local` marks the state as playing, leaving it "playing". This is an edge case. | Accepted. |
 | P2 | Responses lack DLNA `contentFeatures.dlna.org` / `transferMode.dlna.org` headers. Some strict renderers want them. | Follow-up if renderer testing shows a need. |
+
+### Independent review of `b79e47d` (CHANGES REQUESTED) and resolution
+
+| Sev | Review finding | Resolution |
+|-----|----------------|------------|
+| P1 | First tap right after login or cold start, before the background prefetch resolved, still awaited `/api/stream-ticket` before `audio.play()`. Single-flight renewal was not key-aware: an old-key response could be cached after rotation. | **Fixed.** Every credential response (`/api/security/login`, `generate-api-key`, `reset-api-key`) now carries `stream_ticket` and `stream_ticket_expires_at`. The startup session refresh is awaited before the first navigation renders anything tappable, and login and rotation adopt the ticket before re-rendering. The first authenticated tap therefore has a ticket without any network wait. Renewal is single-flight **per API key**: stale responses are discarded and a new key starts its own request. The only remaining await is for a ticket that expired while the page slept; there, a `NotAllowedError` shows "Tap play again". Regression tests use the real `index.html` in jsdom: a cold start with a hung ticket endpoint calls `play()` synchronously, and a gated fallback shows the retry toast. Additional vm tests cover login (ticket present at `render()`), in-flight key rotation, fetch failure and retry, and renewal. |
+| P1 (found while adding the review's timeout test) | `iter_ffmpeg_stdout` wrapped `yield` in `asyncio.timeout`. When the cap expired while the consumer was paused, the cancellation hit an unrelated await in the consumer's task (Starlette's `send()`). `asyncio.timeout` also requires Python 3.11, while `install.ps1` accepts 3.10, so transcodes failed on 3.10. | **Fixed.** The deadline is enforced per read with `asyncio.wait_for`, so cancellation stays inside the generator. Verified on Python 3.10.6 and 3.12. A regression test (paused client outlives the cap) fails on the old code. |
+| P2 | `sw.js` serves cached authenticated cover images before network authorization, and the cache is not purged on key or password rotation. | **Accepted / documented.** Offline cover caching is intentional for the PWA. Covers already viewed stay readable on that device after a credential change until the cache rotates (400 thumbnails / 80 covers). Purging on credential change is tracked in the P2 follow-up. |
+| P2 | The FFmpeg total cap is wall-clock, so pauses count. The docstring implied otherwise. | **Documented and tested.** Docstrings now state the cap includes pauses (duration + 30 min is a margin, not a pause-independent guarantee). A new test pins this behavior. |
+| Scope | `local_playback.py` never requests WASAPI exclusive mode. | **Corrected wording.** Exclusive output is *not implemented*; native playback uses each device's shared/default stream. Nothing in this report claims exclusive output is validated. |
 
 Sample-rate reporting was checked and is correct. The UI badges show source metadata. The native API returns the negotiated output rate (verified on hardware: 44.1/48/96 kHz reported as played). Upsampled responses carry `X-Upsampled-Rate`.
 
@@ -42,8 +52,8 @@ Sample-rate reporting was checked and is correct. The UI badges show source meta
 
 | Gate | Where | Result |
 |------|-------|--------|
-| Python suite | Local Windows 11 / Python 3.12 | **138 passed**, 12 failed. The 12 are the expected 503s because the local FFmpeg lacks libsoxr; they pass on CI. |
-| Frontend suite | Local | **7/7** scripts OK |
+| Python suite | Local Windows 11 / Python 3.12 | **140 passed**, 12 failed. The 12 are the expected 503s because the local FFmpeg lacks libsoxr; they pass on CI. |
+| Frontend suite | Local | **8/8** scripts OK (adds the jsdom cold-start test) |
 | CI · Python Linux / Windows | GitHub Actions [run 38863168866](https://github.com/Edwynl/Velvet-HiFi-MP/actions/runs/38863168866) on head `5a5585e` | **pass**: Linux 137 passed, 1 skipped (Windows-only test), 50 subtests; Windows **138 passed**, 50 subtests |
 | CI · Frontend Linux / Windows | 〃 | **pass** / **pass** (7/7 scripts each) |
 | CI · Windows installer + native audio detection | 〃 | **pass**: `install.ps1` → `[OK] Native audio output is available`, sounddevice 0.5.6 / PortAudio V19.7.0 |
@@ -59,7 +69,7 @@ Sample-rate reporting was checked and is correct. The UI badges show source meta
 
 | Area | Required checks |
 |------|-----------------|
-| **Hi-Fi DAC (Windows)** | WASAPI shared and exclusive-capable USB DAC at 44.1–192 kHz; 16/24-bit FLAC and MP3; DSP preamp/EQ; rapid switching; USB disconnect/reconnect mid-track; end-of-track advance; audible glitches at `medium` |
+| **Hi-Fi DAC (Windows)** | USB DAC through WASAPI **shared** mode and ASIO host APIs at 44.1–192 kHz (exclusive mode is not implemented); 16/24-bit FLAC and MP3; DSP preamp/EQ; rapid switching; USB disconnect/reconnect mid-track; end-of-track advance; audible glitches at `medium` |
 | **DLNA** | HEOS (Marantz M1), StreamMagic (EXN100), BubbleUPnP: browsing refused outside the window and allowed inside it; HEAD/GET probes; cover art; tracks longer than 1 h play to the end; pause over 30 min then resume or seek; cast from the UI with auth on |
 | **iOS Safari + PWA** | First tap-to-play after login and after a cold start; lock-screen auto-advance; resume after a pause longer than the remaining ticket lifetime; DSP stream with VU meter while switching |
 | **Android Chrome + PWA** | Same as iOS, plus switching between Wi-Fi and mobile data mid-track |
@@ -85,3 +95,5 @@ Sample-rate reporting was checked and is correct. The UI badges show source meta
 - `37decb5` second-round fixes
 - `0ef3aed` report
 - `5a5585e` final-review P1 fixes
+- `b79e47d` report
+- `NEW_SHA` independent-review fixes (ticket in credential responses, key-aware renewal, per-read FFmpeg deadline)

@@ -378,6 +378,11 @@ def issue_media_ticket(scope: str, resource_id: int, ttl_seconds: int) -> tuple[
     return get_security_manager().issue_media_ticket(scope, resource_id, ttl_seconds)
 
 
+def issue_browser_stream_ticket() -> tuple[str, int]:
+    """Stream-only ticket for the web player: any track, audio reads only."""
+    return issue_media_ticket("stream-any", 0, BROWSER_STREAM_TICKET_SECONDS)
+
+
 def verify_media_ticket(ticket: str, scope: str, resource_id) -> bool:
     return get_security_manager().verify_media_ticket(ticket, scope, resource_id)
 

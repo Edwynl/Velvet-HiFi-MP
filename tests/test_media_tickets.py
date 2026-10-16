@@ -191,6 +191,20 @@ class TranscodeLifecycleLimitTests(unittest.IsolatedAsyncioTestCase):
         rest = b"".join([chunk async for chunk in gen])
         self.assertEqual(first + rest, b"ab")
 
+    async def test_total_cap_is_wall_clock_and_includes_client_pauses(self):
+        # Documented behaviour: timeout_seconds is not pause-independent.
+        gen = iter_ffmpeg_stdout(
+            [sys.executable, "-c",
+             "import sys,time; sys.stdout.buffer.write(b'a'); sys.stdout.flush(); "
+             "time.sleep(0.2); sys.stdout.buffer.write(b'b'); sys.stdout.flush(); time.sleep(30)"],
+            timeout_seconds=1.0, idle_timeout_seconds=20, chunk_size=1)
+        self.assertEqual(await gen.__anext__(), b"a")
+        await asyncio.sleep(1.5)  # paused client outlives the whole-response cap
+        started = time.monotonic()
+        rest = [chunk async for chunk in gen]
+        self.assertLessEqual(len(rest), 1)  # at most the byte already buffered
+        self.assertLess(time.monotonic() - started, 5)
+
 
 if __name__ == "__main__":
     unittest.main()

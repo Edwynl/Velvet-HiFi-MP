@@ -87,9 +87,11 @@ async def iter_ffmpeg_stdout(
 ) -> AsyncIterator[bytes]:
     """Yield encoded audio bytes; reap the FFmpeg subprocess on every exit path.
 
-    ``timeout_seconds`` caps the whole response; ``idle_timeout_seconds`` ends
-    a decoder that produces no output (time spent waiting for a paused client
-    is not counted). ``on_close`` runs once the process has been reaped.
+    ``timeout_seconds`` is an absolute wall-clock cap on the whole response:
+    time a paused or slow client spends not reading DOES count toward it.
+    ``idle_timeout_seconds`` separately ends a decoder that produces no output;
+    only that idle check ignores time spent waiting for the client.
+    ``on_close`` runs once the process has been reaped.
 
     Raises on cancellation so Starlette can release response resources.
     On a transcode failure the HTTP response may have already started, so the
@@ -107,24 +109,34 @@ async def iter_ffmpeg_stdout(
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.DEVNULL,
         )
-        async with asyncio.timeout(timeout_seconds):
-            while True:
-                try:
-                    block = await asyncio.wait_for(
-                        process.stdout.read(chunk_size), idle_timeout_seconds
-                    )
-                except TimeoutError:
-                    # Stalled decoder: the finally block terminates it.
+        # Enforce the deadline per read. A timeout context spanning `yield`
+        # would deliver its cancellation to whatever the consumer is awaiting
+        # (e.g. Starlette's send()) while the generator is suspended.
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout_seconds
+        # Returning lets the finally block terminate the decoder.
+        while True:
+            wait = min(idle_timeout_seconds, deadline - loop.time())
+            if wait <= 0:
+                log.warning("FFmpeg audio stream exceeded its time limit")
+                return
+            try:
+                block = await asyncio.wait_for(process.stdout.read(chunk_size), wait)
+            except asyncio.TimeoutError:
+                if wait < idle_timeout_seconds:
+                    log.warning("FFmpeg audio stream exceeded its time limit")
+                else:
                     log.warning("FFmpeg produced no audio for %ss", idle_timeout_seconds)
-                    return
-                if not block:
-                    break
-                yield block
-            await process.wait()
+                return
+            if not block:
+                break
+            yield block
+        try:
+            await asyncio.wait_for(process.wait(), 5)
+        except asyncio.TimeoutError:
+            return
         if process.returncode:
             log.warning("FFmpeg exited with code %s", process.returncode)
-    except asyncio.TimeoutError:
-        log.warning("FFmpeg audio stream exceeded its time limit")
     except asyncio.CancelledError:
         # A browser disconnect typically cancels a StreamingResponse task.
         raise
