@@ -3491,12 +3491,27 @@ def get_remote_info():
 
 # ─── Security (Authentication) ───────────────────────────────────────────────────
 
+_PROXY_HEADERS = ("x-forwarded-for", "forwarded", "x-real-ip",
+                  "x-forwarded-host", "tailscale-user-login")
+
+
 def get_client_ip(request: Request) -> str:
     """Use the ASGI client address, not an untrusted X-Forwarded-For header.
 
-    Configure trusted proxies at the ASGI server/proxy layer if deployed behind one.
+    A local reverse proxy (e.g. `tailscale serve`) connects from 127.0.0.1 on
+    behalf of remote devices. Such a request must never inherit loopback
+    trust, so it is reported as a non-IP "proxied:<hop>" identity: never
+    loopback/private, yet still a per-device key for login rate limiting.
+    Forwarded headers only ever lower trust; they never grant it.
     """
-    return request.client.host if request.client else "unknown"
+    peer = request.client.host if request.client else "unknown"
+    if not _is_loopback_client_ip(peer):
+        return peer
+    forwarded = any(request.headers.get(name) for name in _PROXY_HEADERS)
+    if not forwarded and _is_loopback_client_ip(request.url.hostname or ""):
+        return peer
+    hop = request.headers.get("x-forwarded-for", "").split(",")[-1].strip()
+    return "proxied:" + (hop[:64] if hop else "unknown")
 
 
 def _is_local_client_ip(client_ip: str) -> bool:

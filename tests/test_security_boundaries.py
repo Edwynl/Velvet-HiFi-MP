@@ -52,6 +52,36 @@ class SecurityBoundaryTests(unittest.TestCase):
             )
             self.assertEqual(response.status_code, 401)
 
+    def test_local_reverse_proxy_never_inherits_loopback_trust(self):
+        # `tailscale serve --bg 8765` connects from 127.0.0.1 for remote phones.
+        tailnet = {"Host": "velvet.tail1234.ts.net", "X-Forwarded-For": "100.101.102.103",
+                   "X-Forwarded-Host": "velvet.tail1234.ts.net", "X-Forwarded-Proto": "https"}
+        with TestClient(server.app, base_url="http://localhost:8765",
+                        client=("127.0.0.1", 50123)) as loopback, \
+             patch.object(server.security, "is_auth_enabled", return_value=False):
+            self.assertEqual(loopback.get("/api/stats").status_code, 200)
+            self.assertEqual(loopback.get("/api/stats", headers=tailnet).status_code, 403)
+            self.assertEqual(loopback.get("/api/stats", headers={"Host": tailnet["Host"]}).status_code, 403)
+            self.assertEqual(loopback.post("/api/security/setup-password", headers=tailnet,
+                                           json={"password": "long-password"}).status_code, 403)
+
+        verify = patch.object(server.security, "verify_auth",
+                              return_value={"allowed": False, "error": "denied"})
+        with TestClient(server.app, base_url="http://localhost:8765",
+                        client=("127.0.0.1", 50124)) as loopback, \
+             patch.object(server.security, "is_auth_enabled", return_value=True), \
+             patch.dict("os.environ", {"VELVET_AUTH_ENFORCE_ALL_NETWORKS": "false"}), \
+             verify as verify_auth:
+            self.assertEqual(loopback.get("/api/stats", headers=tailnet).status_code, 401)
+            self.assertEqual(verify_auth.call_args.kwargs["ip"], "proxied:100.101.102.103")
+
+    def test_forwarded_headers_never_raise_trust_of_remote_peer(self):
+        with TestClient(server.app, base_url="http://localhost:8765",
+                        client=("203.0.113.7", 50125)) as remote, \
+             patch.object(server.security, "is_auth_enabled", return_value=False):
+            response = remote.get("/api/stats", headers={"X-Forwarded-For": "127.0.0.1"})
+            self.assertEqual(response.status_code, 403)
+
     def test_audio_soxr_profiles_use_valid_resampler(self):
         for profile in ScanConstants.UPSAMPLE_QUALITY.values():
             self.assertTrue(profile.startswith("soxr:precision="))
