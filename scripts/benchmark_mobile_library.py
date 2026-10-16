@@ -7,11 +7,15 @@ import json
 import math
 import sqlite3
 import statistics
+import sys
 import time
 from pathlib import Path
 from urllib.parse import quote
 
-from library_paging import fetch_album_page, fetch_artist_page
+# Run as `python scripts\benchmark_mobile_library.py`: the project root (not
+# scripts\) must be importable.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from library_paging import fetch_album_page, fetch_artist_page  # noqa: E402
 
 
 def timing(db: sqlite3.Connection, fn, offsets=(0, 60, 120), repeats=4):
