@@ -4,7 +4,7 @@ import sqlite3
 from dsp_engine import FACTORY_DSP_PRESETS, legacy_eq_bands_to_filters
 
 
-LATEST_SCHEMA_VERSION = 8
+LATEST_SCHEMA_VERSION = 9
 
 
 def _table_columns(conn: sqlite3.Connection, table_name: str) -> set[str]:
@@ -277,6 +277,36 @@ def migration_008_add_performance_indexes(conn: sqlite3.Connection) -> None:
     conn.execute("CREATE INDEX IF NOT EXISTS idx_play_history_track_played ON play_history(track_id, played_at DESC)")
 
 
+
+def migration_009_track_file_state_and_query_indexes(conn: sqlite3.Connection) -> None:
+    """Track incremental file revisions without altering track IDs or history.
+
+    Existing libraries are deliberately NOT backfilled with guesses: the next
+    scan takes a baseline stat snapshot for existing tracks. Following scans
+    can then detect a changed file without deleting its playlist/history rows.
+    """
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS track_file_state (
+            track_id       INTEGER PRIMARY KEY REFERENCES tracks(id) ON DELETE CASCADE,
+            size_bytes     INTEGER NOT NULL,
+            mtime_ns       INTEGER NOT NULL,
+            sha256         TEXT,
+            hash_size      INTEGER,
+            hash_mtime_ns  INTEGER
+        )
+        """
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_tracks_duplicate_size ON tracks(file_size, id)")
+    # History browse orders by played_at and then joins track_id.
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_history_recent_track ON play_history(played_at DESC, track_id)"
+    )
+    # High resolution album browsing accesses the album/rate/depth together.
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_tracks_album_quality ON tracks(album_id, sample_rate DESC, bit_depth DESC)"
+    )
+
 MIGRATIONS = (
     (1, "create_base_schema", migration_001_create_base_schema),
     (2, "align_album_columns", migration_002_add_album_favorites),
@@ -286,6 +316,7 @@ MIGRATIONS = (
     (6, "enhance_dsp_profiles", migration_006_enhance_dsp_profiles),
     (7, "seed_expanded_factory_dsp_presets", migration_007_seed_expanded_factory_dsp_presets),
     (8, "add_performance_indexes", migration_008_add_performance_indexes),
+    (9, "track_file_state_and_query_indexes", migration_009_track_file_state_and_query_indexes),
 )
 
 
