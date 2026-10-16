@@ -1,8 +1,10 @@
+import asyncio
 import importlib.util
 import os
 import sqlite3
 import sys
 import tempfile
+import time
 import types
 import unittest
 from contextlib import closing
@@ -28,6 +30,8 @@ if importlib.util.find_spec("pydantic_settings") is None:
 
 import server
 import local_playback
+import upnp_server
+from audio_streaming import StreamSlots
 from db_schema import apply_migrations
 
 
@@ -46,6 +50,21 @@ class ServerApiTests(unittest.TestCase):
 
         self.get_db_patcher = patch.object(server, "get_db", side_effect=self._open_connection)
         self.get_db_patcher.start()
+        # TestClient is not a real host browser. Model local, trusted first-time
+        # setup explicitly; individual auth tests override the client address.
+        self.client_ip_patcher = patch.object(server, "get_client_ip", return_value="127.0.0.1")
+        self.client_ip_patcher.start()
+        # Never depend on a developer's persisted credentials or smoke tests.
+        # Authentication-specific tests override this patch explicitly.
+        self.auth_enabled_patcher = patch.object(server.security, "is_auth_enabled", return_value=False)
+        self.auth_enabled_patcher.start()
+        # Media tickets are signed with a persisted secret: never touch the
+        # developer's velvet_data/security.json from tests.
+        self.security_file_patcher = patch.object(server.security, "CONFIG_FILE", self.root / "security.json")
+        self.security_file_patcher.start()
+        self.security_manager_patcher = patch.object(
+            server.security, "_security_manager", server.security.SecurityManager())
+        self.security_manager_patcher.start()
         server.MUSIC_DIR = "C:/TestMusic"
         server.DATA_DIR = self.root / "data"
         server.PORT = 9876
@@ -64,6 +83,10 @@ class ServerApiTests(unittest.TestCase):
     def tearDown(self):
         self.client.close()
         self.get_db_patcher.stop()
+        self.client_ip_patcher.stop()
+        self.auth_enabled_patcher.stop()
+        self.security_manager_patcher.stop()
+        self.security_file_patcher.stop()
         server.MUSIC_DIR = self.original_music_dir
         server.DATA_DIR = self.original_data_dir
         server.PORT = self.original_port
@@ -376,23 +399,34 @@ class ServerApiTests(unittest.TestCase):
     def test_auth_middleware_only_skips_private_network_when_disabled_for_all_networks(self):
         with patch.dict(os.environ, {"VELVET_AUTH_ENFORCE_ALL_NETWORKS": "false"}), \
              patch.object(server.security, "is_auth_enabled", return_value=True), \
-             patch.object(server.security, "verify_auth", return_value={"allowed": False, "error": "denied"}) as verify_auth:
-            private_resp = self.client.get("/api/config", headers={"X-Forwarded-For": "172.16.5.10"})
+             patch.object(server.security, "verify_auth", return_value={"allowed": False, "error": "denied"}) as verify_auth, \
+             patch.object(server, "get_client_ip", return_value="172.16.5.10") as client_ip:
+            private_resp = self.client.get("/api/config")
             self.assertEqual(private_resp.status_code, 200)
             verify_auth.assert_not_called()
 
-            non_private_resp = self.client.get("/api/config", headers={"X-Forwarded-For": "172.15.5.10"})
+            client_ip.return_value = "172.15.5.10"
+            non_private_resp = self.client.get("/api/config")
             self.assertEqual(non_private_resp.status_code, 401)
             verify_auth.assert_called_once()
 
-    def test_auth_middleware_accepts_api_key_query_parameter(self):
+    def test_cors_origins_include_documented_settings_and_legacy_override(self):
+        with patch.object(server.settings, "cors_origins", ["https://example.test"]), \
+             patch.dict(os.environ, {"CORS_ORIGINS": "https://legacy.test"}):
+            origins = server._get_cors_origins()
+        self.assertIn("https://example.test", origins)
+        self.assertIn("https://legacy.test", origins)
+        self.assertEqual(len(origins), len(set(origins)))
+
+    def test_auth_middleware_ignores_credentials_in_query_string(self):
+        # Query strings leak into logs, history and renderer metadata.
         with patch.object(server.security, "is_auth_enabled", return_value=True), \
-             patch.object(server.security, "verify_auth", return_value={"allowed": True, "error": None}) as verify_auth:
-            resp = self.client.get("/api/config?api_key=test-query-key", headers={"X-Forwarded-For": "8.8.8.8"})
-            self.assertEqual(resp.status_code, 200)
-            verify_auth.assert_called_once()
-            kwargs = verify_auth.call_args.kwargs
-            self.assertEqual(kwargs["api_key"], "test-query-key")
+             patch.object(server.security, "verify_auth",
+                          return_value={"allowed": False, "error": "Authentication required"}) as verify_auth:
+            resp = self.client.get("/api/config?api_key=test-query-key&password=pw")
+            self.assertEqual(resp.status_code, 401)
+            self.assertIsNone(verify_auth.call_args.kwargs["api_key"])
+            self.assertIsNone(verify_auth.call_args.kwargs["password"])
 
     def test_stream_route_allows_tracks_inside_configured_library_roots(self):
         with self._connect() as conn:
@@ -411,6 +445,209 @@ class ServerApiTests(unittest.TestCase):
 
         resp = self.client.get("/api/stream/1", headers={"Range": "bytes=0-3"})
         self.assertEqual(resp.status_code, 403)
+
+    def test_dop_and_unknown_pcm_multiplier_fail_explicitly(self):
+        with self._connect() as conn:
+            conn.execute("DELETE FROM libraries")
+            conn.execute("INSERT INTO libraries (path) VALUES (?)", (str(self.root / "music"),))
+            conn.commit()
+        self.assertEqual(self.client.get("/api/stream/1?dop=dsd64").status_code, 501)
+        self.assertEqual(self.client.get("/api/stream/1?upsample=32x").status_code, 422)
+
+    def _allow_music_root(self):
+        with self._connect() as conn:
+            conn.execute("DELETE FROM libraries")
+            conn.execute("INSERT INTO libraries (path) VALUES (?)", (str(self.root / "music"),))
+            conn.commit()
+
+    @staticmethod
+    def _key_only_auth(**kwargs):
+        allowed = kwargs.get("api_key") == "session-key"
+        return {"allowed": allowed, "error": None if allowed else "Authentication required"}
+
+    def _ticket(self, scope="stream", resource_id=1, ttl=600):
+        return server.security.issue_media_ticket(scope, resource_id, ttl)[0]
+
+    def test_protected_cast_hands_renderer_track_scoped_ticket_urls(self):
+        self._allow_music_root()
+        sent = {}
+
+        def fake_cast(udn, url, meta):
+            sent.update(udn=udn, url=url, meta=meta)
+            return True
+
+        with patch.object(server.security, "is_auth_enabled", return_value=True), \
+             patch.object(server.security, "verify_auth", return_value={"allowed": True}), \
+             patch.object(upnp_server, "cast_track", side_effect=fake_cast):
+            response = self.client.post("/api/cast/renderer-1", json={"track_id": 1},
+                                        headers={"X-API-Key": "session-key"})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), {"success": True})
+        self.assertIn("/api/stream/1?ticket=", sent["url"])
+        self.assertNotIn("api_key", sent["url"] + sent["meta"])
+        self.assertNotIn("session-key", sent["url"] + sent["meta"])
+        self.assertIn("ticket=", sent["meta"])  # cover art URL is ticketed too
+
+        # The renderer on the LAN fetches with the ticket only (no headers).
+        path = sent["url"].split(f":{upnp_server.MAIN_PORT}", 1)[1]
+        with patch.object(server.security, "is_auth_enabled", return_value=True), \
+             patch.object(server.security, "verify_auth",
+                          return_value={"allowed": False, "error": "denied"}) as verify_auth, \
+             patch.object(server, "get_client_ip", return_value="192.168.1.50"):
+            self.assertIn(self.client.get(path, headers={"Range": "bytes=0-1"}).status_code, {200, 206})
+            verify_auth.assert_not_called()
+            # The same ticket cannot read another track or a non-media route.
+            other = path.replace("/api/stream/1?", "/api/stream/2?")
+            self.assertEqual(self.client.get(other).status_code, 401)
+            ticket = path.split("ticket=", 1)[1]
+            self.assertEqual(self.client.get(f"/api/config?ticket={ticket}").status_code, 401)
+
+    def test_browser_stream_ticket_requires_auth_and_only_reads_audio(self):
+        self._allow_music_root()
+        key = {"X-API-Key": "session-key"}
+        with patch.object(server.security, "is_auth_enabled", return_value=True), \
+             patch.object(server.security, "verify_auth", side_effect=self._key_only_auth), \
+             patch.object(server, "get_client_ip", return_value="203.0.113.9"):
+            self.assertEqual(self.client.post("/api/stream-ticket").status_code, 401)
+            issued = self.client.post("/api/stream-ticket", headers=key)
+            self.assertEqual(issued.status_code, 200)
+            self.assertEqual(issued.headers["cache-control"], "no-store")
+            body = issued.json()
+            self.assertAlmostEqual(body["expires_at"],
+                                   time.time() + server.security.BROWSER_STREAM_TICKET_SECONDS, delta=5)
+            ticket = body["ticket"]
+            self.assertNotIn("session-key", ticket)
+            for track_id in (1, 2):  # any track, so tap-to-play needs no extra round trip
+                self.assertIn(self.client.get(f"/api/stream/{track_id}?ticket={ticket}",
+                                              headers={"Range": "bytes=0-1"}).status_code, {200, 206})
+            # Stream-only: never covers, the API or credential management.
+            self.assertEqual(self.client.get(f"/api/covers/1/thumb?ticket={ticket}").status_code, 401)
+            self.assertEqual(self.client.get(f"/api/tracks?ticket={ticket}").status_code, 401)
+            self.assertEqual(self.client.post(f"/api/stream/1?ticket={ticket}").status_code, 401)
+            self.assertEqual(self.client.get("/api/stream/1?ticket=1.forged").status_code, 401)
+            # Rotating the API key revokes outstanding browser tickets, and the
+            # rotation response itself carries a ticket valid under the new secret.
+            rotated = self.client.post("/api/security/generate-api-key", headers=key).json()
+            self.assertEqual(self.client.get(f"/api/stream/1?ticket={ticket}").status_code, 401)
+            self.assertIn(self.client.get(f"/api/stream/1?ticket={rotated['stream_ticket']}",
+                                          headers={"Range": "bytes=0-1"}).status_code, {200, 206})
+
+    def test_dlna_head_probes_are_answered_without_a_body_or_decoder(self):
+        self._allow_music_root()
+        size = (self.root / "music" / "one.flac").stat().st_size
+        ticket = self._ticket()
+        with patch.object(server, "get_client_ip", return_value="192.168.1.50"):
+            full = self.client.head(f"/api/stream/1?ticket={ticket}")
+            self.assertEqual(full.status_code, 200)
+            self.assertEqual(full.headers["content-length"], str(size))
+            self.assertEqual(full.headers["accept-ranges"], "bytes")
+            self.assertEqual(full.content, b"")
+            partial = self.client.head(f"/api/stream/1?ticket={ticket}", headers={"Range": "bytes=0-1"})
+            self.assertEqual(partial.status_code, 206)
+            self.assertEqual(partial.headers["content-range"], f"bytes 0-1/{size}")
+            self.assertEqual(partial.headers["content-length"], "2")
+            self.assertEqual(partial.content, b"")
+            cover = self.client.head(f"/api/covers/2/thumb?ticket={self._ticket('cover', 2)}")
+            self.assertNotIn(cover.status_code, {401, 405})
+        with self._connect() as conn:
+            profile_id = conn.execute(
+                "INSERT INTO dsp_profiles (name, preamp_db) VALUES ('Head test', -3)").lastrowid
+            conn.commit()
+        with patch.object(server.asyncio, "create_subprocess_exec",
+                          side_effect=AssertionError("HEAD must not start FFmpeg")):
+            transcoded = self.client.head(f"/api/stream/1?dsp={profile_id}")
+        self.assertEqual(transcoded.status_code, 200)
+        self.assertEqual(transcoded.headers["content-type"], "audio/flac")
+
+    def test_renderer_urls_use_the_configured_server_port(self):
+        self.assertEqual(upnp_server.MAIN_PORT, server.settings.port)
+        with patch.object(upnp_server, "MAIN_PORT", 9123):
+            stream_url, cover_url = upnp_server.media_urls({"id": 1, "album_id": 2, "duration": 60})
+        self.assertIn(":9123/api/stream/1?ticket=", stream_url)
+        self.assertIn(":9123/api/covers/2/thumb?", cover_url)
+
+    def test_ticket_from_unconfigured_host_lets_lan_renderer_play_only_that_track(self):
+        self._allow_music_root()
+        with patch.object(server, "get_client_ip", return_value="192.168.1.50"):
+            self.assertEqual(self.client.get("/api/stream/1").status_code, 403)
+            self.assertIn(self.client.get(f"/api/stream/1?ticket={self._ticket()}",
+                                          headers={"Range": "bytes=0-1"}).status_code, {200, 206})
+            self.assertEqual(self.client.get(f"/api/stream/2?ticket={self._ticket()}").status_code, 401)
+            self.assertEqual(self.client.get("/api/tracks?ticket=" + self._ticket()).status_code, 403)
+
+    def test_cover_ticket_is_scoped_to_cover_reads(self):
+        cover = self._ticket("cover", 2)
+        with patch.object(server.security, "is_auth_enabled", return_value=True), \
+             patch.object(server.security, "verify_auth", return_value={"allowed": False, "error": "denied"}), \
+             patch.object(server, "get_client_ip", return_value="192.168.1.50"):
+            self.assertNotEqual(self.client.get(f"/api/covers/2/thumb?size=medium&ticket={cover}").status_code, 401)
+            self.assertEqual(self.client.get(f"/api/covers/1/thumb?ticket={cover}").status_code, 401)
+            self.assertEqual(self.client.get(f"/api/stream/2?ticket={cover}").status_code, 401)
+
+    def test_dlna_browse_window_requires_credentials_and_is_bounded(self):
+        with patch.object(server.security, "is_auth_enabled", return_value=True), \
+             patch.object(server.security, "verify_auth", side_effect=self._key_only_auth), \
+             patch.dict(os.environ, {"VELVET_AUTH_ENFORCE_ALL_NETWORKS": "false"}), \
+             patch.object(server, "get_client_ip", return_value="192.168.1.23"):
+            # LAN auth opt-out must not let a guest open library browsing.
+            self.assertEqual(self.client.post("/api/dlna/browse-access", json={}).status_code, 401)
+            self.client.headers["X-API-Key"] = "session-key"
+            self.assertFalse(self.client.get("/api/dlna/browse-access").json()["active"])
+            granted = self.client.post("/api/dlna/browse-access", json={"minutes": 30}).json()
+            self.assertTrue(granted["active"])
+            self.assertAlmostEqual(granted["expires_at"], time.time() + 1800, delta=5)
+            for minutes in [0, 481, "60", True]:
+                self.assertEqual(self.client.post("/api/dlna/browse-access",
+                                                  json={"minutes": minutes}).status_code, 422)
+            self.assertFalse(self.client.delete("/api/dlna/browse-access").json()["active"])
+            self.assertEqual(server.security.get_security_manager().dlna_browse_expires_at(), 0)
+
+    def test_transcoded_streams_are_limited_to_configured_concurrency(self):
+        self._allow_music_root()
+        with self._connect() as conn:
+            profile_id = conn.execute(
+                "INSERT INTO dsp_profiles (name, preamp_db) VALUES ('Quiet test', -3)").lastrowid
+            conn.commit()
+        slots = StreamSlots(1)
+        held = slots.try_acquire()
+        with patch.object(server, "TRANSCODE_SLOTS", slots), \
+             patch.object(server, "TRANSCODE_SLOT_WAIT_SECONDS", 0.2):
+            response = self.client.get(f"/api/stream/1?dsp={profile_id}")
+            self.assertEqual(response.status_code, 503)
+            self.assertEqual(response.headers["retry-after"], "5")
+            # Direct (untranscoded) playback is not limited.
+            self.assertIn(self.client.get("/api/stream/1", headers={"Range": "bytes=0-1"}).status_code, {200, 206})
+            held.release()
+            self.assertIsNotNone(slots.try_acquire())
+
+    def test_track_switch_waits_for_the_previous_transcode_slot(self):
+        slots = StreamSlots(1)
+        held = slots.try_acquire()
+
+        async def switch_tracks():
+            async def old_stream_closes():
+                await asyncio.sleep(0.2)
+                held.release()
+            closer = asyncio.create_task(old_stream_closes())
+            lease = await server._acquire_transcode_slot()
+            await closer
+            return lease
+
+        with patch.object(server, "TRANSCODE_SLOTS", slots):
+            lease = asyncio.run(switch_tracks())
+        self.assertEqual(slots.active, 1)
+        lease.release()
+
+    def test_transcode_time_limit_respects_configuration_and_long_tracks(self):
+        limit = server._transcode_time_limit_seconds
+        with patch.object(server.settings, "stream_timeout_minutes", 60):
+            self.assertEqual(limit(180), 3600)
+            self.assertEqual(limit(None), 3600)
+            self.assertEqual(limit(95 * 60), 95 * 60 + 1800)  # long-form track is not cut at 60 min
+            self.assertEqual(limit(30 * 3600), server.TRANSCODE_MAX_SECONDS)
+            self.assertEqual(limit(180, timeout_minutes=240), 240 * 60)
+        with patch.object(server.settings, "stream_timeout_minutes", 120):
+            self.assertEqual(limit(180), 7200)  # configuration above the old hard 60-min cap
 
 
 if __name__ == "__main__":

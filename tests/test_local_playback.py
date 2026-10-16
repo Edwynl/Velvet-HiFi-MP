@@ -23,7 +23,9 @@ class DummyPlayer:
     def _get_device_info(self):
         return {"name": "Dummy DAC", "sample_rate": 48000}
 
-    def play_file(self, file_path, volume=1.0, dsp_filter="", output_sample_rate=None):
+    def play_file(self, file_path, volume=1.0, dsp_filter="", output_sample_rate=None,
+                  allow_device_rate_fallback=True):
+        self.output_sample_rate = output_sample_rate
         self.play_calls.append(
             {
                 "file_path": file_path,

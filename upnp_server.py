@@ -25,8 +25,11 @@ from pathlib import Path
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs, quote
 import logging
+import ipaddress
 
 import env_loader  # noqa: F401 - load .env for direct module use
+import security
+from settings import get_settings
 
 log = logging.getLogger("velvet.upnp")
 
@@ -35,7 +38,7 @@ log = logging.getLogger("velvet.upnp")
 SSDP_ADDR   = "239.255.255.250"
 SSDP_PORT   = 1900
 UPNP_PORT   = 8766           # Separate port for UPnP XML/control
-MAIN_PORT   = 8765           # MusicIQ streaming server port
+MAIN_PORT   = get_settings().port  # VELVET streaming server port (VELVET_PORT)
 
 # Configurable device identification (can be set via environment variables)
 DEVICE_UUID = os.environ.get("VELVET_UPNP_DEVICE_UUID") or os.environ.get("UPNP_DEVICE_UUID", "uuid:velvet-00000000-0000-0000-0000-000000000001")
@@ -426,7 +429,32 @@ def container_xml(id_, parent_id, title, child_count):
         f'</container>'
     )
 
-def track_xml(track, parent_id):
+def media_urls(track, extra_seconds=0):
+    """Stream and cover URLs for a renderer, each with its own scoped ticket.
+
+    Renderers cannot send API headers; a ticket authorizes GET of this one
+    track (or album cover) until the track length plus grace has passed.
+    """
+    ttl = security.media_ticket_ttl(track.get("duration")) + max(int(extra_seconds), 0)
+    tid = int(track["id"])
+    ticket, _ = security.issue_media_ticket("stream", tid, ttl)
+    stream_url = f"http://{LOCAL_IP}:{MAIN_PORT}/api/stream/{tid}?ticket={quote(ticket)}"
+    album_id = track.get("album_id") or 0
+    cover_url = ""
+    if album_id:
+        cover_ticket, _ = security.issue_media_ticket("cover", int(album_id), ttl)
+        cover_url = (f"http://{LOCAL_IP}:{MAIN_PORT}/api/covers/{album_id}/thumb"
+                     f"?size=medium&ticket={quote(cover_ticket)}")
+    return stream_url, cover_url
+
+
+def _browse_ticket_extra_seconds():
+    """Tracks listed during a browse window stay playable until it closes."""
+    expires_at = security.get_security_manager().dlna_browse_expires_at()
+    return int(expires_at - time.time()) if expires_at else 0
+
+
+def track_xml(track, parent_id, extra_seconds=0):
     tid   = track["id"]
     title = _esc(track.get("title") or "Unknown")
     artist= _esc(track.get("artist_name") or "")
@@ -437,7 +465,6 @@ def track_xml(track, parent_id):
     bd    = track.get("bit_depth") or 16
     ch    = track.get("channels") or 2
     size  = track.get("file_size") or 0
-    album_id = track.get("album_id") or 0
 
     # MIME type
     mime_map = {
@@ -450,8 +477,7 @@ def track_xml(track, parent_id):
         "APE":  "audio/x-ape",
     }
     mime = mime_map.get(fmt, "audio/flac")
-    stream_url = f"http://{LOCAL_IP}:{MAIN_PORT}/api/stream/{tid}"
-    cover_url  = f"http://{LOCAL_IP}:{MAIN_PORT}/api/covers/{album_id}/thumb?size=medium" if album_id else ""
+    stream_url, cover_url = media_urls(track, extra_seconds)
 
     # Use correct DLNA profile for the format
     dlna_profile = _get_dlna_profile(mime, fmt)
@@ -548,7 +574,7 @@ def _browse_metadata(oid):
             "JOIN albums al ON t.album_id=al.id WHERE t.id=?", (tid,)
         )
         if rows:
-            xml = track_xml(rows[0], "tracks")
+            xml = track_xml(rows[0], "tracks", _browse_ticket_extra_seconds())
             return _didl_wrap(xml), 1, 1
     return _didl_wrap(""), 0, 0
 
@@ -601,7 +627,8 @@ def _browse_children(oid, start, count):
             f"LIMIT {limit} OFFSET {offset}"
         )
         total = db_query("SELECT COUNT(*) as c FROM tracks")[0]["c"]
-        xmls  = [track_xml(r, "tracks") for r in rows]
+        extra = _browse_ticket_extra_seconds()
+        xmls  = [track_xml(r, "tracks", extra) for r in rows]
         return _didl_wrap("".join(xmls)), len(xmls), total
 
     if oid.startswith("ar_"):
@@ -629,7 +656,8 @@ def _browse_children(oid, start, count):
             f"LIMIT {limit} OFFSET {offset}", (alid,)
         )
         total = db_query("SELECT COUNT(*) as c FROM tracks WHERE album_id=?", (alid,))[0]["c"]
-        xmls  = [track_xml(r, oid) for r in rows]
+        extra = _browse_ticket_extra_seconds()
+        xmls  = [track_xml(r, oid, extra) for r in rows]
         return _didl_wrap("".join(xmls)), len(xmls), total
 
     return _didl_wrap(""), 0, 0
@@ -807,6 +835,29 @@ def _soap_action_header(headers):
         return sa.split("#")[-1]
     return ""
 
+def content_directory_allowed(client_ip, headers):
+    """Authorize a ContentDirectory request.
+
+    API credentials always work. Control points (HEOS, StreamMagic) cannot
+    send them, so private-network clients may also browse while an
+    authenticated user has opened a time-limited browse window.
+    """
+    try:
+        ip = ipaddress.ip_address(str(client_ip).split("%", 1)[0])
+    except ValueError:
+        return False
+    if ip.version == 6 and ip.ipv4_mapped:
+        ip = ip.ipv4_mapped  # ::ffff:0:0/96 is "private" as a whole block
+    if security.get_security_manager().dlna_browse_expires_at() and (ip.is_private or ip.is_link_local):
+        return True
+    if security.is_auth_enabled():
+        return security.verify_auth(
+            password=headers.get("X-Password"),
+            api_key=headers.get("X-API-Key"), ip=str(ip),
+        )["allowed"]
+    return ip.is_loopback
+
+
 class UPnPHandler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         pass  # Silence default HTTP logging
@@ -834,6 +885,10 @@ class UPnPHandler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         p = self.path.split("?")[0]
+        if p == "/upnp/control/ContentDirectory":
+            if not content_directory_allowed(self.client_address[0], self.headers):
+                self._send(403, "text/plain", "Authenticated library access required")
+                return
         length = int(self.headers.get("Content-Length", 0))
         body   = self.rfile.read(length).decode("utf-8", errors="replace")
         action = _soap_action_header(dict(self.headers))

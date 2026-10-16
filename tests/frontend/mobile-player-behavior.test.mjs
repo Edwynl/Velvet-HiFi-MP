@@ -315,7 +315,7 @@ function testLandscapeMiniPlayerProgressCssGuards() {
     'Expected landscape mini-player to keep the compact player height',
   );
   assert.ok(
-    html.includes('.progress-time {\n      display: none !important;'),
+    /\.progress-time\s*\{\s*display: none !important;/.test(html),
     'Expected landscape mini-player progress to stay edge-aligned without inline time labels',
   );
   assert.ok(
@@ -333,7 +333,7 @@ function testLandscapeMiniPlayerProgressCssGuards() {
 }
 
 function testLandscapeMobileVolumeStripHidden() {
-  const html = readFileSync(HTML_PATH, 'utf8');
+  const html = readFileSync(HTML_PATH, 'utf8').replace(/\r\n/g, '\n');
 
   assert.ok(
     html.includes('.mobile-player-volume-strip {\n      display: none !important;'),
@@ -346,7 +346,7 @@ function testLandscapeMobileVolumeStripHidden() {
 }
 
 function testLandscapeFullscreenLayoutBalanceGuards() {
-  const html = readFileSync(HTML_PATH, 'utf8');
+  const html = readFileSync(HTML_PATH, 'utf8').replace(/\r\n/g, '\n');
 
   assert.ok(
     html.includes('.mobile-player-main {\n      flex-direction: row !important;\n      align-items: center !important;\n      justify-content: center !important;\n      gap: 28px !important;'),

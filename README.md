@@ -22,9 +22,9 @@ VELVET is a premium, minimalist personal music server designed for audiophiles. 
 ## Features
 
 - **Cinematic UI**: A refined, dark-mode-first interface inspired by luxury editorial design.
-- **Hi-Fi Ready**: Native support for FLAC, DSD (DoP), and bit-perfect streaming.
+- **Hi-Fi Ready**: Original-file streaming for supported formats such as FLAC, plus optional PCM resampling and DSP. Bit-perfect DAC output is device/driver dependent; true DoP output is not yet implemented.
 - **PWA Support**: Install VELVET on your iOS or Android device for a standalone, app-like experience.
-- **UPnP/DLNA**: Seamlessly stream to high-end devices like Marantz, Cambridge Audio, and HEOS-enabled speakers.
+- **UPnP/DLNA**: Cast to renderers from the web player, or let HEOS/StreamMagic/BubbleUPnP browse after opening a time-limited window in Remote → Security Protection → DLNA Library Browsing. Renderers receive per-track tickets that expire after the track length, never the API key.
 - **Smart Management**: Automatic metadata enrichment and high-resolution cover art fetching.
 
 ## Quick Start
@@ -39,9 +39,11 @@ VELVET is a premium, minimalist personal music server designed for audiophiles. 
      ```
 3. **Configure**: edit `.env` if your music folder is not auto-detected.
 4. **Run**: double-click `start.bat`.
-5. **Access**: open `http://localhost:8765`.
+5. **Access**: open `http://localhost:8765` on the host PC and set a password in **Remote Access** before connecting over LAN, Tailscale or a tunnel. Unconfigured remote access is blocked.
 
 The installer creates `venv/`, installs Python packages, optionally installs Node dependencies, creates a machine-local `.env`, and checks FFmpeg/fpcalc availability. Do not move `venv/` or `.env` between computers; regenerate them with `install.bat`.
+
+PCM upsampling requires an FFmpeg **full build with libsoxr**. Windows essentials builds may omit it; `/api/health/check-ffmpeg` reports both `ffmpeg` and `soxr`. Restart VELVET after replacing FFmpeg. Browser support for high-rate WAV and DSP FLAC varies, and live transcoded streams do not provide byte-range seeking. PWA service workers require HTTPS except on localhost. Native playback uses default PortAudio device settings, without an explicit WASAPI exclusive-mode request. For source-rate playback, a device that rejects the source rate uses its default mixer rate; the playback API reports both requested and actual rates. Explicit upsampling fails if the device rejects its target rate.
 
 ### Manual
 
@@ -75,9 +77,9 @@ VELVET 是一款专为音乐发烧友打造的高级简约私人音乐服务器�
 ## 核心特性
 
 - **电影级界面**：受奢侈品画报设计的启发，提供极致考究的深色模式界面。
-- **发烧级支持**：原生支持 FLAC, DSD (DoP) 以及源码位深（Bit-perfect）串流。
+- **发烧级支持**：支持 FLAC 等原始音频文件串流，并可选 PCM 升采样及 DSP。是否达到 DAC 端 Bit-perfect 取决于设备与驱动；真正的 DoP 尚未实现。
 - **PWA 支持**：可在 iOS 或 Android 设备上通过“添加到主屏幕”作为独立 App 使用，享受沉浸式体验。
-- **UPnP/DLNA**：无缝连接至 Marantz, Cambridge Audio 等高端设备及支持 HEOS 的音箱。
+- **UPnP/DLNA**：可从网页播放器投送到渲染器；HEOS/StreamMagic/BubbleUPnP 等 App 需先在「远程 → 安全保护 → DLNA Library Browsing」开启限时浏览窗口（仅限家庭局域网私有地址）。渲染器拿到的是按单曲限定、随曲长过期的票据，而不是 API key。
 - **智能库管理**：自动元数据增强及高分辨率封面获取。
 
 ## 快速开始
@@ -90,7 +92,7 @@ VELVET 是一款专为音乐发烧友打造的高级简约私人音乐服务器�
      ```
 3. **配置音乐目录**：检查 `.env` 里的 `VELVET_MUSIC_DIR`。
 4. **启动**：双击 `start.bat`。
-5. **访问**：浏览器打开 `http://localhost:8765`。
+5. **访问**：先在服务器电脑打开 `http://localhost:8765`，进入 **Remote Access** 设置至少 8 位密码，再通过局域网或 Tailscale 从其他设备连接。未完成密码初始化时，远程 API 会拒绝访问。
 
 不要在电脑之间复制 `venv/` 和 `.env`。换电脑后保留源码，重新运行 `install.bat`，脚本会按新电脑路径重建虚拟环境和本地配置。
 

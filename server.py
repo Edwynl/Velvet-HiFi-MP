@@ -31,7 +31,7 @@ import httpx
 from mutagen import File as MutagenFile
 from PIL import Image
 from fastapi import FastAPI, HTTPException, Request, BackgroundTasks, Query, File, UploadFile
-from fastapi.responses import FileResponse, StreamingResponse, HTMLResponse, JSONResponse
+from fastapi.responses import FileResponse, StreamingResponse, HTMLResponse, JSONResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 import upnp_server
@@ -39,6 +39,7 @@ import remote_access
 import security
 from cover_art import find_folder_cover as find_folder_cover_bytes, save_cover_bytes
 from dsp_engine import build_dsp_filter_chain, profile_filters, sanitize_dsp_filters
+from audio_streaming import StreamLease, StreamSlots, iter_ffmpeg_stdout, ffmpeg_supports_soxr
 from db_pool import (
     DatabaseConnection,
     _return_db,
@@ -380,21 +381,19 @@ _ALLOWED_ORIGINS_DEFAULT = [
 ]
 
 def _get_cors_origins():
-    """Get CORS origins from env var or use defaults."""
-    env_origins = os.environ.get("CORS_ORIGINS", "")
-    if env_origins:
-        # Parse comma-separated origins
-        origins = [o.strip() for o in env_origins.split(",") if o.strip()]
-        return _ALLOWED_ORIGINS_DEFAULT + origins
-    return _ALLOWED_ORIGINS_DEFAULT
+    """Honor VELVET_CORS_ORIGINS settings and the legacy CORS_ORIGINS list."""
+    configured = [*_ALLOWED_ORIGINS_DEFAULT, *settings.cors_origins]
+    extra = os.environ.get("CORS_ORIGINS", "")
+    configured.extend(o.strip() for o in extra.split(",") if o.strip())
+    return list(dict.fromkeys(configured))
 
 ALLOWED_ORIGINS = _get_cors_origins()
 log.info(f"[CORS] Allowed origins: {ALLOWED_ORIGINS}")
 
 app.add_middleware(CORSMiddleware, allow_origins=ALLOWED_ORIGINS,
-                   allow_credentials=True,
-                   allow_methods=["GET", "POST", "OPTIONS"],
-                   allow_headers=["Content-Type", "Authorization"])
+                   allow_credentials=settings.cors_credentials,
+                   allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+                   allow_headers=["Content-Type", "Authorization", "X-API-Key", "X-Password"])
 
 
 # Global scan state
@@ -701,6 +700,7 @@ def get_zones(refresh: bool = Query(False, description="Force a fresh network re
         import local_playback
 
         native_available = local_playback.SOUNDDEVICE_AVAILABLE
+        native_error = local_playback.SOUNDDEVICE_ERROR
         for idx, dev in enumerate(local_playback.get_output_devices()):
             max_output_channels = int(dev.get("max_output_channels") or 0)
             if max_output_channels <= 0:
@@ -734,9 +734,39 @@ def get_zones(refresh: bool = Query(False, description="Force a fresh network re
         },
     }
 
+@app.get("/api/dlna/browse-access")
+def get_dlna_browse_access():
+    """Whether LAN DLNA control points may currently browse the library."""
+    expires_at = security.get_security_manager().dlna_browse_expires_at()
+    return {"active": bool(expires_at), "expires_at": int(expires_at) or None}
+
+
+@app.post("/api/dlna/browse-access")
+def grant_dlna_browse_access(body: dict = None):
+    """Open a bounded window in which LAN control points (HEOS, StreamMagic,
+    BubbleUPnP) may browse. They cannot send credentials, so access is limited
+    to private-network clients and track/cover URLs carry scoped tickets."""
+    minutes = (body or {}).get("minutes", security.DLNA_BROWSE_DEFAULT_MINUTES)
+    if (not isinstance(minutes, int) or isinstance(minutes, bool)
+            or not 1 <= minutes <= security.DLNA_BROWSE_MAX_MINUTES):
+        raise HTTPException(422, f"minutes must be 1-{security.DLNA_BROWSE_MAX_MINUTES}")
+    expires_at = security.get_security_manager().grant_dlna_browse(minutes)
+    return {"active": True, "expires_at": int(expires_at)}
+
+
+@app.delete("/api/dlna/browse-access")
+def revoke_dlna_browse_access():
+    security.get_security_manager().revoke_dlna_browse()
+    return {"active": False, "expires_at": None}
+
+
 @app.post("/api/cast/{device_udn}")
 async def cast_to_device(device_udn: str, request: Request):
-    """Tell a DLNA device to play a specific track."""
+    """Tell a DLNA device to play a specific track.
+
+    Renderers cannot send API headers, so the URLs handed to them carry
+    tickets scoped to this track/cover that expire after the track length.
+    """
     data = await request.json()
     track_id = data.get("track_id")
     if not track_id:
@@ -753,14 +783,13 @@ async def cast_to_device(device_udn: str, request: Request):
     if not track:
         raise HTTPException(404, "Track not found")
         
-    local_ip = upnp_server.LOCAL_IP
-    stream_url = f"http://{local_ip}:{PORT}/api/stream/{track_id}"
+    track = dict(track)
+    stream_url, _ = upnp_server.media_urls(track)
     # Use upnp_server's DIDL-Lite builder for rich metadata (important for some hi-fi players)
-    # track is a sqlite3.Row, which track_xml can handle (behaves like a dict)
-    track_xml_body = upnp_server.track_xml(dict(track), "0")
-    meta = upnp_server._didl_wrap(track_xml_body)
-    
-    success = upnp_server.cast_track(device_udn, stream_url, meta)
+    meta = upnp_server._didl_wrap(upnp_server.track_xml(track, "0"))
+
+    # cast_track performs blocking SOAP calls and sleeps; keep the event loop free.
+    success = await asyncio.to_thread(upnp_server.cast_track, device_udn, stream_url, meta)
     return {"success": success}
 
 @app.post("/api/cast/control/{device_udn}/{action}")
@@ -1466,7 +1495,7 @@ def _start_thumb_worker():
 # Start the worker
 _start_thumb_worker()
 
-@app.get("/api/covers/{album_id}")
+@app.api_route("/api/covers/{album_id}", methods=["GET", "HEAD"])
 def get_cover(album_id: int):
     # Check cache first (TTLCache handles expiration automatically)
     with _cover_cache_lock:
@@ -1496,7 +1525,7 @@ def get_cover(album_id: int):
         _cover_cache[album_id] = None
     raise HTTPException(404, "No cover")
 
-@app.get("/api/covers/{album_id}/thumb")
+@app.api_route("/api/covers/{album_id}/thumb", methods=["GET", "HEAD"])
 def get_cover_thumbnail(album_id: int, size: str = Query("small", pattern="^(small|medium|large)$")):
     """
     Get a thumbnail-sized version of an album cover.
@@ -1728,47 +1757,82 @@ def refresh_artist_metadata(artist_id: int):
 
 # ─── Audio Streaming ──────────────────────────────────────────────────────────
 
-def _parse_range(header: str, size: int):
-    m = re.match(r'bytes=(\d+)-(\d*)', header)
-    if not m:
-        return 0, size - 1
-    start = int(m.group(1))
-    end   = int(m.group(2)) if m.group(2) else size - 1
+def _parse_range(header: str, size: int) -> tuple[int, int]:
+    """Parse one HTTP byte range, including suffix ranges.
+
+    Invalid or unsatisfiable ranges raise ValueError for an HTTP 416 reply.
+    Multiple ranges are intentionally not supported (multipart/byteranges).
+    """
+    if size <= 0:
+        raise ValueError("empty resource")
+    match = re.fullmatch(r"bytes=(\d*)-(\d*)", header.strip())
+    if not match:
+        raise ValueError("unsupported byte range")
+
+    first, last = match.groups()
+    if not first and not last:
+        raise ValueError("missing range bounds")
+
+    if not first:
+        count = int(last)
+        if count <= 0:
+            raise ValueError("invalid suffix length")
+        return max(0, size - count), size - 1
+
+    start = int(first)
+    end = int(last) if last else size - 1
+    if start >= size or start > end:
+        raise ValueError("range not satisfiable")
     return start, min(end, size - 1)
 
+
 def _stream_file_direct(file_path: str, request: Request):
-    """Direct file streaming with HTTP range support."""
+    """Send an original audio file with RFC 9110 single-range semantics."""
     size = os.path.getsize(file_path)
-    ext  = Path(file_path).suffix.lower()
-    mime = MIME_MAP.get(ext, 'audio/mpeg')
+    ext = Path(file_path).suffix.lower()
+    mime = MIME_MAP.get(ext, "application/octet-stream")
 
     range_header = request.headers.get("Range")
     if range_header:
-        start, end = _parse_range(range_header, size)
+        try:
+            start, end = _parse_range(range_header, size)
+        except ValueError:
+            return Response(
+                status_code=416,
+                headers={
+                    "Content-Range": f"bytes */{size}",
+                    "Accept-Ranges": "bytes",
+                    "Cache-Control": "no-cache",
+                },
+            )
         length = end - start + 1
+        range_headers = {
+            "Content-Range": f"bytes {start}-{end}/{size}",
+            "Accept-Ranges": "bytes",
+            "Content-Length": str(length),
+            "Cache-Control": "no-cache",
+        }
+        if request.method == "HEAD":
+            return Response(status_code=206, media_type=mime, headers=range_headers)
 
         def gen():
-            with open(file_path, 'rb') as f:
-                f.seek(start)
+            with open(file_path, "rb") as audio_file:
+                audio_file.seek(start)
                 remaining = length
                 while remaining > 0:
-                    chunk = f.read(min(262144, remaining))
+                    chunk = audio_file.read(min(262144, remaining))
                     if not chunk:
                         break
                     remaining -= len(chunk)
                     yield chunk
 
-        return StreamingResponse(gen(), status_code=206, media_type=mime, headers={
-            "Content-Range":  f"bytes {start}-{end}/{size}",
-            "Accept-Ranges":  "bytes",
-            "Content-Length": str(length),
-            "Cache-Control":  "no-cache"
-        })
+        return StreamingResponse(gen(), status_code=206, media_type=mime, headers=range_headers)
 
-    return FileResponse(file_path, media_type=mime, headers={
-        "Accept-Ranges":  "bytes",
-        "Content-Length": str(size)
-    })
+    return FileResponse(
+        file_path,
+        media_type=mime,
+        headers={"Accept-Ranges": "bytes", "Cache-Control": "no-cache"},
+    )
 
 
 def _resolve_library_roots(db) -> list[Path]:
@@ -1794,10 +1858,53 @@ def _resolve_library_roots(db) -> list[Path]:
         roots.append(resolved)
     return roots
 
-async def _stream_upsampled(file_path: str, target_rate: str, quality: str = "high",
-                           timeout_minutes: int = 60, dsp_filter: str = ""):
+TRANSCODE_SLOTS = StreamSlots(settings.max_concurrent_streams)
+TRANSCODE_DURATION_MARGIN_SECONDS = 30 * 60
+TRANSCODE_MAX_SECONDS = 12 * 3600
+
+
+def _transcode_time_limit_seconds(duration_seconds, timeout_minutes: int | None = None) -> int:
+    """Wall-clock cap for one FFmpeg response.
+
+    The configured (or requested) limit is a floor: a track longer than it,
+    such as a live set or opera act, gets its duration plus a 30-minute
+    margin. The cap is wall-clock, so pauses consume that margin; a client
+    paused longer than the margin is disconnected and the browser's recovery
+    path reconnects. A stalled decoder is ended separately by the idle timeout.
     """
-    Upsample via FFmpeg + SoXR resampler, stream as FLAC.
+    configured = (timeout_minutes or settings.stream_timeout_minutes) * 60
+    try:
+        duration = max(float(duration_seconds or 0), 0.0)
+    except (TypeError, ValueError):
+        duration = 0.0
+    needed = int(duration) + TRANSCODE_DURATION_MARGIN_SECONDS if duration else 0
+    return min(max(configured, needed), TRANSCODE_MAX_SECONDS)
+
+
+TRANSCODE_SLOT_WAIT_SECONDS = 3.0
+
+
+async def _acquire_transcode_slot() -> StreamLease:
+    # A track switch briefly overlaps the closing transcode with the new one
+    # (twice over when the VU meter mirrors the stream). Wait for the old
+    # decoder to be reaped instead of failing the new track with 503.
+    deadline = time.monotonic() + TRANSCODE_SLOT_WAIT_SECONDS
+    while (lease := TRANSCODE_SLOTS.try_acquire()) is None:
+        if time.monotonic() >= deadline:
+            raise HTTPException(
+                503,
+                f"Too many concurrent transcoded streams (limit {TRANSCODE_SLOTS.limit}). "
+                "Stop another stream or play without DSP/upsampling.",
+                headers={"Retry-After": "5"},
+            )
+        await asyncio.sleep(0.05)
+    return lease
+
+
+async def _stream_upsampled(file_path: str, target_rate: str, quality: str = "high",
+                           timeout_seconds: int = 3600, dsp_filter: str = ""):
+    """
+    Upsample via FFmpeg + SoXR resampler, stream as WAV.
 
     Uses SoXR High-Quality mode for superior audio quality compared to basic SoX.
     SoXR provides polynomial interpolation with 64-bit floating point precision.
@@ -1805,12 +1912,15 @@ async def _stream_upsampled(file_path: str, target_rate: str, quality: str = "hi
     Args:
         file_path: Path to the source audio file
         target_rate: Target sample rate as string (e.g., "705600" for 705.6kHz)
-        quality: soxr_qq (quick), soxr_hq (high), soxr_vhq (extreme)
-        timeout_minutes: Max duration for stream in minutes (5-60)
+        quality: standard, high, extreme (libsoxr precision presets)
+        timeout_seconds: Wall-clock cap for the response
         dsp_filter: Additional DSP filter chain to apply
     """
+    if not await asyncio.to_thread(ffmpeg_supports_soxr):
+        raise HTTPException(503, "PCM upsampling requires FFmpeg with libsoxr. Install a full build and restart VELVET.")
+    lease = await _acquire_transcode_slot()
     # Get SoXR quality setting
-    soxr_quality = UPSAMPLE_QUALITY.get(quality, "soxr_hq")
+    soxr_quality = UPSAMPLE_QUALITY.get(quality, "soxr:precision=28")
 
     # Build filter chain: DSP + Upsampling
     filters = []
@@ -1821,11 +1931,11 @@ async def _stream_upsampled(file_path: str, target_rate: str, quality: str = "hi
 
     # Build FFmpeg command with SoXR resampler
     # Key improvements:
-    # 1. Use soxr_hq/vhq instead of basic soxr
+    # 1. Use libsoxr with validated precision presets
     # 2. output without compression for lower latency
     # 3. Use 32-bit integer for maximum precision in pipeline
     cmd = [
-        "ffmpeg", "-i", file_path,
+        "ffmpeg", "-nostdin", "-i", file_path,
         "-af", filter_chain,
         "-c:a", "pcm_s32le",      # 32-bit integer for best precision
         "-f", "wav",
@@ -1833,43 +1943,9 @@ async def _stream_upsampled(file_path: str, target_rate: str, quality: str = "hi
         "-loglevel", "error"
     ]
 
-    async def gen():
-        proc = None
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                *cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.DEVNULL
-            )
-            # 60 秒超时保护，防止卡死
-            async with asyncio.timeout(60):
-                while True:
-                    chunk = await proc.stdout.read(262144)
-                    if not chunk:
-                        break
-                    yield chunk
-            # 确保进程退出
-            if proc.stdout:
-                proc.stdout.close()
-            await proc.wait()
-        except asyncio.TimeoutError:
-            log.warning("FFmpeg stream timeout, terminating")
-            try:
-                proc.terminate()
-                await asyncio.wait_for(proc.wait(), timeout=2)
-            except Exception:
-                pass
-        except Exception as e:
-            log.error(f"Stream error: {e}")
-            if proc and proc.poll() is None:
-                try:
-                    proc.kill()
-                    await proc.wait()
-                except Exception:
-                    pass
-
     return StreamingResponse(
-        gen(), media_type="audio/flac",
+        iter_ffmpeg_stdout(cmd, timeout_seconds=timeout_seconds, on_close=lease.release),
+        media_type="audio/wav",
         headers={
             "X-Upsampled-Rate": target_rate,
             "X-Upsampled-By":   "FFmpeg+SoXR",
@@ -1879,100 +1955,18 @@ async def _stream_upsampled(file_path: str, target_rate: str, quality: str = "hi
     )
 
 
-async def _stream_dop(file_path: str, dop_mode: str, quality: str = "high",
-                      timeout_minutes: int = 60, dsp_filter: str = ""):
-    """
-    Stream audio as DSD over PCM (DoP).
-
-    DoP is a method to send DSD audio over a PCM transport.
-    The DSD data is encoded in the unused bits of 24-bit PCM frames.
-
-    Args:
-        file_path: Path to the source audio file
-        dop_mode: dsd64, dsd128, dsd256
-        quality: SoXR quality for any required resampling
-        timeout_minutes: Max duration for stream in minutes
-        dsp_filter: Additional DSP filter chain to apply
-    """
-    target_dsd_rate = DSD_RATES.get(dop_mode, DSD_RATES["dsd64"])
-
-    # Build filter chain: DSP + Resampling
-    filters = []
-    if dsp_filter:
-        filters.append(dsp_filter)
-    filters.append(f"aresample=resampler={UPSAMPLE_QUALITY.get(quality, 'soxr_hq')}")
-    filter_chain = ",".join(filters)
-
-    # FFmpeg command for DoP output
-    # This converts PCM to DSD64/128/256 and wraps in DoP format
-    cmd = [
-        "ffmpeg", "-i", file_path,
-        "-af", filter_chain,
-        # Convert to DSD using libsoxr if available, otherwise use libswr
-        "-c:a", "pcm_s32le",
-        "-f", "wav",
-        "pipe:1",
-        "-loglevel", "error"
-    ]
-
-    # Note: True DSD encoding requires ffmpeg with libsoxr or libdsd
-    # This is a placeholder - actual DoP requires specific FFmpeg build
-    # Fallback to high-quality PCM upsampling
-
-    async def gen():
-        proc = None
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                *cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.DEVNULL
-            )
-            async with asyncio.timeout(timeout_minutes * 60):
-                while True:
-                    chunk = await proc.stdout.read(262144)
-                    if not chunk:
-                        break
-                    yield chunk
-            if proc.stdout:
-                proc.stdout.close()
-            await proc.wait()
-        except asyncio.TimeoutError:
-            log.warning("FFmpeg DoP stream timeout, terminating")
-            try:
-                proc.terminate()
-                await asyncio.wait_for(proc.wait(), timeout=2)
-            except Exception:
-                pass
-        except Exception as e:
-            log.error(f"DoP stream error: {e}")
-            if proc and proc.poll() is None:
-                try:
-                    proc.kill()
-                    await proc.wait()
-                except Exception:
-                    pass
-
-    return StreamingResponse(
-        gen(), media_type="audio/wav",
-        headers={
-            "X-Output-Mode": f"DoP-{dop_mode.upper()}",
-            "X-Upsampled-By": "FFmpeg+SoXR",
-            "Cache-Control": "no-cache"
-        }
-    )
-
-
-async def _stream_with_dsp(file_path: str, dsp_filter: str, timeout_minutes: int = 60):
+async def _stream_with_dsp(file_path: str, dsp_filter: str, timeout_seconds: int = 3600):
     """
     Stream audio with DSP processing only (no upsampling).
 
     Args:
         file_path: Path to the source audio file
         dsp_filter: FFmpeg filter chain to apply
-        timeout_minutes: Max duration for stream in minutes
+        timeout_seconds: Wall-clock cap for the response
     """
+    lease = await _acquire_transcode_slot()
     cmd = [
-        "ffmpeg", "-i", file_path,
+        "ffmpeg", "-nostdin", "-i", file_path,
         "-af", dsp_filter,
         "-c:a", "flac",
         "-compression_level", "0",
@@ -1981,41 +1975,9 @@ async def _stream_with_dsp(file_path: str, dsp_filter: str, timeout_minutes: int
         "-loglevel", "error"
     ]
 
-    async def gen():
-        proc = None
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                *cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.DEVNULL
-            )
-            async with asyncio.timeout(timeout_minutes * 60):
-                while True:
-                    chunk = await proc.stdout.read(262144)
-                    if not chunk:
-                        break
-                    yield chunk
-            if proc.stdout:
-                proc.stdout.close()
-            await proc.wait()
-        except asyncio.TimeoutError:
-            log.warning("FFmpeg DSP stream timeout, terminating")
-            try:
-                proc.terminate()
-                await asyncio.wait_for(proc.wait(), timeout=2)
-            except Exception:
-                pass
-        except Exception as e:
-            log.error(f"DSP stream error: {e}")
-            if proc and proc.poll() is None:
-                try:
-                    proc.kill()
-                    await proc.wait()
-                except Exception:
-                    pass
-
     return StreamingResponse(
-        gen(), media_type="audio/flac",
+        iter_ffmpeg_stdout(cmd, timeout_seconds=timeout_seconds, on_close=lease.release),
+        media_type="audio/flac",
         headers={
             "X-Output-Mode": "DSP",
             "Cache-Control": "no-cache"
@@ -2023,7 +1985,40 @@ async def _stream_with_dsp(file_path: str, dsp_filter: str, timeout_minutes: int
     )
 
 
-@app.get("/api/stream/{track_id}")
+def _select_pcm_upsample_rate(source_rate: int | None, multiplier: str) -> str | None:
+    """Preserve the source's 44.1k/48k sample-rate family when upsampling."""
+    factors = {"none": 1, "2x": 2, "4x": 4, "8x": 8, "16x": 16}
+    if multiplier not in factors:
+        raise ValueError("Unsupported upsampling multiplier")
+    if multiplier == "none":
+        return None
+    if source_rate is None or int(source_rate) <= 0:
+        raise ValueError("Source sample rate is unknown; rescan audio metadata")
+    output_rate = int(source_rate) * factors[multiplier]
+    # Protect against accidental very high-rate transcoding and wasted CPU.
+    if output_rate > 768000 or output_rate < 8000:
+        raise ValueError("Requested PCM output sample rate is unsupported")
+    return str(output_rate)
+
+
+@app.post("/api/stream-ticket")
+def create_stream_ticket():
+    """Issue the browser's short-lived, stream-only media ticket.
+
+    Media elements cannot send X-API-Key, so stream URLs carry this ticket
+    instead of the long-lived API key. It authorizes only audio reads
+    (GET/HEAD /api/stream/*), never covers or the API, expires after
+    BROWSER_STREAM_TICKET_SECONDS and is revoked by any credential change.
+    The client fetches it ahead of playback so starting a track needs no
+    network round trip before audio.play().
+    """
+    ticket, expires_at = security.issue_browser_stream_ticket()
+    return JSONResponse({"ticket": ticket, "expires_at": expires_at},
+                        headers={"Cache-Control": "no-store"})
+
+
+# DLNA renderers commonly probe media with HEAD before GET.
+@app.api_route("/api/stream/{track_id}", methods=["GET", "HEAD"])
 async def stream_track(
     track_id: int,
     request: Request,
@@ -2031,7 +2026,11 @@ async def stream_track(
     quality: str = Query("high", description="standard|high|extreme - upsampling quality"),
     dop: str = Query("none", description="none|dsd64|dsd128|dsd256 - DSD over PCM output"),
     dsp: int = Query(None, description="DSP profile ID to apply"),
-    timeout_minutes: int = Query(60, ge=5, le=60, description="Stream timeout (5-60 min)")
+    timeout_minutes: int | None = Query(
+        None, ge=5, le=720,
+        description="Transcode time limit in minutes (default: VELVET_STREAM_TIMEOUT_MINUTES); "
+                    "always extended to cover the track duration",
+    ),
 ):
     """
     Stream a track with optional upsampling and DSP processing.
@@ -2041,7 +2040,7 @@ async def stream_track(
     - quality: SoXR quality preset (standard=quick, high=balanced, extreme=best)
     - dop: DSD over PCM output (none, dsd64, dsd128, dsd256)
     - dsp: DSP profile ID to apply (parametric EQ, volume, etc.)
-    - timeout_minutes: Maximum stream duration
+    - timeout_minutes: Minimum transcode time limit; long tracks get their full length
     """
     db = get_db()
     track = db.execute("SELECT * FROM tracks WHERE id=?", (track_id,)).fetchone()
@@ -2082,18 +2081,37 @@ async def stream_track(
     if dsp_profile:
         dsp_filter = build_dsp_filter_chain(dsp_profile)
 
-    # Handle DoP (DSD over PCM) output
-    if dop != "none" and dop in DSD_RATES:
-        return await _stream_dop(fp, dop, quality, timeout_minutes, dsp_filter)
+    # A WAV/PCM stream is not DoP: until genuine DSD marker packing and
+    # compatible DAC transport are implemented, fail clearly instead of
+    # presenting ordinary PCM as DSD output.
+    if dop != "none":
+        if dop not in DSD_RATES:
+            raise HTTPException(422, "Unsupported DoP mode")
+        raise HTTPException(
+            501,
+            "DoP output is not implemented. Choose PCM output (dop=none).",
+        )
 
-    # Handle PCM upsampling with optional DSP
-    target_rate = UPSAMPLE_RATES.get(upsample)
+    # Handle PCM upsampling with optional DSP. A 48k source played at
+    # 2x must become 96k, not a hard-coded 88.2k.
+    try:
+        target_rate = _select_pcm_upsample_rate(track["sample_rate"], upsample)
+    except (ValueError, TypeError, OverflowError) as exc:
+        raise HTTPException(422, str(exc))
+    if target_rate and quality not in UPSAMPLE_QUALITY:
+        raise HTTPException(422, "Unsupported upsampling quality")
+    if request.method == "HEAD" and (target_rate or dsp_filter):
+        # Describe the transcoded stream without starting FFmpeg.
+        return Response(media_type="audio/wav" if target_rate else "audio/flac",
+                        headers={"Cache-Control": "no-cache"})
     if target_rate:
-        return await _stream_upsampled(fp, target_rate, quality, timeout_minutes, dsp_filter)
+        limit = _transcode_time_limit_seconds(track["duration"], timeout_minutes)
+        return await _stream_upsampled(fp, target_rate, quality, limit, dsp_filter)
 
     # Handle DSP-only (no upsampling)
     if dsp_filter:
-        return await _stream_with_dsp(fp, dsp_filter, timeout_minutes)
+        limit = _transcode_time_limit_seconds(track["duration"], timeout_minutes)
+        return await _stream_with_dsp(fp, dsp_filter, limit)
 
     return _stream_file_direct(fp, request)
 
@@ -3091,7 +3109,7 @@ def check_ffmpeg():
     """Check if FFmpeg is available."""
     import shutil
     ffmpeg_available = shutil.which("ffmpeg") is not None
-    return {"ffmpeg": ffmpeg_available}
+    return {"ffmpeg": ffmpeg_available, "soxr": ffmpeg_supports_soxr()}
 
 @app.post("/api/health/recycle-pool")
 def recycle_db_pool():
@@ -3140,11 +3158,10 @@ def get_remote_info():
 # ─── Security (Authentication) ───────────────────────────────────────────────────
 
 def get_client_ip(request: Request) -> str:
-    """Get client IP address, considering proxies"""
-    # Check X-Forwarded-For header (used by tunnel services)
-    forwarded = request.headers.get("X-Forwarded-For")
-    if forwarded:
-        return forwarded.split(",")[0].strip()
+    """Use the ASGI client address, not an untrusted X-Forwarded-For header.
+
+    Configure trusted proxies at the ASGI server/proxy layer if deployed behind one.
+    """
     return request.client.host if request.client else "unknown"
 
 
@@ -3169,6 +3186,14 @@ def _is_local_client_ip(client_ip: str) -> bool:
     return ip_obj.is_loopback or ip_obj.is_private
 
 
+def _is_loopback_client_ip(client_ip: str) -> bool:
+    """Allow first-time password setup only from the server itself."""
+    try:
+        return ipaddress.ip_address(client_ip).is_loopback
+    except ValueError:
+        return client_ip.strip().lower() == "localhost"
+
+
 @app.get("/api/security/status")
 def get_security_status():
     """Get security configuration status."""
@@ -3186,7 +3211,28 @@ def setup_password(request: Request, body: dict):
 @app.post("/api/security/generate-api-key")
 def generate_api_key(request: Request):
     """Generate a new API key for programmatic access."""
-    return security.generate_new_api_key()
+    return _credential_response(request, security.generate_new_api_key()["api_key"])
+
+
+def _credential_response(request: Request, api_key: str):
+    # Deliver the browser's stream ticket in the same response as the key, so
+    # the UI never has to fetch one between a tap and audio.play().
+    stream_ticket, stream_expires_at = security.issue_browser_stream_ticket()
+    response = JSONResponse({"success": True, "api_key": api_key,
+                             "stream_ticket": stream_ticket,
+                             "stream_ticket_expires_at": stream_expires_at},
+                            headers={"Cache-Control": "no-store"})
+    # Image elements cannot attach API headers. Restrict this cookie to cover
+    # reads; it never authorizes mutations or the rest of the API.
+    response.set_cookie("velvet_cover_key", api_key, path="/api/covers",
+                        httponly=True, samesite="strict",
+                        secure=request.url.scheme == "https")
+    return response
+
+
+@app.post("/api/security/login")
+def login(request: Request):
+    return _credential_response(request, security.get_security_manager().get_or_create_api_key())
 
 
 @app.post("/api/security/disable")
@@ -3198,7 +3244,7 @@ def disable_security(request: Request):
 @app.get("/api/security/reset-api-key")
 def reset_api_key(request: Request):
     """Reset API key."""
-    return security.generate_new_api_key()
+    return _credential_response(request, security.generate_new_api_key()["api_key"])
 
 # ─── CORS Management ─────────────────────────────────────────────────────────────
 
@@ -3249,51 +3295,133 @@ def allow_all_origins():
 
 # ─── Authentication Middleware ──────────────────────────────────────────────────
 
+_MEDIA_TICKET_ROUTES = (
+    (re.compile(r"/api/stream/(\d+)"), "stream"),
+    (re.compile(r"/api/covers/(\d+)(?:/thumb)?"), "cover"),
+)
+
+
+def _media_ticket_target(path: str):
+    """Return (scope, resource_id) when a path may be read with a media ticket."""
+    for pattern, scope in _MEDIA_TICKET_ROUTES:
+        match = pattern.fullmatch(path)
+        if match:
+            return scope, int(match.group(1))
+    return None
+
+
 @app.middleware("http")
 async def auth_middleware(request: Request, call_next):
     """Middleware to check authentication for remote requests."""
 
-    # Skip auth for local connections (same machine and private network)
-    # Only skip if VELVET_AUTH_ENFORCE_ALL_NETWORKS is not set to True (default secure)
     client_ip = get_client_ip(request)
-    enforce_all_networks = os.getenv("VELVET_AUTH_ENFORCE_ALL_NETWORKS", "true").lower() in ("true", "1", "yes")
-    is_local = (not enforce_all_networks) and _is_local_client_ip(client_ip)
+    path = request.url.path
+    auth_enabled = security.is_auth_enabled()
 
-    # For local network requests, skip auth only when enforce_all_networks is False
-    if is_local:
+    # CORS preflight carries no credentials and must reach CORSMiddleware.
+    if request.method == "OPTIONS" and request.headers.get("Access-Control-Request-Method"):
         return await call_next(request)
 
-    # For external/remote requests, check authentication
-    path = request.url.path
+    # Media elements and DLNA renderers cannot send headers. Their URLs carry
+    # a ticket minted by an authenticated client and scoped to exactly this
+    # track or cover; it authorizes this read and nothing else.
+    ticket = request.query_params.get("ticket")
+    media_target = _media_ticket_target(path) if request.method in ("GET", "HEAD") else None
+    if ticket and media_target:
+        scope, resource_id = media_target
+        allowed = security.verify_media_ticket(ticket, scope, resource_id) or (
+            scope == "stream" and security.verify_media_ticket(ticket, "stream-any", 0)
+        )
+        if not allowed:
+            return JSONResponse(status_code=401, content={"error": "Media ticket expired or invalid"})
+        return await call_next(request)
 
-    # Skip auth for certain endpoints
-    skip_auth_prefixes = [
-        "/api/security/",
-        "/api/health",
-        "/api/health/",
-        "/docs",
-        "/openapi.json",
-        "/redoc",
-    ]
-    should_skip = (path == "/") or any(path.startswith(prefix) for prefix in skip_auth_prefixes)
+    # Before protection is enabled, a network guest must not be able to claim
+    # ownership by setting the first password. Bootstrap locally on the host.
+    if not auth_enabled and path.startswith("/api/security/") and path != "/api/security/status":
+        if path != "/api/security/setup-password":
+            return JSONResponse(
+                status_code=403,
+                content={"error": "Set an initial password before managing credentials."},
+            )
+        if not _is_loopback_client_ip(client_ip):
+            return JSONResponse(
+                status_code=403,
+                content={"error": "Initial password setup must be done on the server itself."},
+            )
+        # A loopback reverse proxy or DNS rebinding must not turn a public
+        # hostname into permission to claim an unconfigured server.
+        if (not _is_loopback_client_ip(request.url.hostname or "") or
+                (request.headers.get("origin") and
+                 request.headers["origin"] != str(request.base_url).rstrip("/"))):
+            return JSONResponse(status_code=403, content={"error": "Use the local server URL for initial setup."})
 
-    # Require auth for remote access if enabled
-    if security.is_auth_enabled() and not should_skip:
-        password = request.headers.get("X-Password") or request.query_params.get("password")
-        api_key = request.headers.get("X-API-Key") or request.query_params.get("api_key")
+    # When no password has been configured, do not expose the music library,
+    # destructive APIs, or local playback control over LAN/Tailscale.
+    # Users can initialize security at http://localhost:8765 on the host PC.
+    if not auth_enabled and not _is_loopback_client_ip(client_ip):
+        setup_visible = request.method == "GET" and (
+            path in {
+                "/", "/api/security/status", "/api/health",
+                "/api/health/check-ffmpeg", "/sw.js",
+                "/static/manifest.json", "/static/icon.png",
+                "/static/logo-hires.png",
+                "/static/index.html",
+            }
+        )
+        if not setup_visible:
+            return JSONResponse(
+                status_code=403,
+                content={"error": "VELVET requires first-time password setup on the host PC."},
+            )
+
+    # Expose only read-only diagnostics and the security *status* without auth.
+    # Never exempt the entire /api/security/ or /api/health/ namespace:
+    # those namespaces include state-changing and credential-rotation endpoints.
+    public_get_paths = {
+        "/", "/api/security/status", "/api/health",
+        "/api/health/check-ffmpeg", "/docs", "/redoc", "/openapi.json",
+        "/sw.js", "/static/index.html", "/static/manifest.json",
+        "/static/icon.png", "/static/logo-hires.png",
+    }
+    should_skip = request.method == "GET" and (
+        path in public_get_paths or path.startswith("/docs/")
+    )
+    sensitive_security_route = (
+        (path.startswith("/api/security/") and path != "/api/security/status")
+        or path.startswith("/api/dlna/")
+    )
+
+    # Explicitly opting out of LAN auth does not bypass credential management.
+    enforce_all_networks = os.getenv(
+        "VELVET_AUTH_ENFORCE_ALL_NETWORKS", "true"
+    ).lower() in ("true", "1", "yes")
+    local_bypass = (
+        not enforce_all_networks and _is_local_client_ip(client_ip)
+    )
+
+    if auth_enabled and not should_skip and (sensitive_security_route or not local_bypass):
+        # Credentials are accepted only in headers: query strings end up in
+        # logs, history and renderer metadata. Media URLs use tickets above.
+        password = request.headers.get("X-Password")
+        api_key = request.headers.get("X-API-Key")
+        if not api_key and request.method == "GET" and path.startswith("/api/covers/"):
+            api_key = request.cookies.get("velvet_cover_key")
         auth_result = security.verify_auth(
             password=password,
             api_key=api_key,
-            ip=client_ip
+            ip=client_ip,
         )
-
         if not auth_result["allowed"]:
             return JSONResponse(
                 status_code=401,
-                content={"error": auth_result["error"]}
+                content={"error": auth_result["error"]},
             )
 
-    return await call_next(request)
+    response = await call_next(request)
+    if path.startswith("/api/security/"):
+        response.headers["Cache-Control"] = "no-store"
+    return response
 
 
 # ─── Global Exception Handler ──────────────────────────────────────────────────
@@ -3351,6 +3479,13 @@ def serve_frontend():
             "Expires": "0"
         }
     )
+
+
+@app.get("/static/index.html")
+def serve_public_shell():
+    # No credentials or user data are embedded in the public application shell.
+    html = Path(__file__).parent / "static" / "index.html"
+    return HTMLResponse(html.read_text(encoding="utf-8"), headers={"Cache-Control": "no-cache"})
 @app.get("/static/manifest.json")
 def serve_manifest():
     path = Path(__file__).parent / "static" / "manifest.json"
@@ -3420,7 +3555,7 @@ if __name__ == "__main__":
 
     uvicorn.run(
         "server:app",
-        host="0.0.0.0",
+        host=settings.host,
         port=PORT,
         log_level="warning",
         reload=False
