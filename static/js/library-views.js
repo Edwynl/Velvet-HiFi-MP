@@ -635,10 +635,13 @@ async function renderAlbums(vc) {
 // ── Artists ───────────────────────────────────────────────────────────────────
 
 async function renderArtists(vc) {
-  const allArtists = await api('/artists?limit=5000');
+  const first = await api('/artists/page?limit=' + ARTISTS_PER_PAGE + '&offset=0');
+  let allArtists = first.artists || [];
+  let totalArtists = Number(first.total || 0);
   let searchQuery = '';
-  let artists = allArtists;
   let currentPage = 1;
+  let renderedPage = 1;
+  let serial = 0;
 
   vc.innerHTML = `
     <div class="topbar">
@@ -652,7 +655,7 @@ async function renderArtists(vc) {
     </div>
     <div class="section-header" id="artists-header" title="Click to scroll to top">
       <div class="section-title">Artists</div>
-      <div class="section-sub" id="artists-count">${allArtists.length} artists</div>
+      <div class="section-sub" id="artists-count">${totalArtists} artists</div>
     </div>
     <div class="grid artist-grid" id="artists-grid"></div>
     <div class="back-to-top" id="back-to-top-btn" style="display:none">↑</div>
@@ -690,83 +693,66 @@ async function renderArtists(vc) {
     mainEl.scrollTo({ top: 0, behavior: 'smooth' });
   });
 
-  // Helper functions for pagination
-  function getFilteredData() {
-    const q = searchQuery.trim();
-    if (!q) {
-      return allArtists;
-    }
-    return allArtists.filter(a => {
-      const name = a.name || '';
-      return chineseMatch(name, q);
-    });
-  }
-
-  function getPagedData() {
-    const filtered = getFilteredData();
-    const totalPages = Math.ceil(filtered.length / ARTISTS_PER_PAGE) || 1;
-    if (currentPage > totalPages) currentPage = totalPages;
-    const start = (currentPage - 1) * ARTISTS_PER_PAGE;
-    const end = start + ARTISTS_PER_PAGE;
-    return filtered.slice(start, end);
-  }
-
   function updatePagination() {
-    const filtered = getFilteredData();
-    const totalPages = Math.ceil(filtered.length / ARTISTS_PER_PAGE) || 1;
-
-    prevBtn.disabled = currentPage <= 1 || searchQuery.trim() !== '';
-    nextBtn.disabled = currentPage >= totalPages || searchQuery.trim() !== '';
-    pageInfo.textContent = searchQuery.trim() !== ''
-      ? `Search mode`
-      : `Page ${currentPage} / ${totalPages}`;
-
-    countEl.textContent = searchQuery.trim() !== ''
-      ? `${filtered.length} artist${filtered.length !== 1 ? 's' : ''} found`
-      : `${filtered.length} artists · ${totalPages} pages`;
+    const pages = Math.max(1, Math.ceil(totalArtists / ARTISTS_PER_PAGE));
+    pageInfo.textContent = `Page ${currentPage} / ${pages}`;
+    countEl.textContent = searchQuery.trim()
+      ? `${totalArtists} artists found`
+      : `${totalArtists} artists · ${pages} pages`;
+    prevBtn.disabled = currentPage <= 1;
+    nextBtn.disabled = currentPage >= pages;
   }
 
-  // Render grid with current data
   function renderGrid() {
+    grid._velvetCardObserver?.disconnect();
     grid.innerHTML = '';
-    const data = searchQuery.trim() ? getFilteredData() : getPagedData();
-    if (!data.length) {
-      grid.innerHTML = `<div style="padding:0;color:var(--muted);font-size:13px;grid-column:1/-1">${searchQuery.trim() ? 'No artists found.' : 'No artists found.'}</div>`;
-      pagination.style.display = searchQuery.trim() ? 'none' : 'flex';
+    if (!allArtists.length) {
+      grid.innerHTML = '<div style="padding:0;color:var(--muted);font-size:13px;grid-column:1/-1">No artists found.</div>';
+      updatePagination();
       return;
     }
-    pagination.style.display = searchQuery.trim() ? 'none' : 'flex';
-    renderCardsOnDemand(grid, data, makeArtistCard);
+    renderCardsOnDemand(grid, allArtists, makeArtistCard);
     updatePagination();
   }
 
-  // Local search filter
-  function filterArtists() {
-    const q = searchQuery.trim();
-    if (!q) {
-      artists = allArtists;
-      currentPage = 1; // Reset to first page when clearing search
-    } else {
-      artists = allArtists.filter(a => {
-        const name = a.name || '';
-        return chineseMatch(name, q);
-      });
+  async function loadPage({ reset = false } = {}) {
+    if (reset) currentPage = 1;
+    const thisRequest = ++serial;
+    const params = new URLSearchParams({
+      limit: String(ARTISTS_PER_PAGE),
+      offset: String((currentPage - 1) * ARTISTS_PER_PAGE),
+      search: searchQuery.trim(),
+    });
+    prevBtn.disabled = true;
+    nextBtn.disabled = true;
+    try {
+      const page = await api('/artists/page?' + params.toString());
+      if (thisRequest !== serial || state.view !== 'artists') return;
+      allArtists = page.artists || [];
+      totalArtists = Number(page.total || 0);
+      renderedPage = currentPage;
+      renderGrid();
+    } catch {
+      if (thisRequest === serial) {
+        currentPage = renderedPage;
+        renderGrid();
+        showToast('Unable to load artists. Try again.');
+      }
     }
-    renderGrid();
   }
 
-  // Input event handler
+  let searchTimer;
   let isComposing = false;
   input.addEventListener('compositionstart', () => { isComposing = true; });
   input.addEventListener('compositionend', () => {
     isComposing = false;
     input.dispatchEvent(new Event('input'));
   });
-
   input.addEventListener('input', () => {
     if (isComposing) return;
     searchQuery = input.value;
-    filterArtists();
+    clearTimeout(searchTimer);
+    searchTimer = setTimeout(() => loadPage({ reset: true }), 300);
   });
 
   // Backspace to previous page when empty
@@ -779,23 +765,17 @@ async function renderArtists(vc) {
   // Search fields on library pages only focus after an explicit user tap.
   input.blur();
 
-  // Pagination buttons (disabled in search mode)
   prevBtn.addEventListener('click', () => {
-    if (searchQuery.trim() || currentPage <= 1) return;
+    if (currentPage <= 1) return;
     currentPage--;
     mainEl.scrollTo({ top: 0, behavior: 'smooth' });
-    renderGrid();
+    loadPage();
   });
-
   nextBtn.addEventListener('click', () => {
-    if (searchQuery.trim()) return;
-    const filtered = getFilteredData();
-    const totalPages = Math.ceil(filtered.length / ARTISTS_PER_PAGE) || 1;
-    if (currentPage < totalPages) {
-      currentPage++;
-      mainEl.scrollTo({ top: 0, behavior: 'smooth' });
-      renderGrid();
-    }
+    if (currentPage >= Math.max(1, Math.ceil(totalArtists / ARTISTS_PER_PAGE))) return;
+    currentPage++;
+    mainEl.scrollTo({ top: 0, behavior: 'smooth' });
+    loadPage();
   });
 
   renderGrid();
