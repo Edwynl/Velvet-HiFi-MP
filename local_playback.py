@@ -231,7 +231,10 @@ class LocalPlayer:
         self.process = None
         self.current_file = None
         self.output_sample_rate = None
-        self.underruns = 0
+        # Plain counters written only by the audio callback.
+        self.xrun_flags = 0     # callbacks where PortAudio reported a status flag
+        self.starvations = 0    # callbacks the ring could not fill before EOF
+        self._mme_low_latency_logged = False
         self._ring: Optional[PcmRingBuffer] = None
         self._stop_event: Optional[threading.Event] = None
         self._decoder: Optional[threading.Thread] = None
@@ -252,9 +255,20 @@ class LocalPlayer:
                 "channels": dev["max_output_channels"],
                 "sample_rate": dev["default_samplerate"],
                 "latency": dev.get("default_low_output_latency", 0.01),
+                "host_api": sd.query_hostapis(dev["hostapi"])["name"],
             }
         except:
             return {"name": "Unknown", "latency": 0.02}
+
+    def _stream_latency(self, host_api: Optional[str]) -> float:
+        """Requested output latency in seconds for the device's host API."""
+        if self.latency == "low" and host_api == "MME":
+            # MME consumes far too slowly at 5 ms (measured on Realtek/MME).
+            if not self._mme_low_latency_logged:
+                self._mme_low_latency_logged = True
+                log.info("MME host API: using 'medium' latency for 'low'")
+            return self.latency_map["medium"]
+        return self.latency_map.get(self.latency, 0.02)
 
     def play_file(
         self,
@@ -331,13 +345,15 @@ class LocalPlayer:
             # control, logging and playback-state updates happen elsewhere.
             def callback(outdata, frames, time_info, status):
                 if status:
-                    self.underruns += 1
+                    self.xrun_flags += 1
                 copied = ring.read_into(outdata, gain)
                 if copied < frames:
                     outdata[copied:] = 0
                     if ring.drained:
                         drained.set()
                         raise sd.CallbackStop()
+                    if not ring.eof:
+                        self.starvations += 1
 
             # Let the decoder get ahead so the first callbacks do not underrun.
             target = min(ring.capacity, int(resolved_rate * PREBUFFER_SECONDS))
@@ -350,7 +366,7 @@ class LocalPlayer:
                 samplerate=resolved_rate,
                 channels=2,
                 callback=callback,
-                latency=self.latency_map.get(self.latency, 0.02),
+                latency=self._stream_latency(device_info.get("host_api")),
                 dtype='float32'
             )
 
@@ -401,6 +417,8 @@ class LocalPlayer:
         with _player_state_guard:
             if self._stop_event is not stop_event or stop_event.is_set():
                 return  # a newer track or an explicit stop owns the state
+            # No live generation: play_local must not mark this track playing.
+            self._stop_event = None
             with _state_lock:
                 _playback_state["playing"] = False
                 _playback_state["paused"] = False
@@ -559,13 +577,16 @@ def play_local(
             )
 
             if success:
-                with _state_lock:
-                    _playback_state["playing"] = True
-                    _playback_state["paused"] = False
-                    _playback_state["track_id"] = track_id
-                    _playback_state["position"] = 0
-                    _playback_state["device"] = device_info["name"]
-                    _playback_state["volume"] = volume
+                # A 0-frame or failing track can drain before this point;
+                # _finish_playback then already cleared the state.
+                with _player_state_guard, _state_lock:
+                    if player._stop_event is not None:
+                        _playback_state["playing"] = True
+                        _playback_state["paused"] = False
+                        _playback_state["track_id"] = track_id
+                        _playback_state["position"] = 0
+                        _playback_state["device"] = device_info["name"]
+                        _playback_state["volume"] = volume
 
                 return {
                     "success": True,

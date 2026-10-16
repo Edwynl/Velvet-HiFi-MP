@@ -332,6 +332,176 @@ class DecoderWorkerTests(unittest.TestCase):
         self.assertEqual(state["track_id"], 9)
 
 
+class _CapturingStream:
+    """Records the OutputStream arguments; the test drives the callback."""
+    created = []
+
+    def __init__(self, **kwargs):
+        self.kwargs = kwargs
+        _CapturingStream.created.append(self)
+
+    def start(self):
+        pass
+
+    stop = close = start
+
+
+class _BlockingProcess:
+    """FFmpeg stand-in whose stdout stays silent until it is closed."""
+
+    def __init__(self):
+        self._closed = threading.Event()
+        self.stdout = self
+        self.returncode = None
+
+    def read(self, size):
+        self._closed.wait(5)
+        return b""
+
+    def close(self):
+        self._closed.set()
+
+    def poll(self):
+        return self.returncode
+
+    def terminate(self):
+        self.close()
+        self.returncode = -15
+
+    def wait(self, timeout=None):
+        return self.returncode
+
+
+class NativeStreamSettingsTests(unittest.TestCase):
+    def setUp(self):
+        _CapturingStream.created = []
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.source = Path(self._tmp.name) / "source.flac"
+        self.source.write_bytes(b"test")
+        patches = [
+            patch.object(local_playback, "SOUNDDEVICE_AVAILABLE", True),
+            patch.object(local_playback, "sd", create=True),
+            patch.object(local_playback, "PREBUFFER_TIMEOUT_SECONDS", 0),
+        ]
+        for active in patches:
+            active.start()
+            self.addCleanup(active.stop)
+        self.sd = local_playback.sd
+        self.sd.CallbackStop = _CallbackStop
+        self.sd.OutputStream.side_effect = _CapturingStream
+        self.sd.query_devices.return_value = {
+            "name": "Speakers (Realtek)", "max_output_channels": 2,
+            "default_samplerate": 48000, "default_low_output_latency": 0.01, "hostapi": 0,
+        }
+
+    def _play(self, player, process=None):
+        with patch.object(local_playback.subprocess, "Popen", return_value=process or _FakeProcess()):
+            self.assertTrue(player.play_file(str(self.source)))
+        return _CapturingStream.created[-1]
+
+    def test_low_latency_uses_medium_on_mme_and_logs_once(self):
+        self.sd.query_hostapis.return_value = {"name": "MME"}
+        player = local_playback.LocalPlayer(latency="low")
+        self.addCleanup(player.stop)
+        with self.assertLogs("velvet.playback", level="INFO") as logs:
+            first = self._play(player)
+            second = self._play(player)
+        self.sd.query_hostapis.assert_called_with(0)
+        self.assertEqual(first.kwargs["latency"], player.latency_map["medium"])
+        self.assertEqual(second.kwargs["latency"], player.latency_map["medium"])
+        self.assertEqual(sum("MME" in line for line in logs.output), 1)
+
+    def test_low_latency_is_kept_on_wasapi_and_asio(self):
+        for host_api in ("Windows WASAPI", "ASIO"):
+            with self.subTest(host_api=host_api):
+                self.sd.query_hostapis.return_value = {"name": host_api}
+                player = local_playback.LocalPlayer(latency="low")
+                self.addCleanup(player.stop)
+                self.assertEqual(self._play(player).kwargs["latency"], 0.005)
+
+    def test_xrun_flags_and_starvation_are_counted_separately(self):
+        self.sd.query_hostapis.return_value = {"name": "Windows WASAPI"}
+        player = local_playback.LocalPlayer(latency="medium")
+        self.addCleanup(player.stop)
+        callback = self._play(player, _BlockingProcess()).kwargs["callback"]
+        out = numpy.ones((64, 2), dtype="float32")
+        callback(out, 64, None, None)  # decoder has produced nothing yet
+        self.assertEqual((player.xrun_flags, player.starvations), (0, 1))
+        self.assertFalse(out.any())    # starved frames are silence
+        player._ring.write(numpy.full((64, 2), 0.5, dtype="float32"))
+        callback(out, 64, None, "output underflow")
+        self.assertEqual((player.xrun_flags, player.starvations), (1, 1))
+
+    def test_end_of_track_tail_is_not_counted_as_starvation(self):
+        self.sd.query_hostapis.return_value = {"name": "Windows WASAPI"}
+        player = local_playback.LocalPlayer(latency="medium")
+        self.addCleanup(player.stop)
+        callback = self._play(player).kwargs["callback"]  # one frame, then EOF
+        deadline = time.monotonic() + 2
+        while not player._ring.eof and time.monotonic() < deadline:
+            time.sleep(0.005)
+        with self.assertRaises(_CallbackStop):
+            callback(numpy.zeros((64, 2), dtype="float32"), 64, None, None)
+        self.assertEqual(player.starvations, 0)
+
+
+class ZeroLengthTrackStateTests(unittest.TestCase):
+    def test_track_that_drains_before_play_local_returns_does_not_stay_playing(self):
+        finished = threading.Event()
+        real_finish = local_playback.LocalPlayer._finish_playback
+
+        def finish(player, process, stop_event):
+            real_finish(player, process, stop_event)
+            finished.set()
+
+        test = self
+
+        class DrainOnStartStream:
+            """The callback drains the empty ring and the decoder finishes the
+            track before play_file returns to play_local."""
+
+            def __init__(self, **kwargs):
+                self.callback = kwargs["callback"]
+
+            def start(self):
+                with test.assertRaises(_CallbackStop):
+                    self.callback(numpy.zeros((256, 2), dtype="float32"), 256, None, None)
+                test.assertTrue(finished.wait(2))
+
+            def stop(self):
+                pass
+
+            close = stop
+
+        state = {"playing": False, "paused": False, "track_id": None, "position": 0,
+                 "device": None, "volume": 1.0}
+        with tempfile.TemporaryDirectory() as root:
+            audio = Path(root) / "empty.flac"
+            audio.write_bytes(b"test")
+            with patch.object(local_playback, "SOUNDDEVICE_AVAILABLE", True), \
+                 patch.object(local_playback, "sd", create=True) as sd, \
+                 patch.object(local_playback, "_active_player", None), \
+                 patch.object(local_playback, "_playback_state", state), \
+                 patch.object(local_playback.LocalPlayer, "_finish_playback", finish), \
+                 patch.object(local_playback.subprocess, "Popen",
+                              return_value=_RecordingProcess(frames=0)), \
+                 patch("sqlite3.connect") as connect:
+                sd.CallbackStop = _CallbackStop
+                sd.OutputStream.side_effect = DrainOnStartStream
+                sd.query_devices.return_value = {
+                    "name": "DAC", "max_output_channels": 2, "default_samplerate": 48000,
+                    "hostapi": 0}
+                sd.query_hostapis.return_value = {"name": "Windows WASAPI"}
+                connect.return_value.execute.return_value.fetchone.return_value = {
+                    "file_path": str(audio), "sample_rate": 48000}
+                result = local_playback.play_local(track_id=3)
+                local_playback._active_player.stop()
+        self.assertTrue(result["success"])
+        self.assertFalse(state["playing"])
+        self.assertIsNone(state["track_id"])
+
+
 class NativeAudioInstallTests(unittest.TestCase):
     def test_requirements_install_sounddevice_on_windows(self):
         from packaging.requirements import Requirement

@@ -10,6 +10,7 @@ from db_schema import apply_migrations
 
 class DummyPlayer:
     instances = []
+    _stop_event = object()  # the started track is still live
 
     def __init__(self, device_id=None, latency="low"):
         self.device_id = device_id
