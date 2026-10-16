@@ -31,7 +31,7 @@ import httpx
 from mutagen import File as MutagenFile
 from PIL import Image
 from fastapi import FastAPI, HTTPException, Request, BackgroundTasks, Query, File, UploadFile
-from fastapi.responses import FileResponse, StreamingResponse, HTMLResponse, JSONResponse
+from fastapi.responses import FileResponse, StreamingResponse, HTMLResponse, JSONResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 import upnp_server
@@ -39,6 +39,7 @@ import remote_access
 import security
 from cover_art import find_folder_cover as find_folder_cover_bytes, save_cover_bytes
 from dsp_engine import build_dsp_filter_chain, profile_filters, sanitize_dsp_filters
+from audio_streaming import iter_ffmpeg_stdout
 from db_pool import (
     DatabaseConnection,
     _return_db,
@@ -1728,47 +1729,84 @@ def refresh_artist_metadata(artist_id: int):
 
 # ─── Audio Streaming ──────────────────────────────────────────────────────────
 
-def _parse_range(header: str, size: int):
-    m = re.match(r'bytes=(\d+)-(\d*)', header)
-    if not m:
-        return 0, size - 1
-    start = int(m.group(1))
-    end   = int(m.group(2)) if m.group(2) else size - 1
+def _parse_range(header: str, size: int) -> tuple[int, int]:
+    """Parse one HTTP byte range, including suffix ranges.
+
+    Invalid or unsatisfiable ranges raise ValueError for an HTTP 416 reply.
+    Multiple ranges are intentionally not supported (multipart/byteranges).
+    """
+    if size <= 0:
+        raise ValueError("empty resource")
+    match = re.fullmatch(r"bytes=(\\d*)-(\\d*)", header.strip())
+    if not match:
+        raise ValueError("unsupported byte range")
+
+    first, last = match.groups()
+    if not first and not last:
+        raise ValueError("missing range bounds")
+
+    if not first:
+        count = int(last)
+        if count <= 0:
+            raise ValueError("invalid suffix length")
+        return max(0, size - count), size - 1
+
+    start = int(first)
+    end = int(last) if last else size - 1
+    if start >= size or start > end:
+        raise ValueError("range not satisfiable")
     return start, min(end, size - 1)
 
+
 def _stream_file_direct(file_path: str, request: Request):
-    """Direct file streaming with HTTP range support."""
+    """Send an original audio file with RFC 9110 single-range semantics."""
     size = os.path.getsize(file_path)
-    ext  = Path(file_path).suffix.lower()
-    mime = MIME_MAP.get(ext, 'audio/mpeg')
+    ext = Path(file_path).suffix.lower()
+    mime = MIME_MAP.get(ext, "application/octet-stream")
 
     range_header = request.headers.get("Range")
     if range_header:
-        start, end = _parse_range(range_header, size)
+        try:
+            start, end = _parse_range(range_header, size)
+        except ValueError:
+            return Response(
+                status_code=416,
+                headers={
+                    "Content-Range": f"bytes */{size}",
+                    "Accept-Ranges": "bytes",
+                    "Cache-Control": "no-cache",
+                },
+            )
         length = end - start + 1
 
         def gen():
-            with open(file_path, 'rb') as f:
-                f.seek(start)
+            with open(file_path, "rb") as audio_file:
+                audio_file.seek(start)
                 remaining = length
                 while remaining > 0:
-                    chunk = f.read(min(262144, remaining))
+                    chunk = audio_file.read(min(262144, remaining))
                     if not chunk:
                         break
                     remaining -= len(chunk)
                     yield chunk
 
-        return StreamingResponse(gen(), status_code=206, media_type=mime, headers={
-            "Content-Range":  f"bytes {start}-{end}/{size}",
-            "Accept-Ranges":  "bytes",
-            "Content-Length": str(length),
-            "Cache-Control":  "no-cache"
-        })
+        return StreamingResponse(
+            gen(),
+            status_code=206,
+            media_type=mime,
+            headers={
+                "Content-Range": f"bytes {start}-{end}/{size}",
+                "Accept-Ranges": "bytes",
+                "Content-Length": str(length),
+                "Cache-Control": "no-cache",
+            },
+        )
 
-    return FileResponse(file_path, media_type=mime, headers={
-        "Accept-Ranges":  "bytes",
-        "Content-Length": str(size)
-    })
+    return FileResponse(
+        file_path,
+        media_type=mime,
+        headers={"Accept-Ranges": "bytes", "Cache-Control": "no-cache"},
+    )
 
 
 def _resolve_library_roots(db) -> list[Path]:
@@ -1797,7 +1835,7 @@ def _resolve_library_roots(db) -> list[Path]:
 async def _stream_upsampled(file_path: str, target_rate: str, quality: str = "high",
                            timeout_minutes: int = 60, dsp_filter: str = ""):
     """
-    Upsample via FFmpeg + SoXR resampler, stream as FLAC.
+    Upsample via FFmpeg + SoXR resampler, stream as WAV.
 
     Uses SoXR High-Quality mode for superior audio quality compared to basic SoX.
     SoXR provides polynomial interpolation with 64-bit floating point precision.
@@ -1805,7 +1843,7 @@ async def _stream_upsampled(file_path: str, target_rate: str, quality: str = "hi
     Args:
         file_path: Path to the source audio file
         target_rate: Target sample rate as string (e.g., "705600" for 705.6kHz)
-        quality: soxr_qq (quick), soxr_hq (high), soxr_vhq (extreme)
+        quality: standard, high, extreme (libsoxr precision presets)
         timeout_minutes: Max duration for stream in minutes (5-60)
         dsp_filter: Additional DSP filter chain to apply
     """
@@ -1821,7 +1859,7 @@ async def _stream_upsampled(file_path: str, target_rate: str, quality: str = "hi
 
     # Build FFmpeg command with SoXR resampler
     # Key improvements:
-    # 1. Use soxr_hq/vhq instead of basic soxr
+    # 1. Use libsoxr with validated precision presets
     # 2. output without compression for lower latency
     # 3. Use 32-bit integer for maximum precision in pipeline
     cmd = [
@@ -1833,131 +1871,14 @@ async def _stream_upsampled(file_path: str, target_rate: str, quality: str = "hi
         "-loglevel", "error"
     ]
 
-    async def gen():
-        proc = None
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                *cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.DEVNULL
-            )
-            # 60 秒超时保护，防止卡死
-            async with asyncio.timeout(timeout_minutes * 60):
-                while True:
-                    chunk = await proc.stdout.read(262144)
-                    if not chunk:
-                        break
-                    yield chunk
-            # 确保进程退出
-            if proc.stdout:
-                proc.stdout.close()
-            await proc.wait()
-        except asyncio.TimeoutError:
-            log.warning("FFmpeg stream timeout, terminating")
-            try:
-                proc.terminate()
-                await asyncio.wait_for(proc.wait(), timeout=2)
-            except Exception:
-                pass
-        except Exception as e:
-            log.error(f"Stream error: {e}")
-            if proc and proc.poll() is None:
-                try:
-                    proc.kill()
-                    await proc.wait()
-                except Exception:
-                    pass
-
     return StreamingResponse(
-        gen(), media_type="audio/flac",
+        iter_ffmpeg_stdout(cmd, timeout_seconds=timeout_minutes * 60),
+        media_type="audio/wav",
         headers={
             "X-Upsampled-Rate": target_rate,
             "X-Upsampled-By":   "FFmpeg+SoXR",
             "X-Quality":        quality,
             "Cache-Control":    "no-cache"
-        }
-    )
-
-
-async def _stream_dop(file_path: str, dop_mode: str, quality: str = "high",
-                      timeout_minutes: int = 60, dsp_filter: str = ""):
-    """
-    Stream audio as DSD over PCM (DoP).
-
-    DoP is a method to send DSD audio over a PCM transport.
-    The DSD data is encoded in the unused bits of 24-bit PCM frames.
-
-    Args:
-        file_path: Path to the source audio file
-        dop_mode: dsd64, dsd128, dsd256
-        quality: SoXR quality for any required resampling
-        timeout_minutes: Max duration for stream in minutes
-        dsp_filter: Additional DSP filter chain to apply
-    """
-    target_dsd_rate = DSD_RATES.get(dop_mode, DSD_RATES["dsd64"])
-
-    # Build filter chain: DSP + Resampling
-    filters = []
-    if dsp_filter:
-        filters.append(dsp_filter)
-    filters.append(f"aresample=resampler={UPSAMPLE_QUALITY.get(quality, 'soxr:precision=28')}")
-    filter_chain = ",".join(filters)
-
-    # FFmpeg command for DoP output
-    # This converts PCM to DSD64/128/256 and wraps in DoP format
-    cmd = [
-        "ffmpeg", "-i", file_path,
-        "-af", filter_chain,
-        # Convert to DSD using libsoxr if available, otherwise use libswr
-        "-c:a", "pcm_s32le",
-        "-f", "wav",
-        "pipe:1",
-        "-loglevel", "error"
-    ]
-
-    # Note: True DSD encoding requires ffmpeg with libsoxr or libdsd
-    # This is a placeholder - actual DoP requires specific FFmpeg build
-    # Fallback to high-quality PCM upsampling
-
-    async def gen():
-        proc = None
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                *cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.DEVNULL
-            )
-            async with asyncio.timeout(timeout_minutes * 60):
-                while True:
-                    chunk = await proc.stdout.read(262144)
-                    if not chunk:
-                        break
-                    yield chunk
-            if proc.stdout:
-                proc.stdout.close()
-            await proc.wait()
-        except asyncio.TimeoutError:
-            log.warning("FFmpeg DoP stream timeout, terminating")
-            try:
-                proc.terminate()
-                await asyncio.wait_for(proc.wait(), timeout=2)
-            except Exception:
-                pass
-        except Exception as e:
-            log.error(f"DoP stream error: {e}")
-            if proc and proc.poll() is None:
-                try:
-                    proc.kill()
-                    await proc.wait()
-                except Exception:
-                    pass
-
-    return StreamingResponse(
-        gen(), media_type="audio/wav",
-        headers={
-            "X-Output-Mode": f"DoP-{dop_mode.upper()}",
-            "X-Upsampled-By": "FFmpeg+SoXR",
-            "Cache-Control": "no-cache"
         }
     )
 
@@ -1981,41 +1902,9 @@ async def _stream_with_dsp(file_path: str, dsp_filter: str, timeout_minutes: int
         "-loglevel", "error"
     ]
 
-    async def gen():
-        proc = None
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                *cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.DEVNULL
-            )
-            async with asyncio.timeout(timeout_minutes * 60):
-                while True:
-                    chunk = await proc.stdout.read(262144)
-                    if not chunk:
-                        break
-                    yield chunk
-            if proc.stdout:
-                proc.stdout.close()
-            await proc.wait()
-        except asyncio.TimeoutError:
-            log.warning("FFmpeg DSP stream timeout, terminating")
-            try:
-                proc.terminate()
-                await asyncio.wait_for(proc.wait(), timeout=2)
-            except Exception:
-                pass
-        except Exception as e:
-            log.error(f"DSP stream error: {e}")
-            if proc and proc.poll() is None:
-                try:
-                    proc.kill()
-                    await proc.wait()
-                except Exception:
-                    pass
-
     return StreamingResponse(
-        gen(), media_type="audio/flac",
+        iter_ffmpeg_stdout(cmd, timeout_seconds=timeout_minutes * 60),
+        media_type="audio/flac",
         headers={
             "X-Output-Mode": "DSP",
             "Cache-Control": "no-cache"
@@ -2082,9 +1971,16 @@ async def stream_track(
     if dsp_profile:
         dsp_filter = build_dsp_filter_chain(dsp_profile)
 
-    # Handle DoP (DSD over PCM) output
-    if dop != "none" and dop in DSD_RATES:
-        return await _stream_dop(fp, dop, quality, timeout_minutes, dsp_filter)
+    # A WAV/PCM stream is not DoP: until genuine DSD marker packing and
+    # compatible DAC transport are implemented, fail clearly instead of
+    # presenting ordinary PCM as DSD output.
+    if dop != "none":
+        if dop not in DSD_RATES:
+            raise HTTPException(422, "Unsupported DoP mode")
+        raise HTTPException(
+            501,
+            "DoP output is not implemented. Choose PCM output (dop=none).",
+        )
 
     # Handle PCM upsampling with optional DSP
     target_rate = UPSAMPLE_RATES.get(upsample)
