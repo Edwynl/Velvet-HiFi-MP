@@ -90,6 +90,7 @@ const loginContext = vm.createContext({ authState,
   alert(message) { throw new Error(message); },
   async render() { rendered++; },
   async loadDspProfiles() {},
+  maintainStreamTicket() {},
   async fetch(url, options) {
     requests.push({ url, options });
     return { ok: true, async json() { return { success: true, api_key: 'shared-key' }; } };

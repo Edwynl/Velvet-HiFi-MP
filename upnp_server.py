@@ -29,6 +29,7 @@ import ipaddress
 
 import env_loader  # noqa: F401 - load .env for direct module use
 import security
+from settings import get_settings
 
 log = logging.getLogger("velvet.upnp")
 
@@ -37,7 +38,7 @@ log = logging.getLogger("velvet.upnp")
 SSDP_ADDR   = "239.255.255.250"
 SSDP_PORT   = 1900
 UPNP_PORT   = 8766           # Separate port for UPnP XML/control
-MAIN_PORT   = 8765           # MusicIQ streaming server port
+MAIN_PORT   = get_settings().port  # VELVET streaming server port (VELVET_PORT)
 
 # Configurable device identification (can be set via environment variables)
 DEVICE_UUID = os.environ.get("VELVET_UPNP_DEVICE_UUID") or os.environ.get("UPNP_DEVICE_UUID", "uuid:velvet-00000000-0000-0000-0000-000000000001")

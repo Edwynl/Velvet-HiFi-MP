@@ -1,3 +1,4 @@
+import asyncio
 import importlib.util
 import os
 import sqlite3
@@ -501,26 +502,66 @@ class ServerApiTests(unittest.TestCase):
             ticket = path.split("ticket=", 1)[1]
             self.assertEqual(self.client.get(f"/api/config?ticket={ticket}").status_code, 401)
 
-    def test_stream_ticket_requires_authentication_and_is_track_scoped(self):
+    def test_browser_stream_ticket_requires_auth_and_only_reads_audio(self):
         self._allow_music_root()
         key = {"X-API-Key": "session-key"}
         with patch.object(server.security, "is_auth_enabled", return_value=True), \
              patch.object(server.security, "verify_auth", side_effect=self._key_only_auth), \
              patch.object(server, "get_client_ip", return_value="203.0.113.9"):
-            self.assertEqual(self.client.post("/api/stream-ticket", json={"track_id": 1}).status_code, 401)
-            issued = self.client.post("/api/stream-ticket", json={"track_id": 1}, headers=key)
-            self.assertEqual(self.client.post("/api/stream-ticket", json={"track_id": 999},
-                                              headers=key).status_code, 404)
-            for bad in ["1", True, 0, None]:
-                self.assertEqual(self.client.post("/api/stream-ticket", json={"track_id": bad},
-                                                  headers=key).status_code, 422)
+            self.assertEqual(self.client.post("/api/stream-ticket").status_code, 401)
+            issued = self.client.post("/api/stream-ticket", headers=key)
             self.assertEqual(issued.status_code, 200)
             self.assertEqual(issued.headers["cache-control"], "no-store")
-            ticket = issued.json()["ticket"]
-            self.assertIn(self.client.get(f"/api/stream/1?ticket={ticket}",
-                                          headers={"Range": "bytes=0-1"}).status_code, {200, 206})
-            self.assertEqual(self.client.get(f"/api/stream/2?ticket={ticket}").status_code, 401)
+            body = issued.json()
+            self.assertAlmostEqual(body["expires_at"],
+                                   time.time() + server.security.BROWSER_STREAM_TICKET_SECONDS, delta=5)
+            ticket = body["ticket"]
+            self.assertNotIn("session-key", ticket)
+            for track_id in (1, 2):  # any track, so tap-to-play needs no extra round trip
+                self.assertIn(self.client.get(f"/api/stream/{track_id}?ticket={ticket}",
+                                              headers={"Range": "bytes=0-1"}).status_code, {200, 206})
+            # Stream-only: never covers, the API or credential management.
+            self.assertEqual(self.client.get(f"/api/covers/1/thumb?ticket={ticket}").status_code, 401)
+            self.assertEqual(self.client.get(f"/api/tracks?ticket={ticket}").status_code, 401)
+            self.assertEqual(self.client.post(f"/api/stream/1?ticket={ticket}").status_code, 401)
             self.assertEqual(self.client.get("/api/stream/1?ticket=1.forged").status_code, 401)
+            # Rotating the API key revokes outstanding browser tickets.
+            server.security.get_security_manager().generate_api_key()
+            self.assertEqual(self.client.get(f"/api/stream/1?ticket={ticket}").status_code, 401)
+
+    def test_dlna_head_probes_are_answered_without_a_body_or_decoder(self):
+        self._allow_music_root()
+        size = (self.root / "music" / "one.flac").stat().st_size
+        ticket = self._ticket()
+        with patch.object(server, "get_client_ip", return_value="192.168.1.50"):
+            full = self.client.head(f"/api/stream/1?ticket={ticket}")
+            self.assertEqual(full.status_code, 200)
+            self.assertEqual(full.headers["content-length"], str(size))
+            self.assertEqual(full.headers["accept-ranges"], "bytes")
+            self.assertEqual(full.content, b"")
+            partial = self.client.head(f"/api/stream/1?ticket={ticket}", headers={"Range": "bytes=0-1"})
+            self.assertEqual(partial.status_code, 206)
+            self.assertEqual(partial.headers["content-range"], f"bytes 0-1/{size}")
+            self.assertEqual(partial.headers["content-length"], "2")
+            self.assertEqual(partial.content, b"")
+            cover = self.client.head(f"/api/covers/2/thumb?ticket={self._ticket('cover', 2)}")
+            self.assertNotIn(cover.status_code, {401, 405})
+        with self._connect() as conn:
+            profile_id = conn.execute(
+                "INSERT INTO dsp_profiles (name, preamp_db) VALUES ('Head test', -3)").lastrowid
+            conn.commit()
+        with patch.object(server.asyncio, "create_subprocess_exec",
+                          side_effect=AssertionError("HEAD must not start FFmpeg")):
+            transcoded = self.client.head(f"/api/stream/1?dsp={profile_id}")
+        self.assertEqual(transcoded.status_code, 200)
+        self.assertEqual(transcoded.headers["content-type"], "audio/flac")
+
+    def test_renderer_urls_use_the_configured_server_port(self):
+        self.assertEqual(upnp_server.MAIN_PORT, server.settings.port)
+        with patch.object(upnp_server, "MAIN_PORT", 9123):
+            stream_url, cover_url = upnp_server.media_urls({"id": 1, "album_id": 2, "duration": 60})
+        self.assertIn(":9123/api/stream/1?ticket=", stream_url)
+        self.assertIn(":9123/api/covers/2/thumb?", cover_url)
 
     def test_ticket_from_unconfigured_host_lets_lan_renderer_play_only_that_track(self):
         self._allow_music_root()
@@ -566,7 +607,8 @@ class ServerApiTests(unittest.TestCase):
             conn.commit()
         slots = StreamSlots(1)
         held = slots.try_acquire()
-        with patch.object(server, "TRANSCODE_SLOTS", slots):
+        with patch.object(server, "TRANSCODE_SLOTS", slots), \
+             patch.object(server, "TRANSCODE_SLOT_WAIT_SECONDS", 0.2):
             response = self.client.get(f"/api/stream/1?dsp={profile_id}")
             self.assertEqual(response.status_code, 503)
             self.assertEqual(response.headers["retry-after"], "5")
@@ -574,6 +616,24 @@ class ServerApiTests(unittest.TestCase):
             self.assertIn(self.client.get("/api/stream/1", headers={"Range": "bytes=0-1"}).status_code, {200, 206})
             held.release()
             self.assertIsNotNone(slots.try_acquire())
+
+    def test_track_switch_waits_for_the_previous_transcode_slot(self):
+        slots = StreamSlots(1)
+        held = slots.try_acquire()
+
+        async def switch_tracks():
+            async def old_stream_closes():
+                await asyncio.sleep(0.2)
+                held.release()
+            closer = asyncio.create_task(old_stream_closes())
+            lease = await server._acquire_transcode_slot()
+            await closer
+            return lease
+
+        with patch.object(server, "TRANSCODE_SLOTS", slots):
+            lease = asyncio.run(switch_tracks())
+        self.assertEqual(slots.active, 1)
+        lease.release()
 
     def test_transcode_time_limit_respects_configuration_and_long_tracks(self):
         limit = server._transcode_time_limit_seconds

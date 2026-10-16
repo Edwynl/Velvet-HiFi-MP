@@ -2,45 +2,79 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
 
-const html = readFileSync('static/index.html', 'utf8');
+const html = readFileSync('static/index.html', 'utf8').replace(/\r\n/g, '\n');
 const between = (start, end) => html.slice(html.indexOf(start), html.indexOf(end));
 
 assert.ok(!/[?&]api_key=/.test(html), 'No URL may carry the long-lived API key');
 
 const calls = [];
+let now = 1_700_000_000_000;
+let nextTicket = 1;
 const authState = { apiKey: 'long-lived-key' };
 const context = vm.createContext({
   authState,
   state: { upsample: 'none', dspProfile: 3 },
   encodeURIComponent,
   JSON,
+  Promise,
+  Date: { now: () => now },
+  setInterval() {},
+  document: { visibilityState: 'visible', addEventListener() {} },
   async api(path, opts) {
     calls.push({ path, opts });
-    return { ticket: '1700000000.sig-for-track-5', expires_at: 1700000000 };
+    return { ticket: `ticket-${nextTicket++}`, expires_at: Math.floor(now / 1000) + 4 * 3600 };
   },
 });
 vm.runInContext(between('function streamUrl(', '// DO NOT call initAudioAnalyser()'), context);
+const run = code => vm.runInContext(code, context);
 
-const plain = vm.runInContext('streamUrl(5)', context);
+const plain = run('streamUrl(5)');
 assert.ok(!plain.includes('long-lived-key') && !plain.includes('api_key'), plain);
 
-const ticket = await vm.runInContext('fetchStreamTicket(5)', context);
-assert.equal(ticket, '1700000000.sig-for-track-5');
+// No usable ticket yet: nothing synchronous to hand out.
+assert.equal(run('currentStreamTicket()'), '');
+
+// Prefetch is deduplicated and yields a ticket usable without awaiting.
+run('maintainStreamTicket(); maintainStreamTicket();');
+assert.equal(await run('streamTicketRequest'), 'ticket-1');
+assert.equal(calls.length, 1);
 assert.equal(calls[0].path, '/stream-ticket');
 assert.equal(calls[0].opts.method, 'POST');
-assert.deepEqual(JSON.parse(calls[0].opts.body), { track_id: 5 });
+assert.equal(calls[0].opts.body, undefined, 'The ticket is not tied to a track or its credentials');
+assert.equal(run('currentStreamTicket()'), 'ticket-1');
+assert.equal(run('streamUrl(5, undefined, currentStreamTicket())'),
+  '/api/stream/5?upsample=none&dsp=3&ticket=ticket-1');
 
-const ticketed = vm.runInContext(`streamUrl(5, undefined, ${JSON.stringify(ticket)})`, context);
-assert.equal(ticketed, '/api/stream/5?upsample=none&dsp=3&ticket=1700000000.sig-for-track-5');
+// Renewed in the background before it becomes unusable for a new track.
+now += 2.5 * 3600 * 1000;
+assert.equal(run('currentStreamTicket()'), 'ticket-1');
+run('maintainStreamTicket()');
+await run('streamTicketRequest');
+assert.equal(run('currentStreamTicket()'), 'ticket-2');
 
+// A changed API key (re-login / rotation) invalidates the cached ticket.
+authState.apiKey = 'rotated-key';
+assert.equal(run('currentStreamTicket()'), '');
+
+// Unprotected local host: no ticket and no request.
 authState.apiKey = '';
 calls.length = 0;
-assert.equal(await vm.runInContext('fetchStreamTicket(5)', context), '', 'Unprotected local host needs no ticket');
+run('maintainStreamTicket()');
+assert.equal(await run('refreshStreamTicket()'), '');
 assert.equal(calls.length, 0);
 
+// Tap-to-play must not await the network when a prefetched ticket exists
+// (mobile Safari drops the user-gesture chain across such awaits).
 const playbackSource = between('async function startBrowserPlayback(', 'async function playTrack(');
-assert.match(playbackSource, /streamUrl\(track\.id, undefined, await fetchStreamTicket\(track\.id\)\)/,
-  'Browser playback must request a per-track ticket before setting audio.src');
+const beforePlay = playbackSource.slice(0, playbackSource.indexOf('await audio.play()'));
+const awaits = beforePlay.match(/await [\w.]+\(/g) || [];
+assert.deepEqual(awaits, ['await refreshStreamTicket('],
+  'Only the no-prefetched-ticket fallback may await before audio.play()');
+assert.match(beforePlay, /currentStreamTicket\(\) \|\| await refreshStreamTicket\(\)/);
+
+// Prefetch happens at startup and right after login / key changes.
+assert.match(between("window.addEventListener('DOMContentLoaded'", "log('[VELVET] DOM ready"), /maintainStreamTicket\(\)/);
+assert.match(between('async function submitLogin()', 'function coverUrl('), /maintainStreamTicket\(\)/);
 
 // Casting sends only the track id; the server mints the renderer's ticketed URL.
 const castCalls = [];

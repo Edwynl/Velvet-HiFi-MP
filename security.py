@@ -35,9 +35,13 @@ CONFIG_DIR.mkdir(exist_ok=True)
 # Media tickets authorize GET of ONE track or cover without exposing the
 # long-lived API key in URLs (HTMLMediaElement and DLNA renderers cannot send
 # headers). Lifetime follows track length so long-form music can finish.
-MEDIA_SCOPES = frozenset({"stream", "cover"})
+MEDIA_SCOPES = frozenset({"stream", "stream-any", "cover"})
 MEDIA_TICKET_GRACE_SECONDS = 30 * 60
 MEDIA_TICKET_MAX_SECONDS = 12 * 3600
+# Browser playback holds one stream-only ticket fetched ahead of time, so a
+# tap-to-play never waits on the network before audio.play() (mobile Safari
+# drops the user-gesture chain across such awaits).
+BROWSER_STREAM_TICKET_SECONDS = 4 * 3600
 DLNA_BROWSE_DEFAULT_MINUTES = 60
 DLNA_BROWSE_MAX_MINUTES = 8 * 60
 
