@@ -35,9 +35,13 @@ CONFIG_DIR.mkdir(exist_ok=True)
 # Media tickets authorize GET of ONE track or cover without exposing the
 # long-lived API key in URLs (HTMLMediaElement and DLNA renderers cannot send
 # headers). Lifetime follows track length so long-form music can finish.
-MEDIA_SCOPES = frozenset({"stream", "cover"})
+MEDIA_SCOPES = frozenset({"stream", "stream-any", "cover"})
 MEDIA_TICKET_GRACE_SECONDS = 30 * 60
 MEDIA_TICKET_MAX_SECONDS = 12 * 3600
+# Browser playback holds one stream-only ticket fetched ahead of time, so a
+# tap-to-play never waits on the network before audio.play() (mobile Safari
+# drops the user-gesture chain across such awaits).
+BROWSER_STREAM_TICKET_SECONDS = 4 * 3600
 DLNA_BROWSE_DEFAULT_MINUTES = 60
 DLNA_BROWSE_MAX_MINUTES = 8 * 60
 
@@ -372,6 +376,11 @@ def media_ticket_ttl(duration_seconds=None) -> int:
 
 def issue_media_ticket(scope: str, resource_id: int, ttl_seconds: int) -> tuple[str, int]:
     return get_security_manager().issue_media_ticket(scope, resource_id, ttl_seconds)
+
+
+def issue_browser_stream_ticket() -> tuple[str, int]:
+    """Stream-only ticket for the web player: any track, audio reads only."""
+    return issue_media_ticket("stream-any", 0, BROWSER_STREAM_TICKET_SECONDS)
 
 
 def verify_media_ticket(ticket: str, scope: str, resource_id) -> bool:

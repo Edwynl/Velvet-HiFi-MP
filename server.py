@@ -1499,7 +1499,7 @@ def _start_thumb_worker():
 # Start the worker
 _start_thumb_worker()
 
-@app.get("/api/covers/{album_id}")
+@app.api_route("/api/covers/{album_id}", methods=["GET", "HEAD"])
 def get_cover(album_id: int):
     # Check cache first (TTLCache handles expiration automatically)
     with _cover_cache_lock:
@@ -1529,7 +1529,7 @@ def get_cover(album_id: int):
         _cover_cache[album_id] = None
     raise HTTPException(404, "No cover")
 
-@app.get("/api/covers/{album_id}/thumb")
+@app.api_route("/api/covers/{album_id}/thumb", methods=["GET", "HEAD"])
 def get_cover_thumbnail(album_id: int, size: str = Query("small", pattern="^(small|medium|large)$")):
     """
     Get a thumbnail-sized version of an album cover.
@@ -1810,6 +1810,14 @@ def _stream_file_direct(file_path: str, request: Request):
                 },
             )
         length = end - start + 1
+        range_headers = {
+            "Content-Range": f"bytes {start}-{end}/{size}",
+            "Accept-Ranges": "bytes",
+            "Content-Length": str(length),
+            "Cache-Control": "no-cache",
+        }
+        if request.method == "HEAD":
+            return Response(status_code=206, media_type=mime, headers=range_headers)
 
         def gen():
             with open(file_path, "rb") as audio_file:
@@ -1822,17 +1830,7 @@ def _stream_file_direct(file_path: str, request: Request):
                     remaining -= len(chunk)
                     yield chunk
 
-        return StreamingResponse(
-            gen(),
-            status_code=206,
-            media_type=mime,
-            headers={
-                "Content-Range": f"bytes {start}-{end}/{size}",
-                "Accept-Ranges": "bytes",
-                "Content-Length": str(length),
-                "Cache-Control": "no-cache",
-            },
-        )
+        return StreamingResponse(gen(), status_code=206, media_type=mime, headers=range_headers)
 
     return FileResponse(
         file_path,
@@ -1873,8 +1871,10 @@ def _transcode_time_limit_seconds(duration_seconds, timeout_minutes: int | None 
     """Wall-clock cap for one FFmpeg response.
 
     The configured (or requested) limit is a floor: a track longer than it,
-    such as a live set or opera act, still gets its full duration plus pause
-    margin. A stalled decoder is ended separately by the idle timeout.
+    such as a live set or opera act, gets its duration plus a 30-minute
+    margin. The cap is wall-clock, so pauses consume that margin; a client
+    paused longer than the margin is disconnected and the browser's recovery
+    path reconnects. A stalled decoder is ended separately by the idle timeout.
     """
     configured = (timeout_minutes or settings.stream_timeout_minutes) * 60
     try:
@@ -1885,15 +1885,23 @@ def _transcode_time_limit_seconds(duration_seconds, timeout_minutes: int | None 
     return min(max(configured, needed), TRANSCODE_MAX_SECONDS)
 
 
-def _acquire_transcode_slot() -> StreamLease:
-    lease = TRANSCODE_SLOTS.try_acquire()
-    if lease is None:
-        raise HTTPException(
-            503,
-            f"Too many concurrent transcoded streams (limit {TRANSCODE_SLOTS.limit}). "
-            "Stop another stream or play without DSP/upsampling.",
-            headers={"Retry-After": "5"},
-        )
+TRANSCODE_SLOT_WAIT_SECONDS = 3.0
+
+
+async def _acquire_transcode_slot() -> StreamLease:
+    # A track switch briefly overlaps the closing transcode with the new one
+    # (twice over when the VU meter mirrors the stream). Wait for the old
+    # decoder to be reaped instead of failing the new track with 503.
+    deadline = time.monotonic() + TRANSCODE_SLOT_WAIT_SECONDS
+    while (lease := TRANSCODE_SLOTS.try_acquire()) is None:
+        if time.monotonic() >= deadline:
+            raise HTTPException(
+                503,
+                f"Too many concurrent transcoded streams (limit {TRANSCODE_SLOTS.limit}). "
+                "Stop another stream or play without DSP/upsampling.",
+                headers={"Retry-After": "5"},
+            )
+        await asyncio.sleep(0.05)
     return lease
 
 
@@ -1914,7 +1922,7 @@ async def _stream_upsampled(file_path: str, target_rate: str, quality: str = "hi
     """
     if not await asyncio.to_thread(ffmpeg_supports_soxr):
         raise HTTPException(503, "PCM upsampling requires FFmpeg with libsoxr. Install a full build and restart VELVET.")
-    lease = _acquire_transcode_slot()
+    lease = await _acquire_transcode_slot()
     # Get SoXR quality setting
     soxr_quality = UPSAMPLE_QUALITY.get(quality, "soxr:precision=28")
 
@@ -1960,7 +1968,7 @@ async def _stream_with_dsp(file_path: str, dsp_filter: str, timeout_seconds: int
         dsp_filter: FFmpeg filter chain to apply
         timeout_seconds: Wall-clock cap for the response
     """
-    lease = _acquire_transcode_slot()
+    lease = await _acquire_transcode_slot()
     cmd = [
         "ffmpeg", "-nostdin", "-i", file_path,
         "-af", dsp_filter,
@@ -1998,31 +2006,23 @@ def _select_pcm_upsample_rate(source_rate: int | None, multiplier: str) -> str |
 
 
 @app.post("/api/stream-ticket")
-def create_stream_ticket(body: dict):
-    """Issue a short-lived ticket for ONE track's audio URL.
+def create_stream_ticket():
+    """Issue the browser's short-lived, stream-only media ticket.
 
-    Media elements cannot send X-API-Key, so the browser appends this ticket
-    instead of the long-lived API key. It authorizes only GET of this track
-    and expires after the track length plus a grace period.
+    Media elements cannot send X-API-Key, so stream URLs carry this ticket
+    instead of the long-lived API key. It authorizes only audio reads
+    (GET/HEAD /api/stream/*), never covers or the API, expires after
+    BROWSER_STREAM_TICKET_SECONDS and is revoked by any credential change.
+    The client fetches it ahead of playback so starting a track needs no
+    network round trip before audio.play().
     """
-    track_id = (body or {}).get("track_id")
-    if not isinstance(track_id, int) or isinstance(track_id, bool) or track_id <= 0:
-        raise HTTPException(422, "track_id must be a positive integer")
-    db = get_db()
-    try:
-        track = db.execute("SELECT duration FROM tracks WHERE id=?", (track_id,)).fetchone()
-    finally:
-        db.close()
-    if not track:
-        raise HTTPException(404, "Track not found")
-    ticket, expires_at = security.issue_media_ticket(
-        "stream", track_id, security.media_ticket_ttl(track["duration"])
-    )
+    ticket, expires_at = security.issue_browser_stream_ticket()
     return JSONResponse({"ticket": ticket, "expires_at": expires_at},
                         headers={"Cache-Control": "no-store"})
 
 
-@app.get("/api/stream/{track_id}")
+# DLNA renderers commonly probe media with HEAD before GET.
+@app.api_route("/api/stream/{track_id}", methods=["GET", "HEAD"])
 async def stream_track(
     track_id: int,
     request: Request,
@@ -2102,9 +2102,13 @@ async def stream_track(
         target_rate = _select_pcm_upsample_rate(track["sample_rate"], upsample)
     except (ValueError, TypeError, OverflowError) as exc:
         raise HTTPException(422, str(exc))
+    if target_rate and quality not in UPSAMPLE_QUALITY:
+        raise HTTPException(422, "Unsupported upsampling quality")
+    if request.method == "HEAD" and (target_rate or dsp_filter):
+        # Describe the transcoded stream without starting FFmpeg.
+        return Response(media_type="audio/wav" if target_rate else "audio/flac",
+                        headers={"Cache-Control": "no-cache"})
     if target_rate:
-        if quality not in UPSAMPLE_QUALITY:
-            raise HTTPException(422, "Unsupported upsampling quality")
         limit = _transcode_time_limit_seconds(track["duration"], timeout_minutes)
         return await _stream_upsampled(fp, target_rate, quality, limit, dsp_filter)
 
@@ -3260,7 +3264,12 @@ def generate_api_key(request: Request):
 
 
 def _credential_response(request: Request, api_key: str):
-    response = JSONResponse({"success": True, "api_key": api_key},
+    # Deliver the browser's stream ticket in the same response as the key, so
+    # the UI never has to fetch one between a tap and audio.play().
+    stream_ticket, stream_expires_at = security.issue_browser_stream_ticket()
+    response = JSONResponse({"success": True, "api_key": api_key,
+                             "stream_ticket": stream_ticket,
+                             "stream_ticket_expires_at": stream_expires_at},
                             headers={"Cache-Control": "no-store"})
     # Image elements cannot attach API headers. Restrict this cookie to cover
     # reads; it never authorizes mutations or the rest of the API.
@@ -3380,7 +3389,11 @@ async def auth_middleware(request: Request, call_next):
     ticket = request.query_params.get("ticket")
     media_target = _media_ticket_target(path) if request.method in ("GET", "HEAD") else None
     if ticket and media_target:
-        if not security.verify_media_ticket(ticket, *media_target):
+        scope, resource_id = media_target
+        allowed = security.verify_media_ticket(ticket, scope, resource_id) or (
+            scope == "stream" and security.verify_media_ticket(ticket, "stream-any", 0)
+        )
+        if not allowed:
             return JSONResponse(status_code=401, content={"error": "Media ticket expired or invalid"})
         return await call_next(request)
 

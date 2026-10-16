@@ -326,6 +326,7 @@ async function savePassword() {
         if (keyData.success && keyData.api_key) {
           authState.apiKey = keyData.api_key;
           localStorage.setItem('velvet_api_key', keyData.api_key);
+          adoptStreamTicket(keyData);
         }
       }
       alert(result.message);
@@ -346,6 +347,7 @@ async function generateNewApiKey() {
     if (result && result.success && result.api_key) {
       authState.apiKey = result.api_key;
       localStorage.setItem('velvet_api_key', result.api_key);
+      adoptStreamTicket(result);
       // Show the key in an alert (one-time view)
       alert('Your new API Key:\n\n' + result.api_key + '\n\nSave this now! It will not be shown again.');
       // Update the display
