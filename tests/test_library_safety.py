@@ -52,7 +52,7 @@ class AlbumSafetyTests(unittest.TestCase):
         import library_safety
         original_replace=library_safety.os.replace
         def maybe_fail(src,dst):
-            if str(src)==str(b):
+            if str(src).lower().endswith("b.flac"):  # Windows may add \\?\\ prefix
                 raise OSError("simulated file lock")
             return original_replace(src,dst)
         with patch.object(library_safety.os,"replace",side_effect=maybe_fail):
