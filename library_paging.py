@@ -53,7 +53,8 @@ def fetch_album_page(
         variants = list(dict.fromkeys(
             [q, *(get_all_variants(q) if get_all_variants else [])]
         ))[:12]
-        like = [f"%{value.replace('%', r'\%').replace('_', r'\_')}%" for value in variants]
+        escape = chr(92)
+        like = ["%" + v.replace(escape, escape + escape).replace("%", escape + "%").replace("_", escape + "_") + "%" for v in variants]
         terms = " OR ".join("(al.title LIKE ? ESCAPE '\\' OR ar.name LIKE ? ESCAPE '\\')" for _ in like)
         parts.append(f"({terms})")
         for item in like:
