@@ -119,6 +119,40 @@ class ServerApiTests(unittest.TestCase):
         conn.execute("INSERT INTO libraries (id, path) VALUES (1, 'C:/ExistingLibrary')")
         conn.commit()
 
+    def test_signal_path_direct_flac_is_not_usb_bit_perfect_proof(self):
+        response = self.client.get("/api/audio/signal-path/1")
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(data["server_mode"], "direct")
+        self.assertTrue(data["server_delivers_original_bytes"])
+        self.assertFalse(data["processing"]["dsp_applied"])
+        self.assertEqual(data["device_output"]["bit_perfect_status"], "unverified")
+        self.assertIsNone(data["device_output"]["sample_rate_hz"])
+
+    def test_signal_path_reports_dsp_and_upsampling(self):
+        with self._connect() as conn:
+            profile = conn.execute(
+                "SELECT id FROM dsp_profiles WHERE preset_key='bass_boost'"
+            ).fetchone()
+            self.assertIsNotNone(profile)
+            profile_id = profile["id"]
+
+        dsp_response = self.client.get(
+            f"/api/audio/signal-path/1?dsp={profile_id}"
+        )
+        self.assertEqual(dsp_response.status_code, 200)
+        self.assertEqual(dsp_response.json()["server_mode"], "dsp")
+        self.assertFalse(dsp_response.json()["server_delivers_original_bytes"])
+
+        upsample_response = self.client.get("/api/audio/signal-path/1?upsample=2x")
+        self.assertEqual(upsample_response.status_code, 200)
+        self.assertEqual(upsample_response.json()["server_mode"], "upsampled")
+        self.assertFalse(upsample_response.json()["server_delivers_original_bytes"])
+
+    def test_signal_path_invalid_track_is_404(self):
+        response = self.client.get("/api/audio/signal-path/999999")
+        self.assertEqual(response.status_code, 404)
+
     def test_playlist_routes_support_full_crud_flow(self):
         create_resp = self.client.post(
             "/api/playlists",
