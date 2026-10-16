@@ -78,20 +78,26 @@ def find_exact_duplicates(
                 digest = h.hexdigest()
                 # Update hash metadata only for tracks already baselined by
                 # the normal scanner. Never conceal a pending metadata change.
-                db.execute(
-                    """
-                    UPDATE track_file_state
-                    SET sha256=?, hash_size=?, hash_mtime_ns=?
-                    WHERE track_id=?
-                    """,
-                    (digest, after.st_size, after.st_mtime_ns, track_id),
-                )
+                # Commit each cache write at once: hashing a large library can
+                # take hours and must not hold the SQLite write lock (history,
+                # playlists and scans would fail with "database is locked").
+                try:
+                    db.execute(
+                        """
+                        UPDATE track_file_state
+                        SET sha256=?, hash_size=?, hash_mtime_ns=?
+                        WHERE track_id=?
+                        """,
+                        (digest, after.st_size, after.st_mtime_ns, track_id),
+                    )
+                    db.commit()
+                except sqlite3.OperationalError:
+                    db.rollback()  # Cache is optional; the digest is still valid.
             hashes.setdefault((before.st_size, digest), []).append(
                 {"track_id": track_id, "file_path": str(resolved)}
             )
         except OSError:
             continue  # Offline removable drives are not duplicate evidence.
-    db.commit()
     groups = [
         {"size_bytes": size, "sha256": digest, "tracks": tracks, "count": len(tracks)}
         for (size, digest), tracks in hashes.items() if len(tracks) > 1

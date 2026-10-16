@@ -85,7 +85,9 @@ class IncrementalLibraryTests(unittest.TestCase):
         self.assertEqual(result["tracks_updated"], 1)
         track = self.db.execute("SELECT id, album_id, file_size, artist_id FROM tracks").fetchone()
         self.assertEqual(track["id"], track_id)
-        # Artist changed, so the album is legitimately reassigned; history and\n        # playlist links must still point to the original track ID.\n        self.assertNotEqual(track["album_id"], album_id)
+        # Artist changed, so the album is legitimately reassigned; history and
+        # playlist links must still point to the original track ID.
+        self.assertNotEqual(track["album_id"], album_id)
         self.assertEqual(track["file_size"], file_path.stat().st_size)
         self.assertEqual(self.db.execute("SELECT track_id FROM play_history").fetchone()[0], track_id)
         self.assertEqual(self.db.execute("SELECT track_id FROM playlist_tracks").fetchone()[0], track_id)
@@ -137,6 +139,45 @@ class DuplicateAudioTests(IncrementalLibraryTests):
         (self.music / "b.flac").write_bytes(b"new music!")
         stale = find_exact_duplicates(self.db, [self.music])
         self.assertEqual(stale["groups"], [])
+
+    def test_hash_cache_writes_do_not_block_other_writers(self):
+        """Playback history and scans must stay writable while hashing runs."""
+        for name in ("a", "b", "c"):
+            (self.music / f"{name}.flac").write_bytes(b"same music")
+        self._scan()
+        track_id = self.db.execute("SELECT id FROM tracks ORDER BY id").fetchone()[0]
+        other = sqlite3.connect(self.root / "music.db", timeout=0.2)
+        writes = []
+
+        def progress(done, total, name):
+            if done > 1:  # at least one hash has been cached by now
+                other.execute(
+                    "INSERT INTO play_history(track_id,duration_played) VALUES (?,1)",
+                    (track_id,),
+                )
+                other.commit()
+                writes.append(done)
+
+        try:
+            result = find_exact_duplicates(self.db, [self.music], on_progress=progress)
+        finally:
+            other.close()
+        self.assertEqual(result["groups"][0]["count"], 3)
+        self.assertEqual(writes, [2, 3])
+        self.assertFalse(self.db.in_transaction)
+
+    def test_failed_duplicate_scan_leaves_no_open_transaction(self):
+        for name in ("a", "b"):
+            (self.music / f"{name}.flac").write_bytes(b"same music")
+        self._scan()
+
+        def progress(done, total, name):
+            if done > 1:
+                raise RuntimeError("cancelled")
+
+        with self.assertRaises(RuntimeError):
+            find_exact_duplicates(self.db, [self.music], on_progress=progress)
+        self.assertFalse(self.db.in_transaction)
 
     def test_never_reads_tracks_outside_configured_roots(self):
         (self.music / "a.flac").write_bytes(b"same")
