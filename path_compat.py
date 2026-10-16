@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ntpath
 import os
 
 
@@ -9,7 +10,9 @@ def as_windows_extended_path(path: str | os.PathLike[str]) -> str:
     if value.startswith("\\\\?\\"):
         return value
 
-    absolute = os.path.abspath(value)
+    # ntpath: a Windows path even when this module is imported elsewhere
+    # (identical to os.path on Windows).
+    absolute = ntpath.abspath(value)
     if absolute.startswith("\\\\"):
         return "\\\\?\\UNC\\" + absolute[2:]
     return "\\\\?\\" + absolute
