@@ -96,4 +96,4 @@ Sample-rate reporting was checked and is correct. The UI badges show source meta
 - `0ef3aed` report
 - `5a5585e` final-review P1 fixes
 - `b79e47d` report
-- `NEW_SHA` independent-review fixes (ticket in credential responses, key-aware renewal, per-read FFmpeg deadline)
+- `ad98298` independent-review fixes (ticket in credential responses, key-aware renewal, per-read FFmpeg deadline)
