@@ -4,9 +4,7 @@ on:
   pull_request:
     branches: [main]
   push:
-    branches:
-      - main
-      - fix/auth-boundaries-and-soxr-resampling
+    branches: [main]
   workflow_dispatch:
 
 permissions:
