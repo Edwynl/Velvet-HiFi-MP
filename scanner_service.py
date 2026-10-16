@@ -110,6 +110,20 @@ def _update_existing_track(
         )
 
 
+def _rollback_scan_file(
+    db: sqlite3.Connection,
+    artists_cache: dict[str, int],
+    albums_cache: dict[tuple[int, str], int],
+) -> None:
+    """Undo one file's changes, including artist/album IDs cached meanwhile."""
+    db.execute("ROLLBACK TO SAVEPOINT velvet_scan_file")
+    db.execute("RELEASE SAVEPOINT velvet_scan_file")
+    # Rolled-back rows no longer exist and SQLite may reuse their IDs for the
+    # next insert, so cached IDs could point at nothing or at another artist.
+    artists_cache.clear()
+    albums_cache.clear()
+
+
 def scan_music_dirs(
     db: sqlite3.Connection,
     music_dirs: list[str],
@@ -191,8 +205,7 @@ def scan_music_dirs(
                 _store_file_state(db, track_id, file_stat)
                 db.execute("RELEASE SAVEPOINT velvet_scan_file")
             except Exception as exc:
-                db.execute("ROLLBACK TO SAVEPOINT velvet_scan_file")
-                db.execute("RELEASE SAVEPOINT velvet_scan_file")
+                _rollback_scan_file(db, artists_cache, albums_cache)
                 on_error(f"Incremental metadata refresh failed for {file_path}: {exc}")
                 continue
             if (old_size is None or old_mtime is None) and not force_reparse:
@@ -228,8 +241,7 @@ def scan_music_dirs(
                 _store_file_state(db, new_id[0], file_stat)
                 db.execute("RELEASE SAVEPOINT velvet_scan_file")
             except Exception as exc:
-                db.execute("ROLLBACK TO SAVEPOINT velvet_scan_file")
-                db.execute("RELEASE SAVEPOINT velvet_scan_file")
+                _rollback_scan_file(db, artists_cache, albums_cache)
                 on_error(f"Error adding track {file_path}: {exc}")
                 continue
             on_track_added()

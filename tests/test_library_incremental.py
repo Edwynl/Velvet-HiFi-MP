@@ -24,7 +24,7 @@ def metadata(file_path, artist="Artist", title=None):
     }
 
 
-class IncrementalLibraryTests(unittest.TestCase):
+class LibraryFixture(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
@@ -62,6 +62,28 @@ class IncrementalLibraryTests(unittest.TestCase):
             on_error=lambda m: self.counters["errors"].append(m),
         )
 
+    def _scan_with(self, extract):
+        return scan_music_dirs(
+            self.db, [str(self.music)], audio_extensions={".flac"},
+            scan_batch_size=10, extract_metadata=extract,
+            find_folder_cover=lambda _: None, save_cover=lambda data, key: key,
+            set_total=lambda n: None, on_progress=lambda n, f: None,
+            on_track_added=lambda: None, on_track_skipped=lambda: None,
+            on_track_updated=lambda: None,
+            on_error=lambda m: self.counters["errors"].append(m),
+        )
+
+    def _track_credits(self):
+        return {
+            row["title"]: (row["artist"], row["album"])
+            for row in self.db.execute(
+                "SELECT t.title, ar.name AS artist, al.title AS album FROM tracks t "
+                "JOIN artists ar ON ar.id=t.artist_id JOIN albums al ON al.id=t.album_id"
+            )
+        }
+
+
+class IncrementalLibraryTests(LibraryFixture):
     def test_scan_detects_change_and_preserves_playlists_and_history(self):
         file_path = self.music / "one.flac"
         file_path.write_text("old")
@@ -109,6 +131,56 @@ class IncrementalLibraryTests(unittest.TestCase):
         self._scan()
         self.assertEqual(self.db.execute("SELECT file_size FROM tracks").fetchone()[0], file_path.stat().st_size)
 
+    def test_rolled_back_file_does_not_poison_artist_album_caches(self):
+        """A failed file must not leave rolled-back artist/album IDs cached."""
+        for name in ("01 broken", "02 same album", "03 other artist", "04 first artist"):
+            (self.music / f"{name}.flac").write_text(name)
+        artists = {"01": "Artist A", "02": "Artist A", "03": "Artist B", "04": "Artist A"}
+
+        def extract(path):
+            data = metadata(path, artist=artists[Path(path).name[:2]])
+            if Path(path).name.startswith("01"):
+                del data["duration"]  # fails inside the SAVEPOINT, after artist/album rows exist
+            return data
+
+        self._scan_with(extract)
+        self.assertEqual(len(self.counters["errors"]), 1, self.counters["errors"])
+        self.assertEqual(self._track_credits(), {
+            "02 same album": ("Artist A", "Album"),
+            "03 other artist": ("Artist B", "Album"),
+            "04 first artist": ("Artist A", "Album"),
+        })
+        self.assertEqual(self.db.execute("PRAGMA foreign_key_check").fetchall(), [])
+
+    def test_failed_metadata_update_does_not_poison_caches(self):
+        """Same guarantee for the changed-file (UPDATE) path."""
+        old = self.music / "01 old.flac"
+        old.write_text("v1")
+        self._scan_with(lambda path: metadata(path, artist="Original"))
+        old.write_text("v2 changed bytes")
+        st = old.stat()
+        os.utime(old, ns=(st.st_atime_ns, st.st_mtime_ns + 1_000_000_000))
+        (self.music / "02 new.flac").write_text("new")
+        (self.music / "03 newer.flac").write_text("newer")
+
+        def extract(path):
+            name = Path(path).name
+            if name.startswith("03"):
+                return metadata(path, artist="Other")
+            data = metadata(path, artist="Renamed")
+            data["album"] = "Retagged"
+            if name.startswith("01"):
+                data["bitrate"] = object()  # unbindable: UPDATE fails after new artist/album rows
+            return data
+
+        self._scan_with(extract)
+        self.assertEqual(len(self.counters["errors"]), 1, self.counters["errors"])
+        credits = self._track_credits()
+        self.assertEqual(credits["01 old"], ("Original", "Album"), "failed update rolled back")
+        self.assertEqual(credits["02 new"], ("Renamed", "Retagged"))
+        self.assertEqual(credits["03 newer"], ("Other", "Album"))
+        self.assertEqual(self.db.execute("PRAGMA foreign_key_check").fetchall(), [])
+
     def test_migration_9_has_file_state_and_target_indexes(self):
         self.assertEqual(apply_migrations(self.db), LATEST_SCHEMA_VERSION)
         indexes = {r[0] for r in self.db.execute("SELECT name FROM sqlite_master WHERE type='index'")}
@@ -117,7 +189,7 @@ class IncrementalLibraryTests(unittest.TestCase):
         self.assertIn("idx_tracks_album_quality", indexes)
 
 
-class DuplicateAudioTests(IncrementalLibraryTests):
+class DuplicateAudioTests(LibraryFixture):
     def test_byte_identical_files_only_and_read_only(self):
         (self.music / "a.flac").write_bytes(b"same music")
         (self.music / "b.flac").write_bytes(b"same music")
@@ -139,6 +211,38 @@ class DuplicateAudioTests(IncrementalLibraryTests):
         (self.music / "b.flac").write_bytes(b"new music!")
         stale = find_exact_duplicates(self.db, [self.music])
         self.assertEqual(stale["groups"], [])
+
+    def _rewrite_keeping_stat(self, path, data):
+        """Change content while keeping size and mtime (e.g. tag editor 'keep timestamp')."""
+        st = path.stat()
+        self.assertEqual(len(data), st.st_size)
+        path.write_bytes(data)
+        os.utime(path, ns=(st.st_atime_ns, st.st_mtime_ns))
+        self.assertEqual(path.stat().st_mtime_ns, st.st_mtime_ns)
+
+    def test_stale_cached_hash_never_reports_false_duplicate(self):
+        (self.music / "a.flac").write_bytes(b"same music")
+        (self.music / "b.flac").write_bytes(b"same music")
+        self._scan()
+        self.assertEqual(find_exact_duplicates(self.db, [self.music])["groups"][0]["count"], 2)
+        self._rewrite_keeping_stat(self.music / "b.flac", b"retagged!!")
+        result = find_exact_duplicates(self.db, [self.music])
+        self.assertEqual(result["groups"], [], "b.flac no longer matches a.flac byte-for-byte")
+
+    def test_reported_groups_are_rehashed_from_current_bytes(self):
+        for name in ("a", "b", "c"):
+            (self.music / f"{name}.flac").write_bytes(b"same music")
+        self._scan()
+        find_exact_duplicates(self.db, [self.music])  # caches three equal hashes
+        self._rewrite_keeping_stat(self.music / "c.flac", b"retagged!!")
+        result = find_exact_duplicates(self.db, [self.music])
+        self.assertEqual(len(result["groups"]), 1)
+        self.assertEqual({Path(t["file_path"]).name for t in result["groups"][0]["tracks"]},
+                         {"a.flac", "b.flac"})
+        # The refreshed digest replaces the obsolete one in the cache.
+        cached = {Path(r[0]).name: r[1] for r in self.db.execute(
+            "SELECT t.file_path, s.sha256 FROM tracks t JOIN track_file_state s ON s.track_id=t.id")}
+        self.assertNotEqual(cached["c.flac"], cached["a.flac"])
 
     def test_hash_cache_writes_do_not_block_other_writers(self):
         """Playback history and scans must stay writable while hashing runs."""
