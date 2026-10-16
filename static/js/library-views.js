@@ -465,10 +465,8 @@ async function renderAlbums(vc) {
       return;
     }
 
-    // Use DocumentFragment for better performance
-    const fragment = document.createDocumentFragment();
-    data.forEach(a => fragment.appendChild(makeAlbumCard(a)));
-    grid.appendChild(fragment);
+    // Attach only the visible batch; pagination caps all retained records.
+    renderCardsOnDemand(grid, data, makeAlbumCard);
 
     updatePagination();
   }
@@ -729,9 +727,7 @@ async function renderArtists(vc) {
       return;
     }
     pagination.style.display = searchQuery.trim() ? 'none' : 'flex';
-    const fragment = document.createDocumentFragment();
-    data.forEach(a => fragment.appendChild(makeArtistCard(a)));
-    grid.appendChild(fragment);
+    renderCardsOnDemand(grid, data, makeArtistCard);
     updatePagination();
   }
 
