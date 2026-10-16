@@ -6260,12 +6260,39 @@ input[type=range]::-webkit-slider-thumb:hover { background: var(--gold); }
 </div>
 
 <script src="/static/js/library-views.js"></script>
-<script src="/static/js/settings-view.js"></script>
 <script src="/static/js/player-ui.js"></script>
 <script src="/static/js/library-cards.js"></script>
 <script src="/static/js/dsp-controls.js"></script>
-<script src="/static/js/remote-settings.js"></script>
 <script>
+// Load expensive Settings/Remote logic only when the user opens that screen.
+// Keep login/auth and core DSP modules in the initial shell; they are shared.
+const _lazyFrontendModules = Object.create(null);
+function ensureFrontendModule(name) {
+  const ready = (
+    name === 'settings-view' ? typeof renderSettings === 'function' :
+    name === 'remote-settings' ? typeof renderRemote === 'function' : false
+  );
+  if (ready) return Promise.resolve();
+  if (!['settings-view', 'remote-settings'].includes(name)) {
+    return Promise.reject(new Error('Unknown frontend module'));
+  }
+  if (!_lazyFrontendModules[name]) {
+    _lazyFrontendModules[name] = new Promise((resolve, reject) => {
+      const script = document.createElement('script');
+      script.src = '/static/js/' + name + '.js';
+      script.async = true;
+      script.onload = resolve;
+      script.onerror = () => {
+        delete _lazyFrontendModules[name];
+        script.remove();
+        reject(new Error('Cannot load ' + name + ' while offline'));
+      };
+      document.head.appendChild(script);
+    });
+  }
+  return _lazyFrontendModules[name];
+}
+
 // ─── Utilities ────────────────────────────────────────────────────────────────
 
 const $ = id => {
@@ -8985,11 +9012,11 @@ async function render({ restore = false } = {}) {
       case 'composer':    await renderComposer(vc, state.viewParams); break;
       case 'work':        await renderWork(vc, state.viewParams); break;
       case 'credit':      await renderCreditEntity(vc, state.viewParams); break;
-      case 'settings':    await renderSettings(vc); break;
+      case 'settings':    await ensureFrontendModule('settings-view'); await renderSettings(vc); break;
       case 'search':      await renderSearch(vc, state.viewParams); break;
       case 'history':     await renderHistory(vc); break;
       case 'most-played':await renderMostPlayed(vc); break;
-      case 'remote':      await renderRemote(vc); break;
+      case 'remote':      await ensureFrontendModule('remote-settings'); await renderRemote(vc); break;
     }
     log('[VELVET] Render complete:', state.view);
   } catch (e) {
