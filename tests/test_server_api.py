@@ -587,5 +587,34 @@ class ServerApiTests(unittest.TestCase):
             self.assertEqual(limit(180), 7200)  # configuration above the old hard 60-min cap
 
 
+    def test_modular_frontend_files_are_public_but_allowlisted(self):
+        with patch.object(server.security, "is_auth_enabled", return_value=True), \\
+             patch.object(server.security, "verify_auth",
+                          return_value={"allowed": False, "error": "not authorized"}), \\
+             patch.object(server, "get_client_ip", return_value="192.168.0.20"):
+            for name in server.PUBLIC_FRONTEND_JS_MODULES:
+                response = self.client.get(f"/static/js/{name}")
+                self.assertEqual(response.status_code, 200, name)
+                self.assertIn("javascript", response.headers["content-type"])
+            self.assertEqual(self.client.get("/api/stats").status_code, 401)
+            self.assertNotEqual(self.client.get("/static/js/server.py").status_code, 200)
+
+    def test_duplicate_scanner_runs_as_background_read_only_job(self):
+        from library_jobs import JobState
+        result = {"groups": [], "groups_found": 0, "candidate_files": 0,
+                  "files_examined": 0, "cached_hashes": 0, "truncated": False}
+        job = JobState({"running": False, "groups": [], "error": None})
+        with patch.object(server, "_duplicate_job", job), \\
+             patch.object(server, "find_exact_duplicates", return_value=result) as finder, \\
+             patch.object(server._scan_job, "is_running", return_value=False):
+            response = self.client.post("/api/library/duplicates/scan")
+            self.assertEqual(response.status_code, 202)
+            status = self.client.get("/api/library/duplicates").json()
+            self.assertFalse(status["running"])
+            self.assertEqual(status["groups"], [])
+            self.assertIsNone(status["error"])
+            finder.assert_called_once()
+
+
 if __name__ == "__main__":
     unittest.main()
