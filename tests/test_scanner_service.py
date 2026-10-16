@@ -152,6 +152,9 @@ class ScannerServiceTests(unittest.TestCase):
                 (str(self.file_one),),
             )
             conn.execute("INSERT INTO track_artists (track_id, artist_id) VALUES (1, 1)")
+            conn.execute("INSERT INTO playlists(id,name) VALUES(1,'Keep This')")
+            conn.execute("INSERT INTO playlist_tracks(playlist_id, track_id, position) VALUES(1,1,1)")
+            conn.execute("INSERT INTO play_history(track_id, duration_played) VALUES(1,100)")
             conn.commit()
 
             result = refresh_folder_records(
@@ -190,15 +193,21 @@ class ScannerServiceTests(unittest.TestCase):
                 on_error=lambda message: state["errors"].append(message),
             )
 
-            tracks = conn.execute("SELECT title FROM tracks ORDER BY title").fetchall()
+            tracks = conn.execute("SELECT id, title FROM tracks ORDER BY title").fetchall()
             album = conn.execute("SELECT cover_path FROM albums WHERE id=1").fetchone()
+            retained_history = conn.execute("SELECT track_id FROM play_history").fetchone()[0]
+            retained_playlist = conn.execute("SELECT track_id FROM playlist_tracks").fetchone()[0]
 
-        self.assertEqual(result["deleted_tracks"], 1)
+        self.assertEqual(result["deleted_tracks"], 0)
         self.assertEqual(result["discovered_files"], 2)
         self.assertEqual(state["total"], 2)
-        self.assertEqual(state["tracks_added"], 2)
+        self.assertEqual(state["tracks_added"], 1)
         self.assertEqual(state["errors"], [])
         self.assertEqual([row["title"] for row in tracks], ["Refreshed one", "Refreshed two"])
+        self.assertEqual(next(row["id"] for row in tracks if row["title"] == "Refreshed one"), 1)
+        self.assertEqual(retained_history, 1)
+        self.assertEqual(retained_playlist, 1)
+        self.assertEqual(result["tracks_updated"], 1)
         self.assertEqual(album["cover_path"], "C:/covers/1_Album One.jpg")
 
 
