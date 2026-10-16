@@ -3334,6 +3334,18 @@ def allow_all_origins():
 
 # ─── Authentication Middleware ──────────────────────────────────────────────────
 
+PUBLIC_FRONTEND_JS_MODULES = frozenset({
+    "library-views.js",
+    "settings-view.js",
+    "player-ui.js",
+    "library-cards.js",
+    "dsp-controls.js",
+    "remote-settings.js",
+})
+PUBLIC_FRONTEND_JS_PATHS = frozenset(
+    f"/static/js/{name}" for name in PUBLIC_FRONTEND_JS_MODULES
+)
+
 _MEDIA_TICKET_ROUTES = (
     (re.compile(r"/api/stream/(\d+)"), "stream"),
     (re.compile(r"/api/covers/(\d+)(?:/thumb)?"), "cover"),
@@ -3402,7 +3414,7 @@ async def auth_middleware(request: Request, call_next):
                 "/static/manifest.json", "/static/icon.png",
                 "/static/logo-hires.png",
                 "/static/index.html",
-            }
+            } | PUBLIC_FRONTEND_JS_PATHS
         )
         if not setup_visible:
             return JSONResponse(
@@ -3420,7 +3432,8 @@ async def auth_middleware(request: Request, call_next):
         "/static/icon.png", "/static/logo-hires.png",
     }
     should_skip = request.method == "GET" and (
-        path in public_get_paths or path.startswith("/docs/")
+        path in public_get_paths or path in PUBLIC_FRONTEND_JS_PATHS
+        or path.startswith("/docs/")
     )
     sensitive_security_route = (
         (path.startswith("/api/security/") and path != "/api/security/status")
@@ -3521,6 +3534,16 @@ def serve_public_shell():
     # No credentials or user data are embedded in the public application shell.
     html = Path(__file__).parent / "static" / "index.html"
     return HTMLResponse(html.read_text(encoding="utf-8"), headers={"Cache-Control": "no-cache"})
+@app.get("/static/js/{module_name}")
+def serve_frontend_module(module_name: str):
+    """Serve only reviewed browser modules; never expose arbitrary server files."""
+    if module_name not in PUBLIC_FRONTEND_JS_MODULES:
+        raise HTTPException(404, "Unknown frontend module")
+    file_path = Path(__file__).parent / "static" / "js" / module_name
+    return FileResponse(file_path, media_type="text/javascript",
+                        headers={"Cache-Control": "no-cache"})
+
+
 @app.get("/static/manifest.json")
 def serve_manifest():
     path = Path(__file__).parent / "static" / "manifest.json"
