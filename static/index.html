@@ -5775,34 +5775,59 @@ async function startRadio(mode, id) {
   playTrack(queue[0], queue, 0);
 }
 
-function showSignalPath() {
+async function showSignalPath() {
   if (!state.currentTrack) {
     showToast('Nothing is playing yet');
     return;
   }
 
   const track = state.currentTrack;
-  const dspProfile = state.dspProfiles.find(profile => String(profile.id) === String(state.dspProfile));
+  const activeZone = getActiveZone();
+  // The browser cannot reliably inspect Android USB audio negotiation.
+  // Build a diagnostic from the exact same mode/DSP settings as streamUrl().
+  const params = new URLSearchParams({ upsample: state.upsample || 'none' });
+  if (state.dspProfile) params.set('dsp', String(state.dspProfile));
+  const trackId = Number(track.id);
+  if (!Number.isSafeInteger(trackId) || trackId <= 0) {
+    showToast('Invalid track');
+    return;
+  }
+  let diagnostic;
+  try {
+    diagnostic = await api(`/audio/signal-path/${trackId}?${params.toString()}`);
+  } catch (err) {
+    showToast('Signal-path diagnostic unavailable');
+    return;
+  }
+  if (state.currentTrack?.id !== track.id) return;
+
+  const source = diagnostic?.source || {};
+  const processing = diagnostic?.processing || {};
   const sourceQuality = [
-    track.format || 'Unknown format',
-    track.sample_rate ? fmtSR(track.sample_rate) : '',
-    track.bit_depth ? `${track.bit_depth}bit` : ''
+    source.format || track.format || 'Unknown',
+    source.sample_rate_hz ? fmtSR(source.sample_rate_hz) : 'Unknown sample rate',
+    source.bit_depth ? `${source.bit_depth} bit` : 'Unknown bit depth'
+  ].join(' · ');
+  const modeNames = {
+    direct: 'Original file bytes sent by VELVET',
+    dsp: 'Server-side DSP processing',
+    upsampled: 'Server-side resampling',
+    dop: 'Server-side DoP processing'
+  };
+  const serverStatus = modeNames[diagnostic?.server_mode] || 'Server stream mode unknown';
+  const output = activeZone.type === 'cast'
+    ? `Casting to ${activeZone.name}`
+    : activeZone.type === 'native'
+      ? `Server-native output: ${activeZone.name}`
+      : 'Browser/PWA audio output';
+  const detail = [
+    serverStatus,
+    processing.dsp_applied ? 'DSP enabled' : 'No server DSP',
+    processing.target_sample_rate_hz ? `Target: ${fmtSR(processing.target_sample_rate_hz)}` : '',
   ].filter(Boolean).join(' · ');
 
-  const processing = [
-    state.upsample === 'none' ? 'Bit-perfect source rate' : `${state.upsample.toUpperCase()} upsampling enabled`,
-    dspProfile ? `DSP ${escHtml(dspProfile.name)}` : 'Flat DSP pipeline'
-  ].join('<br>');
-
-  const activeZone = getActiveZone();
-  const output = activeZone.type === 'cast'
-    ? `Streaming to ${escHtml(activeZone.name)}`
-    : activeZone.type === 'native'
-      ? `Playing on ${escHtml(activeZone.name)}`
-      : 'Local browser audio output';
-
   showConfirm({
-    title: 'Signal Path',
+    title: 'Signal Path · USB Hi-Res',
     body: `
       <div style="font-size:13px;color:var(--text);line-height:1.7">
         ${escHtml(track.title || 'Unknown Title')}<br>
@@ -5810,17 +5835,27 @@ function showSignalPath() {
       </div>
       <div class="signal-path-grid">
         <div class="signal-path-card">
-          <div class="signal-path-label">Source</div>
+          <div class="signal-path-label">Source file</div>
           <div class="signal-path-value">${escHtml(sourceQuality)}</div>
         </div>
         <div class="signal-path-card">
-          <div class="signal-path-label">Processing</div>
-          <div class="signal-path-value">${processing}</div>
+          <div class="signal-path-label">VELVET server processing</div>
+          <div class="signal-path-value">${escHtml(detail)}</div>
         </div>
         <div class="signal-path-card">
-          <div class="signal-path-label">Output</div>
-          <div class="signal-path-value">${output}</div>
+          <div class="signal-path-label">Playback zone</div>
+          <div class="signal-path-value">${escHtml(output)}</div>
         </div>
+        <div class="signal-path-card">
+          <div class="signal-path-label">Android / USB output</div>
+          <div class="signal-path-value">Bit-perfect: UNVERIFIED<br>
+            Actual USB sample rate, bit depth, device identity and headphone DSP cannot be measured by this web player.
+          </div>
+        </div>
+      </div>
+      <div style="font-size:12px;color:var(--muted);margin-top:12px">
+        A direct FLAC stream is lossless over the network, but Android, the browser,
+        and Px7 S2e internal DSP may still process PCM. This panel does not claim bit-perfect USB playback.
       </div>
     `,
     confirmText: 'Close',
@@ -5828,8 +5863,6 @@ function showSignalPath() {
     onConfirm: () => {}
   });
 }
-
-
 
 function compactDspLabel(name) {
   if (!name) return 'Dry';
