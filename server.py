@@ -39,7 +39,7 @@ import remote_access
 import security
 from cover_art import find_folder_cover as find_folder_cover_bytes, save_cover_bytes
 from dsp_engine import build_dsp_filter_chain, profile_filters, sanitize_dsp_filters
-from audio_streaming import iter_ffmpeg_stdout
+from audio_streaming import iter_ffmpeg_stdout, ffmpeg_supports_soxr
 from db_pool import (
     DatabaseConnection,
     _return_db,
@@ -391,9 +391,9 @@ ALLOWED_ORIGINS = _get_cors_origins()
 log.info(f"[CORS] Allowed origins: {ALLOWED_ORIGINS}")
 
 app.add_middleware(CORSMiddleware, allow_origins=ALLOWED_ORIGINS,
-                   allow_credentials=True,
-                   allow_methods=["GET", "POST", "OPTIONS"],
-                   allow_headers=["Content-Type", "Authorization"])
+                   allow_credentials=settings.cors_credentials,
+                   allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+                   allow_headers=["Content-Type", "Authorization", "X-API-Key", "X-Password"])
 
 
 # Global scan state
@@ -736,6 +736,8 @@ def get_zones(refresh: bool = Query(False, description="Force a fresh network re
 @app.post("/api/cast/{device_udn}")
 async def cast_to_device(device_udn: str, request: Request):
     """Tell a DLNA device to play a specific track."""
+    if security.is_auth_enabled():
+        raise HTTPException(501, "Authenticated DLNA playback requires scoped media tickets and is not implemented. Use browser or native playback.")
     data = await request.json()
     track_id = data.get("track_id")
     if not track_id:
@@ -1845,6 +1847,8 @@ async def _stream_upsampled(file_path: str, target_rate: str, quality: str = "hi
         timeout_minutes: Max duration for stream in minutes (5-60)
         dsp_filter: Additional DSP filter chain to apply
     """
+    if not await asyncio.to_thread(ffmpeg_supports_soxr):
+        raise HTTPException(503, "PCM upsampling requires FFmpeg with libsoxr. Install a full build and restart VELVET.")
     # Get SoXR quality setting
     soxr_quality = UPSAMPLE_QUALITY.get(quality, "soxr:precision=28")
 
@@ -1861,7 +1865,7 @@ async def _stream_upsampled(file_path: str, target_rate: str, quality: str = "hi
     # 2. output without compression for lower latency
     # 3. Use 32-bit integer for maximum precision in pipeline
     cmd = [
-        "ffmpeg", "-i", file_path,
+        "ffmpeg", "-nostdin", "-i", file_path,
         "-af", filter_chain,
         "-c:a", "pcm_s32le",      # 32-bit integer for best precision
         "-f", "wav",
@@ -1891,7 +1895,7 @@ async def _stream_with_dsp(file_path: str, dsp_filter: str, timeout_minutes: int
         timeout_minutes: Max duration for stream in minutes
     """
     cmd = [
-        "ffmpeg", "-i", file_path,
+        "ffmpeg", "-nostdin", "-i", file_path,
         "-af", dsp_filter,
         "-c:a", "flac",
         "-compression_level", "0",
@@ -3007,7 +3011,7 @@ def check_ffmpeg():
     """Check if FFmpeg is available."""
     import shutil
     ffmpeg_available = shutil.which("ffmpeg") is not None
-    return {"ffmpeg": ffmpeg_available}
+    return {"ffmpeg": ffmpeg_available, "soxr": ffmpeg_supports_soxr()}
 
 @app.post("/api/health/recycle-pool")
 def recycle_db_pool():
@@ -3109,7 +3113,23 @@ def setup_password(request: Request, body: dict):
 @app.post("/api/security/generate-api-key")
 def generate_api_key(request: Request):
     """Generate a new API key for programmatic access."""
-    return security.generate_new_api_key()
+    return _credential_response(request, security.generate_new_api_key()["api_key"])
+
+
+def _credential_response(request: Request, api_key: str):
+    response = JSONResponse({"success": True, "api_key": api_key},
+                            headers={"Cache-Control": "no-store"})
+    # Image elements cannot attach API headers. Restrict this cookie to cover
+    # reads; it never authorizes mutations or the rest of the API.
+    response.set_cookie("velvet_cover_key", api_key, path="/api/covers",
+                        httponly=True, samesite="strict",
+                        secure=request.url.scheme == "https")
+    return response
+
+
+@app.post("/api/security/login")
+def login(request: Request):
+    return _credential_response(request, security.get_security_manager().get_or_create_api_key())
 
 
 @app.post("/api/security/disable")
@@ -3121,7 +3141,7 @@ def disable_security(request: Request):
 @app.get("/api/security/reset-api-key")
 def reset_api_key(request: Request):
     """Reset API key."""
-    return security.generate_new_api_key()
+    return _credential_response(request, security.generate_new_api_key()["api_key"])
 
 # ─── CORS Management ─────────────────────────────────────────────────────────────
 
@@ -3180,6 +3200,10 @@ async def auth_middleware(request: Request, call_next):
     path = request.url.path
     auth_enabled = security.is_auth_enabled()
 
+    # CORS preflight carries no credentials and must reach CORSMiddleware.
+    if request.method == "OPTIONS" and request.headers.get("Access-Control-Request-Method"):
+        return await call_next(request)
+
     # Before protection is enabled, a network guest must not be able to claim
     # ownership by setting the first password. Bootstrap locally on the host.
     if not auth_enabled and path.startswith("/api/security/") and path != "/api/security/status":
@@ -3193,6 +3217,12 @@ async def auth_middleware(request: Request, call_next):
                 status_code=403,
                 content={"error": "Initial password setup must be done on the server itself."},
             )
+        # A loopback reverse proxy or DNS rebinding must not turn a public
+        # hostname into permission to claim an unconfigured server.
+        if (not _is_loopback_client_ip(request.url.hostname or "") or
+                (request.headers.get("origin") and
+                 request.headers["origin"] != str(request.base_url).rstrip("/"))):
+            return JSONResponse(status_code=403, content={"error": "Use the local server URL for initial setup."})
 
     # When no password has been configured, do not expose the music library,
     # destructive APIs, or local playback control over LAN/Tailscale.
@@ -3204,6 +3234,7 @@ async def auth_middleware(request: Request, call_next):
                 "/api/health/check-ffmpeg", "/sw.js",
                 "/static/manifest.json", "/static/icon.png",
                 "/static/logo-hires.png",
+                "/static/index.html",
             }
         )
         if not setup_visible:
@@ -3218,6 +3249,8 @@ async def auth_middleware(request: Request, call_next):
     public_get_paths = {
         "/", "/api/security/status", "/api/health",
         "/api/health/check-ffmpeg", "/docs", "/redoc", "/openapi.json",
+        "/sw.js", "/static/index.html", "/static/manifest.json",
+        "/static/icon.png", "/static/logo-hires.png",
     }
     should_skip = request.method == "GET" and (
         path in public_get_paths or path.startswith("/docs/")
@@ -3237,6 +3270,8 @@ async def auth_middleware(request: Request, call_next):
     if auth_enabled and not should_skip and (sensitive_security_route or not local_bypass):
         password = request.headers.get("X-Password") or request.query_params.get("password")
         api_key = request.headers.get("X-API-Key") or request.query_params.get("api_key")
+        if not api_key and request.method == "GET" and path.startswith("/api/covers/"):
+            api_key = request.cookies.get("velvet_cover_key")
         auth_result = security.verify_auth(
             password=password,
             api_key=api_key,
@@ -3248,7 +3283,10 @@ async def auth_middleware(request: Request, call_next):
                 content={"error": auth_result["error"]},
             )
 
-    return await call_next(request)
+    response = await call_next(request)
+    if path.startswith("/api/security/"):
+        response.headers["Cache-Control"] = "no-store"
+    return response
 
 
 # ─── Global Exception Handler ──────────────────────────────────────────────────
@@ -3306,6 +3344,13 @@ def serve_frontend():
             "Expires": "0"
         }
     )
+
+
+@app.get("/static/index.html")
+def serve_public_shell():
+    # No credentials or user data are embedded in the public application shell.
+    html = Path(__file__).parent / "static" / "index.html"
+    return HTMLResponse(html.read_text(encoding="utf-8"), headers={"Cache-Control": "no-cache"})
 @app.get("/static/manifest.json")
 def serve_manifest():
     path = Path(__file__).parent / "static" / "manifest.json"

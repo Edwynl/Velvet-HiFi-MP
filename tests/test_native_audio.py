@@ -2,6 +2,9 @@
 import io
 import tempfile
 import unittest
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest.mock import patch
 
@@ -38,6 +41,53 @@ class _FakeStream:
 
 
 class NativeAudioTests(unittest.TestCase):
+    def test_native_rates_are_bounded_like_browser_rates(self):
+        self.assertEqual(local_playback._resolve_output_sample_rate(48000, "2x", 44100), 96000)
+        for rate, multiplier in [(96000, "16x"), (48000, "32x")]:
+            with self.assertRaises(ValueError):
+                local_playback._resolve_output_sample_rate(rate, multiplier, 48000)
+
+    def test_rapid_native_play_requests_cannot_overlap_player_start(self):
+        with tempfile.TemporaryDirectory() as root:
+            audio = Path(root) / "source.flac"
+            audio.write_bytes(b"test")
+            active = 0
+            peak = 0
+            counter_lock = threading.Lock()
+            from unittest.mock import MagicMock
+            player = MagicMock(device_id=None, latency="medium")
+            player._get_device_info.return_value = {"name": "DAC", "sample_rate": 48000}
+            def play(*args, **kwargs):
+                nonlocal active, peak
+                with counter_lock:
+                    active += 1
+                    peak = max(peak, active)
+                time.sleep(0.05)
+                with counter_lock:
+                    active -= 1
+                return True
+            player.play_file.side_effect = play
+            with patch.object(local_playback, "SOUNDDEVICE_AVAILABLE", True), \
+                 patch.object(local_playback, "_active_player", player), \
+                 patch.object(local_playback, "_playback_state", dict(local_playback._playback_state)), \
+                 patch("sqlite3.connect") as connect:
+                connect.return_value.execute.return_value.fetchone.return_value = {
+                    "file_path": str(audio), "sample_rate": 48000}
+                with ThreadPoolExecutor(max_workers=2) as pool:
+                    results = list(pool.map(local_playback.play_local, [1, 2]))
+                self.assertTrue(all(result["success"] for result in results))
+                self.assertEqual(peak, 1)
+
+    def test_stop_unblocks_decoder_before_waiting_for_audio_callback(self):
+        with patch.object(local_playback, "SOUNDDEVICE_AVAILABLE", True):
+            player = local_playback.LocalPlayer()
+            events = []
+            with patch.object(player, "_terminate_process", side_effect=lambda: events.append("decoder")), \
+                 patch.object(player, "stream") as stream:
+                stream.stop.side_effect = lambda: events.append("stream")
+                player.stop()
+            self.assertEqual(events, ["decoder", "stream"])
+
     def test_dsp_placed_after_input_with_float32_decoder(self):
         with tempfile.TemporaryDirectory() as root:
             audio = Path(root) / "source.flac"

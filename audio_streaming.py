@@ -7,9 +7,30 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import anyio
+import shutil
+import subprocess
+from functools import lru_cache
 from collections.abc import AsyncIterator, Sequence
 
 log = logging.getLogger("velvet.audio_streaming")
+
+
+@lru_cache(maxsize=1)
+def ffmpeg_supports_soxr() -> bool:
+    """Probe once per server run; Windows essentials builds omit libsoxr."""
+    executable = shutil.which("ffmpeg")
+    if not executable:
+        return False
+    try:
+        result = subprocess.run([
+            executable, "-nostdin", "-v", "error", "-f", "lavfi", "-i",
+            "anullsrc=r=48000:cl=stereo", "-t", "0.01", "-af",
+            "aresample=resampler=soxr", "-f", "null", "-",
+        ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5)
+        return result.returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        return False
 
 
 async def iter_ffmpeg_stdout(
@@ -53,16 +74,22 @@ async def iter_ffmpeg_stdout(
     except Exception:
         log.exception("FFmpeg audio stream failed")
     finally:
-        if process is not None and process.returncode is None:
-            try:
-                process.terminate()
-            except ProcessLookupError:
-                pass
-            try:
-                await asyncio.wait_for(process.wait(), timeout=2)
-            except asyncio.TimeoutError:
+        if process is not None:
+            # Starlette disconnects cancel an AnyIO task group. Shield the
+            # reap operation from repeated cancellation during cleanup.
+            with anyio.CancelScope(shield=True):
+                if process.returncode is None:
+                    try:
+                        process.terminate()
+                    except ProcessLookupError:
+                        pass
                 try:
-                    process.kill()
-                except ProcessLookupError:
-                    pass
-                await process.wait()
+                    # Drain the pipe as well: wait() alone can hang when a
+                    # terminated child's stdout StreamReader is full.
+                    await asyncio.wait_for(process.communicate(), timeout=2)
+                except asyncio.TimeoutError:
+                    try:
+                        process.kill()
+                    except ProcessLookupError:
+                        pass
+                    await process.communicate()

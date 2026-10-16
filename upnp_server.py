@@ -25,8 +25,10 @@ from pathlib import Path
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs, quote
 import logging
+import ipaddress
 
 import env_loader  # noqa: F401 - load .env for direct module use
+import security
 
 log = logging.getLogger("velvet.upnp")
 
@@ -834,6 +836,18 @@ class UPnPHandler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         p = self.path.split("?")[0]
+        if p == "/upnp/control/ContentDirectory":
+            client_ip = self.client_address[0]
+            if security.is_auth_enabled():
+                allowed = security.verify_auth(
+                    password=self.headers.get("X-Password"),
+                    api_key=self.headers.get("X-API-Key"), ip=client_ip,
+                )["allowed"]
+            else:
+                allowed = ipaddress.ip_address(client_ip).is_loopback
+            if not allowed:
+                self._send(403, "text/plain", "Authenticated library access required")
+                return
         length = int(self.headers.get("Content-Length", 0))
         body   = self.rfile.read(length).decode("utf-8", errors="replace")
         action = _soap_action_header(dict(self.headers))

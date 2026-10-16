@@ -427,6 +427,20 @@ class ServerApiTests(unittest.TestCase):
         resp = self.client.get("/api/stream/1", headers={"Range": "bytes=0-3"})
         self.assertEqual(resp.status_code, 403)
 
+    def test_dop_and_unknown_pcm_multiplier_fail_explicitly(self):
+        with self._connect() as conn:
+            conn.execute("DELETE FROM libraries")
+            conn.execute("INSERT INTO libraries (path) VALUES (?)", (str(self.root / "music"),))
+            conn.commit()
+        self.assertEqual(self.client.get("/api/stream/1?dop=dsd64").status_code, 501)
+        self.assertEqual(self.client.get("/api/stream/1?upsample=32x").status_code, 422)
+
+    def test_cast_rejects_unsupported_protected_renderer_transport(self):
+        with patch.object(server.security, "is_auth_enabled", return_value=True), \
+             patch.object(server.security, "verify_auth", return_value={"allowed": True}):
+            response = self.client.post("/api/cast/renderer-1", json={"track_id": 1})
+            self.assertEqual(response.status_code, 501)
+
 
 if __name__ == "__main__":
     unittest.main()

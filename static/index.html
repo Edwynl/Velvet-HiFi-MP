@@ -6188,7 +6188,7 @@ async function submitLogin() {
       // Get API key for future requests
       // Credential management requires authentication. Authenticate this
       // request with the password just verified, then retain the new key.
-      const keyResp = await fetch('/api/security/generate-api-key', {
+      const keyResp = await fetch('/api/security/login', {
         method: 'POST',
         headers: { 'X-Password': password }
       });
@@ -6203,6 +6203,7 @@ async function submitLogin() {
       authState.isAuthenticated = true;
       document.getElementById('login-modal')?.remove();
       // Refresh current view
+      await loadDspProfiles();
       await render();
     } else {
       alert('Invalid password');
@@ -8166,7 +8167,7 @@ UI['upsample-select'].addEventListener('change', e => {
       });
     }
     const labels = {none:'Source quality',
-      '2x':'2× HiRes (88.2kHz)','4x':'4× HiRes (176.4kHz)',
+      '2x':'2× PCM output','4x':'4× PCM output',
       '8x':'8× PCM output','16x':'16× PCM output'};
     showToast(labels[e.target.value] || '');
     updatePlayerUI(state.currentTrack);
@@ -12695,7 +12696,7 @@ async function savePassword() {
     if (result && result.success) {
       // When enabling security for the first time the existing API key is
       // absent. Use the newly configured password for key issuance.
-      const keyResp = await fetch('/api/security/generate-api-key', {
+      const keyResp = await fetch('/api/security/login', {
         method: 'POST',
         headers: { 'X-Password': password }
       });
@@ -12941,6 +12942,8 @@ loadStats();
 loadDspProfiles();
 
 window.addEventListener('DOMContentLoaded', async () => {
+  // Refresh the cover-only HttpOnly cookie for clients with a saved API key.
+  if (authState.apiKey) await api('/security/login', { method: 'POST' });
   log('[VELVET] DOM ready, performing initial navigation...');
   // EQ Controls
   UI['eq-btn-reset']?.addEventListener('click', () => {

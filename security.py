@@ -83,12 +83,12 @@ class SecurityManager:
         return self._config.api_key
 
     def set_password(self, password: str) -> bool:
-        """Set password (stored as bcrypt hash with SHA-256 fallback)"""
-        if not password or len(password) < 8:
+        """Set password using bcrypt or salted PBKDF2 for long passwords."""
+        if not isinstance(password, str) or len(password) < 8:
             return False
 
         with self._lock:
-            if BCRYPT_AVAILABLE:
+            if BCRYPT_AVAILABLE and len(password.encode("utf-8")) <= 72:
                 # Use bcrypt for secure password hashing
                 salt = bcrypt.gensalt(rounds=12)
                 self._config.password_hash = bcrypt.hashpw(password.encode("utf-8"), salt).decode("utf-8")
@@ -104,8 +104,10 @@ class SecurityManager:
                 self._config.password_hash = (
                     f"pbkdf2_sha256${iterations}${salt.hex()}${digest.hex()}"
                 )
-                log.warning("bcrypt missing; password stored using PBKDF2-HMAC-SHA256")
+                log.info("Password stored using PBKDF2-HMAC-SHA256")
             self._config.enabled = True
+            # A password change revokes previously issued credentials.
+            self._config.api_key = ""
             self._config.created_at = time.time()
             self._save_config()
         return True
@@ -147,6 +149,14 @@ class SecurityManager:
             self._config.api_key = api_key
             self._save_config()
         return api_key
+
+    def get_or_create_api_key(self) -> str:
+        """Issue the current credential without revoking other logged-in clients."""
+        with self._lock:
+            if not self._config.api_key:
+                self._config.api_key = secrets.token_urlsafe(32)
+                self._save_config()
+            return self._config.api_key
 
     def verify_api_key(self, api_key: str) -> bool:
         """Verify API key"""
@@ -244,6 +254,12 @@ def verify_auth(password: str = None, api_key: str = None, ip: str = None) -> di
     # If auth not enabled, allow all
     if not manager.is_enabled():
         return {"allowed": True, "error": None}
+
+    # A fresh browser loads several protected resources before showing login.
+    # Missing credentials are a challenge, not a guessed password; counting
+    # them would lock out the user before their first login attempt.
+    if not password and not api_key:
+        return {"allowed": False, "error": "Authentication required"}
 
     # Check rate limit
     if ip and not manager.check_rate_limit(ip):

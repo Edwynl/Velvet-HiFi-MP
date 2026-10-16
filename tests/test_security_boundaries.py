@@ -10,7 +10,7 @@ from settings import ScanConstants
 
 class SecurityBoundaryTests(unittest.TestCase):
     def setUp(self):
-        self.client = TestClient(server.app)
+        self.client = TestClient(server.app, base_url="http://localhost:8765")
 
     def tearDown(self):
         self.client.close()
@@ -55,6 +55,58 @@ class SecurityBoundaryTests(unittest.TestCase):
     def test_audio_soxr_profiles_use_valid_resampler(self):
         for profile in ScanConstants.UPSAMPLE_QUALITY.values():
             self.assertTrue(profile.startswith("soxr:precision="))
+
+    def test_public_pwa_assets_remain_available_when_auth_is_enabled(self):
+        with patch.object(server.security, "is_auth_enabled", return_value=True):
+            for path in ["/sw.js", "/static/index.html", "/static/manifest.json", "/static/icon.png"]:
+                with self.subTest(path=path):
+                    self.assertEqual(self.client.get(path).status_code, 200)
+
+    def test_configured_cors_preflight_reaches_cors_middleware(self):
+        with patch.object(server.security, "is_auth_enabled", return_value=True):
+            response = self.client.options("/api/dsp/profiles/1", headers={
+                "Origin": "http://localhost:8765",
+                "Access-Control-Request-Method": "PUT",
+                "Access-Control-Request-Headers": "X-API-Key,Content-Type",
+            })
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.headers["access-control-allow-origin"], "http://localhost:8765")
+
+    def test_bootstrap_rejects_public_proxy_host_and_cross_origin(self):
+        with patch.object(server.security, "is_auth_enabled", return_value=False), \
+             patch.object(server, "get_client_ip", return_value="127.0.0.1"):
+            for headers in [{"Host": "public.example"}, {"Origin": "https://evil.example"}]:
+                self.assertEqual(self.client.post("/api/security/setup-password",
+                    headers=headers, json={"password": "long-password"}).status_code, 403)
+
+    def test_cover_cookie_never_authorizes_mutations(self):
+        calls = []
+        def verify(**kwargs):
+            calls.append(kwargs)
+            return {"allowed": bool(kwargs.get("api_key") == "cover-secret"), "error": "denied"}
+        self.client.cookies.set("velvet_cover_key", "cover-secret")
+        with patch.object(server.security, "is_auth_enabled", return_value=True), \
+             patch.object(server.security, "verify_auth", side_effect=verify):
+            # A missing cover may return 404, but it must pass authentication.
+            with patch.object(server, "get_db") as db:
+                db.return_value.execute.return_value.fetchone.return_value = None
+                self.assertNotEqual(self.client.get("/api/covers/99999").status_code, 401)
+            self.assertEqual(calls[-1]["api_key"], "cover-secret")
+            self.assertEqual(self.client.post("/api/security/disable").status_code, 401)
+            self.assertIsNone(calls[-1]["api_key"])
+
+    def test_login_response_has_scoped_cookie_and_no_store(self):
+        with patch.object(server.security, "is_auth_enabled", return_value=True), \
+             patch.object(server.security, "verify_auth", return_value={"allowed": True}), \
+             patch.object(server.security, "get_security_manager") as manager:
+            manager.return_value.get_or_create_api_key.return_value = "test-key"
+            response = self.client.post("/api/security/login", headers={"X-Password": "password"})
+            self.assertEqual(response.json()["api_key"], "test-key")
+            self.assertEqual(response.headers["cache-control"], "no-store")
+            cookie = response.headers["set-cookie"]
+            self.assertIn("HttpOnly", cookie)
+            self.assertIn("Path=/api/covers", cookie)
+            self.assertIn("SameSite=strict", cookie)
 
 
 if __name__ == "__main__":

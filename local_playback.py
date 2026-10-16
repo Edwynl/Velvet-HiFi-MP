@@ -1,16 +1,14 @@
 """
 MusicIQ Local Playback Module
 ────────────────────────────
-Windows audio output using WASAPI/ASIO.
+Native audio output through the host APIs exposed by sounddevice/PortAudio.
 
 Requirements:
   • sounddevice: pip install sounddevice
   • For ASIO support: Install ASIO drivers for your audio interface
 
-Supported output modes:
-  - WASAPI Shared: Default Windows audio (works out of box)
-  - WASAPI Exclusive: Low-latency direct access to audio device
-  - ASIO: Professional audio interface drivers (requires ASIO hardware)
+The selected device uses its default stream settings. This module does not
+request WASAPI exclusive mode or negotiate ASIO/DSD capabilities.
 """
 
 import os
@@ -114,8 +112,12 @@ def _audio_stream_callback(outdata, frames, time_info, status):
 
 def _resolve_output_sample_rate(source_rate: Optional[float], upsample: str, device_rate: float) -> int:
     base_rate = int(source_rate or device_rate or 48000)
-    multiplier = UPSAMPLE_MULTIPLIERS.get(upsample or "none", 1)
-    return max(8000, int(base_rate * multiplier))
+    if upsample not in UPSAMPLE_MULTIPLIERS:
+        raise ValueError("Unsupported upsampling multiplier")
+    rate = base_rate * UPSAMPLE_MULTIPLIERS[upsample]
+    if not 8000 <= rate <= 768000:
+        raise ValueError("Requested PCM output sample rate is unsupported")
+    return rate
 
 
 class LocalPlayer:
@@ -286,6 +288,8 @@ class LocalPlayer:
 
     def stop(self):
         """Stop playback."""
+        # Unblock a callback waiting for FFmpeg before waiting for PortAudio.
+        self._terminate_process()
         if self.stream:
             try:
                 self.stream.stop()
@@ -293,7 +297,6 @@ class LocalPlayer:
             except:
                 pass
             self.stream = None
-        self._terminate_process()
         self._playback_finished = False
         self.current_file = None
 
@@ -387,39 +390,39 @@ def play_local(
                 _active_player = LocalPlayer(device_id=device_id, latency=latency)
             player = _active_player
 
-        device_info = player._get_device_info()
-        output_sample_rate = _resolve_output_sample_rate(
-            track["sample_rate"],
-            upsample,
-            float(device_info.get("sample_rate", 48000) or 48000),
-        )
-        dsp_filter = build_dsp_filter_chain(dict(dsp_profile)) if dsp_profile else ""
-        success = player.play_file(
-            file_path,
-            volume,
-            dsp_filter=dsp_filter,
-            output_sample_rate=output_sample_rate,
-        )
+            device_info = player._get_device_info()
+            output_sample_rate = _resolve_output_sample_rate(
+                track["sample_rate"],
+                upsample,
+                float(device_info.get("sample_rate", 48000) or 48000),
+            )
+            dsp_filter = build_dsp_filter_chain(dict(dsp_profile)) if dsp_profile else ""
+            success = player.play_file(
+                file_path,
+                volume,
+                dsp_filter=dsp_filter,
+                output_sample_rate=output_sample_rate,
+            )
 
-        if success:
-            with _state_lock:
-                _playback_state["playing"] = True
-                _playback_state["paused"] = False
-                _playback_state["track_id"] = track_id
-                _playback_state["position"] = 0
-                _playback_state["device"] = device_info["name"]
-                _playback_state["volume"] = volume
+            if success:
+                with _state_lock:
+                    _playback_state["playing"] = True
+                    _playback_state["paused"] = False
+                    _playback_state["track_id"] = track_id
+                    _playback_state["position"] = 0
+                    _playback_state["device"] = device_info["name"]
+                    _playback_state["volume"] = volume
 
-            return {
-                "success": True,
-                "device": device_info["name"],
-                "latency": latency,
-                "track_id": track_id,
-                "dsp_profile_id": dsp_profile_id,
-                "upsample": upsample,
-                "output_sample_rate": output_sample_rate,
-            }
-        return {"success": False, "error": "Playback failed"}
+                return {
+                    "success": True,
+                    "device": device_info["name"],
+                    "latency": latency,
+                    "track_id": track_id,
+                    "dsp_profile_id": dsp_profile_id,
+                    "upsample": upsample,
+                    "output_sample_rate": output_sample_rate,
+                }
+            return {"success": False, "error": "Playback failed"}
 
     except Exception as e:
         log.error(f"Local playback error: {e}")

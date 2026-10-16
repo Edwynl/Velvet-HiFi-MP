@@ -1,10 +1,34 @@
 import unittest
-from unittest.mock import patch
+from unittest.mock import patch, MagicMock
 
 import upnp_server
 
 
 class UpnpServerTests(unittest.TestCase):
+    def test_separate_content_directory_cannot_bypass_library_auth(self):
+        for enabled, client_ip, authenticated, expected in [
+            (False, "192.168.1.5", False, 403),
+            (True, "192.168.1.5", False, 403),
+            (True, "127.0.0.1", False, 403),
+            (True, "192.168.1.5", True, None),
+            (False, "127.0.0.1", False, None),
+        ]:
+            with self.subTest(enabled=enabled, ip=client_ip, authenticated=authenticated):
+                handler = MagicMock()
+                handler.path = "/upnp/control/ContentDirectory"
+                handler.client_address = (client_ip, 1234)
+                handler.headers = {"Content-Length": "0"}
+                handler.rfile.read.return_value = b""
+                with patch.object(upnp_server.security, "is_auth_enabled", return_value=enabled), \
+                     patch.object(upnp_server.security, "verify_auth", return_value={"allowed": authenticated}):
+                    upnp_server.UPnPHandler.do_POST(handler)
+                if expected:
+                    self.assertEqual(handler._send.call_args.args[0], expected)
+                    handler._handle_content_dir.assert_not_called()
+                    handler.rfile.read.assert_not_called()
+                else:
+                    handler._handle_content_dir.assert_called_once()
+
     def test_cast_track_prefers_full_metadata_before_plain_uri_fallback(self):
         discovered = {
             "renderer-1": {

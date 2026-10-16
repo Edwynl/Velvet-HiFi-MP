@@ -1,15 +1,14 @@
 // VELVET - Service Worker for PWA
-const CACHE_NAME = 'velvet-v4';
+const CACHE_NAME = 'velvet-v5';
 const STATIC_ASSETS = [
-  '/',
   '/static/index.html',
   '/static/manifest.json',
   '/static/icon.png'
 ];
 
 // Separate cache for thumbnails to avoid polluting main cache
-const THUMB_CACHE_NAME = 'velvet-thumbs-v3';
-const COVER_CACHE_NAME = 'velvet-covers-v1';
+const THUMB_CACHE_NAME = 'velvet-thumbs-v4';
+const COVER_CACHE_NAME = 'velvet-covers-v2';
 const MAX_THUMBS = 400;
 const MAX_COVERS = 80;
 
@@ -17,7 +16,12 @@ const MAX_COVERS = 80;
 self.addEventListener('install', event => {
   event.waitUntil(
     caches.open(CACHE_NAME)
-      .then(cache => cache.addAll(STATIC_ASSETS))
+      .then(async cache => {
+        for (const asset of STATIC_ASSETS) {
+          const response = await fetch(asset);
+          if (canCache(response)) await cache.put(asset, response);
+        }
+      })
       .then(() => self.skipWaiting())
   );
 });
@@ -38,6 +42,11 @@ self.addEventListener('activate', event => {
 });
 
 // Helper to trim cache to max size
+function canCache(response) {
+  return response.ok && response.status !== 206 && response.type === 'basic' &&
+    !/\bno-store\b/i.test(response.headers.get('Cache-Control') || '');
+}
+
 async function trimCache(cacheName, maxItems) {
   const cache = await caches.open(cacheName);
   const keys = await cache.keys();
@@ -79,8 +88,9 @@ self.addEventListener('fetch', event => {
 
         try {
           const response = await fetch(request);
-          if (response.ok && response.type === 'basic' &&
-              !response.headers.get('Cache-Control')?.includes('no-store')) {
+          // Covers use an HttpOnly credential cookie. Never persist a
+          // response under a URL containing a long-lived API key.
+          if (canCache(response) && !url.searchParams.has('api_key')) {
             try {
               await cache.put(request, response.clone());
               await trimCache(THUMB_CACHE_NAME, MAX_THUMBS);
@@ -109,8 +119,7 @@ self.addEventListener('fetch', event => {
     event.respondWith(
       fetch(request)
         .then(response => {
-          if (response.ok && response.type === 'basic' &&
-              !response.headers.get('Cache-Control')?.includes('no-store')) {
+          if (canCache(response) && !url.searchParams.has('api_key')) {
             const clone = response.clone();
             event.waitUntil(
               caches.open(COVER_CACHE_NAME)
@@ -140,12 +149,14 @@ self.addEventListener('fetch', event => {
   }
 
   // General static assets - network first, fallback to cache
+  if (url.pathname !== '/' && !STATIC_ASSETS.includes(url.pathname)) return;
   event.respondWith(
     fetch(request)
       .then(response => {
-        if (response.ok) {
+        if (canCache(response)) {
           const clone = response.clone();
-          caches.open(CACHE_NAME).then(cache => cache.put(request, clone));
+          event.waitUntil(caches.open(CACHE_NAME)
+            .then(cache => cache.put(url.pathname, clone)).catch(() => {}));
         }
         return response;
       })

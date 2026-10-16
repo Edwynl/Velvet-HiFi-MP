@@ -279,7 +279,7 @@ def build_dsp_filter_chain(dsp_profile: dict[str, Any] | None) -> str:
 
     stereo_width = dsp_profile.get("stereo_width", 0)
     if stereo_width:
-        filters.append(f"stereotools=phase=0:width={1 + float(stereo_width)/100}")
+        filters.append(f"stereotools=phase=0:slev={1 + float(stereo_width)/100}")
 
     room_size = dsp_profile.get("reverb_room_size", 0)
     wet_dry = dsp_profile.get("reverb_wet_dry", 0)

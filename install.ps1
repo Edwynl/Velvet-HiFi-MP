@@ -186,6 +186,10 @@ if (-not (Test-ToolOnPath "ffmpeg")) {
     }
 } else {
     Write-Ok "FFmpeg is available"
+    $ffmpegConfig = & ffmpeg -buildconf 2>&1 | Out-String
+    if ($ffmpegConfig -notmatch '--enable-libsoxr') {
+        Write-Warn "This FFmpeg build lacks libsoxr. Install the full build (Gyan.FFmpeg) for PCM upsampling, then restart VELVET."
+    }
 }
 
 Write-Step "Checking fpcalc"
