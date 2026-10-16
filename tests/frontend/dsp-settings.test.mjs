@@ -317,7 +317,13 @@ async function main() {
       'expected graphic EQ save to avoid deprecated DSP endpoints'
     );
 
-    document.querySelector('#dsp-delete-editor-btn').click();
+    // The graphic EQ save may change which profile is loaded in the editor.
+    // Delete the exact custom preset created above, not whichever preset
+    // happens to be selected in the editor at this moment.
+    const customDeleteButton = await waitFor(() =>
+      document.querySelector(`.dsp-delete-btn[data-profile-id="${savedProfile.id}"]`)
+    );
+    customDeleteButton.click();
     await waitFor(() => !harness.dspProfiles.some(profile => profile.id === savedProfile.id));
 
     assert.ok(
