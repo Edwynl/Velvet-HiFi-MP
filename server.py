@@ -3174,6 +3174,24 @@ async def auth_middleware(request: Request, call_next):
                 content={"error": "Initial password setup must be done on the server itself."},
             )
 
+    # When no password has been configured, do not expose the music library,
+    # destructive APIs, or local playback control over LAN/Tailscale.
+    # Users can initialize security at http://localhost:8765 on the host PC.
+    if not auth_enabled and not _is_loopback_client_ip(client_ip):
+        setup_visible = request.method == "GET" and (
+            path in {
+                "/", "/api/security/status", "/api/health",
+                "/api/health/check-ffmpeg", "/sw.js",
+                "/static/manifest.json", "/static/icon.png",
+                "/static/logo-hires.png",
+            }
+        )
+        if not setup_visible:
+            return JSONResponse(
+                status_code=403,
+                content={"error": "VELVET requires first-time password setup on the host PC."},
+            )
+
     # Expose only read-only diagnostics and the security *status* without auth.
     # Never exempt the entire /api/security/ or /api/health/ namespace:
     # those namespaces include state-changing and credential-rotation endpoints.
