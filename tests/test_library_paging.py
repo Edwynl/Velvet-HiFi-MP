@@ -60,6 +60,23 @@ class AlbumPagingTests(unittest.TestCase):
         self.assertEqual(result["total"],1)
         self.assertEqual(result["albums"][0]["id"],3)
 
+    def test_artist_pages_have_stable_boundaries_and_search(self):
+        for i in range(2, 153):
+            name = f"Artist {i:03d}"
+            self.db.execute("INSERT INTO artists(id,name,sort_name) VALUES(?,?,?)",(i,name,name))
+        self.db.execute("INSERT INTO track_artists(track_id,artist_id) VALUES(1,1)")
+        self.db.commit()
+        pages = [fetch_artist_page(self.db,limit=60,offset=o) for o in (0,60,120)]
+        self.assertEqual([len(page["artists"]) for page in pages],[60,60,32])
+        self.assertEqual({page["total"] for page in pages},{152})
+        ids = [a["id"] for page in pages for a in page["artists"]]
+        self.assertEqual(len(set(ids)),152)
+        result = fetch_artist_page(self.db,search="Artist 152")
+        self.assertEqual(result["total"],1)
+        self.assertEqual(result["artists"][0]["id"],152)
+        first = fetch_artist_page(self.db,limit=1)
+        self.assertEqual(first["artists"][0]["track_count"],1)
+
     def test_input_bounds(self):
         with self.assertRaises(ValueError):
             self.page(limit=201)
