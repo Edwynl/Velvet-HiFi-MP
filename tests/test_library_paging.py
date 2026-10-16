@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 
 from db_schema import apply_migrations
-from library_paging import album_catalog_filters, fetch_album_page
+from library_paging import album_catalog_filters, fetch_album_page, fetch_artist_page
 
 
 class AlbumPagingTests(unittest.TestCase):
