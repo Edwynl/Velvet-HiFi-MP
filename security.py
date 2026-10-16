@@ -325,9 +325,11 @@ def is_auth_enabled() -> bool:
     return get_security_manager().is_enabled()
 
 
-def verify_auth(password: str = None, api_key: str = None, ip: str = None) -> dict:
+def verify_auth(password: str = None, api_key: str = None, ip: str = None,
+                record_failure: bool = True) -> dict:
     """
     Verify authentication.
+    record_failure=False keeps a rejected credential out of the lockout count.
     Returns: {"allowed": bool, "error": str or None}
     """
     manager = get_security_manager()
@@ -359,7 +361,7 @@ def verify_auth(password: str = None, api_key: str = None, ip: str = None) -> di
         return {"allowed": True, "error": None}
 
     # Record failed attempt
-    if ip:
+    if ip and record_failure:
         manager.record_failed_attempt(ip)
 
     return {"allowed": False, "error": "Invalid password or API key"}
