@@ -418,6 +418,7 @@ _duplicate_job = JobState({"running": False, "progress": 0, "total": 0, "current
 # commit per file, and a commit from one job between another job's per-file
 # read and write fails that file with "database is locked" (BUSY_SNAPSHOT).
 _library_task_lock = threading.Lock()
+_album_mutation_active = False
 
 # In-memory cover cache with TTL support
 _cover_cache: TTLCache = TTLCache(maxsize=10000, ttl=86400)  # album_id -> path
@@ -1724,15 +1725,22 @@ async def upload_album_cover(album_id: int, file: UploadFile = File(...)):
     return {"success": True, "path": str(target_path)}
 
 @app.delete("/api/albums/{album_id}")
-async def delete_album(album_id: int, delete_files: bool = Query(False)):
+def delete_album(album_id: int, delete_files: bool = Query(False)):
     """Remove an album's index; optionally archive audio to recoverable storage.
 
     Audio is never unlinked. If file staging or the SQL transaction fails,
     rollback restores the original files and retains the music index.
     """
-    db = get_db()
+    global _album_mutation_active
+    # Hold the task reservation throughout filesystem staging and DB commit.
+    with _library_task_lock:
+        if _album_mutation_active or _scan_job.is_running() or _duplicate_job.is_running():
+            raise HTTPException(409, "Library maintenance is busy; try again when scans finish")
+        _album_mutation_active = True
+    db = None
     archive = None
     try:
+        db = get_db()
         album = db.execute("SELECT * FROM albums WHERE id=?", (album_id,)).fetchone()
         if not album:
             raise HTTPException(404, "Album not found")
@@ -1782,7 +1790,10 @@ async def delete_album(album_id: int, delete_files: bool = Query(False)):
             })
         return result
     finally:
-        db.close()
+        if db is not None:
+            db.close()
+        with _library_task_lock:
+            _album_mutation_active = False
 
 
 @app.get("/api/library/trash")
@@ -2301,6 +2312,8 @@ def _claim_library_scan(begin) -> str | None:
     which a duplicate check could start before the scan thread does.
     """
     with _library_task_lock:
+        if _album_mutation_active:
+            return "Album file maintenance in progress"
         if _scan_job.is_running():
             return "Scan already in progress"
         if _duplicate_job.is_running():
@@ -2467,6 +2480,8 @@ def _duplicate_scan_worker() -> None:
 def start_duplicate_scan(background_tasks: BackgroundTasks):
     """Queue a read-only, byte-exact duplicate check in the background."""
     with _library_task_lock:
+        if _album_mutation_active:
+            raise HTTPException(409, "Album file maintenance in progress")
         if _scan_job.is_running():
             raise HTTPException(409, "Finish the library scan before checking duplicates")
         if _duplicate_job.is_running():
