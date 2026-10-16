@@ -1804,11 +1804,20 @@ def list_library_trash():
 
 @app.post("/api/library/trash/{token}/restore")
 def restore_library_trash(token: str):
-    """Restore archived audio files; scanning rebuilds the library index."""
+    """Restore archived audio safely while library scanning is paused."""
+    global _album_mutation_active
+    with _library_task_lock:
+        if _album_mutation_active or _scan_job.is_running() or _duplicate_job.is_running():
+            raise HTTPException(409, "Library maintenance is busy; retry when scans finish")
+        _album_mutation_active = True
     try:
-        return restore_album_files(Path(DATA_DIR) / "album-trash", token)
-    except ArchiveError as exc:
-        raise HTTPException(409, str(exc)) from exc
+        try:
+            return restore_album_files(Path(DATA_DIR) / "album-trash", token)
+        except ArchiveError as exc:
+            raise HTTPException(409, str(exc)) from exc
+    finally:
+        with _library_task_lock:
+            _album_mutation_active = False
 
 
 @app.post("/api/albums/{album_id}/open-folder")
