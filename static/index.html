@@ -9012,11 +9012,11 @@ async function render({ restore = false } = {}) {
       case 'composer':    await renderComposer(vc, state.viewParams); break;
       case 'work':        await renderWork(vc, state.viewParams); break;
       case 'credit':      await renderCreditEntity(vc, state.viewParams); break;
-      case 'settings':    await ensureFrontendModule('settings-view'); await renderSettings(vc); break;
+      case 'settings':    await ensureFrontendModule('settings-view'); if (state.view === 'settings') await renderSettings(vc); break;
       case 'search':      await renderSearch(vc, state.viewParams); break;
       case 'history':     await renderHistory(vc); break;
       case 'most-played':await renderMostPlayed(vc); break;
-      case 'remote':      await ensureFrontendModule('remote-settings'); await renderRemote(vc); break;
+      case 'remote':      await ensureFrontendModule('remote-settings'); if (state.view === 'remote') await renderRemote(vc); break;
     }
     log('[VELVET] Render complete:', state.view);
   } catch (e) {
