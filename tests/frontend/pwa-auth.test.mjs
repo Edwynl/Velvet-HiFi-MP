@@ -102,4 +102,65 @@ assert.equal(authState.apiKey, 'shared-key');
 assert.equal(rendered, 1);
 assert.equal(requests[1].url, '/api/security/login', 'Login must not rotate other clients\' keys');
 assert.equal(requests[1].options.headers['X-Password'], 'password');
+
+// Credential changes purge the authenticated cover caches the SW serves
+// before the network; the static app shell cache is kept.
+const remoteSettings = readFileSync('static/js/remote-settings.js', 'utf8');
+const settingsSource = remoteSettings.slice(remoteSettings.indexOf('async function savePassword()'),
+  remoteSettings.indexOf('// Auto-refresh remote status in background'));
+const stored = new Map([['velvet_api_key', 'old-key']]);
+const order = [];
+let loginOk = true;
+const settingsAuth = { apiKey: 'old-key' };
+const settingsContext = vm.createContext({ authState: settingsAuth, caches, state: {},
+  document: { getElementById(id) { return id === 'new-password' ? { value: 'new-password' } : {}; } },
+  localStorage: { setItem(k, v) { stored.set(k, v); }, removeItem(k) { stored.delete(k); } },
+  alert() {},
+  async render() {},
+  adoptStreamTicket() { order.push(['ticket', settingsAuth.apiKey]); },
+  async api(path) {
+    return path === '/security/generate-api-key'
+      ? { success: true, api_key: 'rotated-key' }
+      : { success: true, message: 'Password set successfully' };
+  },
+  async fetch() {
+    return { ok: loginOk, async json() { return { success: true, api_key: 'rotated-key' }; } };
+  },
+});
+vm.runInContext(loginSource, settingsContext);
+vm.runInContext(settingsSource, settingsContext);
+const settle = () => new Promise(resolve => setTimeout(resolve, 0));
+const coverCaches = () => [...stores.keys()].filter(name => /^velvet-(thumbs|covers)-v/.test(name));
+async function seedCoverCaches() {
+  await dispatch('fetch', request('/api/covers/1/thumb'));
+  await dispatch('fetch', request('/api/covers/1'));
+  assert.deepEqual(coverCaches().sort(), ['velvet-covers-v3', 'velvet-thumbs-v5']);
+}
+
+assert.equal(coverCaches().length, 2, 'SW tests above populated both cover caches');
+await vm.runInContext('generateNewApiKey()', settingsContext);
+await settle();
+assert.deepEqual(coverCaches(), [], 'API-key rotation purges thumbnail and cover caches');
+assert.ok(stores.has('velvet-v6'), 'The app shell cache is not purged');
+assert.equal(stored.get('velvet_api_key'), 'rotated-key');
+assert.deepEqual(order, [['ticket', 'rotated-key']], 'The stream ticket is adopted for the new key');
+
+for (const ok of [true, false]) {
+  await seedCoverCaches();
+  loginOk = ok;
+  await vm.runInContext('savePassword()', settingsContext);
+  await settle();
+  assert.deepEqual(coverCaches(), [], `Password change purges cover caches (key fetch ok=${ok})`);
+}
+
+await seedCoverCaches();
+await vm.runInContext("storeApiKey('')", settingsContext);
+assert.deepEqual(coverCaches(), [], 'Clearing the API key purges cover caches');
+assert.equal(stored.has('velvet_api_key'), false);
+
+const beforeOffline = networkCalls;
+await dispatch('fetch', request('/api/covers/7/thumb'));
+await dispatch('fetch', request('/api/covers/7/thumb'));
+assert.equal(networkCalls, beforeOffline + 1, 'Thumbnail caching works again after a purge');
+assert.equal(stores.get('velvet-thumbs-v5').size, 1);
 console.log('frontend_pwa_auth_check=OK');

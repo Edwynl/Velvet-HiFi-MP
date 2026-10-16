@@ -1790,11 +1790,22 @@ def _parse_range(header: str, size: int) -> tuple[int, int]:
     return start, min(end, size - 1)
 
 
-def _stream_file_direct(file_path: str, request: Request):
+def _dlna_stream_headers(request: Request, mime: str, fmt: str) -> dict:
+    """DLNA headers, only for renderers that ask with getcontentFeatures.dlna.org: 1."""
+    if request.headers.get("getcontentFeatures.dlna.org", "").strip() != "1":
+        return {}
+    return {
+        "transferMode.dlna.org": "Streaming",
+        "contentFeatures.dlna.org": upnp_server._get_dlna_profile(mime, fmt),
+    }
+
+
+def _stream_file_direct(file_path: str, request: Request, fmt: str = ""):
     """Send an original audio file with RFC 9110 single-range semantics."""
     size = os.path.getsize(file_path)
     ext = Path(file_path).suffix.lower()
     mime = MIME_MAP.get(ext, "application/octet-stream")
+    dlna_headers = _dlna_stream_headers(request, mime, fmt)
 
     range_header = request.headers.get("Range")
     if range_header:
@@ -1815,6 +1826,7 @@ def _stream_file_direct(file_path: str, request: Request):
             "Accept-Ranges": "bytes",
             "Content-Length": str(length),
             "Cache-Control": "no-cache",
+            **dlna_headers,
         }
         if request.method == "HEAD":
             return Response(status_code=206, media_type=mime, headers=range_headers)
@@ -1835,7 +1847,7 @@ def _stream_file_direct(file_path: str, request: Request):
     return FileResponse(
         file_path,
         media_type=mime,
-        headers={"Accept-Ranges": "bytes", "Cache-Control": "no-cache"},
+        headers={"Accept-Ranges": "bytes", "Cache-Control": "no-cache", **dlna_headers},
     )
 
 
@@ -2117,7 +2129,7 @@ async def stream_track(
         limit = _transcode_time_limit_seconds(track["duration"], timeout_minutes)
         return await _stream_with_dsp(fp, dsp_filter, limit)
 
-    return _stream_file_direct(fp, request)
+    return _stream_file_direct(fp, request, track["format"] or "")
 
 # ─── Scan API ─────────────────────────────────────────────────────────────────
 

@@ -446,6 +446,28 @@ class ServerApiTests(unittest.TestCase):
         resp = self.client.get("/api/stream/1", headers={"Range": "bytes=0-3"})
         self.assertEqual(resp.status_code, 403)
 
+    def test_direct_stream_sends_dlna_headers_only_when_requested(self):
+        self._allow_music_root()
+        ask = {"getcontentFeatures.dlna.org": "1"}
+        features = upnp_server._get_dlna_profile("audio/flac", "FLAC")
+        self.assertIn("DLNA.ORG_PN=FLAC;DLNA.ORG_OP=01", features)
+        for method, headers, status in [
+            ("GET", {}, 200), ("HEAD", {}, 200),
+            ("GET", {"Range": "bytes=0-1"}, 206), ("HEAD", {"Range": "bytes=0-1"}, 206),
+        ]:
+            with self.subTest(method=method, headers=headers):
+                plain = self.client.request(method, "/api/stream/1", headers=headers)
+                self.assertEqual(plain.status_code, status)
+                self.assertNotIn("transferMode.dlna.org", plain.headers)
+                self.assertNotIn("contentFeatures.dlna.org", plain.headers)
+
+                dlna = self.client.request(method, "/api/stream/1", headers={**headers, **ask})
+                self.assertEqual(dlna.status_code, status)
+                self.assertEqual(dlna.headers["transferMode.dlna.org"], "Streaming")
+                self.assertEqual(dlna.headers["contentFeatures.dlna.org"], features)
+        mp3 = self.client.get("/api/stream/2", headers=ask)
+        self.assertIn("DLNA.ORG_PN=MP3;", mp3.headers["contentFeatures.dlna.org"])
+
     def test_dop_and_unknown_pcm_multiplier_fail_explicitly(self):
         with self._connect() as conn:
             conn.execute("DELETE FROM libraries")

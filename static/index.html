@@ -6204,8 +6204,7 @@ async function submitLogin() {
       }
       const keyResult = await keyResp.json();
       if (!keyResult.success || !keyResult.api_key) return;
-      authState.apiKey = keyResult.api_key;
-      localStorage.setItem('velvet_api_key', keyResult.api_key);
+      storeApiKey(keyResult.api_key);
       authState.isAuthenticated = true;
       document.getElementById('login-modal')?.remove();
       adoptStreamTicket(keyResult);
@@ -6218,6 +6217,26 @@ async function submitLogin() {
   } catch (e) {
     alert('Authentication failed: ' + e.message);
   }
+}
+
+// sw.js answers cover reads from these caches before the network checks
+// credentials, so drop them whenever the credentials change.
+function purgeCoverCaches() {
+  if (typeof caches === 'undefined') return Promise.resolve();
+  return caches.keys()
+    .then(names => Promise.all(names
+      .filter(name => name.startsWith('velvet-thumbs-') || name.startsWith('velvet-covers-'))
+      .map(name => caches.delete(name))))
+    .catch(() => {});
+}
+
+// Every API-key change (login, rotation, or '' to clear) goes through here.
+// Callers adopt the stream ticket right after, so they do not await the purge.
+function storeApiKey(apiKey) {
+  authState.apiKey = apiKey;
+  if (apiKey) localStorage.setItem('velvet_api_key', apiKey);
+  else localStorage.removeItem('velvet_api_key');
+  return purgeCoverCaches();
 }
 
 function coverUrl(albumId) {
