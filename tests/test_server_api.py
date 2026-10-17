@@ -378,6 +378,27 @@ class ServerApiTests(unittest.TestCase):
         after = self.client.get(f"/api/dsp/profiles/{created['id']}").json()
         self.assertEqual(after, before)
 
+    def test_shelf_and_peq_presets_round_trip_exactly(self):
+        # EQ-2: the editor saves an untouched preset's filters as they are;
+        # the stored chain keeps type, freq, gain, Q, enabled and order.
+        factory = next(p for p in self.client.get("/api/dsp/profiles").json()
+                       if p.get("preset_key") == "black_background")
+        filters = server.json.loads(factory["filter_chain_json"])
+        filters[1] = {**filters[1], "enabled": False}
+        filters.reverse()
+        created = self.client.post("/api/dsp/profiles", json={
+            "name": "Round trip", "preamp_db": factory["preamp_db"], "stereo_width": 12,
+            "filters": filters}).json()
+        saved = self.client.get(f"/api/dsp/profiles/{created['id']}").json()
+        self.assertEqual(server.json.loads(saved["filter_chain_json"]), filters)
+        self.assertEqual(saved["preamp_db"], factory["preamp_db"])
+
+        clone = self.client.post(f"/api/dsp/profiles/{created['id']}/clone",
+                                 json={"name": "Round trip Copy"}).json()
+        copied = self.client.get(f"/api/dsp/profiles/{clone['id']}").json()
+        self.assertEqual(server.json.loads(copied["filter_chain_json"]), filters)
+        self.assertEqual((copied["preamp_db"], copied["stereo_width"]), (saved["preamp_db"], 12))
+
     def test_legacy_eq_bands_payload_is_validated_and_converted(self):
         created = self.client.post("/api/dsp/profiles", json={
             "name": "Legacy client", "eq_bands": [{"freq": 1000, "gain": 3, "q": 1.0}]}).json()

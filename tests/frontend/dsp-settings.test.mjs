@@ -27,6 +27,15 @@ function makeJsonResponse(body, status = 200) {
   };
 }
 
+// Parametric/shelf preset with a disabled filter and an out-of-order chain:
+// the graphic EQ must keep every field and the order exactly.
+const STUDIO_PEQ_FILTERS = [
+  { type: 'high_shelf', freq: 9500, gain: 1.8, q: 0.65, enabled: true },
+  { type: 'peaking', freq: 47, gain: 2.25, q: 4.3, enabled: true },
+  { type: 'low_shelf', freq: 110, gain: -1.4, q: 0.8, enabled: false },
+  { type: 'peaking', freq: 3150, gain: -2.5, q: 6, enabled: true },
+];
+
 function createHarness() {
   let nextProfileId = 100;
   const requests = [];
@@ -60,6 +69,18 @@ function createHarness() {
       ]),
       tags: JSON.stringify(['vocals']),
       sort_order: 20,
+    },
+    {
+      id: 4,
+      name: 'Studio PEQ',
+      description: 'Custom parametric voicing.',
+      category: 'custom',
+      is_factory: 0,
+      preamp_db: -3.5,
+      stereo_width: 12,
+      filter_chain_json: JSON.stringify(STUDIO_PEQ_FILTERS),
+      tags: JSON.stringify(['custom']),
+      sort_order: 999,
     },
   ];
 
@@ -345,10 +366,14 @@ async function main() {
       eqSaveRequests.every(request => request.path !== '/api/dsp/presets/custom' && request.path !== '/api/dsp/apply'),
       'expected graphic EQ save to avoid deprecated DSP endpoints'
     );
+    // Black Background is a shelf preset: a slider edit saves a converted
+    // graphic copy and never touches the factory preset.
     const createdEqProfile = harness.dspProfiles.find(profile =>
-      !profile.is_factory && profile.name === 'Custom EQ' && /graphic-eq/.test(profile.tags || '')
+      !profile.is_factory && profile.name === 'Black Background (Graphic)' && /graphic-eq/.test(profile.tags || '')
     );
     assert.ok(createdEqProfile, 'expected graphic EQ save to create a custom EQ profile');
+    assert.equal(harness.dspProfiles.find(profile => profile.id === 2).filter_chain_json,
+      JSON.stringify([{ type: 'low_shelf', freq: 90, gain: -0.8, q: 0.7, enabled: true }]));
 
     await dom.window.loadDspProfiles();
     await dom.window.selectEQPreset(String(createdEqProfile.id));
@@ -482,8 +507,199 @@ async function main() {
   }
 }
 
+// The curve path, read back as (frequency, dB) on the plot's own axes.
+function readCurve(document, selector = '#eq-curve-path') {
+  const range = Number(document.querySelector('#eq-curve-svg').dataset.rangeDb);
+  const d = document.querySelector(selector).getAttribute('d') || '';
+  return [...d.matchAll(/[ML] (-?[\d.]+) (-?[\d.]+)/g)].map(([, x, y]) => ({
+    freq: 20 * Math.pow(1000, Number(x) / 1000),
+    db: (150 - Number(y)) / 150 * range,
+  }));
+}
+
+function modelDb(dom, filters, freqs) {
+  dom.window.__eqFilters = filters;
+  dom.window.__eqFreqs = freqs;
+  return dom.window.eval('dspFiltersResponseDb(window.__eqFilters, 48000, window.__eqFreqs)');
+}
+
+function assertCurveIsModel(dom, filters, offsetDb = 0, selector = '#eq-curve-path') {
+  const points = readCurve(dom.window.document, selector);
+  assert.ok(points.length >= 256, `expected a dense curve, got ${points.length} points`);
+  const model = modelDb(dom, filters, points.map(p => p.freq));
+  points.forEach((point, i) => {
+    assert.ok(Math.abs(point.db - (model[i] + offsetDb)) < 0.02,
+      `${selector} at ${point.freq.toFixed(1)} Hz: drawn ${point.db.toFixed(3)} dB, model ${(model[i] + offsetDb).toFixed(3)} dB`);
+  });
+  return points;
+}
+
+function preampLineDb(document) {
+  const range = Number(document.querySelector('#eq-curve-svg').dataset.rangeDb);
+  return (150 - Number(document.querySelector('#eq-preamp-line').getAttribute('y1'))) / 150 * range;
+}
+
+// EQ-2: exact curve, lossless graphic/parametric round trip, A/B, Bypass,
+// Reset, Duplicate, Save as and the Preview/Applied state.
+async function eqEditorFidelityChecks() {
+  const harness = createHarness();
+  const dom = await harness.createDom();
+  const { document } = dom.window;
+  const status = () => document.querySelector('#eq-apply-state').textContent.trim();
+  const draft = () => JSON.parse(dom.window.eval('JSON.stringify(eqActiveDraft())'));
+  const writes = since => harness.requests.slice(since).filter(r => r.method === 'POST' || r.method === 'PUT');
+  try {
+    await dom.window.loadDspProfiles();
+    await dom.window.openGraphicEQ();
+
+    // Showing a parametric preset never rewrites its filters.
+    await dom.window.selectEQPreset('4');
+    assert.deepEqual(draft().filters, STUDIO_PEQ_FILTERS);
+    assert.equal(draft().edited, false);
+    assert.match(document.querySelector('#eq-conversion-note').textContent, /Parametric preset/);
+    assert.equal(document.querySelector('#eq-conversion-note').hidden, false);
+    assert.equal(document.querySelector('#eq-btn-save').textContent, 'Apply');
+    assert.equal(status(), 'Preview (not yet applied)');
+
+    // The curve is the real cascade (shelf Q*sqrt(2) as in FFmpeg), not a
+    // per-band heuristic; the narrow 47 Hz peak is drawn at its true height.
+    const points = assertCurveIsModel(dom, STUDIO_PEQ_FILTERS);
+    const at47 = modelDb(dom, STUDIO_PEQ_FILTERS, [47])[0];
+    assert.ok(Math.max(...points.map(p => p.db)) >= at47 - 0.01, 'narrow peak must not be missed');
+    dom.window.__eqFilters = STUDIO_PEQ_FILTERS;
+    const effective = dom.window.eval('dspEffectivePreampDb(window.__eqFilters, -3.5)');
+    assert.equal(effective, -3.5, 'saved preamp covers this preset, so the server keeps it');
+    assert.ok(Math.abs(preampLineDb(document) - effective) < 0.02, 'preamp line at the effective preamp');
+    assert.match(document.querySelector('#eq-preamp-label').textContent, /Preamp -3\.5 dB/);
+    // A hot preset: the line shows the guarded preamp the server applies,
+    // not the insufficient saved one.
+    const guarded = dom.window.eval(
+      "dspEffectivePreampDb([{type:'peaking',freq:1000,gain:9,q:1,enabled:true}], -2)");
+    assert.equal(guarded, -10, `expected the playback guard preamp, got ${guarded}`);
+
+    // An untouched preset applies unchanged: no write at all.
+    const beforeApply = harness.requests.length;
+    document.querySelector('#eq-btn-save').click();
+    await waitFor(() => document.querySelector('#dsp-select').value === '4');
+    assert.deepEqual(writes(beforeApply), []);
+    assert.equal(harness.dspProfiles.find(p => p.id === 4).filter_chain_json, JSON.stringify(STUDIO_PEQ_FILTERS));
+    await dom.window.openGraphicEQ();
+    assert.equal(status(), 'Applied');
+
+    // Save as... on an untouched preset keeps every filter field and the order.
+    dom.window.prompt = () => 'Studio PEQ Copy';
+    document.querySelector('#eq-btn-save-as').click();
+    const copy = await waitFor(() => harness.dspProfiles.find(p => p.name === 'Studio PEQ Copy'));
+    assert.deepEqual(JSON.parse(copy.filter_chain_json), STUDIO_PEQ_FILTERS);
+    assert.equal(copy.preamp_db, -3.5);
+    assert.equal(copy.stereo_width, 12);
+    await waitFor(() => document.querySelector('#eq-current-name').textContent === 'Studio PEQ Copy');
+    assert.equal(status(), 'Preview (not yet applied)', 'a saved copy is not applied yet');
+    assert.equal(document.querySelector('#dsp-select').value, '4');
+
+    // Duplicate of an untouched factory preset is a server-side exact copy.
+    await dom.window.selectEQPreset('2');
+    const beforeDuplicate = harness.requests.length;
+    document.querySelector('#eq-btn-duplicate').click();
+    await waitFor(() => harness.dspProfiles.some(p => p.name === 'Black Background Copy'));
+    assert.ok(writes(beforeDuplicate).some(r => r.path === '/api/dsp/profiles/2/clone'));
+    assert.equal(harness.dspProfiles.find(p => p.name === 'Black Background Copy').filter_chain_json,
+      harness.dspProfiles.find(p => p.id === 2).filter_chain_json);
+
+    // Editing a shelf preset in graphic mode converts an explicit copy.
+    await dom.window.selectEQPreset('2');
+    const shelfFilters = JSON.parse(harness.dspProfiles.find(p => p.id === 2).filter_chain_json);
+    const fit = dom.window.eval(
+      'const d = eqActiveDraft(); [dspFiltersResponseDb(graphicEqFilters(d.gains), 48000, GEQ_BANDS), dspFiltersResponseDb(d.filters, 48000, GEQ_BANDS)]');
+    fit[0].forEach((db, i) => assert.ok(Math.abs(db - fit[1][i]) < 0.2, `band ${i}: fit ${db} vs ${fit[1][i]}`));
+    dom.window.handleEQSliderInput(3, '1.5');
+    assert.equal(draft().converted, true);
+    assert.equal(draft().name, 'Black Background (Graphic)');
+    assert.ok(draft().filters.every(f => f.type === 'peaking' && f.q === 1.41));
+    assert.match(document.querySelector('#eq-conversion-note').textContent, /graphic copy of "Black Background"/);
+    assert.equal(document.querySelector('#eq-btn-save').textContent, 'Save as Custom');
+    assert.deepEqual(JSON.parse(harness.dspProfiles.find(p => p.id === 2).filter_chain_json), shelfFilters);
+    assertCurveIsModel(dom, draft().filters);
+    // Reset discards the copy and restores the exact preset.
+    document.querySelector('#eq-btn-reset').click();
+    assert.deepEqual(draft().filters, shelfFilters);
+    assert.equal(draft().converted, false);
+    assert.equal(draft().edited, false);
+    assert.equal(document.querySelector('#eq-btn-save').textContent, 'Apply');
+
+    // Editing never re-renders album artwork.
+    dom.window.eval("state.currentTrack = { id: 1, album_id: 7, title: 'T', artist_name: 'A', format: 'flac' }; updatePlayerUI(state.currentTrack);");
+    const artMutations = [];
+    const observer = new dom.window.MutationObserver(records => artMutations.push(...records));
+    ['player-art', 'mobile-player-cover', 'mobile-player-bg-image'].forEach(id => {
+      const el = document.getElementById(id);
+      if (el) observer.observe(el, { attributes: true, childList: true, subtree: true });
+    });
+    await dom.window.selectEQPreset('4');
+    dom.window.handleEQSliderInput(5, '2');
+    document.querySelector('#eq-btn-ab').click();
+    dom.window.handleEQSliderInput(6, '-3');
+    document.querySelector('#eq-btn-ab').click();
+    document.querySelector('#eq-btn-reset').click();
+    await new Promise(resolve => setTimeout(resolve, 200));
+    observer.disconnect();
+    assert.deepEqual(artMutations.map(r => r.target.id || r.target.tagName), []);
+    dom.window.eval('state.currentTrack = null;');
+
+    // A/B: two slots; the other one is drawn level-matched by its preamp.
+    await dom.window.openGraphicEQ();
+    assert.equal(document.querySelector('#eq-btn-ab').textContent, 'A/B: A');
+    assert.equal(document.querySelector('#eq-curve-ghost').getAttribute('d'), '');
+    document.querySelector('#eq-btn-ab').click();
+    assert.equal(document.querySelector('#eq-btn-ab').textContent, 'A/B: B');
+    assert.deepEqual(draft().filters, STUDIO_PEQ_FILTERS, 'B starts as a copy of A');
+    assert.equal(status(), 'Applied');
+    await dom.window.selectEQPreset('');
+    assert.equal(status(), 'Preview (not yet applied)');
+    // B is flat at 0 dB preamp; A is drawn at its net level, EQ - 3.5 dB.
+    assertCurveIsModel(dom, STUDIO_PEQ_FILTERS, -3.5, '#eq-curve-ghost');
+    dom.window.handleEQSliderInput(4, '6');
+    await waitFor(() => /Auto headroom/.test(document.querySelector('#eq-headroom-note').textContent));
+    const bPreamp = dom.window.eval('eqDraftHeadroom(eqActiveDraft()).effectivePreampDb');
+    assert.ok(bPreamp < -6, `expected B to get headroom, got ${bPreamp}`);
+    assert.ok(Math.abs(preampLineDb(document) - bPreamp) < 0.02);
+    assertCurveIsModel(dom, STUDIO_PEQ_FILTERS, -3.5 - bPreamp, '#eq-curve-ghost');
+    document.querySelector('#eq-btn-ab').click();
+    assert.deepEqual(draft().filters, STUDIO_PEQ_FILTERS, 'editing B leaves A untouched');
+    assert.equal(status(), 'Applied');
+    assert.notEqual(dom.window.eval('currentEqGains[4]'), 6, 'A shows its own sliders');
+    document.querySelector('#eq-btn-ab').click();
+    assert.equal(status(), 'Preview (not yet applied)');
+    const beforeSaveB = harness.requests.length;
+    document.querySelector('#eq-btn-save').click();
+    await waitFor(() => writes(beforeSaveB).length && document.querySelector('#dsp-select').value !== '4');
+    const savedB = harness.dspProfiles.find(p => String(p.id) === document.querySelector('#dsp-select').value);
+    assert.equal(savedB.name, 'Custom EQ');
+    assert.deepEqual(JSON.parse(savedB.filter_chain_json),
+      [{ type: 'peaking', freq: 500, gain: 6, q: 1.41, enabled: true }]);
+    assert.equal(savedB.preamp_db, bPreamp);
+
+    // Bypass: Off now, the applied preset back on the second press or on close.
+    await dom.window.openGraphicEQ();
+    assert.equal(status(), 'Applied');
+    document.querySelector('#eq-btn-bypass').click();
+    assert.equal(document.querySelector('#dsp-select').value, '');
+    assert.equal(status(), 'Bypassed (source direct)');
+    assert.equal(document.querySelector('#eq-btn-bypass').getAttribute('aria-pressed'), 'true');
+    document.querySelector('#eq-btn-bypass').click();
+    assert.equal(document.querySelector('#dsp-select').value, String(savedB.id));
+    assert.equal(status(), 'Applied');
+    document.querySelector('#eq-btn-bypass').click();
+    document.querySelector('#eq-close-btn').click();
+    assert.equal(document.querySelector('#dsp-select').value, String(savedB.id), 'closing ends the bypass');
+  } finally {
+    dom.window.close();
+  }
+}
+
 try {
   await main();
+  await eqEditorFidelityChecks();
   console.log('frontend_dsp_settings_check=OK');
   process.exit(0);
 } catch (error) {
