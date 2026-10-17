@@ -538,6 +538,24 @@ function testLandscapeAlbumLayoutCssGuards() {
   );
 }
 
+async function testAlbumRemovalExplainsFileRecoveryAndAssociationGuard() {
+  const harness = createHarness();
+  const dom = await harness.createDom();
+  try {
+    await dom.window.navigate('album', { id: 11 });
+    const button = await waitFor(() => dom.window.document.querySelector('#del-album-btn'));
+    button.click();
+    const modal = await waitFor(() => dom.window.document.querySelector('#modal-container.open'));
+    assert.match(modal.textContent, /playlists or play history cannot be removed/);
+    assert.match(modal.textContent, /may assign new Track IDs/);
+    assert.match(modal.textContent, /archive audio files \(recoverable\)/);
+    assert.equal(dom.window.document.querySelector('#delete-files-check').checked, false);
+    assert.equal(harness.fetchLog.some(entry => entry === 'DELETE /api/albums/11'), false);
+  } finally {
+    dom.window.close();
+  }
+}
+
 async function main() {
   await testAlbumBackFallsBackWhenHistoryBackDoesNothing();
   await testBackToAlbumsRestoresKeptViewWithoutRefetch();
@@ -549,6 +567,7 @@ async function main() {
   await testTabletMenuNavigationDoesNotFocusSearch();
   await testSearchTrackOpensAlbumAndPlaysMatchedTrack();
   testLandscapeAlbumLayoutCssGuards();
+  await testAlbumRemovalExplainsFileRecoveryAndAssociationGuard();
 }
 
 try {

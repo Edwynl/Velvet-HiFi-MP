@@ -90,8 +90,18 @@ class AlbumFileArchive:
         for entry in reversed(self.entries):
             staged, original = entry["staged"], entry["original"]
             if not os.path.isfile(filesystem_path(staged)):
+                # A missing staged file is only safe when this entry was never
+                # moved (or a previous restore durably recorded its success).
+                # Even an existing original cannot prove recovery if moved=True:
+                # it may be a replacement created after the archive disappeared.
+                if os.path.lexists(filesystem_path(staged)):
+                    errors.append(f"Archived path is not an audio file: {staged}")
+                elif entry["moved"]:
+                    errors.append(f"Archived audio missing; recovery cannot be verified: {original}")
+                elif not os.path.isfile(filesystem_path(original)):
+                    errors.append(f"Both archived and original audio missing: {original}")
                 continue
-            if os.path.exists(filesystem_path(original)):
+            if os.path.lexists(filesystem_path(original)):
                 errors.append(f"Destination exists: {original}")
                 continue
             try:
@@ -128,6 +138,10 @@ def restore_album_files(archive_dir: Path, token: str) -> dict:
         data = json.loads(manifest.read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
         raise ArchiveError("Archive manifest not found or damaged") from exc
+    if (not isinstance(data, dict) or data.get("token") != token
+            or data.get("state") not in ("pending", "archived", "recovery_required", "restored")
+            or not isinstance(data.get("files"), list) or not data["files"]):
+        raise ArchiveError("Archive manifest not found or damaged")
     archive = object.__new__(AlbumFileArchive)
     archive.token = token
     archive.manifest_path = manifest
@@ -137,6 +151,11 @@ def restore_album_files(archive_dir: Path, token: str) -> dict:
     # names prevent an attacker-controlled manifest from silently restoring
     # arbitrary paths. Do not expose write access to the data directory.
     for idx, entry in enumerate(archive.entries):
+        if (not isinstance(entry, dict)
+                or not isinstance(entry.get("original"), str) or not entry["original"]
+                or not isinstance(entry.get("staged"), str) or not entry["staged"]
+                or type(entry.get("moved")) is not bool):
+            raise ArchiveError("Archive manifest not found or damaged")
         staged_path = Path(entry["staged"])
         if staged_path.name != f".velvet-recycle-{token}-{idx}{Path(entry['original']).suffix}" or (
             staged_path.parent != Path(entry["original"]).parent
@@ -144,4 +163,6 @@ def restore_album_files(archive_dir: Path, token: str) -> dict:
             raise ArchiveError("Invalid archived path")
     archive.restore()
     return {"restored": sum(not entry["moved"] for entry in archive.entries),
-            "message": "Files restored; re-scan the library to rebuild the album index."}
+            "message": "Files restored; re-scan the library to rebuild the album index. "
+                       "Track IDs may change. File archives do not restore playlists or play history.",
+            "index_restored": False, "track_ids_preserved": False}

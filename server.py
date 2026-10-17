@@ -1711,6 +1711,8 @@ def delete_album(album_id: int, delete_files: bool = Query(False)):
 
     Audio is never unlinked. If file staging or the SQL transaction fails,
     rollback restores the original files and retains the music index.
+    Refuse removal when tracks have playlist/history references: file-only
+    recovery cannot safely reconstruct those relations or their original IDs.
     """
     global _album_mutation_active
     # Hold the task reservation throughout filesystem staging and DB commit.
@@ -1722,9 +1724,23 @@ def delete_album(album_id: int, delete_files: bool = Query(False)):
     archive = None
     try:
         db = get_db()
+        # Reserve SQLite's writer before checking references, so another
+        # request cannot add history/playlist links between the check and DELETE.
+        db.execute("BEGIN IMMEDIATE")
         album = db.execute("SELECT * FROM albums WHERE id=?", (album_id,)).fetchone()
         if not album:
             raise HTTPException(404, "Album not found")
+        linked = db.execute(
+            "SELECT EXISTS(SELECT 1 FROM playlist_tracks p JOIN tracks t ON t.id=p.track_id "
+            "WHERE t.album_id=?) OR "
+            "EXISTS(SELECT 1 FROM play_history h JOIN tracks t ON t.id=h.track_id "
+            "WHERE t.album_id=?)", (album_id, album_id),
+        ).fetchone()[0]
+        if linked:
+            raise HTTPException(409,
+                "Album tracks are referenced by playlists or play history. Removal refused; "
+                "files, Track IDs and associations are unchanged. File-only restore cannot "
+                "preserve these associations. Keep the album to retain them.")
         tracks = db.execute("SELECT file_path FROM tracks WHERE album_id=?", (album_id,)).fetchall()
         if delete_files:
             try:
@@ -1758,7 +1774,9 @@ def delete_album(album_id: int, delete_files: bool = Query(False)):
                 archive.restore()
             raise
 
-        result = {"success": True, "message": "Album removed from the library index"}
+        result = {"success": True,
+                  "message": "Album removed from the library index; re-scanning may assign new Track IDs",
+                  "track_ids_preserved": False}
         if archive:
             try:
                 archive.commit()
@@ -1766,13 +1784,17 @@ def delete_album(album_id: int, delete_files: bool = Query(False)):
                 log.error("Album archive manifest needs reconciliation: %s", exc)
                 result["warning"] = "Files archived; manifest needs recovery check"
             result.update({
-                "message": "Album removed; audio moved to recoverable local archive",
+                "message": "Album removed; audio moved to recoverable local archive. "
+                           "Restoring files and re-scanning may assign new Track IDs; "
+                           "playlists and play history are not stored in file archives.",
                 "archive_token": archive.token,
                 "archived_files": len(archive.entries),
             })
         return result
     finally:
         if db is not None:
+            if db.in_transaction:
+                db.rollback()
             db.close()
         with _library_task_lock:
             _album_mutation_active = False
