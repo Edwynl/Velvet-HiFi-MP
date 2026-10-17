@@ -6601,6 +6601,9 @@ function describeSignalProcessing(zoneType, dspProfile, upsample, plan = null) {
     if (plan?.disabled_filters?.length) {
       lines.push(`${plan.disabled_filters.length} filter(s) above Nyquist disabled`);
     }
+    if (plan?.headroom_guard_db < 0) {
+      lines.push(`Headroom guard: ${plan.headroom_guard_db.toFixed(1)} dB extra attenuation (preamp ${plan.effective_preamp_db.toFixed(1)} dB)`);
+    }
     if (plan?.eq_clipping_risk) {
       lines.push(`EQ may clip: estimated peak ${plan.net_peak_db > 0 ? '+' : ''}${plan.net_peak_db} dB`);
     }
@@ -8810,10 +8813,13 @@ bindDesktopPlayerSelectPopover('upsample-select', { openUp: true });
 
 UI['upsample-select'].addEventListener('change', e => {
   state.upsample = e.target.value;
-  if (state.currentTrack) {
-    if (isCastZone()) {
-      castTo(state.currentTrack, state.castDevice);
-    } else if (isNativeZone()) {
+  if (state.currentTrack && isCastZone()) {
+    // Renderers fetch the direct source URL: upsampling is not applied there,
+    // so re-casting would only restart the track.
+    showToast('PCM upsampling not applied on this renderer');
+    updatePlayerUI(state.currentTrack);
+  } else if (state.currentTrack) {
+    if (isNativeZone()) {
       playTrack(state.currentTrack, state.queue, state.queueIdx);
     } else {
       const t = audio.currentTime;

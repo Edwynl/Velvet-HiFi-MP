@@ -15,8 +15,9 @@ MAX_FILTERS = 20
 MIN_PREAMP_DB = -30.0
 MAX_PREAMP_DB = 6.0
 DEFAULT_HEADROOM_MARGIN_DB = 1.0
-# Response/headroom estimates assume this rate when the source rate is unknown.
-DEFAULT_ANALYSIS_SAMPLE_RATE = 48000
+# The playback guard leaves a saved preamp alone while it keeps at least this
+# much headroom; below it, the recommended preamp (full margin) is applied.
+HEADROOM_GUARD_MIN_DB = 0.5
 
 
 class DspValidationError(ValueError):
@@ -358,36 +359,86 @@ def filters_response_db(filters: list[dict[str, Any]], sample_rate: float,
     return [_cascade_db(coefficients, sample_rate, freq) for freq in freqs]
 
 
+def _biquad_extremum_freqs(coefficients: tuple[float, ...], sample_rate: float) -> list[float]:
+    """Exact frequencies where one biquad's |H| has a stationary point.
+
+    |H|^2 = N(c)/D(c) with c = cos(w) and N, D quadratic in c, so d/dc = 0 is a
+    quadratic. Seeding the search grid with these puts a sample at the centre
+    of each resonance (the mirrored grid covers ill-conditioned cases near
+    Nyquist, where this quadratic has a near-double root).
+    """
+    b0, b1, b2, a0, a1, a2 = coefficients
+
+    def power_poly(x0: float, x1: float, x2: float) -> tuple[float, float, float]:
+        # |x0 + x1 z + x2 z^2|^2 on the unit circle, as a polynomial in cos(w).
+        return x0 * x0 + x1 * x1 + x2 * x2 - 2 * x0 * x2, 2 * (x0 * x1 + x1 * x2), 4 * x0 * x2
+
+    n0, n1, n2 = power_poly(b0, b1, b2)
+    d0, d1, d2 = power_poly(a0, a1, a2)
+    qa, qb, qc = n2 * d1 - n1 * d2, 2 * (n2 * d0 - n0 * d2), n1 * d0 - n0 * d1
+    disc = qb * qb - 4 * qa * qc
+    if disc < 0:
+        roots = []
+    else:
+        q = -0.5 * (qb + math.copysign(math.sqrt(disc), qb))
+        roots = [r for r in ((q / qa) if qa else None, (qc / q) if q else None) if r is not None]
+    return [math.acos(c) * sample_rate / (2 * math.pi) for c in roots if -1 < c < 1]
+
+
 PEAK_GRID_POINTS = 2048
+# The mirrored grid reaches this close to Nyquist.
+PEAK_GRID_MIN_DISTANCE_HZ = 0.01
+# Only grid local maxima this close to the grid maximum are refined: with >= 14
+# grid points per filter bandwidth, refinement gains far less than this.
+PEAK_REFINE_WINDOW_DB = 1.0
 _GOLDEN = (math.sqrt(5) - 1) / 2
+
+
+def _peak_search_grid(filters: list[dict[str, Any]], coefficients: list[tuple[float, ...]],
+                      sample_rate: float) -> list[float]:
+    """Frequencies (Hz) sampled before refinement.
+
+    Log spacing from 1 Hz resolves narrow features near DC; frequency warping
+    squeezes resonances near Nyquist just as tightly, so a mirrored grid, log
+    spaced in the distance to Nyquist, covers that end. Filter centres and each
+    biquad's exact extremum frequencies are added as well.
+    """
+    nyquist = sample_rate / 2
+    span = math.log(nyquist / PEAK_GRID_MIN_DISTANCE_HZ)
+    points = {math.exp(math.log(nyquist) * i / (PEAK_GRID_POINTS - 1)) for i in range(PEAK_GRID_POINTS)}
+    points |= {nyquist - PEAK_GRID_MIN_DISTANCE_HZ * math.exp(span * i / (PEAK_GRID_POINTS // 2 - 1))
+               for i in range(PEAK_GRID_POINTS // 2)}
+    points |= {float(f["freq"]) for f in filters}
+    points |= {f for c in coefficients for f in _biquad_extremum_freqs(c, sample_rate)}
+    return sorted(f for f in points if 0 < f < nyquist)
 
 
 def peak_gain_db(filters: list[dict[str, Any]], sample_rate: float) -> float:
     """Maximum combined boost from DC to Nyquist (>= 0 dB).
 
-    A fixed grid alone misses narrow resonances (a Q=10 shelf near Nyquist was
-    underestimated by 4 dB), so every local maximum of a dense log grid is
-    refined with a golden-section search, and DC/Nyquist are evaluated exactly.
+    A fixed log grid alone misses narrow resonances (a Q=10 shelf near Nyquist
+    was underestimated by 4 dB). The search samples _peak_search_grid, refines
+    local maxima near the grid maximum with a golden-section search between
+    their neighbours, and evaluates DC/Nyquist exactly.
     """
     coefficients = _active_coefficients(filters, sample_rate)
     if not coefficients:
         return 0.0
-    nyquist = sample_rate / 2
 
-    def response(log_freq: float) -> float:
-        return _cascade_db(coefficients, sample_rate, math.exp(log_freq))
+    def response(freq: float) -> float:
+        return _cascade_db(coefficients, sample_rate, freq)
 
-    low, high = math.log(1.0), math.log(nyquist)
-    grid = sorted({low + (high - low) * i / (PEAK_GRID_POINTS - 1) for i in range(PEAK_GRID_POINTS)}
-                  | {math.log(float(f["freq"])) for f in filters if 0 < float(f["freq"]) < nyquist})
-    values = [response(x) for x in grid]
-    best = max(values + [_cascade_db(coefficients, sample_rate, 0.0),
-                         _cascade_db(coefficients, sample_rate, nyquist)])
+    grid = _peak_search_grid(filters, coefficients, sample_rate)
+    values = [response(f) for f in grid]
+    grid_max = max(values)
+    best = max(grid_max, response(0.0), response(sample_rate / 2))
     for i, value in enumerate(values):
+        if value < grid_max - PEAK_REFINE_WINDOW_DB:
+            continue
         left, right = values[i - 1] if i else -math.inf, values[i + 1] if i + 1 < len(values) else -math.inf
         if value < left or value < right:
             continue
-        a, b = grid[max(i - 1, 0)], grid[min(i + 1, len(grid) - 1)]
+        a, b = grid[i - 1] if i else 0.0, grid[i + 1] if i + 1 < len(grid) else sample_rate / 2
         c, d = b - _GOLDEN * (b - a), a + _GOLDEN * (b - a)
         fc, fd = response(c), response(d)
         for _ in range(40):
@@ -409,21 +460,40 @@ def recommended_preamp_db(filters: list[dict[str, Any]], sample_rate: float,
 
     Never capped: overlapping +12 dB boosts need more than -12 dB.
     """
-    peak = peak_gain_db(filters, sample_rate)
+    return _preamp_for_peak_db(peak_gain_db(filters, sample_rate), margin_db)
+
+
+# Source-rate families VELVET may run DSP at (the EQ runs at the source rate,
+# before any resampling). Peaks near the top of the band grow with the rate:
+# a GEQ curve peaking at +15.2 dB at 48 kHz reaches +17.0 dB at 192 kHz.
+DSP_REFERENCE_SAMPLE_RATES = (22050, 32000, 44100, 48000, 88200, 96000,
+                              176400, 192000, 352800, 384000, 705600, 768000)
+
+
+def _playable_filters(filters: list[dict[str, Any]], sample_rate: float) -> list[dict[str, Any]]:
+    return [f for f in filters if float(f["freq"]) < sample_rate / 2]
+
+
+def _preamp_for_peak_db(peak: float, margin_db: float = DEFAULT_HEADROOM_MARGIN_DB) -> float:
     if peak <= 0.05:
         return 0.0
     return -math.ceil((peak + margin_db) * 10 - 1e-9) / 10
 
 
-# Source rates a saved profile must keep headroom at (EQ runs at the source rate).
-HEADROOM_CHECK_SAMPLE_RATES = (22050, 32000, 44100, 48000, 88200, 96000, 176400, 192000)
+def _worst_case_peak_db(filters: list[dict[str, Any]]) -> float:
+    return max(peak_gain_db(_playable_filters(filters, rate), rate) for rate in DSP_REFERENCE_SAMPLE_RATES)
+
+
+def worst_case_preamp_db(filters: list[dict[str, Any]]) -> float:
+    """Preamp that keeps headroom at every reference source rate."""
+    return _preamp_for_peak_db(_worst_case_peak_db(filters))
 
 
 def validate_dsp_headroom(filters: list[dict[str, Any]]) -> None:
     """Fail-safe policy: reject a filter set whose combined boost cannot be
     offset by the largest allowed preamp attenuation (plus safety margin)."""
-    for rate in HEADROOM_CHECK_SAMPLE_RATES:
-        playable = [f for f in filters if float(f["freq"]) < rate / 2]
+    for rate in DSP_REFERENCE_SAMPLE_RATES:
+        playable = _playable_filters(filters, rate)
         needed = recommended_preamp_db(playable, rate)
         if needed < MIN_PREAMP_DB:
             raise DspValidationError(
@@ -453,28 +523,82 @@ def _active_filters(dsp_profile: dict[str, Any] | None,
     return applied, disabled
 
 
+def _guarded_processing(profile: dict[str, Any], rate: float | None) -> dict[str, Any]:
+    """Filters and preamp actually applied at a source rate.
+
+    Headroom guard: when the saved preamp leaves less than
+    HEADROOM_GUARD_MIN_DB below full scale at this rate, the recommended
+    preamp (with the full safety margin) is applied instead. An unknown rate
+    uses the worst case over DSP_REFERENCE_SAMPLE_RATES.
+    """
+    applied, disabled = _active_filters(profile, rate)
+    preamp_db = _finite_float(profile.get("preamp_db", 0) or 0) or 0.0
+    if rate:
+        peak = peak_gain_db(applied, rate)
+        needed = recommended_preamp_db(applied, rate)
+    else:
+        peak = _worst_case_peak_db(applied)
+        needed = _preamp_for_peak_db(peak)
+    insufficient = peak + preamp_db > -HEADROOM_GUARD_MIN_DB and (peak > 0.05 or preamp_db > 0)
+    effective = min(preamp_db, needed) if insufficient else preamp_db
+    return {"applied": applied, "disabled": disabled, "preamp_db": preamp_db,
+            "effective_preamp_db": effective, "needed_preamp_db": needed, "peak": peak}
+
+
+def _filter_chain(profile: dict[str, Any], applied: list[dict[str, Any]], preamp_db: float) -> str:
+    filters: list[str] = []
+    if preamp_db:
+        # Default float precision would push the EQ below into float32, which
+        # skews resonant low-frequency filters (~0.1 dB) away from the model.
+        filters.append(f"volume={preamp_db}dB:precision=double")
+
+    for flt in applied:
+        freq, gain, q = flt["freq"], flt["gain"], flt["q"]
+        if flt["type"] == "peaking":
+            filters.append(f"equalizer=f={freq}:t=q:w={q}:g={gain}")
+        elif flt["type"] == "low_shelf":
+            filters.append(f"bass=g={gain}:f={freq}:w={q}")
+        elif flt["type"] == "high_shelf":
+            filters.append(f"treble=g={gain}:f={freq}:w={q}")
+
+    if profile.get("volume_normalize"):
+        filters.append("loudnorm=I=-16:TP=-1.5:LRA=11")
+
+    stereo_width = _finite_float(profile.get("stereo_width", 0) or 0)
+    if stereo_width:
+        filters.append(f"stereotools=phase=0:slev={1 + stereo_width/100}")
+
+    room_size = _finite_float(profile.get("reverb_room_size", 0) or 0)
+    wet_dry = _finite_float(profile.get("reverb_wet_dry", 0) or 0)
+    if room_size and wet_dry:
+        filters.append(f"aecho=0.8:0.9:{room_size/100}:{wet_dry/100}")
+
+    return ",".join(filters)
+
+
 def resolve_dsp_plan(dsp_profile: dict[str, Any] | None, sample_rate: Any = None) -> dict[str, Any]:
     """What will actually be applied, plus a combined-response headroom estimate."""
     profile = dsp_profile or {}
     rate = _source_rate(sample_rate)
-    analysis_rate = rate or DEFAULT_ANALYSIS_SAMPLE_RATE
-    applied, disabled = _active_filters(profile, rate)
-    preamp_db = _finite_float(profile.get("preamp_db", 0) or 0) or 0.0
-    peak = peak_gain_db(applied, analysis_rate)
-    net_peak = peak + preamp_db
+    processing = _guarded_processing(profile, rate)
+    effective = processing["effective_preamp_db"]
+    net_peak = processing["peak"] + effective
     return {
-        "filters": applied,
-        "disabled_filters": disabled,
-        "preamp_db": preamp_db,
-        "sample_rate": analysis_rate,
-        "sample_rate_assumed": rate is None,
-        "peak_gain_db": round(peak, 2),
+        "filters": processing["applied"],
+        "disabled_filters": processing["disabled"],
+        "preamp_db": processing["preamp_db"],
+        "effective_preamp_db": effective,
+        "headroom_guard_db": round(effective - processing["preamp_db"], 2),
+        "sample_rate": rate,
+        "headroom_rate_basis": "source sample rate" if rate else "worst case of reference sample rates",
+        "peak_gain_db": round(processing["peak"], 2),
         "net_peak_db": round(net_peak, 2),
         "eq_clipping_risk": net_peak > 0.05,
-        "estimate_scope": ("EQ frequency-response estimate for full-scale input; not a post-DSP "
-                           "sample or true-peak measurement, and excludes level_changing_effects"),
-        "recommended_preamp_db": recommended_preamp_db(applied, analysis_rate),
-        "active": bool(build_dsp_filter_chain(profile, rate)),
+        "estimate_scope": ("EQ frequency-response estimate for full-scale input after the headroom "
+                           "guard; not a post-DSP sample or true-peak measurement, and excludes "
+                           "level_changing_effects"),
+        "recommended_preamp_db": processing["needed_preamp_db"],
+        "active": bool(_filter_chain(profile, processing["applied"], effective)),
         # The headroom estimate covers the EQ stage; these stages change level too.
         "level_changing_effects": [name for name, on in (
             ("loudnorm", profile.get("volume_normalize")),
@@ -487,35 +611,8 @@ def resolve_dsp_plan(dsp_profile: dict[str, Any] | None, sample_rate: Any = None
 def build_dsp_filter_chain(dsp_profile: dict[str, Any] | None, sample_rate: Any = None) -> str:
     if not dsp_profile:
         return ""
-
-    filters: list[str] = []
-
-    preamp_db = _finite_float(dsp_profile.get("preamp_db", 0) or 0) or 0.0
-    if preamp_db:
-        filters.append(f"volume={preamp_db}dB")
-
-    for flt in _active_filters(dsp_profile, _source_rate(sample_rate))[0]:
-        freq, gain, q = flt["freq"], flt["gain"], flt["q"]
-        if flt["type"] == "peaking":
-            filters.append(f"equalizer=f={freq}:t=q:w={q}:g={gain}")
-        elif flt["type"] == "low_shelf":
-            filters.append(f"bass=g={gain}:f={freq}:w={q}")
-        elif flt["type"] == "high_shelf":
-            filters.append(f"treble=g={gain}:f={freq}:w={q}")
-
-    if dsp_profile.get("volume_normalize"):
-        filters.append("loudnorm=I=-16:TP=-1.5:LRA=11")
-
-    stereo_width = _finite_float(dsp_profile.get("stereo_width", 0) or 0)
-    if stereo_width:
-        filters.append(f"stereotools=phase=0:slev={1 + stereo_width/100}")
-
-    room_size = _finite_float(dsp_profile.get("reverb_room_size", 0) or 0)
-    wet_dry = _finite_float(dsp_profile.get("reverb_wet_dry", 0) or 0)
-    if room_size and wet_dry:
-        filters.append(f"aecho=0.8:0.9:{room_size/100}:{wet_dry/100}")
-
-    return ",".join(filters)
+    processing = _guarded_processing(dsp_profile, _source_rate(sample_rate))
+    return _filter_chain(dsp_profile, processing["applied"], processing["effective_preamp_db"])
 
 
 def dsp_effective_status(requested_profile_id: Any, dsp_profile: dict[str, Any] | None,
@@ -535,4 +632,5 @@ def dsp_effective_status(requested_profile_id: Any, dsp_profile: dict[str, Any] 
             "effective_profile_id": requested_profile_id,
             "status": "applied", "reason": None,
             "disabled_filters": plan["disabled_filters"],
+            "headroom_guard_db": plan["headroom_guard_db"],
             "net_peak_db": plan["net_peak_db"], "eq_clipping_risk": plan["eq_clipping_risk"]}

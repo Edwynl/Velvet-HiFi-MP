@@ -21,6 +21,7 @@ from dsp_engine import (
     validate_dsp_filters,
     validate_dsp_headroom,
     validate_dsp_number,
+    worst_case_preamp_db,
 )
 
 try:
@@ -206,14 +207,17 @@ class ResolvedPlanTests(unittest.TestCase):
         self.assertIn("equalizer=f=1000.0", chain)
         self.assertNotIn("treble", chain)
 
-    def test_plan_reports_headroom_and_eq_clipping_risk(self):
+    def test_plan_reports_headroom_and_guarded_net_peak(self):
         profile = {"preamp_db": -1, "filter_chain_json": json.dumps([
             {"type": "peaking", "freq": 1000, "gain": 6, "q": 1.0, "enabled": True},
         ])}
         plan = resolve_dsp_plan(profile, sample_rate=48000)
         self.assertAlmostEqual(plan["peak_gain_db"], 6.0, delta=0.05)
-        self.assertAlmostEqual(plan["net_peak_db"], 5.0, delta=0.05)
-        self.assertTrue(plan["eq_clipping_risk"])
+        # Saved -1 dB is insufficient: the guard adds attenuation to -7.0 dB.
+        self.assertEqual(plan["effective_preamp_db"], -7.0)
+        self.assertEqual(plan["headroom_guard_db"], -6.0)
+        self.assertAlmostEqual(plan["net_peak_db"], -1.0, delta=0.05)
+        self.assertFalse(plan["eq_clipping_risk"])
         self.assertNotIn("clipping_risk", plan)  # not a post-DSP measurement
         self.assertIn("not a post-DSP", plan["estimate_scope"])
         self.assertLessEqual(plan["recommended_preamp_db"], -6.0)
@@ -228,6 +232,65 @@ class ResolvedPlanTests(unittest.TestCase):
     def test_plan_without_processing_is_inactive(self):
         plan = resolve_dsp_plan({"preamp_db": 0, "filter_chain_json": "[]"}, sample_rate=44100)
         self.assertFalse(plan["active"])
+
+
+CODEX_GEQ_GAINS = [4, -12, -4, 4, 12, 0, 0, 12, 12, 12]
+CODEX_GEQ_FILTERS = [{"type": "peaking", "freq": f, "gain": g, "q": 1.41, "enabled": True}
+                     for f, g in zip(GRAPHIC_BANDS, CODEX_GEQ_GAINS) if g]
+
+
+class SampleRateHeadroomTests(unittest.TestCase):
+    """Headroom must hold at the rate the EQ actually runs at, not just 48 kHz."""
+
+    def test_worst_case_preamp_covers_every_reference_rate(self):
+        # Codex review: +15.16 dB at 48 kHz but +16.96 dB at 192 kHz.
+        self.assertAlmostEqual(peak_gain_db(CODEX_GEQ_FILTERS, 192000), 16.958, delta=0.01)
+        preamp = worst_case_preamp_db(CODEX_GEQ_FILTERS)
+        for rate in dsp_engine.DSP_REFERENCE_SAMPLE_RATES:
+            playable = [f for f in CODEX_GEQ_FILTERS if f["freq"] < rate / 2]  # others are disabled
+            with self.subTest(rate=rate):
+                self.assertLessEqual(peak_gain_db(playable, rate) + preamp,
+                                     -dsp_engine.DEFAULT_HEADROOM_MARGIN_DB + 1e-6)
+
+    def test_playback_guard_adds_attenuation_when_saved_preamp_is_insufficient(self):
+        profile = {"preamp_db": 0, "filter_chain_json": json.dumps(
+            [{"type": "peaking", "freq": 1000, "gain": 12, "q": 1.0, "enabled": True}])}
+        plan = resolve_dsp_plan(profile, sample_rate=44100)
+        self.assertLessEqual(plan["effective_preamp_db"], -13.0)
+        self.assertAlmostEqual(plan["headroom_guard_db"], plan["effective_preamp_db"], delta=1e-9)
+        self.assertFalse(plan["eq_clipping_risk"])
+        self.assertEqual(plan["preamp_db"], 0.0)  # the saved value is reported unchanged
+        self.assertIn(f"volume={plan['effective_preamp_db']}dB", build_dsp_filter_chain(profile, 44100))
+
+    def test_guard_tracks_the_actual_source_rate(self):
+        profile = {"preamp_db": -16.2, "filter_chain_json": json.dumps(CODEX_GEQ_FILTERS)}
+        at_48k = resolve_dsp_plan(profile, sample_rate=48000)
+        at_192k = resolve_dsp_plan(profile, sample_rate=192000)
+        self.assertEqual(at_48k["headroom_guard_db"], 0.0)
+        self.assertLess(at_192k["headroom_guard_db"], 0.0)
+        self.assertLessEqual(at_192k["net_peak_db"], -dsp_engine.DEFAULT_HEADROOM_MARGIN_DB + 0.01)
+
+    def test_unknown_source_rate_uses_the_worst_case(self):
+        profile = {"preamp_db": 0, "filter_chain_json": json.dumps(CODEX_GEQ_FILTERS)}
+        plan = resolve_dsp_plan(profile)
+        self.assertEqual(plan["effective_preamp_db"], worst_case_preamp_db(CODEX_GEQ_FILTERS))
+
+    def test_saved_preamp_with_enough_headroom_is_left_alone(self):
+        # Net peak -0.8 dB: inside the 1 dB recommendation, but not clipping.
+        profile = {"preamp_db": -3.0, "filter_chain_json": json.dumps(
+            [{"type": "peaking", "freq": 1000, "gain": 2.2, "q": 1.0, "enabled": True}])}
+        self.assertEqual(resolve_dsp_plan(profile, 44100)["headroom_guard_db"], 0.0)
+
+    def test_positive_preamp_without_boost_is_guarded(self):
+        plan = resolve_dsp_plan({"preamp_db": 6, "filter_chain_json": "[]"}, 44100)
+        self.assertEqual(plan["effective_preamp_db"], 0.0)
+        self.assertEqual(plan["headroom_guard_db"], -6.0)
+
+    def test_factory_presets_are_not_changed_by_the_guard(self):
+        for preset in dsp_engine.FACTORY_DSP_PRESETS:
+            for rate in dsp_engine.DSP_REFERENCE_SAMPLE_RATES:
+                with self.subTest(preset=preset["name"], rate=rate):
+                    self.assertEqual(resolve_dsp_plan(preset, rate)["headroom_guard_db"], 0.0)
 
 
 class EffectiveStatusTests(unittest.TestCase):
@@ -288,7 +351,9 @@ class PeakSearchPropertyTests(unittest.TestCase):
 
     def test_never_underestimates_brute_force_peak(self):
         for rate, filters in _random_adversarial_filter_sets(seed=1234, count=60):
-            freqs = numpy.concatenate([numpy.geomspace(0.5, rate / 2, 200_000), [0.0, rate / 2]])
+            # Dense near DC (log) and near Nyquist (log distance), where warping squeezes peaks.
+            freqs = numpy.concatenate([numpy.geomspace(0.5, rate / 2, 200_000),
+                                       rate / 2 - numpy.geomspace(1e-3, rate / 2, 200_000), [0.0, rate / 2]])
             z1 = numpy.exp(-2j * numpy.pi * freqs / rate)
             response = numpy.ones_like(z1)
             for b0, b1, b2, a0, a1, a2 in dsp_engine._active_coefficients(filters, rate):
@@ -312,15 +377,16 @@ class JavaScriptParityTests(unittest.TestCase):
             "const cases=JSON.parse(fs.readFileSync(0,'utf8'));"
             "ctx.cases=cases;"
             "process.stdout.write(JSON.stringify(vm.runInContext("
-            "'cases.map(([r,f])=>dspPeakGainDb(f,r))',ctx)));"
+            "'cases.map(([r,f])=>[dspPeakGainDb(f,r),dspWorstCasePreampDb(f)])',ctx)));"
         )
         result = subprocess.run(["node", "-e", runner], input=json.dumps(cases),
                                 capture_output=True, text=True, check=True)
         js_peaks = json.loads(result.stdout)
         self.assertEqual(len(js_peaks), len(cases))
-        for (rate, filters), js_peak in zip(cases, js_peaks):
+        for (rate, filters), (js_peak, js_preamp) in zip(cases, js_peaks):
             with self.subTest(rate=rate, filters=filters):
                 self.assertAlmostEqual(js_peak, peak_gain_db(filters, rate), delta=0.01)
+                self.assertAlmostEqual(js_preamp, worst_case_preamp_db(filters), delta=0.11)
 
 
 @unittest.skipUnless(shutil.which("ffmpeg") and numpy is not None, "FFmpeg and numpy required")
@@ -358,10 +424,21 @@ class FFmpegResponseMatchTests(unittest.TestCase):
             for rate in (44100, 48000, 96000):
                 with self.subTest(filters=filters[0], rate=rate):
                     spectrum, _ = self._ffmpeg_spectrum(chain, rate, 1 << 18, 1 << 22)
-                    actual = 20 * math.log10(float(spectrum.max()))
+                    guard = resolve_dsp_plan({"filter_chain_json": json.dumps(filters)}, rate)
+                    actual = 20 * math.log10(float(spectrum.max())) - guard["effective_preamp_db"]
                     predicted = peak_gain_db(filters, rate)
                     self.assertGreaterEqual(predicted, actual - 0.05)
                     self.assertLessEqual(predicted, actual + 0.5)
+
+    def test_guarded_chain_output_stays_below_full_scale_at_every_rate(self):
+        # On-wire check of the whole FFmpeg chain (preamp + EQ), Codex GEQ
+        # counterexample saved with the old 48 kHz-only preamp of -16.2 dB.
+        profile = {"preamp_db": -16.2, "filter_chain_json": json.dumps(CODEX_GEQ_FILTERS)}
+        for rate in (44100, 48000, 96000, 192000, 384000):
+            with self.subTest(rate=rate):
+                chain = build_dsp_filter_chain(profile, rate)
+                spectrum, _ = self._ffmpeg_spectrum(chain, rate, 1 << 18, 1 << 20)
+                self.assertLessEqual(20 * math.log10(float(spectrum.max())), -0.95)
 
     def test_model_matches_ffmpeg_for_all_filter_types(self):
         filters = [
@@ -375,7 +452,8 @@ class FFmpegResponseMatchTests(unittest.TestCase):
             freqs = [f for f in (30, 90, 300, 1000, 1500, 2000, 5000, 9000, 15000, 20000)
                      if f < rate / 2]
             measured = self._ffmpeg_response_db(chain, rate, freqs)
-            modeled = filters_response_db(filters, rate, freqs)
+            preamp = resolve_dsp_plan({"filter_chain_json": json.dumps(filters)}, rate)["effective_preamp_db"]
+            modeled = [db + preamp for db in filters_response_db(filters, rate, freqs)]
             for freq, got, want in zip(freqs, measured, modeled):
                 with self.subTest(rate=rate, freq=freq):
                     self.assertAlmostEqual(got, want, delta=0.5)

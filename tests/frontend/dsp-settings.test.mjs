@@ -402,13 +402,25 @@ async function main() {
     // and is never capped at -12 dB.
     dom.window.selectEQPreset('');
     [4, 5, 6].forEach(band => dom.window.handleEQSliderInput(band, '12'));
-    const peak = dom.window.eval('dspPeakGainDb(graphicEqFilters())');
+    const peak = dom.window.eval('dspWorstCaseHeadroom(graphicEqFilters()).peakDb');
     const preamp = dom.window.eval('recommendedGraphicEqPreamp()');
     assert.ok(peak > 13, `expected stacked +12 dB bands to peak above 13 dB, got ${peak}`);
     assert.ok(preamp <= -(peak + 1) && preamp > -(peak + 1.11),
       `expected preamp to cover the combined peak plus 1 dB margin, got ${preamp} for ${peak}`);
     assert.ok(preamp < -12, 'expected no -12 dB headroom cap');
-    assert.match(document.querySelector('#eq-headroom-note').textContent, /EQ peak \+1\d\.\d dB/);
+    // The note is debounced while sliders move.
+    await waitFor(() => /EQ peak \+1\d\.\d dB, worst case/.test(document.querySelector('#eq-headroom-note').textContent));
+
+    // Codex review 2: the same curve peaks +15.16 dB at 48 kHz but +16.96 dB at
+    // 192 kHz, so a preamp from 48 kHz alone (-16.2 dB) clipped at 192 kHz.
+    const codexGains = [4, -12, -4, 4, 12, 0, 0, 12, 12, 12];
+    codexGains.forEach((gain, band) => dom.window.handleEQSliderInput(band, String(gain)));
+    const at48k = dom.window.eval('dspPeakGainDb(graphicEqFilters(), 48000)');
+    const at192k = dom.window.eval('dspPeakGainDb(graphicEqFilters(), 192000)');
+    assert.ok(Math.abs(at48k - 15.163) < 0.01 && Math.abs(at192k - 16.958) < 0.01, `${at48k} / ${at192k}`);
+    const codexPreamp = dom.window.eval('recommendedGraphicEqPreamp()');
+    assert.ok(codexPreamp <= -(at192k + 1), `expected 192 kHz to be covered, got ${codexPreamp}`);
+    assert.equal(codexPreamp, -18.1);
     // Same model as dsp_engine.py (FFmpeg-verified there): a single +6 dB
     // peaking band peaks at exactly +6 dB at its centre frequency.
     const single = dom.window.eval(
@@ -439,8 +451,32 @@ async function main() {
     assert.equal(applied[1], 'DSP Hot');
     assert.ok(applied.some(line => /above Nyquist disabled/.test(line)));
     assert.ok(applied.some(line => /EQ may clip: estimated peak \+2\.5 dB/.test(line)));
+    const guarded = dom.window.describeSignalProcessing('native', { name: 'Hot' }, 'none',
+      { active: true, headroom_guard_db: -13, effective_preamp_db: -13 });
+    assert.ok(guarded.some(line => /Headroom guard: -13\.0 dB extra attenuation/.test(line)));
     const browserLines = dom.window.describeSignalProcessing('browser', null, 'none');
     assert.equal(JSON.stringify(browserLines), JSON.stringify(['No PCM upsampling', 'VELVET DSP off (source direct)']));
+
+    // Codex review 2: in a cast zone, neither DSP nor upsampling reaches the
+    // renderer, so changing them must not re-cast (restart) the track.
+    dom.window.eval(`
+      state.outputMode = 'cast';
+      state.castDevice = { udn: 'uuid:renderer', name: 'EXN100' };
+      state.currentTrack = { id: 1, title: 'Cast Track' };
+    `);
+    const requestsBeforeCastChanges = harness.requests.length;
+    const upsampleSelect = document.querySelector('#upsample-select');
+    upsampleSelect.value = '2x';
+    upsampleSelect.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
+    const dspSelect = document.querySelector('#dsp-select');
+    dspSelect.value = '';
+    dspSelect.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
+    await new Promise(resolve => setTimeout(resolve, 100));
+    assert.ok(
+      !harness.requests.slice(requestsBeforeCastChanges).some(request => request.path.startsWith('/api/cast/')),
+      'expected no re-cast when upsampling or DSP changes in a cast zone');
+    assert.equal(dom.window.eval('state.upsample'), '2x');
+    dom.window.eval("state.outputMode = 'browser'; state.castDevice = null; state.currentTrack = null;");
   } finally {
     dom.window.close();
   }

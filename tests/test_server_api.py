@@ -408,12 +408,37 @@ class ServerApiTests(unittest.TestCase):
         self.assertEqual(resp.status_code, 200)
         plan = resp.json()
         self.assertGreater(plan["peak_gain_db"], 13.0)
-        self.assertTrue(plan["eq_clipping_risk"])
         self.assertLess(plan["recommended_preamp_db"], -14.0)
+        # Saved -12 dB is insufficient: playback applies the recommended preamp.
+        self.assertEqual(plan["preamp_db"], -12.0)
+        self.assertEqual(plan["effective_preamp_db"], plan["recommended_preamp_db"])
+        self.assertLess(plan["headroom_guard_db"], 0)
+        self.assertFalse(plan["eq_clipping_risk"])
         self.assertEqual(plan["sample_rate"], 48000)
         self.assertEqual(self.client.get("/api/dsp/profiles/9999/resolved").status_code, 404)
         self.assertEqual(self.client.get(
             f"/api/dsp/profiles/{created['id']}/resolved?sample_rate=0").status_code, 422)
+
+    def test_insufficient_saved_preamp_is_guarded_on_the_stream(self):
+        # Codex review: +12 dB with preamp 0 saved fine and then played +12 dB.
+        self._allow_music_root()
+        with self._connect() as conn:
+            conn.execute("UPDATE tracks SET sample_rate=44100 WHERE id=1")
+            conn.commit()
+        created = self.client.post("/api/dsp/profiles", json={
+            "name": "Hot", "preamp_db": 0,
+            "filters": [{"type": "peaking", "freq": 1000, "gain": 12, "q": 1.0, "enabled": True}],
+        })
+        self.assertEqual(created.status_code, 200)
+        captured = {}
+
+        async def fake_stream(fp, dsp_filter, limit):
+            captured["chain"] = dsp_filter
+            return server.Response(b"", media_type="audio/flac")
+
+        with patch.object(server, "_stream_with_dsp", side_effect=fake_stream):
+            self.assertEqual(self.client.get(f"/api/stream/1?dsp={created.json()['id']}").status_code, 200)
+        self.assertTrue(captured["chain"].startswith("volume=-13.0dB"))
 
     def test_stream_with_unknown_dsp_profile_fails_closed(self):
         self._allow_music_root()
