@@ -137,11 +137,13 @@ const hours = h => Math.floor(1_700_000_000_000 / 1000) + h * 3600;
   assert.equal(called, false);
 }
 
-// 8. Casting sends only the track id; the server mints the renderer's URL.
+// 8. Casting sends only the track id (plus the requested DSP preset, which
+// the server reports as bypassed); the server mints the renderer's URL.
 {
   const castCalls = [];
   const castContext = vm.createContext({
     JSON,
+    state: { dspProfile: '2' },
     location: { origin: 'http://localhost:8765' },
     audio: { pause() {} },
     showToast() {},
@@ -153,7 +155,7 @@ const hours = h => Math.floor(1_700_000_000_000 / 1000) + h * 3600;
   vm.runInContext(between('async function castTo(', 'async function toggleCastMenu('), castContext);
   await vm.runInContext('castTo({ id: 5 }, { udn: "uuid:renderer", name: "Marantz" })', castContext);
   assert.equal(castCalls[0].path, '/cast/uuid:renderer');
-  assert.deepEqual(JSON.parse(castCalls[0].opts.body), { track_id: 5 });
+  assert.deepEqual(JSON.parse(castCalls[0].opts.body), { track_id: 5, dsp_profile_id: 2 });
 }
 
 console.log('frontend_stream_ticket_check=OK');

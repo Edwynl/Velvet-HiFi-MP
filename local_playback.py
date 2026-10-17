@@ -21,7 +21,7 @@ from typing import Optional
 import numpy
 
 import env_loader  # noqa: F401 - load .env for direct module use
-from dsp_engine import build_dsp_filter_chain
+from dsp_engine import build_dsp_filter_chain, dsp_effective_status
 from path_compat import filesystem_path
 
 try:
@@ -559,6 +559,9 @@ def play_local(
 
     if not track:
         return {"success": False, "error": "Track not found"}
+    if dsp_profile_id and not dsp_profile:
+        # Fail closed: never play unprocessed audio for a requested preset.
+        return {"success": False, "error": "DSP profile not found"}
 
     file_path = track["file_path"]
     if not Path(filesystem_path(file_path)).exists():
@@ -583,7 +586,8 @@ def play_local(
                 upsample,
                 float(device_info.get("sample_rate", 48000) or 48000),
             )
-            dsp_filter = build_dsp_filter_chain(dict(dsp_profile)) if dsp_profile else ""
+            dsp_filter = (build_dsp_filter_chain(dict(dsp_profile), track["sample_rate"])
+                          if dsp_profile else "")
             success = player.play_file(
                 file_path,
                 volume,
@@ -610,6 +614,9 @@ def play_local(
                     "latency": latency,
                     "track_id": track_id,
                     "dsp_profile_id": dsp_profile_id,
+                    "dsp": dsp_effective_status(
+                        dsp_profile_id, dict(dsp_profile) if dsp_profile else None,
+                        track["sample_rate"]),
                     "upsample": upsample,
                     "output_sample_rate": player.output_sample_rate,
                     "requested_output_sample_rate": output_sample_rate,

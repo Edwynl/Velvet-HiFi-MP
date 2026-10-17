@@ -288,38 +288,180 @@ class ServerApiTests(unittest.TestCase):
         self.assertEqual(profile["preamp_db"], -2.0)
         self.assertIn('"type": "peaking"', profile["filter_chain_json"])
 
-    def test_create_custom_dsp_profile_sanitizes_invalid_filters(self):
-        resp = self.client.post(
-            "/api/dsp/profiles",
-            json={
-                "name": "Unsafe Custom",
-                "filters": [
-                    {"type": "PEAKING", "freq": "18", "gain": "99", "q": "0.01", "enabled": True},
-                    {"type": "unknown", "freq": 1000, "gain": 2, "q": 1.0, "enabled": True},
-                    {"type": "high_shelf", "freq": "12000", "gain": "-3.5", "q": "2.2", "enabled": False},
-                    {"type": "low_shelf", "freq": "oops", "gain": 4, "q": 1.0, "enabled": True},
-                ],
-            },
-        )
+    def _dsp_profile_count(self):
+        with self._connect() as conn:
+            return conn.execute("SELECT COUNT(*) FROM dsp_profiles").fetchone()[0]
+
+    def test_create_custom_dsp_profile_rejects_invalid_filters_without_mutation(self):
+        valid = {"type": "peaking", "freq": 1000, "gain": 2, "q": 1.0, "enabled": True}
+        invalid_filters = [
+            {**valid, "type": "PEAKING", "freq": "18"},       # below 20 Hz
+            {**valid, "gain": "99"},                          # excessive gain
+            {**valid, "q": "0.01"},                           # Q too small
+            {**valid, "q": 0},
+            {**valid, "freq": -1000},
+            {**valid, "type": "unknown"},
+            {**valid, "freq": "oops"},
+        ]
+        before = self._dsp_profile_count()
+        for bad in invalid_filters:
+            with self.subTest(bad=bad):
+                resp = self.client.post("/api/dsp/profiles",
+                                        json={"name": "Unsafe Custom", "filters": [valid, bad]})
+                self.assertEqual(resp.status_code, 422)
+                self.assertIn("filter 2", resp.json()["detail"])
+        self.assertEqual(self._dsp_profile_count(), before)
+
+    def test_dsp_api_rejects_non_finite_json_values(self):
+        before = self._dsp_profile_count()
+        for raw in [
+            '{"name":"x","filters":[{"type":"peaking","freq":NaN,"gain":2,"q":1}]}',
+            '{"name":"x","filters":[{"type":"peaking","freq":1000,"gain":Infinity,"q":1}]}',
+            '{"name":"x","filters":[{"type":"peaking","freq":1000,"gain":2,"q":-Infinity}]}',
+            '{"name":"x","preamp_db":NaN,"filters":[]}',
+            '{"name":"x","stereo_width":Infinity}',
+        ]:
+            with self.subTest(raw=raw):
+                resp = self.client.post("/api/dsp/profiles", content=raw,
+                                        headers={"Content-Type": "application/json"})
+                self.assertEqual(resp.status_code, 422)
+        self.assertEqual(self._dsp_profile_count(), before)
+
+    def test_dsp_api_validates_scalar_fields_and_filter_count(self):
+        valid = {"type": "peaking", "freq": 1000, "gain": 2, "q": 1.0, "enabled": True}
+        for body in [
+            {"name": "x", "filters": [valid] * 21},
+            {"name": "x", "preamp_db": "loud"},
+            {"name": "x", "preamp_db": -31},
+            {"name": "x", "preamp_db": 7},
+            {"name": "x", "stereo_width": 500},
+            {"name": "x", "reverb_room_size": -1},
+            {"name": "x", "reverb_wet_dry": 101},
+            {"name": "x", "category": "<script>"},
+            {"name": "", "filters": []},
+            {"name": "x" * 121},
+            {"name": 5},
+            {"name": "x", "filters": "not a list"},
+            {"name": "x", "category": []},
+            {"name": "x", "category": {"a": 1}},
+            {"name": "x", "eq_bands": 1},
+            {"name": "x", "eq_bands": [1]},
+            {"name": "x", "eq_bands": "nope"},
+            {"name": "x", "eq_bands": [{"freq": 1000, "gain": 99}]},
+            {"name": "x", "volume_normalize": 2},
+            {"name": "x", "volume_normalize": "true"},
+            # Valid filters whose combined boost no allowed preamp can offset.
+            {"name": "x", "filters": [{"type": "high_shelf", "freq": 19900, "gain": 12, "q": 10}]},
+            {"name": "x", "filters": [{**valid, "gain": 18}] * 20},
+        ]:
+            with self.subTest(body=str(body)[:60]):
+                self.assertEqual(self.client.post("/api/dsp/profiles", json=body).status_code, 422)
+        ok = self.client.post("/api/dsp/profiles",
+                              json={"name": "x", "preamp_db": "-13.5", "volume_normalize": 1,
+                                    "filters": [{**valid, "gain": 1}] * 20})
+        self.assertEqual(ok.status_code, 200)
+        saved = self.client.get(f"/api/dsp/profiles/{ok.json()['id']}").json()
+        self.assertEqual(saved["preamp_db"], -13.5)
+        self.assertEqual(len(server.json.loads(saved["filter_chain_json"])), 20)
+
+    def test_update_with_invalid_payload_leaves_profile_unchanged(self):
+        created = self.client.post("/api/dsp/profiles", json={
+            "name": "Keep me", "preamp_db": -3,
+            "filters": [{"type": "low_shelf", "freq": 90, "gain": 2, "q": 0.7, "enabled": True}],
+        }).json()
+        before = self.client.get(f"/api/dsp/profiles/{created['id']}").json()
+        resp = self.client.put(f"/api/dsp/profiles/{created['id']}", json={
+            "name": "Changed", "preamp_db": -1,
+            "filters": [{"type": "peaking", "freq": 1000, "gain": 50, "q": 1.0}],
+        })
+        self.assertEqual(resp.status_code, 422)
+        after = self.client.get(f"/api/dsp/profiles/{created['id']}").json()
+        self.assertEqual(after, before)
+
+    def test_legacy_eq_bands_payload_is_validated_and_converted(self):
+        created = self.client.post("/api/dsp/profiles", json={
+            "name": "Legacy client", "eq_bands": [{"freq": 1000, "gain": 3, "q": 1.0}]}).json()
+        saved = self.client.get(f"/api/dsp/profiles/{created['id']}").json()
+        self.assertEqual(server.json.loads(saved["filter_chain_json"]),
+                         [{"type": "peaking", "freq": 1000.0, "gain": 3.0, "q": 1.0, "enabled": True}])
+
+    def test_saving_an_empty_filter_list_bypasses_legacy_bands(self):
+        with self._connect() as conn:
+            profile_id = conn.execute(
+                "INSERT INTO dsp_profiles (name, eq_bands, filter_chain_json) VALUES (?, ?, ?)",
+                ("Legacy", '[{"freq":1000,"gain":6,"q":1}]', '[{"type":"peaking","freq":1000,"gain":6,"q":1}]'),
+            ).lastrowid
+            conn.commit()
+        self.assertEqual(self.client.put(f"/api/dsp/profiles/{profile_id}",
+                                         json={"filters": []}).status_code, 200)
+        saved = self.client.get(f"/api/dsp/profiles/{profile_id}").json()
+        self.assertEqual(saved["filter_chain_json"], "[]")
+        self.assertEqual(server.build_dsp_filter_chain(saved), "")
+
+    def test_resolved_dsp_plan_reports_combined_headroom(self):
+        created = self.client.post("/api/dsp/profiles", json={
+            "name": "Stacked", "preamp_db": -12,
+            "filters": [{"type": "peaking", "freq": f, "gain": 12, "q": 1.41, "enabled": True}
+                        for f in (500, 1000, 2000)],
+        }).json()
+        resp = self.client.get(f"/api/dsp/profiles/{created['id']}/resolved?sample_rate=48000")
         self.assertEqual(resp.status_code, 200)
-        profile_id = resp.json()["id"]
+        plan = resp.json()
+        self.assertGreater(plan["peak_gain_db"], 13.0)
+        self.assertLess(plan["recommended_preamp_db"], -14.0)
+        # Saved -12 dB is insufficient: playback applies the recommended preamp.
+        self.assertEqual(plan["preamp_db"], -12.0)
+        self.assertEqual(plan["effective_preamp_db"], plan["recommended_preamp_db"])
+        self.assertLess(plan["headroom_guard_db"], 0)
+        self.assertFalse(plan["eq_clipping_risk"])
+        self.assertEqual(plan["sample_rate"], 48000)
+        self.assertEqual(self.client.get("/api/dsp/profiles/9999/resolved").status_code, 404)
+        self.assertEqual(self.client.get(
+            f"/api/dsp/profiles/{created['id']}/resolved?sample_rate=0").status_code, 422)
 
-        detail_resp = self.client.get(f"/api/dsp/profiles/{profile_id}")
-        self.assertEqual(detail_resp.status_code, 200)
-        profile = detail_resp.json()
-        filter_chain = server.json.loads(profile["filter_chain_json"])
+    def test_insufficient_saved_preamp_is_guarded_on_the_stream(self):
+        # Codex review: +12 dB with preamp 0 saved fine and then played +12 dB.
+        self._allow_music_root()
+        with self._connect() as conn:
+            conn.execute("UPDATE tracks SET sample_rate=44100 WHERE id=1")
+            conn.commit()
+        created = self.client.post("/api/dsp/profiles", json={
+            "name": "Hot", "preamp_db": 0,
+            "filters": [{"type": "peaking", "freq": 1000, "gain": 12, "q": 1.0, "enabled": True}],
+        })
+        self.assertEqual(created.status_code, 200)
+        captured = {}
 
-        self.assertEqual(len(filter_chain), 2)
-        self.assertEqual(filter_chain[0]["type"], "peaking")
-        self.assertEqual(filter_chain[0]["freq"], 20.0)
-        self.assertEqual(filter_chain[0]["gain"], 18.0)
-        self.assertEqual(filter_chain[0]["q"], 0.1)
-        self.assertTrue(filter_chain[0]["enabled"])
-        self.assertEqual(filter_chain[1]["type"], "high_shelf")
-        self.assertEqual(filter_chain[1]["freq"], 12000.0)
-        self.assertEqual(filter_chain[1]["gain"], -3.5)
-        self.assertEqual(filter_chain[1]["q"], 2.2)
-        self.assertFalse(filter_chain[1]["enabled"])
+        async def fake_stream(fp, dsp_filter, limit):
+            captured["chain"] = dsp_filter
+            return server.Response(b"", media_type="audio/flac")
+
+        with patch.object(server, "_stream_with_dsp", side_effect=fake_stream):
+            self.assertEqual(self.client.get(f"/api/stream/1?dsp={created.json()['id']}").status_code, 200)
+        self.assertTrue(captured["chain"].startswith("volume=-13.0dB"))
+
+    def test_stream_with_unknown_dsp_profile_fails_closed(self):
+        self._allow_music_root()
+        with patch.object(server.asyncio, "create_subprocess_exec",
+                          side_effect=AssertionError("must not transcode")):
+            for method in ("head", "get"):
+                with self.subTest(method=method):
+                    resp = getattr(self.client, method)("/api/stream/1?dsp=9999")
+                    self.assertEqual(resp.status_code, 404)
+        self.assertIn("DSP profile not found", resp.json()["detail"])
+
+    def test_cast_reports_dsp_as_bypassed_on_dlna_renderers(self):
+        self._allow_music_root()
+        with patch.object(upnp_server, "cast_track", return_value=True):
+            with_dsp = self.client.post("/api/cast/renderer-1",
+                                        json={"track_id": 1, "dsp_profile_id": 2}).json()
+            without_dsp = self.client.post("/api/cast/renderer-1", json={"track_id": 1}).json()
+        self.assertTrue(with_dsp["success"])
+        self.assertEqual(with_dsp["dsp"]["requested_profile_id"], 2)
+        self.assertIsNone(with_dsp["dsp"]["effective_profile_id"])
+        self.assertEqual(with_dsp["dsp"]["status"], "bypassed")
+        self.assertIn("not applied", with_dsp["dsp"]["reason"])
+        self.assertEqual(without_dsp["dsp"]["status"], "off")
 
     def test_factory_dsp_profile_can_be_cloned_but_not_updated_or_deleted(self):
         update_resp = self.client.put(
@@ -551,7 +693,7 @@ class ServerApiTests(unittest.TestCase):
             response = self.client.post("/api/cast/renderer-1", json={"track_id": 1},
                                         headers={"X-API-Key": "session-key"})
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json(), {"success": True})
+        self.assertTrue(response.json()["success"])
         self.assertIn("/api/stream/1?ticket=", sent["url"])
         self.assertNotIn("api_key", sent["url"] + sent["meta"])
         self.assertNotIn("session-key", sent["url"] + sent["meta"])

@@ -22,16 +22,183 @@ function renderEQPresets() {
   container.innerHTML = html;
 }
 
+// Mirrors dsp_engine.py: RBJ biquads as FFmpeg renders them. FFmpeg's
+// bass/treble shelves behave like an RBJ shelf with Q scaled by sqrt(2).
+const EQ_ANALYSIS_SAMPLE_RATE = 48000;
+const EQ_HEADROOM_MARGIN_DB = 1.0;
+// Mirrors dsp_engine.DSP_REFERENCE_SAMPLE_RATES: the EQ runs at the source
+// rate, and peaks near the top of the band grow with it (+15.2 dB at 48 kHz
+// vs +17.0 dB at 192 kHz for the same curve), so a saved preamp must cover all.
+const DSP_REFERENCE_SAMPLE_RATES = [22050, 32000, 44100, 48000, 88200, 96000,
+  176400, 192000, 352800, 384000, 705600, 768000];
+
+function dspBiquadCoefficients(filter, sampleRate) {
+  const isShelf = filter.type === 'low_shelf' || filter.type === 'high_shelf';
+  const q = Number(filter.q) * (isShelf ? Math.SQRT2 : 1);
+  const A = Math.pow(10, Number(filter.gain) / 40);
+  const w0 = 2 * Math.PI * Number(filter.freq) / sampleRate;
+  const cosW0 = Math.cos(w0);
+  const alpha = Math.sin(w0) / (2 * q);
+  const root = 2 * Math.sqrt(A) * alpha;
+  if (filter.type === 'low_shelf') {
+    return [A * ((A + 1) - (A - 1) * cosW0 + root), 2 * A * ((A - 1) - (A + 1) * cosW0),
+      A * ((A + 1) - (A - 1) * cosW0 - root),
+      (A + 1) + (A - 1) * cosW0 + root, -2 * ((A - 1) + (A + 1) * cosW0), (A + 1) + (A - 1) * cosW0 - root];
+  }
+  if (filter.type === 'high_shelf') {
+    return [A * ((A + 1) + (A - 1) * cosW0 + root), -2 * A * ((A - 1) + (A + 1) * cosW0),
+      A * ((A + 1) + (A - 1) * cosW0 - root),
+      (A + 1) - (A - 1) * cosW0 + root, 2 * ((A - 1) - (A + 1) * cosW0), (A + 1) - (A - 1) * cosW0 - root];
+  }
+  return [1 + alpha * A, -2 * cosW0, 1 - alpha * A, 1 + alpha / A, -2 * cosW0, 1 - alpha / A];
+}
+
+function dspActiveCoefficients(filters, sampleRate) {
+  return filters
+    .filter(f => f.enabled !== false && Number(f.gain))
+    .map(f => dspBiquadCoefficients(f, sampleRate));
+}
+
+// H(e^jw) = (b0 + b1 e^-jw + b2 e^-2jw) / (a0 + a1 e^-jw + a2 e^-2jw), cascaded.
+function dspCascadeDb(coefficients, sampleRate, freq) {
+  const w = 2 * Math.PI * freq / sampleRate;
+  const cos1 = Math.cos(w), sin1 = Math.sin(w), cos2 = Math.cos(2 * w), sin2 = Math.sin(2 * w);
+  let re = 1, im = 0;
+  for (const [b0, b1, b2, a0, a1, a2] of coefficients) {
+    const nRe = b0 + b1 * cos1 + b2 * cos2;
+    const nIm = -b1 * sin1 - b2 * sin2;
+    const dRe = a0 + a1 * cos1 + a2 * cos2;
+    const dIm = -a1 * sin1 - a2 * sin2;
+    const dMag = dRe * dRe + dIm * dIm;
+    const hRe = (nRe * dRe + nIm * dIm) / dMag;
+    const hIm = (nIm * dRe - nRe * dIm) / dMag;
+    const nextRe = re * hRe - im * hIm;
+    im = re * hIm + im * hRe;
+    re = nextRe;
+  }
+  return 20 * Math.log10(Math.max(Math.hypot(re, im), 1e-12));
+}
+
+// Same as dsp_engine._biquad_extremum_freqs: |H|^2 = N(c)/D(c), c = cos(w),
+// so a biquad's stationary points solve a quadratic in c (exact, closed form).
+function dspBiquadExtremumFreqs([b0, b1, b2, a0, a1, a2], sampleRate) {
+  const powerPoly = (x0, x1, x2) => [x0 * x0 + x1 * x1 + x2 * x2 - 2 * x0 * x2, 2 * (x0 * x1 + x1 * x2), 4 * x0 * x2];
+  const [n0, n1, n2] = powerPoly(b0, b1, b2);
+  const [d0, d1, d2] = powerPoly(a0, a1, a2);
+  const qa = n2 * d1 - n1 * d2, qb = 2 * (n2 * d0 - n0 * d2), qc = n1 * d0 - n0 * d1;
+  const disc = qb * qb - 4 * qa * qc;
+  if (disc < 0) return [];
+  // Numerically stable roots: no cancellation between -qb and sqrt(disc).
+  const q = -0.5 * (qb + (qb < 0 ? -1 : 1) * Math.sqrt(disc));
+  const roots = [qa ? q / qa : null, q ? qc / q : null].filter(c => c !== null);
+  return roots.filter(c => c > -1 && c < 1).map(c => Math.acos(c) * sampleRate / (2 * Math.PI));
+}
+
+// Combined magnitude (dB) of cascaded enabled filters at each frequency.
+function dspFiltersResponseDb(filters, sampleRate, freqs) {
+  const coefficients = dspActiveCoefficients(filters, sampleRate);
+  return freqs.map(freq => dspCascadeDb(coefficients, sampleRate, freq));
+}
+
+// Same search as dsp_engine.peak_gain_db / _peak_search_grid: a log grid
+// from 1 Hz, a mirrored grid log-spaced in the distance to Nyquist (warping
+// squeezes resonances there), filter centres and each biquad's exact extremum
+// frequencies; local maxima near the grid maximum are refined by
+// golden-section search; DC/Nyquist are exact.
+const DSP_PEAK_GRID_POINTS = 2048;
+const DSP_PEAK_GRID_MIN_DISTANCE_HZ = 0.01;
+const DSP_PEAK_REFINE_WINDOW_DB = 1.0;
+
+function dspPeakSearchGrid(filters, coefficients, sampleRate) {
+  const nyquist = sampleRate / 2;
+  const points = [];
+  for (let i = 0; i < DSP_PEAK_GRID_POINTS; i++) {
+    points.push(Math.exp(Math.log(nyquist) * i / (DSP_PEAK_GRID_POINTS - 1)));
+  }
+  const half = DSP_PEAK_GRID_POINTS / 2;
+  const span = Math.log(nyquist / DSP_PEAK_GRID_MIN_DISTANCE_HZ);
+  for (let i = 0; i < half; i++) {
+    points.push(nyquist - DSP_PEAK_GRID_MIN_DISTANCE_HZ * Math.exp(span * i / (half - 1)));
+  }
+  filters.forEach(f => points.push(Number(f.freq)));
+  coefficients.forEach(c => points.push(...dspBiquadExtremumFreqs(c, sampleRate)));
+  return [...new Set(points.filter(f => f > 0 && f < nyquist))].sort((a, b) => a - b);
+}
+
+function dspPeakGainDb(filters, sampleRate = EQ_ANALYSIS_SAMPLE_RATE) {
+  const coefficients = dspActiveCoefficients(filters, sampleRate);
+  if (!coefficients.length) return 0;
+  const nyquist = sampleRate / 2;
+  const response = freq => dspCascadeDb(coefficients, sampleRate, freq);
+  const grid = dspPeakSearchGrid(filters, coefficients, sampleRate);
+  const values = grid.map(response);
+  const gridMax = Math.max(...values);
+  let best = Math.max(gridMax, response(0), response(nyquist));
+  const golden = (Math.sqrt(5) - 1) / 2;
+  values.forEach((value, i) => {
+    if (value < gridMax - DSP_PEAK_REFINE_WINDOW_DB) return;
+    if (value < (values[i - 1] ?? -Infinity) || value < (values[i + 1] ?? -Infinity)) return;
+    let a = grid[i - 1] ?? 0, b = grid[i + 1] ?? nyquist;
+    let c = b - golden * (b - a), d = a + golden * (b - a);
+    let fc = response(c), fd = response(d);
+    for (let step = 0; step < 40; step++) {
+      if (fc > fd) {
+        b = d; d = c; fd = fc; c = b - golden * (b - a); fc = response(c);
+      } else {
+        a = c; c = d; fc = fd; d = a + golden * (b - a); fd = response(d);
+      }
+    }
+    best = Math.max(best, fc, fd);
+  });
+  return Math.max(0, best);
+}
+
+function graphicEqFilters() {
+  return GEQ_BANDS
+    .map((freq, i) => ({ type: 'peaking', freq, gain: Number(currentEqGains[i]) || 0, q: GEQ_DEFAULT_Q, enabled: true }))
+    .filter(f => Math.abs(f.gain) > 0.05);
+}
+
+function dspPreampForPeakDb(peak) {
+  return peak > 0.05 ? -Math.ceil((peak + EQ_HEADROOM_MARGIN_DB) * 10 - 1e-9) / 10 : 0;
+}
+
+// Same as dsp_engine.worst_case_preamp_db: filters at/above a rate's Nyquist
+// are disabled there, so they are left out for that rate.
+function dspWorstCaseHeadroom(filters) {
+  let peakDb = 0;
+  DSP_REFERENCE_SAMPLE_RATES.forEach(rate => {
+    peakDb = Math.max(peakDb, dspPeakGainDb(filters.filter(f => Number(f.freq) < rate / 2), rate));
+  });
+  return { peakDb, preampDb: dspPreampForPeakDb(peakDb) };
+}
+
+function dspWorstCasePreampDb(filters) {
+  return dspWorstCaseHeadroom(filters).preampDb;
+}
+
+// Headroom from the combined response of all bands, not the largest slider:
+// overlapping boosts add up. Never capped, so the margin is always kept, at
+// every source rate the saved preset may be played at.
 function recommendedGraphicEqPreamp() {
-  const maxBoost = Math.max(0, ...currentEqGains.map(gain => Number(gain) || 0));
-  return maxBoost > 0.05 ? -Math.min(12, Math.ceil((maxBoost + 1) * 10) / 10) : 0;
+  return dspWorstCasePreampDb(graphicEqFilters());
+}
+
+// The worst-case search covers 12 sample rates; while a slider is dragged,
+// recompute once input settles rather than on every tick.
+let eqHeadroomNoteTimer = null;
+function scheduleEQHeadroomNote() {
+  clearTimeout(eqHeadroomNoteTimer);
+  eqHeadroomNoteTimer = setTimeout(updateEQHeadroomNote, 150);
 }
 
 function updateEQHeadroomNote() {
   const note = $('eq-headroom-note');
   if (!note) return;
-  const preamp = recommendedGraphicEqPreamp();
-  note.textContent = preamp < 0 ? `Auto headroom: ${preamp.toFixed(1)} dB` : 'Headroom: 0.0 dB';
+  const { peakDb, preampDb } = dspWorstCaseHeadroom(graphicEqFilters());
+  note.textContent = preampDb < 0
+    ? `Auto headroom: ${preampDb.toFixed(1)} dB (EQ peak +${peakDb.toFixed(1)} dB, worst case 22-768 kHz)`
+    : 'Headroom: 0.0 dB';
 }
 
 function updateEQSaveButtonLabel() {
@@ -169,7 +336,7 @@ window.handleEQSliderInput = function(i, value) {
   }
   renderEQPresets(); 
   updateEQCurve();
-  updateEQHeadroomNote();
+  scheduleEQHeadroomNote();
   updateEQSaveButtonLabel();
 };
 
@@ -254,7 +421,8 @@ async function loadDspProfiles() {
       return;
     }
     const persistedLastProfileId = readPersistedLastDspProfileId();
-    const preferredProfileId = state.dspProfile || state.lastEqProfile || persistedLastProfileId;
+    const preferredProfileId = state.dspProfile
+      || (isDspExplicitlyOff() ? '' : (state.lastEqProfile || persistedLastProfileId));
     if (preferredProfileId && hasProfile(preferredProfileId)) {
       state.dspProfile = String(preferredProfileId);
       state.lastEqProfile = state.dspProfile;

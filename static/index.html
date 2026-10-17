@@ -5852,7 +5852,7 @@ input[type=range]::-webkit-slider-thumb:hover { background: var(--gold); }
           <svg id="default-album-art" viewBox="0 0 52 52" style="width:100%;height:100%;padding:14px;color:var(--s4)">
             <path fill="currentColor" d="M40 8H24v24.26A8 8 0 1026 44V20h12V8z"/>
           </svg>
-          <div id="btn-vu-desktop" class="player-art-vu-btn" title="Toggle VU Meters">
+          <div id="btn-vu-desktop" class="player-art-vu-btn" title="Toggle VU Meters (pre-DSP level, not a clipping indicator)">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/></svg>
           </div>
         </div>
@@ -6017,7 +6017,7 @@ input[type=range]::-webkit-slider-thumb:hover { background: var(--gold); }
         <span class="mobile-player-pill-label">EQ</span>
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 21v-7 M4 10V3 M12 21v-9 M12 8V3 M20 21v-5 M20 12V3 M1 14h6 M9 8h6 M17 12h6"/></svg>
       </button>
-      <button class="mobile-player-pill" id="mobile-top-vu" type="button" title="VU Meters">
+      <button class="mobile-player-pill" id="mobile-top-vu" type="button" title="VU Meters (pre-DSP level)">
         <span class="mobile-player-pill-label">VU</span>
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/></svg>
       </button>
@@ -6223,7 +6223,7 @@ input[type=range]::-webkit-slider-thumb:hover { background: var(--gold); }
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>
           <span>Queue</span>
         </button>
-        <button class="mobile-sec-btn" id="mobile-btn-vu" title="VU Meters">
+        <button class="mobile-sec-btn" id="mobile-btn-vu" title="VU Meters (pre-DSP level)">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 12h4l3 8 4-16 3 8h4"/></svg>
           <span>VU</span>
         </button>
@@ -6576,7 +6576,42 @@ async function startRadio(mode, id) {
   playTrack(queue[0], queue, 0);
 }
 
-function showSignalPath() {
+// What VELVET actually does to the audio on this output, never a mere
+// selection: DLNA renderers fetch the direct source URL, so neither DSP nor
+// upsampling is applied there.
+// `plan` is the server's resolved plan (/dsp/profiles/{id}/resolved): a
+// selected preset whose processing graph is empty is reported as bypassed.
+function describeSignalProcessing(zoneType, dspProfile, upsample, plan = null) {
+  if (zoneType === 'cast') {
+    return [
+      'Direct source stream to renderer',
+      dspProfile ? `DSP ${dspProfile.name} not applied on this renderer` : 'VELVET DSP off',
+      ...(upsample && upsample !== 'none' ? ['PCM upsampling not applied on this renderer'] : []),
+    ];
+  }
+  const lines = [
+    !upsample || upsample === 'none' ? 'No PCM upsampling' : `${upsample.toUpperCase()} PCM upsampling enabled`,
+  ];
+  if (!dspProfile) {
+    lines.push('VELVET DSP off (source direct)');
+  } else if (plan && !plan.active) {
+    lines.push(`DSP ${dspProfile.name} selected but bypassed: no active processing`);
+  } else {
+    lines.push(plan ? `DSP ${dspProfile.name}` : `DSP ${dspProfile.name} (status unavailable)`);
+    if (plan?.disabled_filters?.length) {
+      lines.push(`${plan.disabled_filters.length} filter(s) above Nyquist disabled`);
+    }
+    if (plan?.headroom_guard_db < 0) {
+      lines.push(`Headroom guard: ${plan.headroom_guard_db.toFixed(1)} dB extra attenuation (preamp ${plan.effective_preamp_db.toFixed(1)} dB)`);
+    }
+    if (plan?.eq_clipping_risk) {
+      lines.push(`EQ may clip: estimated peak ${plan.net_peak_db > 0 ? '+' : ''}${plan.net_peak_db} dB`);
+    }
+  }
+  return lines;
+}
+
+async function showSignalPath() {
   if (!state.currentTrack) {
     showToast('Nothing is playing yet');
     return;
@@ -6590,12 +6625,13 @@ function showSignalPath() {
     track.bit_depth ? `${track.bit_depth}bit` : ''
   ].filter(Boolean).join(' · ');
 
-  const processing = [
-    state.upsample === 'none' ? 'No PCM upsampling' : `${state.upsample.toUpperCase()} PCM upsampling enabled`,
-    dspProfile ? `DSP ${escHtml(dspProfile.name)}` : 'Flat DSP pipeline'
-  ].join('<br>');
-
   const activeZone = getActiveZone();
+  let plan = null;
+  if (dspProfile && activeZone.type !== 'cast') {
+    const rate = Number(track.sample_rate) >= 8000 ? `?sample_rate=${Math.round(Number(track.sample_rate))}` : '';
+    plan = await api(`/dsp/profiles/${dspProfile.id}/resolved${rate}`).catch(() => null);
+  }
+  const processing = describeSignalProcessing(activeZone.type, dspProfile, state.upsample, plan).map(escHtml).join('<br>');
   const output = activeZone.type === 'cast'
     ? `Streaming to ${escHtml(activeZone.name)}`
     : activeZone.type === 'native'
@@ -7118,6 +7154,9 @@ function updateMediaSession(track) {
 
 const DSP_PROFILE_STORAGE_KEY = 'velvet:dsp-profile-id';
 const DSP_LAST_PROFILE_STORAGE_KEY = 'velvet:dsp-last-profile-id';
+// Off is stored explicitly so a remembered last preset (kept for quick
+// re-enable) is never resurrected after the user, or Auto Fallback, chose Off.
+const DSP_OFF_STORAGE_VALUE = 'off';
 
 function readPersistedDspProfileId() {
   try {
@@ -7135,27 +7174,28 @@ function readPersistedLastDspProfileId() {
   }
 }
 
-function persistDspProfileId(profileId, { preserveLast = false, lastProfileId = '' } = {}) {
+// Choosing Off never forgets the last preset; `lastProfileId` updates it.
+function persistDspProfileId(profileId, { lastProfileId = '' } = {}) {
   try {
     const value = String(profileId || '');
     if (value) {
       localStorage.setItem(DSP_PROFILE_STORAGE_KEY, value);
       localStorage.setItem(DSP_LAST_PROFILE_STORAGE_KEY, value);
     } else {
-      localStorage.removeItem(DSP_PROFILE_STORAGE_KEY);
+      localStorage.setItem(DSP_PROFILE_STORAGE_KEY, DSP_OFF_STORAGE_VALUE);
       const lastValue = String(lastProfileId || '');
-      if (preserveLast && lastValue) {
-        localStorage.setItem(DSP_LAST_PROFILE_STORAGE_KEY, lastValue);
-      } else if (!preserveLast) {
-        localStorage.removeItem(DSP_LAST_PROFILE_STORAGE_KEY);
-      }
+      if (lastValue) localStorage.setItem(DSP_LAST_PROFILE_STORAGE_KEY, lastValue);
     }
   } catch {}
 }
 
-const persistedDspProfileId = readPersistedDspProfileId();
+function isDspExplicitlyOff() {
+  return readPersistedDspProfileId() === DSP_OFF_STORAGE_VALUE;
+}
+
+const persistedDspProfileId = isDspExplicitlyOff() ? '' : readPersistedDspProfileId();
 const persistedLastDspProfileId = readPersistedLastDspProfileId();
-const initialDspProfileId = persistedDspProfileId || persistedLastDspProfileId;
+const initialDspProfileId = isDspExplicitlyOff() ? '' : (persistedDspProfileId || persistedLastDspProfileId);
 
 const state = {
   view: null, // Start as null to ensure initial navigate() triggers render
@@ -7375,7 +7415,7 @@ function attemptDspAutoFallback(reason = 'stream-error') {
   const failedProfileId = String(state.dspProfile);
   state.lastEqProfile = failedProfileId;
   state.dspProfile = '';
-  persistDspProfileId('', { preserveLast: true, lastProfileId: failedProfileId });
+  persistDspProfileId('', { lastProfileId: failedProfileId });
 
   const select = UI['dsp-select'];
   if (select) {
@@ -7983,12 +8023,14 @@ async function castTo(track, device) {
     // The server hands the renderer its own ticketed URL for this track.
     const res = await api(`/cast/${device.udn}`, {
       method: 'POST',
-      body: JSON.stringify({ track_id: track.id })
+      body: JSON.stringify({ track_id: track.id, dsp_profile_id: Number(state.dspProfile) || null })
     });
     if (res.success) {
       markExpectedBrowserPause(1200);
       audio.pause();
-      showToast(`Playing on ${device.name}`);
+      showToast(res.dsp?.status === 'bypassed'
+        ? `Playing on ${device.name} · DSP not applied on this renderer`
+        : `Playing on ${device.name}`);
       startCastPolling();
     } else {
       showToast(`Failed to cast to ${device.name}`);
@@ -8771,10 +8813,13 @@ bindDesktopPlayerSelectPopover('upsample-select', { openUp: true });
 
 UI['upsample-select'].addEventListener('change', e => {
   state.upsample = e.target.value;
-  if (state.currentTrack) {
-    if (isCastZone()) {
-      castTo(state.currentTrack, state.castDevice);
-    } else if (isNativeZone()) {
+  if (state.currentTrack && isCastZone()) {
+    // Renderers fetch the direct source URL: upsampling is not applied there,
+    // so re-casting would only restart the track.
+    showToast('PCM upsampling not applied on this renderer');
+    updatePlayerUI(state.currentTrack);
+  } else if (state.currentTrack) {
+    if (isNativeZone()) {
       playTrack(state.currentTrack, state.queue, state.queueIdx);
     } else {
       const t = audio.currentTime;
@@ -8804,7 +8849,13 @@ UI['dsp-select'].addEventListener('change', e => {
   }
   persistDspProfileId(state.dspProfile);
   const selected = state.dspProfiles.find(profile => String(profile.id) === String(state.dspProfile));
-  showToast(selected ? `DSP: ${selected.name}` : 'DSP: Off');
+  if (isCastZone()) {
+    // The renderer plays the direct source: re-casting would restart the
+    // track without changing the sound, so only say so.
+    showToast(selected ? 'DSP not applied on this renderer' : 'DSP: Off');
+  } else {
+    showToast(selected ? `DSP: ${selected.name}` : 'DSP: Off');
+  }
   document.querySelectorAll('.dsp-preset-card').forEach(card => {
     const isActive = String(card.dataset.profileId) === String(state.dspProfile || '');
     card.style.borderColor = isActive ? 'var(--gold)' : 'var(--border)';
@@ -8813,7 +8864,7 @@ UI['dsp-select'].addEventListener('change', e => {
 
   if (state.currentTrack) {
     if (isCastZone()) {
-      castTo(state.currentTrack, state.castDevice);
+      // Direct renderer stream: nothing to restart.
     } else if (isNativeZone()) {
       playTrack(state.currentTrack, state.queue, state.queueIdx);
     } else {

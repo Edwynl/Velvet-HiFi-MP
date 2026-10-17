@@ -435,7 +435,9 @@ async function testDspErrorAutoFallbacksToDry() {
 
     await waitFor(() => dom.window.eval('state.dspProfile') === '');
     await waitFor(() => harness.getPlayCalls() >= 1, { timeoutMs: 8000 });
-    assert.equal(dom.window.localStorage.getItem('velvet:dsp-profile-id'), null);
+    // Off is persisted explicitly so a reload cannot resurrect the failed preset.
+    assert.equal(dom.window.localStorage.getItem('velvet:dsp-profile-id'), 'off');
+    assert.equal(dom.window.localStorage.getItem('velvet:dsp-last-profile-id'), '2');
   } finally {
     dom.window.close();
   }
@@ -473,7 +475,9 @@ async function testDspStartupNoProgressAutoFallbacksToDry() {
 
     await dom.window.startBrowserPlayback({ id: 7, title: 'Recovery Track' }, { resumeTime: 0 });
     await waitFor(() => dom.window.eval('state.dspProfile') === '', { timeoutMs: 6000 });
-    assert.equal(dom.window.localStorage.getItem('velvet:dsp-profile-id'), null);
+    // Off is persisted explicitly so a reload cannot resurrect the failed preset.
+    assert.equal(dom.window.localStorage.getItem('velvet:dsp-profile-id'), 'off');
+    assert.equal(dom.window.localStorage.getItem('velvet:dsp-last-profile-id'), '2');
   } finally {
     dom.window.close();
   }
@@ -511,7 +515,9 @@ async function testDspPlayRejectedAutoFallbacksToDry() {
     const ok = await dom.window.startBrowserPlayback({ id: 7, title: 'Recovery Track' });
     assert.equal(ok, false);
     await waitFor(() => dom.window.eval('state.dspProfile') === '');
-    assert.equal(dom.window.localStorage.getItem('velvet:dsp-profile-id'), null);
+    // Off is persisted explicitly so a reload cannot resurrect the failed preset.
+    assert.equal(dom.window.localStorage.getItem('velvet:dsp-profile-id'), 'off');
+    assert.equal(dom.window.localStorage.getItem('velvet:dsp-last-profile-id'), '2');
   } finally {
     dom.window.close();
   }

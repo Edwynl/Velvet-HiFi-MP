@@ -41,7 +41,16 @@ import upnp_server
 import remote_access
 import security
 from cover_art import find_folder_cover as find_folder_cover_bytes, save_cover_bytes
-from dsp_engine import build_dsp_filter_chain, profile_filters, sanitize_dsp_filters
+from dsp_engine import (
+    MAX_PREAMP_DB,
+    MIN_PREAMP_DB,
+    DspValidationError,
+    build_dsp_filter_chain,
+    resolve_dsp_plan,
+    validate_dsp_filters,
+    validate_dsp_headroom,
+    validate_dsp_number,
+)
 from audio_streaming import (
     StreamLease, StreamSlots, TranscodeGuard, TranscodeStreamingResponse, iter_ffmpeg_stdout,
     ffmpeg_supports_soxr,
@@ -827,7 +836,15 @@ async def cast_to_device(device_udn: str, request: Request):
 
     # cast_track performs blocking SOAP calls and sleeps; keep the event loop free.
     success = await asyncio.to_thread(upnp_server.cast_track, device_udn, stream_url, meta)
-    return {"success": success}
+    # Renderers receive the direct source URL: VELVET DSP is not applied, so
+    # report a requested preset as bypassed instead of implying it is active.
+    requested_dsp = data.get("dsp_profile_id") or None
+    dsp_status = {"requested_profile_id": requested_dsp, "effective_profile_id": None,
+                  "status": "bypassed" if requested_dsp else "off",
+                  "reason": ("DSP not applied on this renderer (direct source stream)"
+                             if requested_dsp else "VELVET DSP off"),
+                  "disabled_filters": []}
+    return {"success": success, "dsp": dsp_status}
 
 @app.post("/api/cast/control/{device_udn}/{action}")
 async def cast_control(device_udn: str, action: str):
@@ -2245,6 +2262,9 @@ async def stream_track(
 
     if not track:
         raise HTTPException(404, "Track not found")
+    if dsp and not dsp_profile:
+        # Fail closed: never stream unprocessed audio for a requested preset.
+        raise HTTPException(404, "DSP profile not found")
 
     fp = track["file_path"]
     # Validate resolved path is within configured library roots.
@@ -2267,7 +2287,7 @@ async def stream_track(
     # Build DSP filter chain
     dsp_filter = ""
     if dsp_profile:
-        dsp_filter = build_dsp_filter_chain(dsp_profile)
+        dsp_filter = build_dsp_filter_chain(dsp_profile, track["sample_rate"])
 
     # A WAV/PCM stream is not DoP: until genuine DSD marker packing and
     # compatible DAC transport are implemented, fail clearly instead of
@@ -3043,42 +3063,86 @@ def _serialize_dsp_json(value, fallback: str = "[]") -> str:
     return json.dumps(value)
 
 
-def _normalize_dsp_payload(body: dict, existing_profile: dict | None = None) -> dict:
+DSP_CATEGORIES = {"custom", "taste", "genre", "reference", "correction"}
+
+
+def _dsp_text(value, field: str, max_length: int, *, required: bool = False):
+    if value is None and not required:
+        return None
+    if not isinstance(value, str):
+        raise DspValidationError(f"{field} must be text")
+    value = value.strip()
+    if required and not value:
+        raise DspValidationError(f"{field} must not be empty")
+    if len(value) > max_length:
+        raise DspValidationError(f"{field} must be at most {max_length} characters")
+    return value
+
+
+def _normalize_dsp_payload(body: dict) -> dict:
+    """Validate a DSP create/update body. Invalid input is rejected (422),
+    never clamped or dropped, so a saved profile is exactly what was sent."""
+    if not isinstance(body, dict):
+        raise HTTPException(422, "DSP profile body must be an object")
+    try:
+        return _validate_dsp_payload(body)
+    except DspValidationError as exc:
+        raise HTTPException(422, f"Invalid DSP profile: {exc}")
+
+
+def _validate_dsp_payload(body: dict) -> dict:
     normalized: dict = {}
 
     if "name" in body:
-        normalized["name"] = body["name"]
+        normalized["name"] = _dsp_text(body["name"], "name", 120, required=True)
     if "description" in body:
-        normalized["description"] = body["description"]
+        normalized["description"] = _dsp_text(body["description"], "description", 1000)
     if "volume_normalize" in body:
-        normalized["volume_normalize"] = int(bool(body["volume_normalize"]))
+        if not isinstance(body["volume_normalize"], (bool, int)) or body["volume_normalize"] not in (0, 1):
+            raise DspValidationError("volume_normalize must be true or false")
+        normalized["volume_normalize"] = int(body["volume_normalize"])
     if "stereo_width" in body:
-        normalized["stereo_width"] = body["stereo_width"]
+        normalized["stereo_width"] = validate_dsp_number(body["stereo_width"], "stereo_width", -100, 100)
     if "reverb_room_size" in body:
-        normalized["reverb_room_size"] = body["reverb_room_size"]
+        normalized["reverb_room_size"] = validate_dsp_number(body["reverb_room_size"], "reverb_room_size", 0, 100)
     if "reverb_wet_dry" in body:
-        normalized["reverb_wet_dry"] = body["reverb_wet_dry"]
+        normalized["reverb_wet_dry"] = validate_dsp_number(body["reverb_wet_dry"], "reverb_wet_dry", 0, 100)
     if "category" in body:
+        if not isinstance(body["category"], str) or body["category"] not in DSP_CATEGORIES:
+            raise DspValidationError(f"category must be one of {sorted(DSP_CATEGORIES)}")
         normalized["category"] = body["category"]
     if "preset_key" in body:
-        normalized["preset_key"] = body["preset_key"]
+        normalized["preset_key"] = _dsp_text(body["preset_key"], "preset_key", 64)
     if "preamp_db" in body:
-        normalized["preamp_db"] = body["preamp_db"]
+        normalized["preamp_db"] = validate_dsp_number(body["preamp_db"], "preamp_db",
+                                                      MIN_PREAMP_DB, MAX_PREAMP_DB)
     if "sort_order" in body:
-        normalized["sort_order"] = body["sort_order"]
+        normalized["sort_order"] = int(validate_dsp_number(body["sort_order"], "sort_order", -100000, 100000))
     if "tags" in body:
         normalized["tags"] = _serialize_dsp_json(body["tags"])
     if "filter_chain_json" in body:
-        normalized["filter_chain_json"] = _serialize_dsp_json(sanitize_dsp_filters(body["filter_chain_json"]))
+        normalized["filter_chain_json"] = _serialize_dsp_json(validate_dsp_filters(body["filter_chain_json"]))
     elif "filters" in body:
-        normalized["filter_chain_json"] = _serialize_dsp_json(sanitize_dsp_filters(body["filters"]))
+        normalized["filter_chain_json"] = _serialize_dsp_json(validate_dsp_filters(body["filters"]))
 
     if "eq_bands" in body:
-        normalized["eq_bands"] = _serialize_dsp_json(body["eq_bands"])
+        eq_bands = body["eq_bands"]
+        if isinstance(eq_bands, str):
+            try:
+                eq_bands = json.loads(eq_bands)
+            except json.JSONDecodeError as exc:
+                raise DspValidationError("eq_bands must be a JSON list") from exc
+        if not isinstance(eq_bands, list) or not all(isinstance(band, dict) for band in eq_bands):
+            raise DspValidationError("eq_bands must be a list of band objects")
+        normalized["eq_bands"] = _serialize_dsp_json(eq_bands)
         if "filter_chain_json" not in normalized:
-            temp_profile = dict(existing_profile or {})
-            temp_profile["eq_bands"] = normalized["eq_bands"]
-            normalized["filter_chain_json"] = json.dumps(profile_filters(temp_profile))
+            legacy_filters = [{"type": "peaking", "freq": band.get("freq", 1000), "gain": band.get("gain", 0),
+                               "q": band.get("q", 1.4), "enabled": band.get("enabled", True)}
+                              for band in eq_bands]
+            normalized["filter_chain_json"] = json.dumps(validate_dsp_filters(legacy_filters))
+
+    if "filter_chain_json" in normalized:
+        validate_dsp_headroom(json.loads(normalized["filter_chain_json"]))
 
     return normalized
 
@@ -3103,6 +3167,21 @@ def get_dsp_profile(profile_id: int):
     if not profile:
         raise HTTPException(404, "DSP profile not found")
     return dict(profile)
+
+
+@app.get("/api/dsp/profiles/{profile_id}/resolved")
+def get_resolved_dsp_profile(
+    profile_id: int,
+    sample_rate: int | None = Query(None, ge=8000, le=768000,
+                                    description="Source sample rate the EQ runs at"),
+):
+    """The filters actually applied at a sample rate, with combined-response headroom."""
+    db = get_db()
+    profile = db.execute("SELECT * FROM dsp_profiles WHERE id=?", (profile_id,)).fetchone()
+    db.close()
+    if not profile:
+        raise HTTPException(404, "DSP profile not found")
+    return resolve_dsp_plan(dict(profile), sample_rate)
 
 
 @app.post("/api/dsp/profiles")
@@ -3167,7 +3246,7 @@ def update_dsp_profile(profile_id: int, body: dict):
 
     updates = []
     params = []
-    normalized = _normalize_dsp_payload(body, existing_profile=profile)
+    normalized = _normalize_dsp_payload(body)
 
     if "name" in normalized:
         updates.append("name=?")
