@@ -87,3 +87,46 @@ Only run the last command if local Python dependencies are already installed. Do
 ### 未覆盖
 
 iOS Safari / Android Chrome 真机、锁屏 30 分钟、网络中断、DLNA/原生 DAC 输出切换、Tailscale 带宽和服务器 CPU 都未实测。
+
+---
+
+## 第二轮审核修复（2026-10-17，基于 `c2f8087`）
+
+### P1-4 首次 VU play() 被节流（已修复）
+
+- **根因**：`vuLastPlayAttemptAt = 0` 加上 `now - vuLastPlayAttemptAt >= 1200` 的判断，意味着 `performance.now()` 小于 1200 时（页面加载后 1.2 秒内），VU 打开手势里的首次 `play()` 会被跳过。等到下一次重试时已经不在手势内，iOS 会拒绝。上一轮加的"点按重试"也重置为 0，同样中招。
+- **修复**：重试策略抽成 `VelvetVU.createPlayGate()`，初始值为 `-Infinity`。首次请求和点按、换曲后的 `rearm()` 都立即放行；同一时间只允许一个 `play()` 在途；普通重试间隔 1.2 秒；`NotAllowedError` 退避 30 秒，并把 `needsGesture` 置位，界面显示 "Tap the meters to enable"；401/404/无法解码之类的错误退避 5 秒；`AbortError` 按普通间隔重试。
+- **测试**：`test:vu` 覆盖页面年龄 0/16/500/1199 ms 时首次请求都放行，以及在途、重试、拒绝、点按、失败、中断各状态。变异测试：把初值改回等效旧代码的 `nextAt = 1200`，测试报 "first play() throttled at 0 ms"。浏览器实测：把 `performance.now()` 固定在页面年龄约 300 ms 时打开 VU，250 ms 内镜像已经在播。
+
+### P1-5 镜像与主播放争抢转码槽位（已修复镜像部分）
+
+- **根因**：镜像直接复制 `audio.src`。升频或 DSP 时，每路流各占一个 FFmpeg 槽位（`max_concurrent_streams` 默认 3），所以每个开着 VU 的听众占 2 槽。槽位满时服务器先等 3 秒，再返回 503；如果新镜像比新主播放先抢到槽位，503 就会落在主播放上。
+- **修复**：`VelvetVU.mirrorSourceUrl()` 把镜像改成同一首歌的直通流：`upsample=none`，去掉 `dsp` 和 `quality`，保留 stream ticket。直通流不占槽位，FLAC 原文件的流量也小于升频 WAV。升频不改变电平；DSP 打开时 VU 读的是源信号（pre-DSP），界面显示 "VU signal active · source, pre-DSP"。
+- **资源释放**：暂停（以及主播放缓冲不足）时 `releaseVUMirrorSource()` 移除 `src` 并调用 `load()`，断开镜像的 HTTP 连接；切到 Cast/DLNA/原生输出时释放整个 AudioContext 和镜像，切回浏览器输出后自动重建；关闭 VU 的释放逻辑不变。
+- **测试**：
+  - `pytest`：`test_vu_mirror_direct_stream_needs_no_transcode_slot`。槽位全占满时直通请求仍返回 200/206，且不占槽；同状态下的 DSP 请求返回 503。
+  - `test:vu`：URL 推导单元测试，以及 `syncVUAudioToPlayback` 不再出现 `vuAudio.src = audio.src` 的断言。变异测试：改回直接复制 URL，测试报错。
+- **实测**（Windows，测试实例，`upsample=2x`）：开着 VU 时只有 1 个 ffmpeg 进程，镜像 URL 为 `upsample=none`，漂移 -12 ms。400 ms 间隔连续切 6 首，主播放没有 error 事件且时间在走；ffmpeg 数在 5 秒内回到 1；服务器日志里没有 503。
+
+### P1-6（原有问题，非本分支引入，未修复）服务器回收旧转码的速度接近 3 秒等待窗口
+
+用 `curl --limit-rate 100k` 模拟 2 个慢速远程客户端占住 2 个槽，浏览器再切到另一首升频曲目：主播放报 `MEDIA_ERR_SRC_NOT_SUPPORTED`（即 503）。**修复前后的镜像行为都会出现这个结果**：同一首歌在修复版上重跑，同样失败。这说明问题与 VU 无关，而是上一首主播放的 ffmpeg 在客户端断开后约 2–5 秒才被回收，超过了 `TRANSCODE_SLOT_WAIT_SECONDS = 3`。（我最初做的"旧版失败、新版成功"对比用了不同曲目，结论不成立，已作废。）本地回环下浏览器几秒就能下完转码流、槽位很快释放，所以单客户端测不出来；Tailscale 等慢链路更容易触发。建议另开任务，评估断开时立即终止 FFmpeg 或延长等待窗口。
+
+### P2 修复
+
+- **镜像漂移**：阈值从 0.6 s 收紧到 0.25 s（`VU_MAX_DRIFT_SECONDS`），每 400 ms 检查一次。镜像现在一定是直通流，支持 Range，seek 开销低。实测漂移 -12 ~ +43 ms。
+- **suspended 状态下重复 resume()**：`resumeVUContext()` 保证同一时间只有一个 `resume()` 在途，最多每秒 1 次；点按表盘时强制执行一次。实测：模拟 Chrome（`resume()` 一直挂起）时，3 秒 722 帧只调用 1 次；模拟 Safari（`resume()` 被拒绝）时，3 秒 3 次。修复前是每帧一次。
+- **Responsive 刻度真实性**：Responsive 模式给浮层加 `vu-relative` 类，VU 数字刻度降到 30% 不透明度，校准下拉框禁用，状态显示 "Responsive · relative scale, not VU"。
+- **恢复播放提示**：镜像被拒绝或 AudioContext 处于 suspended 时，显示 "Tap the meters to enable"。点按后实测 AudioContext 恢复为 running。
+
+### 第二轮测试证据（Windows 11，本地）
+
+- `npm ci`：0 vulnerabilities
+- `npm run test:vu`：PASS
+- `npm run test:frontend`：11 项全部 OK/PASS
+- `python -m pytest tests -q`（项目 `venv`）：191 passed，67 subtests passed
+- 测试结束后无残留 ffmpeg 进程
+
+### 兼容性
+
+主播放链路（`audio` 元素、stream ticket、FLAC 直通、WASAPI/DLNA/原生输出、封面、PWA 缓存）的代码未改动。镜像只在 VU 打开且为浏览器输出时存在。仍未覆盖 iOS/Android 真机和真实 Tailscale 链路。
