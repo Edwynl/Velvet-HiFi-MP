@@ -1,6 +1,7 @@
 import asyncio
 import importlib.util
 import os
+import re
 import sqlite3
 import sys
 import tempfile
@@ -702,6 +703,16 @@ class ServerApiTests(unittest.TestCase):
                 self.assertIn("javascript", response.headers["content-type"])
             self.assertEqual(self.client.get("/api/stats").status_code, 401)
             self.assertNotEqual(self.client.get("/static/js/server.py").status_code, 200)
+
+    def test_every_shell_and_precached_module_is_served(self):
+        # A module the shell or service worker loads but the server 404s
+        # silently disables that feature (e.g. the VU meter engine).
+        root = Path(server.__file__).parent
+        shell = (root / "static" / "index.html").read_text(encoding="utf-8")
+        worker = (root / "sw.js").read_text(encoding="utf-8")
+        referenced = set(re.findall(r"/static/js/([\w.-]+\.js)", shell + worker))
+        self.assertIn("vu-meter-engine.js", referenced)
+        self.assertEqual(referenced - server.PUBLIC_FRONTEND_JS_MODULES, set())
 
     def test_duplicate_scanner_runs_as_background_read_only_job(self):
         from library_jobs import JobState
