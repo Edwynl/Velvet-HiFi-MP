@@ -324,6 +324,12 @@ async function renderSettings(vc) {
     </div>
   `;
 
+  const adminPanel = document.createElement('div');
+  adminPanel.className = 'form-group';
+  adminPanel.id = 'admin-security-panel';
+  vc.querySelector('.settings-form').prepend(adminPanel);
+  renderAdminSecurityPanel(adminPanel);
+
   // Add fingerprint card to settings form
   const form = vc.querySelector('.settings-form');
   const fpSection = document.createElement('div');
@@ -393,6 +399,46 @@ function applyDspProfile(profileId) {
     select.dispatchEvent(new Event('change', { bubbles: true }));
   }
   syncDspPresetCardState(state.dspProfile);
+}
+
+async function renderAdminSecurityPanel(panel) {
+  const status = await api('/security/status');
+  if (!status || !panel.isConnected) return;
+  const configured = !!status.admin_configured;
+  const canSave = configured || (status.admin_setup_allowed && status.enabled);
+  panel.innerHTML = `
+    <label class="form-label">Administrator protection</label>
+    <p style="font-size:13px;color:var(--muted);line-height:1.6">Share the listening password with friends. Keep the administrator password private.<br>
+    Cover changes, re-reading tags, opening server folders, deleting albums and server settings require it every time. Listening and Album Radio stay available.</p>
+    <p style="color:var(--gold);font-size:13px">${configured
+      ? 'Protected — administrator verification is required for every change.'
+      : 'Management is locked until a separate administrator password is set on this PC.'}</p>
+    ${!canSave ? '<p style="color:var(--muted);font-size:13px">Enable a listening password in Remote Access first, then open Settings using localhost on the server PC.</p>' : ''}
+    <form id="admin-password-form" style="display:grid;gap:10px;max-width:420px">
+      <label for="admin-new-password">${configured ? 'New administrator password' : 'Administrator password'}</label>
+      <input id="admin-new-password" type="password" autocomplete="new-password" minlength="8" maxlength="1024" required class="settings-input" ${canSave ? '' : 'disabled'} />
+      <label for="admin-confirm-password">Confirm administrator password</label>
+      <input id="admin-confirm-password" type="password" autocomplete="new-password" required class="settings-input" ${canSave ? '' : 'disabled'} />
+      <p id="admin-password-error" role="alert" style="color:#ff8d8d;font-size:13px"></p>
+      <button type="submit" class="btn btn-gold" ${canSave ? '' : 'disabled'}>${configured ? 'Change administrator password' : 'Set administrator password'}</button>
+    </form>`;
+  panel.querySelector('form').onsubmit = async event => {
+    event.preventDefault();
+    const password = panel.querySelector('#admin-new-password');
+    const confirmation = panel.querySelector('#admin-confirm-password');
+    const error = panel.querySelector('[role="alert"]');
+    if (password.value !== confirmation.value) { error.textContent = 'Passwords do not match.'; return; }
+    const body = JSON.stringify({ password: password.value });
+    password.value = ''; confirmation.value = ''; error.textContent = '';
+    const button = panel.querySelector('button');
+    button.disabled = true;
+    try {
+      const result = await api('/security/admin-password', { method: 'POST', body });
+      if (result?.success) { showToast(result.message); await renderAdminSecurityPanel(panel); }
+    } finally {
+      if (button.isConnected) button.disabled = false;
+    }
+  };
 }
 
   function getEditorFilters() {

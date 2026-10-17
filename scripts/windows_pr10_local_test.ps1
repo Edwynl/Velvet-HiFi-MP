@@ -19,7 +19,7 @@ try {
         if ($LASTEXITCODE -ne 0) { throw "Python dependency installation failed" }
     }
     Write-Host "Checking Python syntax..."
-    & $python -m compileall -q server.py library_paging.py library_safety.py db_pool.py local_playback.py remote_access.py
+    & $python -m compileall -q server.py admin_security.py library_paging.py library_safety.py db_pool.py local_playback.py remote_access.py
     if ($LASTEXITCODE -ne 0) { throw "Python syntax check failed" }
 
     if ($Quick) {

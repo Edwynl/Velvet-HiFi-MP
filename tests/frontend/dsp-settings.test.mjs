@@ -83,6 +83,10 @@ function createHarness() {
     const body = opts.body ? JSON.parse(opts.body) : null;
     requests.push({ method, path: parsedUrl.pathname, body });
 
+    if (parsedUrl.pathname === '/api/security/status' && method === 'GET') {
+      return makeJsonResponse({ enabled: false, admin_configured: false, admin_setup_allowed: true });
+    }
+
     if (parsedUrl.pathname === '/api/stats' && method === 'GET') {
       return makeJsonResponse({ artists: 0, albums: 0, tracks: 0, duration: 0 });
     }

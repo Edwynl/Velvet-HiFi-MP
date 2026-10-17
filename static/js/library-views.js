@@ -1986,7 +1986,7 @@ async function renderAlbum(vc, { id }) {
             ${album.is_favorite ? '♥' : '♡'} Favorite
           </button>
           <div class="album-more-btn">
-            <button class="btn btn-ghost" id="album-more-trigger">⋯ Manage</button>
+            <button class="btn btn-ghost" id="album-more-trigger" title="Changes require your administrator password">⋯ Manage 🔒</button>
             <div class="album-more-menu" id="album-more-menu">
               <button class="album-more-item" id="album-radio-btn">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" style="width:15px;height:15px;flex-shrink:0"><path d="M22 17H2a3 3 0 0 0 0 6h20v-6zM2 5h20M6 5V3M18 5V3M16 17v-5a4 4 0 0 0-8 0v5"/></svg>
@@ -2217,7 +2217,8 @@ async function renderAlbum(vc, { id }) {
   UI['enrich-btn'].addEventListener('click', async () => {
     showToast('Searching all sources (Netease, QQ, Apple Music…)…');
     try {
-      const res = await fetch(`/api/albums/${album.id}/fetch-cover`, { method: 'POST' });
+      const res = await managementFetch(`/api/albums/${album.id}/fetch-cover`, { method: 'POST' });
+      if (res.adminCancelled) return;
       const data = await res.json();
       if (data.success) {
         showToast(`Cover found from ${data.source || 'web'}!`);
@@ -2238,6 +2239,7 @@ async function renderAlbum(vc, { id }) {
   UI['open-folder-btn'].addEventListener('click', async () => {
     try {
       const res = await api(`/albums/${album.id}/open-folder`, { method: 'POST' });
+      if (!res) return;
       if (!res.success) showToast('Failed to open folder');
     } catch (e) {
       showToast('Error: ' + e.message);
@@ -2249,6 +2251,7 @@ async function renderAlbum(vc, { id }) {
     showToast('Re-reading metadata from files…');
     try {
       const res = await api(`/albums/${album.id}/refresh`, { method: 'POST' });
+      if (!res) return;
       if (res.success) {
         showToast(res.message);
         // Reload the album page to show updated metadata
@@ -2287,10 +2290,11 @@ async function renderAlbum(vc, { id }) {
       formData.append('file', input.files[0]);
       showToast('Uploading cover…');
       try {
-        const res = await fetch(`/api/albums/${album.id}/cover`, {
+        const res = await managementFetch(`/api/albums/${album.id}/cover`, {
           method: 'POST',
           body: formData
         });
+        if (res.adminCancelled) return;
         if (res.ok) {
           showToast('Cover updated!');
           // Force refresh after upload with timestamp to bust CDN/browser cache
@@ -2305,7 +2309,7 @@ async function renderAlbum(vc, { id }) {
     input.click();
   });
 
-  // Delete album
+  // Sensitive changes require administrator verification on the server.
   UI['del-album-btn'].addEventListener('click', () => {
     showConfirm({
       title: 'Delete Album',
@@ -2321,6 +2325,7 @@ async function renderAlbum(vc, { id }) {
         showToast(delFiles ? 'Archiving files and removing library entry…' : 'Removing from library…');
         try {
           const res = await api(`/albums/${album.id}?delete_files=${delFiles}`, { method: 'DELETE' });
+          if (!res) return;
           if (res.success) {
             showToast(res.message || 'Album removed');
             navigate('albums');

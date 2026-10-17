@@ -40,6 +40,7 @@ import uvicorn
 import upnp_server
 import remote_access
 import security
+import admin_security
 from cover_art import find_folder_cover as find_folder_cover_bytes, save_cover_bytes
 from dsp_engine import build_dsp_filter_chain, profile_filters, sanitize_dsp_filters
 from audio_streaming import StreamLease, StreamSlots, iter_ffmpeg_stdout, ffmpeg_supports_soxr
@@ -354,7 +355,7 @@ log.info(f"[CORS] Allowed origins: {ALLOWED_ORIGINS}")
 app.add_middleware(CORSMiddleware, allow_origins=ALLOWED_ORIGINS,
                    allow_credentials=settings.cors_credentials,
                    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-                   allow_headers=["Content-Type", "Authorization", "X-API-Key", "X-Password"])
+                   allow_headers=["Content-Type", "Authorization", "X-API-Key", "X-Password", "X-Admin-Password"])
 
 
 # Global scan state
@@ -3526,15 +3527,42 @@ def _is_loopback_client_ip(client_ip: str) -> bool:
 
 
 @app.get("/api/security/status")
-def get_security_status():
+def get_security_status(request: Request):
     """Get security configuration status."""
-    return security.get_security_status()
+    return {**security.get_security_status(),
+            "admin_configured": admin_security.get_admin_security().is_configured(),
+            "admin_setup_allowed": _is_direct_local_request(request)}
+
+
+def _is_direct_local_request(request: Request) -> bool:
+    return (_is_loopback_client_ip(get_client_ip(request))
+            and _is_loopback_client_ip(request.url.hostname or "")
+            and (not request.headers.get("origin")
+                 or request.headers["origin"] == str(request.base_url).rstrip("/")))
+
+
+@app.post("/api/security/admin-password")
+def set_admin_password(request: Request, body: dict):
+    manager = admin_security.get_admin_security()
+    if not manager.is_configured() and not _is_direct_local_request(request):
+        raise HTTPException(403, "Set the first administrator password on the server PC.")
+    password = body.get("password")
+    if (security.is_auth_enabled() and isinstance(password, str)
+            and security.get_security_manager().check_password(password)):
+        raise HTTPException(400, "Administrator and shared listening passwords must be different.")
+    try:
+        manager.set_password(password)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return {"success": True, "message": "Administrator password saved. Management requires it every time."}
 
 
 @app.post("/api/security/setup-password")
 def setup_password(request: Request, body: dict):
     """Set up password authentication."""
     password = body.get("password", "")
+    if admin_security.get_admin_security().password_matches(password):
+        raise HTTPException(400, "Administrator and shared listening passwords must be different.")
     result = security.setup_password(password)
     return result
 
@@ -3761,6 +3789,24 @@ async def auth_middleware(request: Request, call_next):
                 status_code=401,
                 content={"error": auth_result["error"]},
             )
+
+    # Management always requires a separate password, including on localhost
+    # and with LAN auth bypass enabled. Keys, cookies and media tickets cannot
+    # stand in for this per-operation check.
+    manager = admin_security.get_admin_security()
+    bootstrap_admin = (path.rstrip("/") == "/api/security/admin-password"
+                       and not manager.is_configured() and _is_direct_local_request(request))
+    bootstrap_listener = (path.rstrip("/") == "/api/security/setup-password"
+                          and not manager.is_configured() and _is_direct_local_request(request))
+    if not (bootstrap_admin or bootstrap_listener) and admin_security.requires_admin(request.method, path):
+        admin_error = await asyncio.to_thread(
+            admin_security.check_request, request.method, path,
+            request.headers.get("X-Admin-Password"), client_ip,
+        )
+        if admin_error:
+            status, code, message = admin_error
+            return JSONResponse(status_code=status, content={"error": message, "code": code},
+                                headers={"Cache-Control": "no-store"})
 
     response = await call_next(request)
     if path.startswith("/api/security/"):

@@ -6841,6 +6841,117 @@ let authState = {
   apiKey: localStorage.getItem('velvet_api_key') || ''
 };
 
+// Management passwords are used for one request only, never stored as a
+// browser credential or a reusable "unlocked" session.
+let adminDialogActive = false;
+
+async function timedApiFetch(url, opts = {}) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 8000);
+  try {
+    return await fetch(url, { ...opts, signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function showAdminVerification(submit, setupRequired = false) {
+  if (adminDialogActive) return Promise.resolve(null);
+  adminDialogActive = true;
+  const previousFocus = document.activeElement;
+  const dialog = document.createElement('div');
+  dialog.id = 'admin-verification';
+  dialog.style.cssText = 'position:fixed;inset:0;z-index:12000;background:#000b;display:grid;place-items:center;padding:20px';
+  dialog.innerHTML = `
+    <form role="dialog" aria-modal="true" aria-labelledby="admin-verification-title" style="width:min(100%,400px);padding:28px;border-radius:16px;background:var(--s2);border:1px solid var(--border)">
+      <h2 id="admin-verification-title" style="font-size:20px;margin:0 0 12px">Administrator verification</h2>
+      <p style="font-size:13px;color:var(--muted);line-height:1.6">${setupRequired
+        ? 'Management is locked. Set a separate administrator password in Settings on the server PC first.'
+        : 'Enter your administrator password to approve this change. Your shared listening password does not grant management access.'}</p>
+      ${setupRequired ? '' : '<label for="admin-verification-password">Administrator password</label><input id="admin-verification-password" type="password" autocomplete="off" required maxlength="1024" class="settings-input" style="width:100%;margin:10px 0" />'}
+      <p id="admin-verification-error" role="alert" style="color:#ff8d8d;font-size:13px;min-height:20px"></p>
+      <div style="display:flex;gap:10px;justify-content:flex-end">
+        <button type="button" id="admin-verification-cancel" class="btn btn-ghost">Cancel</button>
+        <button type="submit" id="admin-verification-submit" class="btn btn-gold">${setupRequired ? 'Open Settings' : 'Approve change'}</button>
+      </div>
+    </form>`;
+  document.body.appendChild(dialog);
+  return new Promise(resolve => {
+    let busy = false;
+    const field = dialog.querySelector('input');
+    const button = dialog.querySelector('#admin-verification-submit');
+    const cancel = dialog.querySelector('#admin-verification-cancel');
+    const error = dialog.querySelector('[role="alert"]');
+    const close = result => {
+      if (field) field.value = '';
+      dialog.remove();
+      adminDialogActive = false;
+      if (previousFocus?.isConnected) previousFocus.focus();
+      resolve(result);
+    };
+    cancel.onclick = () => { if (!busy) close(null); };
+    dialog.addEventListener('keydown', event => {
+      if (event.key === 'Escape') { event.preventDefault(); if (!busy) close(null); }
+      if (event.key === 'Tab') {
+        const controls = [...dialog.querySelectorAll('input,button')].filter(item => !item.disabled);
+        if (event.shiftKey && document.activeElement === controls[0]) {
+          event.preventDefault(); controls.at(-1).focus();
+        } else if (!event.shiftKey && document.activeElement === controls.at(-1)) {
+          event.preventDefault(); controls[0].focus();
+        }
+      }
+    });
+    dialog.querySelector('form').onsubmit = async event => {
+      event.preventDefault();
+      if (busy) return;
+      if (setupRequired) { close(null); navigate('settings'); return; }
+      if (!field.value) { field.focus(); return; }
+      busy = true; button.disabled = true; cancel.disabled = true; error.textContent = '';
+      // Clear the input before the request, and release the password after it.
+      let password = field.value;
+      field.value = '';
+      try {
+        const response = await submit(password);
+        password = '';
+        if (response.status === 403 || response.status === 429) {
+          const body = await response.clone().json().catch(() => ({}));
+          if (body.code?.startsWith('admin_')) {
+            error.textContent = body.error || 'Administrator verification failed.';
+            if (body.code === 'admin_locked') button.dataset.locked = 'true';
+            return;
+          }
+        }
+        close(response);
+      } catch {
+        error.textContent = 'Request failed. Check the connection before trying again.';
+      } finally {
+        password = '';
+        busy = false; cancel.disabled = false; button.disabled = button.dataset.locked === 'true';
+        if (field.isConnected) field.focus();
+      }
+    };
+    (field || cancel).focus();
+  });
+}
+
+async function managementFetch(url, opts = {}) {
+  const headers = { ...(opts.headers || {}) };
+  if (authState.apiKey) headers['X-API-Key'] = authState.apiKey;
+  const response = await timedApiFetch(url, { ...opts, headers });
+  if (response.status !== 403) return response;
+  const body = await response.clone().json().catch(() => ({}));
+  if (body.code === 'admin_setup_required') {
+    await showAdminVerification(null, true);
+    response.adminCancelled = true;
+    return response;
+  }
+  if (body.code !== 'admin_password_required') return response;
+  const approved = await showAdminVerification(password =>
+    timedApiFetch(url, { ...opts, headers: { ...headers, 'X-Admin-Password': password } }));
+  if (!approved) response.adminCancelled = true;
+  return approved || response;
+}
+
 // Views kept alive across back/forward: going back re-attaches their DOM
 // (listeners, filters, page) and scroll position instead of refetching the
 // whole library. Any mutating API call drops them so nothing stale returns.
@@ -6859,14 +6970,10 @@ async function api(path, opts = {}) {
     headers['X-API-Key'] = authState.apiKey;
   }
 
-  // 8-second timeout to prevent infinite hangs on server startup
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 8000);
-
   try {
     log(`[VELVET] API Call: ${path}`);
-    const r = await fetch('/api' + path, { ...opts, headers, signal: controller.signal });
-    clearTimeout(timeoutId);
+    const r = await managementFetch('/api' + path, { ...opts, headers });
+    if (r.adminCancelled) return null;
 
     // Handle 401 - need to authenticate
     if (r.status === 401) {
@@ -6887,7 +6994,8 @@ async function api(path, opts = {}) {
       console.warn(errText);
       // For non-GET requests (mutations), show a toast error
       if (opts.method && opts.method !== 'GET') {
-        showToast('Operation failed: ' + r.status);
+        const body = await r.json().catch(() => ({}));
+        showToast(body.error || body.detail || 'Operation failed: ' + r.status);
       }
       return null;
     }
@@ -6900,7 +7008,6 @@ async function api(path, opts = {}) {
       return {};
     }
   } catch (e) {
-    clearTimeout(timeoutId);
     if (e.name === 'AbortError') {
       console.warn(`API ${path} timed out`);
       showToast('Connection timed out');
@@ -9275,10 +9382,11 @@ async function showCoverPicker(albumId) {
 async function setAlbumCover(albumId, url) {
   try {
     showToast('Downloading cover to folder...');
-    await api(`/albums/${albumId}/set-cover`, {
+    const result = await api(`/albums/${albumId}/set-cover`, {
       method: 'POST',
       body: JSON.stringify({ url })
     });
+    if (result?.status !== 'ok') return;
     showToast('✅ Cover updated in folder!');
     setTimeout(() => location.reload(), 1000);
   } catch (err) {

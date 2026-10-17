@@ -66,6 +66,11 @@ class ServerApiTests(unittest.TestCase):
         self.security_manager_patcher = patch.object(
             server.security, "_security_manager", server.security.SecurityManager())
         self.security_manager_patcher.start()
+        # These tests isolate endpoint behavior. Dedicated admin-security tests
+        # exercise the real gate with shared and administrator credentials.
+        admin_gate = patch.object(server.admin_security, "check_request", return_value=None)
+        admin_gate.start()
+        self.addCleanup(admin_gate.stop)
         server.MUSIC_DIR = "C:/TestMusic"
         server.DATA_DIR = self.root / "data"
         server.PORT = 9876

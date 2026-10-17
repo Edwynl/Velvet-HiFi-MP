@@ -27,6 +27,7 @@ SERVE_HEADERS = {
 }
 CHILD = """
 import sys
+import os
 from pathlib import Path
 import security
 security.CONFIG_FILE = Path(sys.argv[1]) / "security.json"
@@ -34,6 +35,9 @@ security._security_manager = security.SecurityManager()
 if sys.argv[3] == "enabled":
     security._security_manager.set_password("disposable-test-password")
     security._security_manager._config.api_key = sys.argv[4]
+if os.environ.get("VELVET_TEST_ADMIN_PASSWORD"):
+    import admin_security
+    admin_security.get_admin_security().set_password(os.environ["VELVET_TEST_ADMIN_PASSWORD"])
 import server
 import uvicorn
 uvicorn.run(server.app, host="127.0.0.1", port=int(sys.argv[2]),
@@ -42,7 +46,7 @@ uvicorn.run(server.app, host="127.0.0.1", port=int(sys.argv[2]),
 
 
 @contextmanager
-def isolated_http_server(*, enabled=False, enforce_all=True):
+def isolated_http_server(*, enabled=False, enforce_all=True, admin_password=""):
     with tempfile.TemporaryDirectory() as folder:
         with socket.socket() as probe:
             probe.bind(("127.0.0.1", 0))
@@ -50,6 +54,7 @@ def isolated_http_server(*, enabled=False, enforce_all=True):
         env = {**os.environ, "VELVET_DATA_DIR": folder,
                "VELVET_MUSIC_DIR": folder, "VELVET_PORT": str(port),
                "VELVET_AUTH_ENFORCE_ALL_NETWORKS": str(enforce_all).lower(),
+               "VELVET_TEST_ADMIN_PASSWORD": admin_password,
                "PYTHONUTF8": "1"}
         # A file avoids filling a pipe if startup fails or an assertion logs.
         with (Path(folder) / "server-output.txt").open("w+", encoding="utf-8") as output:
@@ -86,6 +91,23 @@ def isolated_http_server(*, enabled=False, enforce_all=True):
 
 
 class TailscaleProxyHttpTests(unittest.TestCase):
+    def test_real_proxy_management_requires_separate_password_for_every_operation(self):
+        admin_password = "disposable-separate-admin-password"
+        with isolated_http_server(enabled=True, enforce_all=False, admin_password=admin_password) as client:
+            listener = {**SERVE_HEADERS, "X-API-Key": TEST_KEY}
+            for method, path in [("POST", "/api/albums/999/open-folder"),
+                                 ("POST", "/api/albums/999/fetch-cover"),
+                                 ("POST", "/api/albums/999/refresh"),
+                                 ("DELETE", "/api/albums/999")]:
+                with self.subTest(path=path):
+                    result = client.request(method, path, headers=listener)
+                    self.assertEqual(result.status_code, 403)
+                    self.assertEqual(result.json()["code"], "admin_password_required")
+            result = client.delete("/api/albums/999", headers={**listener, "X-Admin-Password": admin_password})
+            self.assertEqual(result.status_code, 404)  # Auth passed; disposable album does not exist.
+            self.assertEqual(client.delete("/api/albums/999", headers=listener).status_code, 403)
+            self.assertEqual(client.get("/api/stats", headers=listener).status_code, 200)
+
     def test_unconfigured_proxy_cannot_browse_mutate_or_claim_initial_password(self):
         with isolated_http_server() as client:
             self.assertEqual(client.get("/api/stats").status_code, 200)
