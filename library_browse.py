@@ -88,6 +88,7 @@ def fetch_artists(
     direct_rows = []
     if like_patterns:
         conditions = " OR ".join(["ar.name LIKE ?"] * len(like_patterns))
+        alias_conditions = " OR ".join(["aa.name LIKE ?"] * len(like_patterns))
         direct_rows = db.execute(
             f"""
             SELECT ar.*,
@@ -97,9 +98,11 @@ def fetch_artists(
             LEFT JOIN track_artists ta ON ar.id = ta.artist_id
             LEFT JOIN tracks t ON ta.track_id = t.id
             WHERE {conditions}
+               OR EXISTS (SELECT 1 FROM artist_aliases aa
+                          WHERE aa.artist_id = ar.id AND ({alias_conditions}))
             GROUP BY ar.id
             """,
-            like_patterns,
+            like_patterns * 2,
         ).fetchall()
 
     if not _needs_variant_fallback(search, variants, to_simplified, to_traditional):

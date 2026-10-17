@@ -70,6 +70,17 @@ def _build_rows(db: sqlite3.Connection, track_ids: list[int]):
         track_ids,
     ):
         credited.setdefault(track_id, []).append(name)
+    if db.execute("SELECT 1 FROM sqlite_master WHERE name = 'artist_aliases'").fetchone():
+        # Search also matches credited artists by their other names.
+        for track_id, name in db.execute(
+            f"""
+            SELECT ta.track_id, aa.name
+            FROM track_artists ta JOIN artist_aliases aa ON aa.artist_id = ta.artist_id
+            WHERE ta.track_id IN ({placeholders})
+            """,
+            track_ids,
+        ):
+            credited.setdefault(track_id, []).append(name)
 
     index_rows = []
     term_rows = []

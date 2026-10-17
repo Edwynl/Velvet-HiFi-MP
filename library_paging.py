@@ -120,9 +120,13 @@ def fetch_artist_page(
                    .replace("%", backslash + "%").replace("_", backslash + "_") + "%"
             for v in variants
         ]
-        where = "WHERE " + " OR ".join(
-            "ar.name LIKE ? ESCAPE '\\'" for _ in params
+        name_match = " OR ".join("ar.name LIKE ? ESCAPE '\\'" for _ in params)
+        alias_match = " OR ".join("aa.name LIKE ? ESCAPE '\\'" for _ in params)
+        where = (
+            f"WHERE {name_match} OR EXISTS (SELECT 1 FROM artist_aliases aa "
+            f"WHERE aa.artist_id = ar.id AND ({alias_match}))"
         )
+        params = params * 2
     total = db.execute(f"SELECT COUNT(*) FROM artists ar {where}", params).fetchone()[0]
     rows = db.execute(
         f"""

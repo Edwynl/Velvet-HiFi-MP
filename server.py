@@ -54,6 +54,7 @@ from db_schema import init_db
 from library_search_index import refresh_track_search_index
 from library_browse import fetch_albums, fetch_artists, fetch_tracks
 from library_paging import album_catalog_filters, fetch_album_page, fetch_artist_page
+from artist_aliases import fetch_aliases
 from library_safety import AlbumFileArchive, ArchiveError, list_album_archives, restore_album_files
 from library_discovery import (
     fetch_album_radio,
@@ -1018,10 +1019,12 @@ def get_artist(artist_id: int):
         ORDER BY count DESC
         LIMIT 1
     """, (artist_id,)).fetchone()
+    aliases = fetch_aliases(db, artist_id)
 
     db.close()
 
     result = dict(artist)
+    result["aliases"] = aliases
     result["album_count"] = stats["album_count"] or 0
     result["track_count"] = stats["track_count"] or 0
     result["total_duration_hours"] = round((stats["total_duration"] or 0) / 3600, 1)

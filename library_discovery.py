@@ -8,6 +8,7 @@ from typing import Callable, Optional
 from fastapi import HTTPException
 
 import chinese_variants
+from artist_aliases import fetch_aliases
 from library_browse import _matches_variants
 from library_search_index import INDEX_SIGNATURE, read_index_meta, search_fold
 
@@ -76,6 +77,7 @@ def fetch_artist_detail_summary(db: sqlite3.Connection, artist_id: int) -> dict:
     result["total_duration_hours"] = round((stats["total_duration"] or 0) / 3600, 1)
     result["play_count"] = play_count["plays"] or 0 if play_count else 0
     result["genres"] = [dict(row) for row in genres]
+    result["aliases"] = fetch_aliases(db, artist_id)
     return result
 
 
@@ -110,6 +112,13 @@ def _like_conditions(variants: list[str]) -> tuple[str, dict]:
                 JOIN artists ar_all ON ar_all.id = ta2.artist_id
                 WHERE ta2.track_id = t.id
                   AND LOWER(ar_all.name) LIKE {p}
+            )""",
+            f"""EXISTS (
+                SELECT 1
+                FROM track_artists ta3
+                JOIN artist_aliases aa ON aa.artist_id = ta3.artist_id
+                WHERE ta3.track_id = t.id
+                  AND LOWER(aa.name) LIKE {p}
             )""",
             f"LOWER(al.title) LIKE {p}",
             f"LOWER(COALESCE(t.composer, '')) LIKE {p}",

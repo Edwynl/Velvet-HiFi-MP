@@ -4,7 +4,7 @@ import sqlite3
 from dsp_engine import FACTORY_DSP_PRESETS, legacy_eq_bands_to_filters
 
 
-LATEST_SCHEMA_VERSION = 10
+LATEST_SCHEMA_VERSION = 11
 
 
 def _table_columns(conn: sqlite3.Connection, table_name: str) -> set[str]:
@@ -405,6 +405,43 @@ def migration_010_track_search_index(conn: sqlite3.Connection) -> None:
     )
 
 
+def migration_011_artist_aliases(conn: sqlite3.Connection) -> None:
+    """Other names of one artist (English, pinyin, other script).
+
+    A merged artist keeps one row whose name is the display name; the names
+    of the rows merged into it live here, so the artist page can list them,
+    search finds them, and a rescan that reads an old name from a file tag
+    resolves to the same artist instead of recreating the duplicate.
+    """
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS artist_aliases (
+            id         INTEGER PRIMARY KEY,
+            artist_id  INTEGER NOT NULL REFERENCES artists(id) ON DELETE CASCADE,
+            name       TEXT NOT NULL UNIQUE COLLATE NOCASE,
+            created_at REAL DEFAULT (strftime('%s', 'now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_artist_aliases_artist ON artist_aliases(artist_id);
+
+        CREATE TRIGGER IF NOT EXISTS trg_search_alias_insert AFTER INSERT ON artist_aliases
+        BEGIN
+            INSERT OR IGNORE INTO track_search_dirty(track_id)
+                SELECT track_id FROM track_artists WHERE artist_id = NEW.artist_id;
+        END;
+        CREATE TRIGGER IF NOT EXISTS trg_search_alias_update AFTER UPDATE ON artist_aliases
+        BEGIN
+            INSERT OR IGNORE INTO track_search_dirty(track_id)
+                SELECT track_id FROM track_artists WHERE artist_id IN (OLD.artist_id, NEW.artist_id);
+        END;
+        CREATE TRIGGER IF NOT EXISTS trg_search_alias_delete AFTER DELETE ON artist_aliases
+        BEGIN
+            INSERT OR IGNORE INTO track_search_dirty(track_id)
+                SELECT track_id FROM track_artists WHERE artist_id = OLD.artist_id;
+        END;
+        """
+    )
+
+
 MIGRATIONS = (
     (1, "create_base_schema", migration_001_create_base_schema),
     (2, "align_album_columns", migration_002_add_album_favorites),
@@ -416,6 +453,7 @@ MIGRATIONS = (
     (8, "add_performance_indexes", migration_008_add_performance_indexes),
     (9, "track_file_state_and_query_indexes", migration_009_track_file_state_and_query_indexes),
     (10, "track_search_index", migration_010_track_search_index),
+    (11, "artist_aliases", migration_011_artist_aliases),
 )
 
 
