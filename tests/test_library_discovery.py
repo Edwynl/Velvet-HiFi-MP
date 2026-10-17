@@ -4,6 +4,7 @@ import unittest
 from contextlib import closing
 from pathlib import Path
 
+from chinese_variants import _T2S_MAP, get_all_variants, to_simplified, to_traditional
 from db_schema import apply_migrations
 from library_discovery import (
     fetch_album_radio,
@@ -12,6 +13,7 @@ from library_discovery import (
     fetch_discover,
     search_tracks,
 )
+from library_search_index import refresh_track_search_index
 
 
 class LibraryDiscoveryTests(unittest.TestCase):
@@ -126,6 +128,131 @@ class LibraryDiscoveryTests(unittest.TestCase):
         self.assertGreaterEqual(len(album_radio["tracks"]), 2)
         self.assertEqual(artist_radio["mode"], "artist_radio")
         self.assertEqual(artist_radio["seed"]["name"], "Artist One")
+
+
+def _real_search(db, q, limit=80):
+    result = search_tracks(db, q, limit, get_all_variants, to_simplified, to_traditional)
+    return [track["id"] for track in result["tracks"]]
+
+
+class TrackSearchIndexTests(unittest.TestCase):
+    """The index must only narrow candidates: indexed answers equal exact ones."""
+
+    def setUp(self):
+        self.db = sqlite3.connect(":memory:")
+        self.db.row_factory = sqlite3.Row
+        self.db.execute("PRAGMA foreign_keys=ON")
+        apply_migrations(self.db)
+        self.db.execute("INSERT INTO artists (id, name) VALUES (1, 'Pianist'), (2, '周杰倫'), (3, 'Guest')")
+        self.db.execute(
+            "INSERT INTO albums (id, artist_id, title) VALUES (1, 1, 'Filler'), (2, 2, '鋼琴精選')"
+        )
+        self.db.executemany(
+            "INSERT INTO tracks (id, album_id, artist_id, title, file_path) VALUES (?, 1, 1, ?, ?)",
+            [(i, f"Other song {i}", f"C:/music/{i}.flac") for i in range(1, 1500)],
+        )
+        self.db.executemany(
+            "INSERT INTO tracks (id, album_id, artist_id, title, composer, file_path) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            [
+                (1500, 1, 1, "Track_01", None, "C:/music/a.flac"),
+                (1501, 1, 1, "鋼琴奏鳴曲", None, "C:/music/b.flac"),  # traditional title
+                (1502, 1, 1, "Waltz", "钢琴家", "C:/music/c.flac"),   # simplified credit
+                (1503, 2, 2, "月亮代表我的心", None, "C:/music/d.flac"),
+                (1504, 1, 1, "琴", None, "C:/music/e.flac"),          # field inside query
+            ],
+        )
+        self.db.execute("INSERT INTO track_artists (track_id, artist_id) VALUES (1503, 2), (1502, 3)")
+        self.db.commit()
+
+    def tearDown(self):
+        self.db.close()
+
+    def _exact(self, q, limit=80):
+        self.db.execute("DELETE FROM search_index_meta")  # unsigned index: exact path
+        try:
+            return _real_search(self.db, q, limit)
+        finally:
+            self.db.rollback()
+
+    def _build(self):
+        refresh_track_search_index(self.db)
+        self.db.commit()
+
+    def test_conversion_map_supports_folding(self):
+        # search_fold relies on to_simplified being idempotent and on
+        # simplified(traditional(x)) == simplified(x).
+        for traditional, simplified in _T2S_MAP.items():
+            self.assertEqual(to_simplified(simplified), simplified)
+            for char in (traditional, simplified):
+                self.assertEqual(to_simplified(to_traditional(char)), to_simplified(char))
+
+    def test_variants_match_near_end_of_table_with_index(self):
+        self._build()
+        for q in ("钢琴", "鋼琴"):
+            with self.subTest(q=q):
+                ids = _real_search(self.db, q)
+                self.assertIn(1501, ids)  # traditional title, last rows of the table
+                self.assertIn(1502, ids)  # simplified composer credit
+                self.assertIn(1503, ids)  # traditional album title
+                self.assertIn(1504, ids)  # whole field '琴' inside the query
+                self.assertEqual(ids, self._exact(q))
+
+    def test_traditional_artist_found_from_simplified_query(self):
+        self._build()
+        self.assertEqual(_real_search(self.db, "周杰伦"), [1503])
+        self.assertEqual(_real_search(self.db, "周杰倫"), [1503])
+
+    def test_indexed_answers_equal_exact_answers(self):
+        self._build()
+        for q in ("钢琴", "鋼琴", "琴", "song 14", "SONG 149", "guest", "pianist", "track_01",
+                  "%", "_", "o%g", "月亮", "zz不存在的琴", "Other song 1499"):
+            for limit in (1, 5, 80):
+                with self.subTest(q=q, limit=limit):
+                    self.assertEqual(_real_search(self.db, q, limit), self._exact(q, limit))
+
+    def test_unrefreshed_changes_stay_correct(self):
+        self._build()
+        self.db.execute("UPDATE tracks SET title='鋼琴小品' WHERE id=10")
+        self.db.execute("UPDATE albums SET title='鋼琴與我' WHERE id=1")  # dirties every filler track
+        self.db.execute("UPDATE artists SET name='鋼琴手' WHERE id=3")
+        self.db.execute(
+            "INSERT INTO tracks (id, album_id, artist_id, title, file_path) "
+            "VALUES (1600, 2, 2, '新鋼琴曲', 'C:/music/f.flac')"
+        )
+        self.db.commit()
+        dirty = self.db.execute("SELECT COUNT(*) FROM track_search_dirty").fetchone()[0]
+        self.assertGreater(dirty, 1500)
+        for q in ("钢琴", "鋼琴手", "钢琴与我"):
+            with self.subTest(q=q):
+                before_refresh = _real_search(self.db, q)
+                self.assertEqual(before_refresh, self._exact(q))
+                self._build()
+                self.assertEqual(_real_search(self.db, q), before_refresh)
+                self.db.execute("UPDATE albums SET title=title || '' WHERE id=1")
+        self.assertIn(1600, _real_search(self.db, "钢琴曲"))
+
+    def test_deleted_track_leaves_no_index_rows(self):
+        self._build()
+        self.db.execute("DELETE FROM tracks WHERE id=1501")
+        self.db.commit()
+        self.assertNotIn(1501, _real_search(self.db, "钢琴"))
+        for table in ("track_search_index", "track_search_terms", "track_search_dirty"):
+            row = self.db.execute(f"SELECT COUNT(*) FROM {table} WHERE track_id=1501").fetchone()
+            self.assertEqual(row[0], 0, table)
+
+    def test_changed_signature_rebuilds_every_track(self):
+        self._build()
+        self.db.execute("UPDATE search_index_meta SET value='old' WHERE key='signature'")
+        self.db.commit()
+        self.assertEqual(_real_search(self.db, "钢琴"), self._exact("钢琴"))
+        self.assertEqual(refresh_track_search_index(self.db), 1504)
+
+    def test_refresh_is_a_no_op_before_schema_10(self):
+        db = sqlite3.connect(":memory:")
+        db.execute("CREATE TABLE tracks (id INTEGER PRIMARY KEY)")
+        self.assertEqual(refresh_track_search_index(db), 0)
+        db.close()
 
 
 if __name__ == "__main__":

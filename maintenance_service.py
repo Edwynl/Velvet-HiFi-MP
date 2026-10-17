@@ -8,6 +8,8 @@ from typing import Awaitable, Callable
 
 from fastapi import HTTPException
 
+from library_search_index import refresh_track_search_index
+
 
 def refresh_album_from_files(
     db: sqlite3.Connection,
@@ -74,6 +76,7 @@ def refresh_album_from_files(
         except Exception as exc:
             errors.append(f"{os.path.basename(file_path)}: {exc}")
 
+    refresh_track_search_index(db)
     db.commit()
     return {
         "success": True,
@@ -151,6 +154,7 @@ def refresh_artist_from_files(
     else:
         artist_name_changed = None
 
+    refresh_track_search_index(db)
     db.commit()
 
     message = f"Refreshed {total_updated} tracks from {len(album_ids)} albums"

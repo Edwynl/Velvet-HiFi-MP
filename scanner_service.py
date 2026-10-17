@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Callable, Optional
 
 from album_grouping import UNKNOWN_ARTIST, VARIOUS_ARTISTS, album_folder_of, plan_album_folder
+from library_search_index import refresh_track_search_index
 from path_compat import filesystem_path
 
 
@@ -212,6 +213,8 @@ def scan_music_dirs(
     def commit_with_stats() -> None:
         nonlocal commit_count, commit_total_seconds
         commit_started = time.perf_counter()
+        # Index this batch's tracks in the same transaction as the tracks.
+        refresh_track_search_index(db)
         db.commit()
         commit_total_seconds += time.perf_counter() - commit_started
         commit_count += 1
