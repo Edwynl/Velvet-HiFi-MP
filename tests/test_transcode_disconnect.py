@@ -7,6 +7,7 @@ abandoned body generator, the new track fails with 503 under slot pressure.
 """
 import asyncio
 import ctypes
+import gc
 import os
 import socket
 import sys
@@ -186,11 +187,17 @@ class SlotReleaseOnDisconnectTests(unittest.TestCase):
         self.assertGreater(server.TRANSCODE_SLOT_WAIT_SECONDS, audio_streaming.TERMINATE_GRACE_SECONDS)
 
 
+def _fresh(error):
+    # A new exception each time, like a real call: one stored instance would
+    # keep every frame it was raised through (and the guard) alive.
+    return type(error)(*error.args)
+
+
 class FakeProcess:
     """Deterministic stand-in for an asyncio subprocess."""
 
     def __init__(self, *, exits_on_terminate=True, exits_on_kill=True, terminate_error=None,
-                 kill_error=None, communicate_errors=(), communicate_hangs=False):
+                 kill_error=None, communicate_errors=(), communicate_hangs=False, wait_error=None):
         self.pid = 4242
         self.returncode = None
         self.calls = []
@@ -200,6 +207,7 @@ class FakeProcess:
         self.kill_error = kill_error
         self.communicate_errors = list(communicate_errors)
         self.communicate_hangs = communicate_hangs
+        self.wait_error = wait_error
         self._exited = asyncio.Event()
         self.stdout = self
 
@@ -216,27 +224,29 @@ class FakeProcess:
     def terminate(self):
         self.calls.append("terminate")
         if self.terminate_error:
-            raise self.terminate_error
+            raise _fresh(self.terminate_error)
         if self.exits_on_terminate:
             self.exit(-15)
 
     def kill(self):
         self.calls.append("kill")
         if self.kill_error:
-            raise self.kill_error
+            raise _fresh(self.kill_error)
         if self.exits_on_kill:
             self.exit(-9)
 
     async def communicate(self):
         self.calls.append("communicate")
         if self.communicate_errors:
-            raise self.communicate_errors.pop(0)
+            raise _fresh(self.communicate_errors.pop(0))
         if self.communicate_hangs:
             await asyncio.Event().wait()  # a stuck pipe, even after the kill
         await self._exited.wait()
         return b"", None
 
     async def wait(self):
+        if self.wait_error:
+            raise _fresh(self.wait_error)
         await self._exited.wait()
         return self.returncode
 
@@ -254,7 +264,7 @@ class _Body:
         raise StopAsyncIteration
 
     async def aclose(self):
-        raise self.error
+        raise _fresh(self.error)
 
 
 SCOPE = {"type": "http", "asgi": {"version": "3.0", "spec_version": "2.4"}, "method": "GET",
@@ -269,14 +279,44 @@ async def _send(message):
     pass
 
 
-class TranscodeGuardTests(unittest.IsolatedAsyncioTestCase):
+async def _receive_disconnect():
+    await asyncio.sleep(0.01)
+    return {"type": "http.disconnect"}
+
+
+class _GuardStateIsolation(unittest.IsolatedAsyncioTestCase):
+    """Held transcodes and exit monitors are module state: isolate each test."""
+
+    async def asyncSetUp(self):
+        audio_streaming._HELD_TRANSCODES.clear()
+
+    async def asyncTearDown(self):
+        for task in list(audio_streaming._CLEANUP_TASKS):
+            task.cancel()
+        await asyncio.gather(*audio_streaming._CLEANUP_TASKS, return_exceptions=True)
+        audio_streaming._HELD_TRANSCODES.clear()
+
+    async def wait_until(self, predicate, timeout=2.0):
+        deadline = time.monotonic() + timeout
+        while not predicate():
+            self.assertLess(time.monotonic(), deadline, "condition not reached")
+            await asyncio.sleep(0.01)
+
+
+class TranscodeGuardTests(_GuardStateIsolation):
     """Exception, cancellation and race paths, without real processes."""
 
     def setUp(self):
-        for name, value in (("TERMINATE_GRACE_SECONDS", 0.05), ("KILL_GRACE_SECONDS", 0.05)):
+        for name, value in (("TERMINATE_GRACE_SECONDS", 0.05), ("KILL_GRACE_SECONDS", 0.05),
+                            ("EXIT_POLL_SECONDS", 0.02)):
             patcher = patch.object(audio_streaming, name, value)
             patcher.start()
             self.addCleanup(patcher.stop)
+        # Fake PID 4242: the OS cannot vouch for it either way, so only the
+        # fake's returncode decides whether it exited.
+        patcher = patch.object(audio_streaming, "_os_process_exited", return_value=None)
+        patcher.start()
+        self.addCleanup(patcher.stop)
         self.slots = StreamSlots(1)
         self.lease = self.slots.try_acquire()
         self.releases = []
@@ -344,13 +384,16 @@ class TranscodeGuardTests(unittest.IsolatedAsyncioTestCase):
         process = self._spawned(FakeProcess(exits_on_terminate=False, exits_on_kill=False,
                                             kill_error=PermissionError("denied")))
         with self.assertLogs("velvet.audio_streaming", "ERROR"):
-            finishing = asyncio.ensure_future(self.guard.finish())
-            await asyncio.sleep(0.3)
+            # Bounded: the request returns although FFmpeg will not die.
+            await asyncio.wait_for(self.guard.finish(), 1)
+        await asyncio.sleep(0.2)  # several exit-monitor polls
         self.assertEqual(self.releases, [], "slot released while FFmpeg was still running")
         self.assertEqual(self.slots.active, 1)
+        self.assertIn(self.guard, audio_streaming._HELD_TRANSCODES)
         process.exit(1)
-        await asyncio.wait_for(finishing, 1)
+        await self.wait_until(lambda: self.releases)
         self.assertReleasedOnceAfterExit()
+        self.assertNotIn(self.guard, audio_streaming._HELD_TRANSCODES)
 
     async def test_cancelled_cleanup_and_a_second_finish_release_once(self):
         process = self._spawned(FakeProcess(exits_on_terminate=False, exits_on_kill=False))
@@ -359,12 +402,12 @@ class TranscodeGuardTests(unittest.IsolatedAsyncioTestCase):
         first.cancel()  # e.g. the request task is cancelled again mid-cleanup
         second = asyncio.ensure_future(self.guard.finish())
         with self.assertLogs("velvet.audio_streaming", "ERROR"):
-            await asyncio.sleep(0.2)
-        self.assertEqual(self.releases, [])
-        process.exit(-9)
-        await asyncio.wait_for(second, 1)
+            await asyncio.wait_for(second, 1)  # bounded, shares the first cleanup
         with self.assertRaises(asyncio.CancelledError):
             await first
+        self.assertEqual(self.releases, [])
+        process.exit(-9)
+        await self.wait_until(lambda: self.releases)
         await self.guard.finish()  # later callers see the finished cleanup
         self.assertReleasedOnceAfterExit()
 
@@ -380,11 +423,35 @@ class TranscodeGuardTests(unittest.IsolatedAsyncioTestCase):
             body = iter_ffmpeg_stdout(["ffmpeg"], timeout_seconds=60, guard=self.guard)
             reading = asyncio.ensure_future(body.__anext__())
             await asyncio.sleep(0.01)
-            # The response ends (client gone) while FFmpeg is still starting.
-            finishing = asyncio.ensure_future(self.guard.finish())
-            await asyncio.sleep(0.05)
+            # The response ends (client gone) while FFmpeg is still starting,
+            # longer than the spawn grace: finish() returns, the slot is held.
+            with self.assertLogs("velvet.audio_streaming", "ERROR"):
+                await asyncio.wait_for(self.guard.finish(), 1)
+            await asyncio.sleep(0.1)
             self.assertEqual(self.releases, [], "released before the spawned FFmpeg was reaped")
             spawned.set()
+            await self.wait_until(lambda: self.releases)  # the monitor kills it, then releases
+            reading.cancel()
+            await asyncio.gather(reading, return_exceptions=True)
+            await body.aclose()
+        self.assertIn("kill", process.calls)
+        self.assertReleasedOnceAfterExit()
+
+    async def test_finish_waits_for_a_quick_spawn(self):
+        spawned = asyncio.Event()
+        process = FakeProcess()
+
+        async def quick_spawn(*args, **kwargs):
+            await spawned.wait()
+            return process
+
+        with patch.object(asyncio, "create_subprocess_exec", side_effect=quick_spawn):
+            body = iter_ffmpeg_stdout(["ffmpeg"], timeout_seconds=60, guard=self.guard)
+            reading = asyncio.ensure_future(body.__anext__())
+            await asyncio.sleep(0.01)
+            finishing = asyncio.ensure_future(self.guard.finish())
+            await asyncio.sleep(0.01)
+            spawned.set()  # within the spawn grace
             await asyncio.wait_for(finishing, 1)
             reading.cancel()
             await asyncio.gather(reading, return_exceptions=True)
@@ -409,6 +476,111 @@ class TranscodeGuardTests(unittest.IsolatedAsyncioTestCase):
                     pass
         self.assertEqual(self.releases, [None])
         self.assertEqual(self.slots.active, 0)
+
+
+class UnconfirmedExitTests(_GuardStateIsolation):
+    """A slot whose FFmpeg exit cannot be confirmed must never be freed by GC."""
+
+    def setUp(self):
+        for name, value in (("TERMINATE_GRACE_SECONDS", 0.05), ("KILL_GRACE_SECONDS", 0.05),
+                            ("EXIT_POLL_SECONDS", 0.02)):
+            patcher = patch.object(audio_streaming, name, value, create=True)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        # Fake PID 4242 may exist on the test machine: report "still running"
+        # unless a test says otherwise.
+        self.os_exited = False
+        patcher = patch.object(audio_streaming, "_os_process_exited", create=True,
+                               side_effect=lambda pid: self.os_exited)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.slots = StreamSlots(1)
+
+    def _unkillable(self):
+        return FakeProcess(exits_on_terminate=False, exits_on_kill=False,
+                           terminate_error=OSError("terminate failed"),
+                           kill_error=OSError("kill failed"),
+                           wait_error=RuntimeError("wait failed"))
+
+    async def _finish_dropping_references(self, process):
+        """Finish a transcode whose guard and lease nobody else references."""
+        guard = TranscodeGuard(self.slots.try_acquire().release)
+        guard.process = process
+        # Not assertLogs: its captured tracebacks would keep the guard alive
+        # and hide exactly the GC release this test is about.
+        with patch.object(audio_streaming.log, "disabled", True):
+            await asyncio.wait_for(guard.finish(), 2)  # bounded: the request does not hang
+        del guard
+        gc.collect()
+
+    async def test_unconfirmed_exit_keeps_the_slot_even_when_references_drop(self):
+        process = self._unkillable()
+        await self._finish_dropping_references(process)
+        await asyncio.sleep(0.2)  # several monitor polls
+        gc.collect()
+        self.assertEqual(self.slots.active, 1, "slot freed while FFmpeg exit was unconfirmed")
+
+    async def test_monitor_releases_once_the_os_confirms_exit(self):
+        process = self._unkillable()
+        await self._finish_dropping_references(process)
+        self.assertEqual(self.slots.active, 1)
+        self.os_exited = True  # wait() keeps failing; the OS says the PID is gone
+        for _ in range(100):
+            if not self.slots.active:
+                break
+            await asyncio.sleep(0.02)
+        self.assertEqual(self.slots.active, 0)
+        self.assertEqual(audio_streaming._HELD_TRANSCODES, set(), "released guard still held")
+
+    async def test_monitor_retries_kill_until_ffmpeg_exits(self):
+        process = FakeProcess(exits_on_terminate=False, kill_error=OSError("busy"))
+        await self._finish_dropping_references(process)
+        self.assertEqual(self.slots.active, 1)
+        process.kill_error = None  # the next kill() attempt succeeds
+        for _ in range(100):
+            if not self.slots.active:
+                break
+            await asyncio.sleep(0.02)
+        self.assertGreater(process.calls.count("kill"), 1)
+        self.assertEqual(self.slots.active, 0)
+
+    async def test_cancelled_aclose_still_reaps_and_releases(self):
+        for spec in ("2.3", "2.4"):
+            with self.subTest(spec_version=spec):
+                lease = self.slots.try_acquire()
+                guard = TranscodeGuard(lease.release)
+                process = FakeProcess()
+                guard.process = process
+                response = TranscodeStreamingResponse(_Body(asyncio.CancelledError()), guard=guard)
+                scope = {**SCOPE, "asgi": {"version": "3.0", "spec_version": spec}}
+                with self.assertRaises(asyncio.CancelledError):  # cancellation still propagates
+                    await response(scope, _receive_disconnect, _send)
+                self.assertIn("terminate", process.calls)
+                self.assertEqual(self.slots.active, 0)
+
+    def test_slot_wait_window_covers_terminate_then_kill(self):
+        # A decoder that ignores terminate() is killed after TERMINATE_GRACE;
+        # the next track's slot wait must outlast that plus the kill itself.
+        self.assertGreaterEqual(server.TRANSCODE_SLOT_WAIT_SECONDS,
+                                audio_streaming.TERMINATE_GRACE_SECONDS + 1.0)
+
+
+class OsExitCheckTests(unittest.TestCase):
+    """The exit monitor's OS-level check, against a real child process."""
+
+    def test_reports_running_then_exited(self):
+        import subprocess
+        child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+        try:
+            self.assertIs(audio_streaming._os_process_exited(child.pid), False)
+        finally:
+            child.kill()
+            child.wait(10)
+        self.assertIs(audio_streaming._os_process_exited(child.pid), True)
+
+    def test_unknown_pid_is_never_reported_running(self):
+        self.assertIsNone(audio_streaming._os_process_exited(None))
+        self.assertIsNone(audio_streaming._os_process_exited(-1))
 
 
 class ServerUsesClosingResponseTests(unittest.IsolatedAsyncioTestCase):
