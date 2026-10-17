@@ -6126,9 +6126,9 @@ input[type=range]::-webkit-slider-thumb:hover { background: var(--gold); }
           <option value="-20">-20 dBFS</option>
           <option value="-18">-18 dBFS</option>
           <option value="-15">-15 dBFS</option>
-          <option value="-12" selected>-12 dBFS</option>
+          <option value="-12">-12 dBFS</option>
           <option value="-9">-9 dBFS</option>
-          <option value="-6">-6 dBFS</option>
+          <option value="-6" selected>-6 dBFS</option>
         </select>
       </label>
     </div>
@@ -8436,8 +8436,8 @@ let vuAnimationFrame = null;
 let vuStyle = 1; // Classic gold or McIntosh-inspired blue
 const VU_CONFIG_KEY = 'velvet-vu-v1';
 // -18 dBFS studio line-up pins mastered releases at +3 VU most of the time;
-// -12 dBFS keeps typical mastered music swinging around -3..0 VU.
-const VU_DEFAULT_CALIBRATION = -12;
+// -6 dBFS gives loud modern masters the liveliest needle swing (owner's pick).
+const VU_DEFAULT_CALIBRATION = -6;
 function readVUConfig() {
   try {
     const stored = JSON.parse(localStorage.getItem(VU_CONFIG_KEY) || '{}');

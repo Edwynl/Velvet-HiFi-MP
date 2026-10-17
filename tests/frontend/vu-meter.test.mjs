@@ -162,9 +162,9 @@ assert.ok(html.includes('const VU_MAX_DRIFT_SECONDS = 0.25;'));
 assert.ok(html.includes("classList.toggle('vu-relative', vuMode !== 'classic')"));
 assert.ok(html.includes("'Tap the meters to enable'"));
 assert.ok(!/fftSize = 2048/.test(html), 'analyser window must follow the context rate');
-// Mastered releases pin at -18 dBFS; the shipped default is -12 dBFS.
-assert.ok(html.includes('const VU_DEFAULT_CALIBRATION = -12;'));
-assert.ok(html.includes('<option value="-12" selected>'));
+// Mastered releases pin at -18 dBFS; the shipped default is -6 dBFS.
+assert.ok(html.includes('const VU_DEFAULT_CALIBRATION = -6;'));
+assert.ok(html.includes('<option value="-6" selected>'));
 assert.equal((html.match(/<option value="-?\d+" selected>/g) || []).length, 1);
 // Breakpoint rules pin .mobile-vu-markings with !important; the arc-placed
 // labels must override them or they drift off the needle arc.
