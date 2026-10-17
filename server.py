@@ -3447,10 +3447,12 @@ def _credential_response(request: Request, api_key: str):
                              "stream_ticket_expires_at": stream_expires_at},
                             headers={"Cache-Control": "no-store"})
     # Image elements cannot attach API headers. Restrict this cookie to cover
-    # reads; it never authorizes mutations or the rest of the API.
-    response.set_cookie("velvet_cover_key", api_key, path="/api/covers",
-                        httponly=True, samesite="strict",
-                        secure=request.url.scheme == "https")
+    # and artist-image reads; it never authorizes mutations or the rest of
+    # the API (auth_middleware accepts it only on _IMAGE_COOKIE_PATH).
+    for cookie_path in ("/api/covers", "/api/artists"):
+        response.set_cookie("velvet_cover_key", api_key, path=cookie_path,
+                            httponly=True, samesite="strict",
+                            secure=request.url.scheme == "https")
     return response
 
 
@@ -3535,6 +3537,11 @@ _MEDIA_TICKET_ROUTES = (
     (re.compile(r"/api/stream/(\d+)"), "stream"),
     (re.compile(r"/api/covers/(\d+)(?:/thumb)?"), "cover"),
 )
+
+
+# The image-only cookie is sent for every /api/artists/... request, so the
+# middleware accepts it only on these exact read paths.
+_IMAGE_COOKIE_PATH = re.compile(r"/api/(?:covers/\d+(?:/thumb)?|artists/\d+/image)")
 
 
 def _media_ticket_target(path: str):
@@ -3642,7 +3649,7 @@ async def auth_middleware(request: Request, call_next):
         # logs, history and renderer metadata. Media URLs use tickets above.
         password = request.headers.get("X-Password")
         api_key = request.headers.get("X-API-Key")
-        if not api_key and request.method == "GET" and path.startswith("/api/covers/"):
+        if not api_key and request.method == "GET" and _IMAGE_COOKIE_PATH.fullmatch(path):
             api_key = request.cookies.get("velvet_cover_key")
         auth_result = security.verify_auth(
             password=password,
