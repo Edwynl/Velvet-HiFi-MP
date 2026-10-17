@@ -296,6 +296,17 @@ async function main() {
     await dom.window.loadDspProfiles();
     await waitFor(() => document.querySelector('#dsp-select').value === '2');
 
+    // An explicit Off (user choice or Auto Fallback) must survive a profile
+    // reload instead of resurrecting the last preset.
+    dom.window.eval("state.dspProfile = ''; persistDspProfileId('', { lastProfileId: '2' });");
+    await dom.window.loadDspProfiles();
+    assert.equal(document.querySelector('#dsp-select').value, '');
+    assert.equal(dom.window.eval('state.dspProfile'), '');
+    assert.equal(dom.window.localStorage.getItem('velvet:dsp-last-profile-id'), '2');
+    dom.window.eval("state.dspProfile = '2'; persistDspProfileId('2');");
+    await dom.window.loadDspProfiles();
+    await waitFor(() => document.querySelector('#dsp-select').value === '2');
+
     await dom.window.openGraphicEQ();
     await waitFor(() => document.querySelector('#eq-current-name')?.textContent?.trim() === 'Black Background');
     const requestCountBeforeFactoryApply = harness.requests.length;
@@ -406,6 +417,10 @@ async function main() {
     const shelfPeak = dom.window.eval(
       "dspPeakGainDb([{type:'low_shelf',freq:100,gain:4,q:0.7}], 48000)");
     assert.ok(shelfPeak > 4 && shelfPeak < 4.6, `expected FFmpeg shelf overshoot, got ${shelfPeak}`);
+    // Codex review repro: FFmpeg peaks at +32.52 dB; a plain grid found +28.36 dB.
+    const resonantPeak = dom.window.eval(
+      "dspPeakGainDb([{type:'high_shelf',freq:19900,gain:12,q:10}], 44100)");
+    assert.ok(resonantPeak > 32.4, `expected resonant shelf peak above 32.4 dB, got ${resonantPeak}`);
 
     // EQ-1: "Off" never claims bit-perfect output, and casting never claims
     // that DSP or upsampling is applied by a DLNA renderer.
@@ -417,6 +432,13 @@ async function main() {
     assert.ok(castLines.some(line => /not applied on this renderer/.test(line)));
     assert.ok(!castLines.some(line => /^DSP Black Background$/.test(line)));
     assert.ok(castLines.some(line => /upsampling not applied/.test(line)));
+    const bypassed = dom.window.describeSignalProcessing('native', { name: 'Empty' }, 'none', { active: false });
+    assert.match(bypassed[1], /selected but bypassed/);
+    const applied = dom.window.describeSignalProcessing('browser', { name: 'Hot' }, 'none',
+      { active: true, disabled_filters: [{}], eq_clipping_risk: true, net_peak_db: 2.5 });
+    assert.equal(applied[1], 'DSP Hot');
+    assert.ok(applied.some(line => /above Nyquist disabled/.test(line)));
+    assert.ok(applied.some(line => /EQ may clip: estimated peak \+2\.5 dB/.test(line)));
     const browserLines = dom.window.describeSignalProcessing('browser', null, 'none');
     assert.equal(JSON.stringify(browserLines), JSON.stringify(['No PCM upsampling', 'VELVET DSP off (source direct)']));
   } finally {

@@ -73,13 +73,35 @@ function dspFiltersResponseDb(filters, sampleRate, freqs) {
   });
 }
 
+// Same search as dsp_engine.peak_gain_db: a dense log grid misses narrow
+// resonances, so each local maximum is refined by golden-section search and
+// DC/Nyquist are evaluated exactly.
 function dspPeakGainDb(filters, sampleRate = EQ_ANALYSIS_SAMPLE_RATE) {
   if (!filters.some(f => f.enabled !== false && Number(f.gain))) return 0;
-  const low = 5, high = sampleRate / 2 * 0.999, points = 1024;
-  const ratio = Math.pow(high / low, 1 / (points - 1));
-  const grid = Array.from({ length: points }, (_, i) => low * Math.pow(ratio, i));
-  filters.forEach(f => { if (Number(f.freq) < high) grid.push(Number(f.freq)); });
-  return Math.max(0, ...dspFiltersResponseDb(filters, sampleRate, grid));
+  const nyquist = sampleRate / 2;
+  const response = logFreq => dspFiltersResponseDb(filters, sampleRate, [Math.exp(logFreq)])[0];
+  const points = 2048, high = Math.log(nyquist);
+  const grid = Array.from({ length: points }, (_, i) => high * i / (points - 1));
+  filters.forEach(f => { if (Number(f.freq) > 0 && Number(f.freq) < nyquist) grid.push(Math.log(Number(f.freq))); });
+  grid.sort((a, b) => a - b);
+  const values = dspFiltersResponseDb(filters, sampleRate, grid.map(Math.exp));
+  let best = Math.max(...values, ...dspFiltersResponseDb(filters, sampleRate, [0, nyquist]));
+  const golden = (Math.sqrt(5) - 1) / 2;
+  values.forEach((value, i) => {
+    if (value < (values[i - 1] ?? -Infinity) || value < (values[i + 1] ?? -Infinity)) return;
+    let a = grid[Math.max(i - 1, 0)], b = grid[Math.min(i + 1, grid.length - 1)];
+    let c = b - golden * (b - a), d = a + golden * (b - a);
+    let fc = response(c), fd = response(d);
+    for (let step = 0; step < 40; step++) {
+      if (fc > fd) {
+        b = d; d = c; fd = fc; c = b - golden * (b - a); fc = response(c);
+      } else {
+        a = c; c = d; fc = fd; d = a + golden * (b - a); fd = response(d);
+      }
+    }
+    best = Math.max(best, fc, fd);
+  });
+  return Math.max(0, best);
 }
 
 function graphicEqFilters() {
@@ -325,7 +347,8 @@ async function loadDspProfiles() {
       return;
     }
     const persistedLastProfileId = readPersistedLastDspProfileId();
-    const preferredProfileId = state.dspProfile || state.lastEqProfile || persistedLastProfileId;
+    const preferredProfileId = state.dspProfile
+      || (isDspExplicitlyOff() ? '' : (state.lastEqProfile || persistedLastProfileId));
     if (preferredProfileId && hasProfile(preferredProfileId)) {
       state.dspProfile = String(preferredProfileId);
       state.lastEqProfile = state.dspProfile;

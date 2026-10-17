@@ -342,11 +342,23 @@ class ServerApiTests(unittest.TestCase):
             {"name": "x" * 121},
             {"name": 5},
             {"name": "x", "filters": "not a list"},
+            {"name": "x", "category": []},
+            {"name": "x", "category": {"a": 1}},
+            {"name": "x", "eq_bands": 1},
+            {"name": "x", "eq_bands": [1]},
+            {"name": "x", "eq_bands": "nope"},
+            {"name": "x", "eq_bands": [{"freq": 1000, "gain": 99}]},
+            {"name": "x", "volume_normalize": 2},
+            {"name": "x", "volume_normalize": "true"},
+            # Valid filters whose combined boost no allowed preamp can offset.
+            {"name": "x", "filters": [{"type": "high_shelf", "freq": 19900, "gain": 12, "q": 10}]},
+            {"name": "x", "filters": [{**valid, "gain": 18}] * 20},
         ]:
             with self.subTest(body=str(body)[:60]):
                 self.assertEqual(self.client.post("/api/dsp/profiles", json=body).status_code, 422)
         ok = self.client.post("/api/dsp/profiles",
-                              json={"name": "x", "preamp_db": "-13.5", "filters": [valid] * 20})
+                              json={"name": "x", "preamp_db": "-13.5", "volume_normalize": 1,
+                                    "filters": [{**valid, "gain": 1}] * 20})
         self.assertEqual(ok.status_code, 200)
         saved = self.client.get(f"/api/dsp/profiles/{ok.json()['id']}").json()
         self.assertEqual(saved["preamp_db"], -13.5)
@@ -365,6 +377,13 @@ class ServerApiTests(unittest.TestCase):
         self.assertEqual(resp.status_code, 422)
         after = self.client.get(f"/api/dsp/profiles/{created['id']}").json()
         self.assertEqual(after, before)
+
+    def test_legacy_eq_bands_payload_is_validated_and_converted(self):
+        created = self.client.post("/api/dsp/profiles", json={
+            "name": "Legacy client", "eq_bands": [{"freq": 1000, "gain": 3, "q": 1.0}]}).json()
+        saved = self.client.get(f"/api/dsp/profiles/{created['id']}").json()
+        self.assertEqual(server.json.loads(saved["filter_chain_json"]),
+                         [{"type": "peaking", "freq": 1000.0, "gain": 3.0, "q": 1.0, "enabled": True}])
 
     def test_saving_an_empty_filter_list_bypasses_legacy_bands(self):
         with self._connect() as conn:
@@ -389,7 +408,7 @@ class ServerApiTests(unittest.TestCase):
         self.assertEqual(resp.status_code, 200)
         plan = resp.json()
         self.assertGreater(plan["peak_gain_db"], 13.0)
-        self.assertTrue(plan["clipping_risk"])
+        self.assertTrue(plan["eq_clipping_risk"])
         self.assertLess(plan["recommended_preamp_db"], -14.0)
         self.assertEqual(plan["sample_rate"], 48000)
         self.assertEqual(self.client.get("/api/dsp/profiles/9999/resolved").status_code, 404)

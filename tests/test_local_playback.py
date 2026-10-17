@@ -144,6 +144,21 @@ class LocalPlaybackTests(unittest.TestCase):
         self.assertIn("DSP profile not found", result["error"])
         self.assertEqual(DummyPlayer.instances, [])
 
+    def test_named_empty_preset_is_reported_as_bypassed_not_applied(self):
+        conn = sqlite3.connect(self.db_path)
+        profile_id = conn.execute(
+            "INSERT INTO dsp_profiles (name, preamp_db, filter_chain_json) VALUES ('Empty', 0, '[]')"
+        ).lastrowid
+        conn.commit()
+        conn.close()
+        with patch.object(local_playback, "SOUNDDEVICE_AVAILABLE", True),              patch.object(local_playback, "_get_library_db_path", return_value=self.db_path),              patch.object(local_playback, "LocalPlayer", DummyPlayer):
+            result = local_playback.play_local(track_id=1, dsp_profile_id=profile_id)
+
+        self.assertTrue(result["success"])
+        self.assertEqual(DummyPlayer.instances[0].play_calls[0]["dsp_filter"], "")
+        self.assertEqual(result["dsp"]["status"], "bypassed")
+        self.assertIsNone(result["dsp"]["effective_profile_id"])
+
     def test_dsp_profile_chain_is_resolved_at_the_source_rate(self):
         conn = sqlite3.connect(self.db_path)
         profile_id = conn.execute(

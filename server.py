@@ -46,9 +46,9 @@ from dsp_engine import (
     MIN_PREAMP_DB,
     DspValidationError,
     build_dsp_filter_chain,
-    profile_filters,
     resolve_dsp_plan,
     validate_dsp_filters,
+    validate_dsp_headroom,
     validate_dsp_number,
 )
 from audio_streaming import (
@@ -3079,18 +3079,18 @@ def _dsp_text(value, field: str, max_length: int, *, required: bool = False):
     return value
 
 
-def _normalize_dsp_payload(body: dict, existing_profile: dict | None = None) -> dict:
+def _normalize_dsp_payload(body: dict) -> dict:
     """Validate a DSP create/update body. Invalid input is rejected (422),
     never clamped or dropped, so a saved profile is exactly what was sent."""
     if not isinstance(body, dict):
         raise HTTPException(422, "DSP profile body must be an object")
     try:
-        return _validate_dsp_payload(body, existing_profile)
+        return _validate_dsp_payload(body)
     except DspValidationError as exc:
         raise HTTPException(422, f"Invalid DSP profile: {exc}")
 
 
-def _validate_dsp_payload(body: dict, existing_profile: dict | None) -> dict:
+def _validate_dsp_payload(body: dict) -> dict:
     normalized: dict = {}
 
     if "name" in body:
@@ -3098,9 +3098,9 @@ def _validate_dsp_payload(body: dict, existing_profile: dict | None) -> dict:
     if "description" in body:
         normalized["description"] = _dsp_text(body["description"], "description", 1000)
     if "volume_normalize" in body:
-        if not isinstance(body["volume_normalize"], (bool, int)):
+        if not isinstance(body["volume_normalize"], (bool, int)) or body["volume_normalize"] not in (0, 1):
             raise DspValidationError("volume_normalize must be true or false")
-        normalized["volume_normalize"] = int(bool(body["volume_normalize"]))
+        normalized["volume_normalize"] = int(body["volume_normalize"])
     if "stereo_width" in body:
         normalized["stereo_width"] = validate_dsp_number(body["stereo_width"], "stereo_width", -100, 100)
     if "reverb_room_size" in body:
@@ -3108,7 +3108,7 @@ def _validate_dsp_payload(body: dict, existing_profile: dict | None) -> dict:
     if "reverb_wet_dry" in body:
         normalized["reverb_wet_dry"] = validate_dsp_number(body["reverb_wet_dry"], "reverb_wet_dry", 0, 100)
     if "category" in body:
-        if body["category"] not in DSP_CATEGORIES:
+        if not isinstance(body["category"], str) or body["category"] not in DSP_CATEGORIES:
             raise DspValidationError(f"category must be one of {sorted(DSP_CATEGORIES)}")
         normalized["category"] = body["category"]
     if "preset_key" in body:
@@ -3126,12 +3126,23 @@ def _validate_dsp_payload(body: dict, existing_profile: dict | None) -> dict:
         normalized["filter_chain_json"] = _serialize_dsp_json(validate_dsp_filters(body["filters"]))
 
     if "eq_bands" in body:
-        normalized["eq_bands"] = _serialize_dsp_json(body["eq_bands"])
+        eq_bands = body["eq_bands"]
+        if isinstance(eq_bands, str):
+            try:
+                eq_bands = json.loads(eq_bands)
+            except json.JSONDecodeError as exc:
+                raise DspValidationError("eq_bands must be a JSON list") from exc
+        if not isinstance(eq_bands, list) or not all(isinstance(band, dict) for band in eq_bands):
+            raise DspValidationError("eq_bands must be a list of band objects")
+        normalized["eq_bands"] = _serialize_dsp_json(eq_bands)
         if "filter_chain_json" not in normalized:
-            temp_profile = dict(existing_profile or {})
-            temp_profile["eq_bands"] = normalized["eq_bands"]
-            temp_profile["filter_chain_json"] = None
-            normalized["filter_chain_json"] = json.dumps(validate_dsp_filters(profile_filters(temp_profile)))
+            legacy_filters = [{"type": "peaking", "freq": band.get("freq", 1000), "gain": band.get("gain", 0),
+                               "q": band.get("q", 1.4), "enabled": band.get("enabled", True)}
+                              for band in eq_bands]
+            normalized["filter_chain_json"] = json.dumps(validate_dsp_filters(legacy_filters))
+
+    if "filter_chain_json" in normalized:
+        validate_dsp_headroom(json.loads(normalized["filter_chain_json"]))
 
     return normalized
 
@@ -3235,7 +3246,7 @@ def update_dsp_profile(profile_id: int, body: dict):
 
     updates = []
     params = []
-    normalized = _normalize_dsp_payload(body, existing_profile=profile)
+    normalized = _normalize_dsp_payload(body)
 
     if "name" in normalized:
         updates.append("name=?")

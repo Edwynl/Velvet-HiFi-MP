@@ -337,35 +337,70 @@ def _biquad_coefficients(flt: dict[str, Any], sample_rate: float) -> tuple[float
     return (1 + alpha * a, -2 * cos_w0, 1 - alpha * a, 1 + alpha / a, -2 * cos_w0, 1 - alpha / a)
 
 
+def _active_coefficients(filters: list[dict[str, Any]], sample_rate: float) -> list[tuple[float, ...]]:
+    return [_biquad_coefficients(f, sample_rate) for f in filters
+            if f.get("enabled", True) and f.get("gain")]
+
+
+def _cascade_db(coefficients: list[tuple[float, ...]], sample_rate: float, freq: float) -> float:
+    z1 = cmath.exp(-2j * math.pi * freq / sample_rate)
+    z2 = z1 * z1
+    total = 1 + 0j
+    for b0, b1, b2, a0, a1, a2 in coefficients:
+        total *= (b0 + b1 * z1 + b2 * z2) / (a0 + a1 * z1 + a2 * z2)
+    return 20 * math.log10(max(abs(total), 1e-12))
+
+
 def filters_response_db(filters: list[dict[str, Any]], sample_rate: float,
                         freqs: list[float]) -> list[float]:
     """Combined magnitude response (dB) of the enabled filters, cascaded."""
-    active = [_biquad_coefficients(f, sample_rate) for f in filters
-              if f.get("enabled", True) and f.get("gain")]
-    response: list[float] = []
-    for freq in freqs:
-        z1 = cmath.exp(-2j * math.pi * freq / sample_rate)
-        z2 = z1 * z1
-        total = 1 + 0j
-        for b0, b1, b2, a0, a1, a2 in active:
-            total *= (b0 + b1 * z1 + b2 * z2) / (a0 + a1 * z1 + a2 * z2)
-        response.append(20 * math.log10(max(abs(total), 1e-12)))
-    return response
+    coefficients = _active_coefficients(filters, sample_rate)
+    return [_cascade_db(coefficients, sample_rate, freq) for freq in freqs]
 
 
-def _analysis_grid(filters: list[dict[str, Any]], sample_rate: float, points: int = 1024) -> list[float]:
-    low, high = 5.0, sample_rate / 2 * 0.999
-    ratio = (high / low) ** (1 / (points - 1))
-    grid = [low * ratio ** i for i in range(points)]
-    grid.extend(float(f["freq"]) for f in filters if float(f["freq"]) < high)
-    return grid
+PEAK_GRID_POINTS = 2048
+_GOLDEN = (math.sqrt(5) - 1) / 2
 
 
 def peak_gain_db(filters: list[dict[str, Any]], sample_rate: float) -> float:
-    """Maximum combined boost on a dense log grid up to Nyquist (>= 0 dB)."""
-    if not any(f.get("enabled", True) and f.get("gain") for f in filters):
+    """Maximum combined boost from DC to Nyquist (>= 0 dB).
+
+    A fixed grid alone misses narrow resonances (a Q=10 shelf near Nyquist was
+    underestimated by 4 dB), so every local maximum of a dense log grid is
+    refined with a golden-section search, and DC/Nyquist are evaluated exactly.
+    """
+    coefficients = _active_coefficients(filters, sample_rate)
+    if not coefficients:
         return 0.0
-    return max(0.0, max(filters_response_db(filters, sample_rate, _analysis_grid(filters, sample_rate))))
+    nyquist = sample_rate / 2
+
+    def response(log_freq: float) -> float:
+        return _cascade_db(coefficients, sample_rate, math.exp(log_freq))
+
+    low, high = math.log(1.0), math.log(nyquist)
+    grid = sorted({low + (high - low) * i / (PEAK_GRID_POINTS - 1) for i in range(PEAK_GRID_POINTS)}
+                  | {math.log(float(f["freq"])) for f in filters if 0 < float(f["freq"]) < nyquist})
+    values = [response(x) for x in grid]
+    best = max(values + [_cascade_db(coefficients, sample_rate, 0.0),
+                         _cascade_db(coefficients, sample_rate, nyquist)])
+    for i, value in enumerate(values):
+        left, right = values[i - 1] if i else -math.inf, values[i + 1] if i + 1 < len(values) else -math.inf
+        if value < left or value < right:
+            continue
+        a, b = grid[max(i - 1, 0)], grid[min(i + 1, len(grid) - 1)]
+        c, d = b - _GOLDEN * (b - a), a + _GOLDEN * (b - a)
+        fc, fd = response(c), response(d)
+        for _ in range(40):
+            if fc > fd:
+                b, d, fd = d, c, fc
+                c = b - _GOLDEN * (b - a)
+                fc = response(c)
+            else:
+                a, c, fc = c, d, fd
+                d = a + _GOLDEN * (b - a)
+                fd = response(d)
+        best = max(best, fc, fd)
+    return max(0.0, best)
 
 
 def recommended_preamp_db(filters: list[dict[str, Any]], sample_rate: float,
@@ -378,6 +413,23 @@ def recommended_preamp_db(filters: list[dict[str, Any]], sample_rate: float,
     if peak <= 0.05:
         return 0.0
     return -math.ceil((peak + margin_db) * 10 - 1e-9) / 10
+
+
+# Source rates a saved profile must keep headroom at (EQ runs at the source rate).
+HEADROOM_CHECK_SAMPLE_RATES = (22050, 32000, 44100, 48000, 88200, 96000, 176400, 192000)
+
+
+def validate_dsp_headroom(filters: list[dict[str, Any]]) -> None:
+    """Fail-safe policy: reject a filter set whose combined boost cannot be
+    offset by the largest allowed preamp attenuation (plus safety margin)."""
+    for rate in HEADROOM_CHECK_SAMPLE_RATES:
+        playable = [f for f in filters if float(f["freq"]) < rate / 2]
+        needed = recommended_preamp_db(playable, rate)
+        if needed < MIN_PREAMP_DB:
+            raise DspValidationError(
+                f"combined EQ boost peaks at +{peak_gain_db(playable, rate):.1f} dB at {rate} Hz; "
+                f"keeping headroom would need {needed:.1f} dB preamp, beyond the "
+                f"{MIN_PREAMP_DB:g} dB limit. Reduce the boosts or Q.")
 
 
 def _source_rate(sample_rate: Any) -> float | None:
@@ -418,8 +470,11 @@ def resolve_dsp_plan(dsp_profile: dict[str, Any] | None, sample_rate: Any = None
         "sample_rate_assumed": rate is None,
         "peak_gain_db": round(peak, 2),
         "net_peak_db": round(net_peak, 2),
-        "clipping_risk": net_peak > 0.05,
+        "eq_clipping_risk": net_peak > 0.05,
+        "estimate_scope": ("EQ frequency-response estimate for full-scale input; not a post-DSP "
+                           "sample or true-peak measurement, and excludes level_changing_effects"),
         "recommended_preamp_db": recommended_preamp_db(applied, analysis_rate),
+        "active": bool(build_dsp_filter_chain(profile, rate)),
         # The headroom estimate covers the EQ stage; these stages change level too.
         "level_changing_effects": [name for name, on in (
             ("loudnorm", profile.get("volume_normalize")),
@@ -470,8 +525,14 @@ def dsp_effective_status(requested_profile_id: Any, dsp_profile: dict[str, Any] 
         return {"requested_profile_id": None, "effective_profile_id": None,
                 "status": "off", "reason": "VELVET DSP off", "disabled_filters": []}
     plan = resolve_dsp_plan(dsp_profile, sample_rate)
+    if not plan["active"]:
+        # Empty processing graph: the output is the source, whatever is selected.
+        return {"requested_profile_id": requested_profile_id, "effective_profile_id": None,
+                "status": "bypassed",
+                "reason": "Preset has no active processing at this sample rate (source direct)",
+                "disabled_filters": plan["disabled_filters"]}
     return {"requested_profile_id": requested_profile_id,
             "effective_profile_id": requested_profile_id,
             "status": "applied", "reason": None,
             "disabled_filters": plan["disabled_filters"],
-            "net_peak_db": plan["net_peak_db"], "clipping_risk": plan["clipping_risk"]}
+            "net_peak_db": plan["net_peak_db"], "eq_clipping_risk": plan["eq_clipping_risk"]}

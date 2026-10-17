@@ -9,6 +9,7 @@ import dsp_engine
 from dsp_engine import (
     DspValidationError,
     build_dsp_filter_chain,
+    dsp_effective_status,
     filters_response_db,
     peak_gain_db,
     profile_filters,
@@ -16,6 +17,7 @@ from dsp_engine import (
     resolve_dsp_plan,
     sanitize_dsp_filters,
     validate_dsp_filters,
+    validate_dsp_headroom,
     validate_dsp_number,
 )
 
@@ -164,6 +166,22 @@ class CombinedResponseTests(unittest.TestCase):
         filters = [{"type": "peaking", "freq": 1000, "gain": -6, "q": 1.0, "enabled": True}]
         self.assertEqual(recommended_preamp_db(filters, 48000), 0.0)
 
+    def test_resonant_shelf_near_nyquist_peak_is_not_missed_by_the_grid(self):
+        # Codex review repro: FFmpeg measures +32.52 dB near 20.5 kHz; a fixed
+        # log grid estimated only +28.36 dB.
+        flt = [{"type": "high_shelf", "freq": 19900, "gain": 12, "q": 10, "enabled": True}]
+        self.assertGreater(peak_gain_db(flt, 44100), 32.4)
+
+    def test_narrow_peaks_between_grid_points_are_found(self):
+        for flt in ({"type": "peaking", "freq": 20, "gain": 18, "q": 10, "enabled": True},
+                    {"type": "peaking", "freq": 19999, "gain": 18, "q": 10, "enabled": True},
+                    {"type": "low_shelf", "freq": 20, "gain": 18, "q": 10, "enabled": True}):
+            with self.subTest(flt=flt):
+                dense = [flt["freq"] * (1 + i / 20000) for i in range(-2000, 2001)]
+                dense = [f for f in dense if 0 < f < 22050]
+                brute = max(filters_response_db([flt], 44100, dense))
+                self.assertGreaterEqual(peak_gain_db([flt], 44100), brute - 0.01)
+
     def test_response_grid_matches_requested_frequencies(self):
         filters = [{"type": "peaking", "freq": 1000, "gain": 6, "q": 1.0, "enabled": True}]
         response = filters_response_db(filters, 48000, [100, 1000, 10000])
@@ -186,29 +204,70 @@ class ResolvedPlanTests(unittest.TestCase):
         self.assertIn("equalizer=f=1000.0", chain)
         self.assertNotIn("treble", chain)
 
-    def test_plan_reports_headroom_and_clipping_risk(self):
+    def test_plan_reports_headroom_and_eq_clipping_risk(self):
         profile = {"preamp_db": -1, "filter_chain_json": json.dumps([
             {"type": "peaking", "freq": 1000, "gain": 6, "q": 1.0, "enabled": True},
         ])}
         plan = resolve_dsp_plan(profile, sample_rate=48000)
         self.assertAlmostEqual(plan["peak_gain_db"], 6.0, delta=0.05)
         self.assertAlmostEqual(plan["net_peak_db"], 5.0, delta=0.05)
-        self.assertTrue(plan["clipping_risk"])
+        self.assertTrue(plan["eq_clipping_risk"])
+        self.assertNotIn("clipping_risk", plan)  # not a post-DSP measurement
+        self.assertIn("not a post-DSP", plan["estimate_scope"])
         self.assertLessEqual(plan["recommended_preamp_db"], -6.0)
+        self.assertTrue(plan["active"])
 
-    def test_plan_without_boost_has_no_clipping_risk(self):
+    def test_plan_without_boost_has_no_eq_clipping_risk(self):
         plan = resolve_dsp_plan({"preamp_db": -4, "filter_chain_json": json.dumps([
             {"type": "peaking", "freq": 1000, "gain": 3, "q": 1.0, "enabled": True},
         ])}, sample_rate=44100)
-        self.assertFalse(plan["clipping_risk"])
+        self.assertFalse(plan["eq_clipping_risk"])
+
+    def test_plan_without_processing_is_inactive(self):
+        plan = resolve_dsp_plan({"preamp_db": 0, "filter_chain_json": "[]"}, sample_rate=44100)
+        self.assertFalse(plan["active"])
+
+
+class EffectiveStatusTests(unittest.TestCase):
+    def test_named_empty_preset_is_reported_as_bypassed(self):
+        status = dsp_effective_status(7, {"preamp_db": 0, "filter_chain_json": "[]"}, 44100)
+        self.assertEqual(status["status"], "bypassed")
+        self.assertIsNone(status["effective_profile_id"])
+        self.assertEqual(status["requested_profile_id"], 7)
+
+    def test_preset_with_processing_is_applied(self):
+        status = dsp_effective_status(7, {"preamp_db": -3, "filter_chain_json": "[]"}, 44100)
+        self.assertEqual(status["status"], "applied")
+        self.assertEqual(status["effective_profile_id"], 7)
+
+    def test_no_request_is_off(self):
+        self.assertEqual(dsp_effective_status(None, None)["status"], "off")
+
+
+class HeadroomPolicyTests(unittest.TestCase):
+    def test_profiles_whose_boost_exceeds_available_preamp_are_rejected(self):
+        for filters in (
+            [{"type": "high_shelf", "freq": 19900, "gain": 12, "q": 10, "enabled": True}],
+            [{"type": "peaking", "freq": 1000, "gain": 18, "q": 1.0, "enabled": True}] * 20,
+        ):
+            with self.subTest(n=len(filters)):
+                with self.assertRaises(DspValidationError) as ctx:
+                    validate_dsp_headroom(filters)
+                self.assertIn("preamp", str(ctx.exception))
+
+    def test_factory_presets_and_moderate_boosts_pass(self):
+        for preset in dsp_engine.FACTORY_DSP_PRESETS:
+            with self.subTest(preset=preset["name"]):
+                validate_dsp_headroom(json.loads(preset["filter_chain_json"]))
+        validate_dsp_headroom([{"type": "peaking", "freq": f, "gain": 12, "q": 1.41, "enabled": True}
+                               for f in (500, 1000, 2000)])
 
 
 @unittest.skipUnless(shutil.which("ffmpeg") and numpy is not None, "FFmpeg and numpy required")
 class FFmpegResponseMatchTests(unittest.TestCase):
     """The model must match what FFmpeg actually does to audio (<=0.5 dB)."""
 
-    def _ffmpeg_response_db(self, chain, rate, freqs):
-        length = 1 << 16
+    def _ffmpeg_spectrum(self, chain, rate, length=1 << 16, fft_length=None):
         impulse = numpy.zeros(length, dtype="<f8")
         impulse[0] = 1.0
         result = subprocess.run(
@@ -216,9 +275,33 @@ class FFmpegResponseMatchTests(unittest.TestCase):
              "-af", chain, "-f", "f64le", "-ac", "1", "pipe:1"],
             input=impulse.tobytes(), capture_output=True, check=True)
         out = numpy.frombuffer(result.stdout, dtype="<f8")[:length]
-        spectrum = numpy.fft.rfft(out)
-        bins = numpy.fft.rfftfreq(length, 1.0 / rate)
-        return [20 * math.log10(abs(spectrum[int(numpy.argmin(abs(bins - f)))])) for f in freqs]
+        fft_length = fft_length or length  # zero-padding interpolates narrow peaks
+        return abs(numpy.fft.rfft(out, fft_length)), numpy.fft.rfftfreq(fft_length, 1.0 / rate)
+
+    def _ffmpeg_response_db(self, chain, rate, freqs):
+        spectrum, bins = self._ffmpeg_spectrum(chain, rate)
+        return [20 * math.log10(spectrum[int(numpy.argmin(abs(bins - f)))]) for f in freqs]
+
+    def test_predicted_peak_covers_the_actual_ffmpeg_maximum(self):
+        # Adversarial but valid filters: resonant shelves/peaks at the band edges.
+        cases = [
+            [{"type": "high_shelf", "freq": 19900, "gain": 12, "q": 10, "enabled": True}],
+            [{"type": "high_shelf", "freq": 15000, "gain": 6, "q": 10, "enabled": True}],
+            [{"type": "low_shelf", "freq": 20, "gain": 12, "q": 10, "enabled": True}],
+            [{"type": "peaking", "freq": 20, "gain": 18, "q": 10, "enabled": True}],
+            [{"type": "peaking", "freq": 19990, "gain": 18, "q": 10, "enabled": True}],
+            [{"type": "peaking", "freq": f, "gain": 12, "q": 1.41, "enabled": True}
+             for f in (500, 1000, 2000)],
+        ]
+        for filters in cases:
+            chain = build_dsp_filter_chain({"filter_chain_json": json.dumps(filters)})
+            for rate in (44100, 48000, 96000):
+                with self.subTest(filters=filters[0], rate=rate):
+                    spectrum, _ = self._ffmpeg_spectrum(chain, rate, 1 << 18, 1 << 22)
+                    actual = 20 * math.log10(float(spectrum.max()))
+                    predicted = peak_gain_db(filters, rate)
+                    self.assertGreaterEqual(predicted, actual - 0.05)
+                    self.assertLessEqual(predicted, actual + 0.5)
 
     def test_model_matches_ffmpeg_for_all_filter_types(self):
         filters = [

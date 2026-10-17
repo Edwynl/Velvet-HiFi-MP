@@ -6579,7 +6579,9 @@ async function startRadio(mode, id) {
 // What VELVET actually does to the audio on this output, never a mere
 // selection: DLNA renderers fetch the direct source URL, so neither DSP nor
 // upsampling is applied there.
-function describeSignalProcessing(zoneType, dspProfile, upsample) {
+// `plan` is the server's resolved plan (/dsp/profiles/{id}/resolved): a
+// selected preset whose processing graph is empty is reported as bypassed.
+function describeSignalProcessing(zoneType, dspProfile, upsample, plan = null) {
   if (zoneType === 'cast') {
     return [
       'Direct source stream to renderer',
@@ -6587,13 +6589,26 @@ function describeSignalProcessing(zoneType, dspProfile, upsample) {
       ...(upsample && upsample !== 'none' ? ['PCM upsampling not applied on this renderer'] : []),
     ];
   }
-  return [
+  const lines = [
     !upsample || upsample === 'none' ? 'No PCM upsampling' : `${upsample.toUpperCase()} PCM upsampling enabled`,
-    dspProfile ? `DSP ${dspProfile.name}` : 'VELVET DSP off (source direct)',
   ];
+  if (!dspProfile) {
+    lines.push('VELVET DSP off (source direct)');
+  } else if (plan && !plan.active) {
+    lines.push(`DSP ${dspProfile.name} selected but bypassed: no active processing`);
+  } else {
+    lines.push(plan ? `DSP ${dspProfile.name}` : `DSP ${dspProfile.name} (status unavailable)`);
+    if (plan?.disabled_filters?.length) {
+      lines.push(`${plan.disabled_filters.length} filter(s) above Nyquist disabled`);
+    }
+    if (plan?.eq_clipping_risk) {
+      lines.push(`EQ may clip: estimated peak ${plan.net_peak_db > 0 ? '+' : ''}${plan.net_peak_db} dB`);
+    }
+  }
+  return lines;
 }
 
-function showSignalPath() {
+async function showSignalPath() {
   if (!state.currentTrack) {
     showToast('Nothing is playing yet');
     return;
@@ -6608,7 +6623,12 @@ function showSignalPath() {
   ].filter(Boolean).join(' · ');
 
   const activeZone = getActiveZone();
-  const processing = describeSignalProcessing(activeZone.type, dspProfile, state.upsample).map(escHtml).join('<br>');
+  let plan = null;
+  if (dspProfile && activeZone.type !== 'cast') {
+    const rate = Number(track.sample_rate) >= 8000 ? `?sample_rate=${Math.round(Number(track.sample_rate))}` : '';
+    plan = await api(`/dsp/profiles/${dspProfile.id}/resolved${rate}`).catch(() => null);
+  }
+  const processing = describeSignalProcessing(activeZone.type, dspProfile, state.upsample, plan).map(escHtml).join('<br>');
   const output = activeZone.type === 'cast'
     ? `Streaming to ${escHtml(activeZone.name)}`
     : activeZone.type === 'native'
@@ -7131,6 +7151,9 @@ function updateMediaSession(track) {
 
 const DSP_PROFILE_STORAGE_KEY = 'velvet:dsp-profile-id';
 const DSP_LAST_PROFILE_STORAGE_KEY = 'velvet:dsp-last-profile-id';
+// Off is stored explicitly so a remembered last preset (kept for quick
+// re-enable) is never resurrected after the user, or Auto Fallback, chose Off.
+const DSP_OFF_STORAGE_VALUE = 'off';
 
 function readPersistedDspProfileId() {
   try {
@@ -7148,27 +7171,28 @@ function readPersistedLastDspProfileId() {
   }
 }
 
-function persistDspProfileId(profileId, { preserveLast = false, lastProfileId = '' } = {}) {
+// Choosing Off never forgets the last preset; `lastProfileId` updates it.
+function persistDspProfileId(profileId, { lastProfileId = '' } = {}) {
   try {
     const value = String(profileId || '');
     if (value) {
       localStorage.setItem(DSP_PROFILE_STORAGE_KEY, value);
       localStorage.setItem(DSP_LAST_PROFILE_STORAGE_KEY, value);
     } else {
-      localStorage.removeItem(DSP_PROFILE_STORAGE_KEY);
+      localStorage.setItem(DSP_PROFILE_STORAGE_KEY, DSP_OFF_STORAGE_VALUE);
       const lastValue = String(lastProfileId || '');
-      if (preserveLast && lastValue) {
-        localStorage.setItem(DSP_LAST_PROFILE_STORAGE_KEY, lastValue);
-      } else if (!preserveLast) {
-        localStorage.removeItem(DSP_LAST_PROFILE_STORAGE_KEY);
-      }
+      if (lastValue) localStorage.setItem(DSP_LAST_PROFILE_STORAGE_KEY, lastValue);
     }
   } catch {}
 }
 
-const persistedDspProfileId = readPersistedDspProfileId();
+function isDspExplicitlyOff() {
+  return readPersistedDspProfileId() === DSP_OFF_STORAGE_VALUE;
+}
+
+const persistedDspProfileId = isDspExplicitlyOff() ? '' : readPersistedDspProfileId();
 const persistedLastDspProfileId = readPersistedLastDspProfileId();
-const initialDspProfileId = persistedDspProfileId || persistedLastDspProfileId;
+const initialDspProfileId = isDspExplicitlyOff() ? '' : (persistedDspProfileId || persistedLastDspProfileId);
 
 const state = {
   view: null, // Start as null to ensure initial navigate() triggers render
@@ -7388,7 +7412,7 @@ function attemptDspAutoFallback(reason = 'stream-error') {
   const failedProfileId = String(state.dspProfile);
   state.lastEqProfile = failedProfileId;
   state.dspProfile = '';
-  persistDspProfileId('', { preserveLast: true, lastProfileId: failedProfileId });
+  persistDspProfileId('', { lastProfileId: failedProfileId });
 
   const select = UI['dsp-select'];
   if (select) {
