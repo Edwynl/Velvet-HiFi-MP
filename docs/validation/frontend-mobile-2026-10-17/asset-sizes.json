@@ -1,0 +1,32 @@
+{
+  "static/index.html": {
+    "bytes": 320798,
+    "gzip_bytes": 67071,
+    "sha256": "3c12297c7dff995e8e6951127ac27e891c96470b4f34f7d79f63ddf30da917d0"
+  },
+  "static/js/library-views.js": {
+    "bytes": 104251,
+    "gzip_bytes": 19492,
+    "sha256": "361819455b706d420568653aa7f65c30b542b856c2d3df0e6c81a16819aade1c"
+  },
+  "static/js/library-cards.js": {
+    "bytes": 9619,
+    "gzip_bytes": 3170,
+    "sha256": "bd0b8a4fe37c7d00637498c31a3fe156d7a05fdabc7f55b30fe1e5dad962879d"
+  },
+  "static/js/player-ui.js": {
+    "bytes": 14699,
+    "gzip_bytes": 4232,
+    "sha256": "ddced3bf9b8c8485111d48ed56a4df21b2f20a8148cd285f7a140cda6b3d70e3"
+  },
+  "static/js/dsp-controls.js": {
+    "bytes": 9723,
+    "gzip_bytes": 3141,
+    "sha256": "2822a7b8a9a5fc3e4d1e9f190dcf723f9c2a73610e2b898383e30eb5a23c7fa6"
+  },
+  "static/mobile-layout.css": {
+    "bytes": 6898,
+    "gzip_bytes": 1809,
+    "sha256": "c3b77d42b2bb2af962b12a364ca8ce3a6d41c80522cf6022f9f40fa09249c6a2"
+  }
+}

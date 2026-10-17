@@ -1,0 +1,84 @@
+[WebServer] (node:27440) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+[WebServer] (Use `node --trace-warnings ...` to show where the warning was created)
+
+Running 2 tests using 2 workers
+
+(node:1756) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:28644) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+  x  2 [webkit-oppo-landscape] › tests\browser\mobile.spec.mjs:8:5 › browser › one Back preserves page 4, filters and card offset after five tracks and ticket/history POSTs (40.4s)
+  x  1 [webkit-oppo-landscape] › tests\browser\mobile.spec.mjs:8:5 › standalone-simulation › one Back preserves page 4, filters and card offset after five tracks and ticket/history POSTs (40.6s)
+
+
+  1) [webkit-oppo-landscape] › tests\browser\mobile.spec.mjs:8:5 › browser › one Back preserves page 4, filters and card offset after five tracks and ticket/history POSTs 
+
+    Error: expect(received).toBeLessThanOrEqual(expected)
+
+    Expected: <= 1
+    Received:    80
+
+      45 |       const afterGeometry = await page.locator('#albums-grid .card').nth(17).evaluate(e => ({ cardTop: e.getBoundingClientRect().top, mainTop: document.getElementById('main').getBoundingClientRect().top, viewTop: document.getElementById('view-container').getBoundingClientRect().top, scroll: document.getElementById('main').scrollTop, windowScroll: scrollY, playerHeight: document.getElementById('player').getBoundingClientRect().height }));
+      46 |       await info.attach('back-geometry', { body: JSON.stringify({ beforeGeometry, afterGeometry }), contentType: 'application/json' });
+    > 47 |       expect(Math.abs((await page.locator('#albums-grid .card').nth(17).boundingBox()).y - offset)).toBeLessThanOrEqual(1);
+         |                                                                                                     ^
+      48 |       expect(await page.evaluate(() => history.state.listState)).toMatchObject({ page: 4, sort: 'year', genre: 'Classical', decade: '2020s', favorites: true });
+      49 |       await shot(page, info, 'back-restored', mode);
+      50 |       await noOverflow(page); expect(errors).toEqual([]);
+        at C:\Users\edwyn\.codex\worktrees\frontend-mobile-pwa\VELVET_NEXT\tests\browser\mobile.spec.mjs:47:101
+
+    attachment #2: screenshot (image/png) ──────────────────────────────────────────────────────────
+    artifacts\frontend-mobile-qa\results\mobile-browser-one-Back-pr-ccba5-ks-and-ticket-history-POSTs-webkit-oppo-landscape\test-failed-1.png
+    ────────────────────────────────────────────────────────────────────────────────────────────────
+
+    attachment #3: video (video/webm) ──────────────────────────────────────────────────────────────
+    artifacts\frontend-mobile-qa\results\mobile-browser-one-Back-pr-ccba5-ks-and-ticket-history-POSTs-webkit-oppo-landscape\video.webm
+    ────────────────────────────────────────────────────────────────────────────────────────────────
+
+    Error Context: artifacts\frontend-mobile-qa\results\mobile-browser-one-Back-pr-ccba5-ks-and-ticket-history-POSTs-webkit-oppo-landscape\error-context.md
+
+    attachment #5: trace (application/zip) ─────────────────────────────────────────────────────────
+    artifacts\frontend-mobile-qa\results\mobile-browser-one-Back-pr-ccba5-ks-and-ticket-history-POSTs-webkit-oppo-landscape\trace.zip
+    Usage:
+
+        npx playwright show-trace artifacts\frontend-mobile-qa\results\mobile-browser-one-Back-pr-ccba5-ks-and-ticket-history-POSTs-webkit-oppo-landscape\trace.zip
+
+    ────────────────────────────────────────────────────────────────────────────────────────────────
+
+  2) [webkit-oppo-landscape] › tests\browser\mobile.spec.mjs:8:5 › standalone-simulation › one Back preserves page 4, filters and card offset after five tracks and ticket/history POSTs 
+
+    Error: expect(received).toBeLessThanOrEqual(expected)
+
+    Expected: <= 1
+    Received:    80
+
+      45 |       const afterGeometry = await page.locator('#albums-grid .card').nth(17).evaluate(e => ({ cardTop: e.getBoundingClientRect().top, mainTop: document.getElementById('main').getBoundingClientRect().top, viewTop: document.getElementById('view-container').getBoundingClientRect().top, scroll: document.getElementById('main').scrollTop, windowScroll: scrollY, playerHeight: document.getElementById('player').getBoundingClientRect().height }));
+      46 |       await info.attach('back-geometry', { body: JSON.stringify({ beforeGeometry, afterGeometry }), contentType: 'application/json' });
+    > 47 |       expect(Math.abs((await page.locator('#albums-grid .card').nth(17).boundingBox()).y - offset)).toBeLessThanOrEqual(1);
+         |                                                                                                     ^
+      48 |       expect(await page.evaluate(() => history.state.listState)).toMatchObject({ page: 4, sort: 'year', genre: 'Classical', decade: '2020s', favorites: true });
+      49 |       await shot(page, info, 'back-restored', mode);
+      50 |       await noOverflow(page); expect(errors).toEqual([]);
+        at C:\Users\edwyn\.codex\worktrees\frontend-mobile-pwa\VELVET_NEXT\tests\browser\mobile.spec.mjs:47:101
+
+    attachment #2: screenshot (image/png) ──────────────────────────────────────────────────────────
+    artifacts\frontend-mobile-qa\results\mobile-standalone-simulati-7cca3-ks-and-ticket-history-POSTs-webkit-oppo-landscape\test-failed-1.png
+    ────────────────────────────────────────────────────────────────────────────────────────────────
+
+    attachment #3: video (video/webm) ──────────────────────────────────────────────────────────────
+    artifacts\frontend-mobile-qa\results\mobile-standalone-simulati-7cca3-ks-and-ticket-history-POSTs-webkit-oppo-landscape\video.webm
+    ────────────────────────────────────────────────────────────────────────────────────────────────
+
+    Error Context: artifacts\frontend-mobile-qa\results\mobile-standalone-simulati-7cca3-ks-and-ticket-history-POSTs-webkit-oppo-landscape\error-context.md
+
+    attachment #5: trace (application/zip) ─────────────────────────────────────────────────────────
+    artifacts\frontend-mobile-qa\results\mobile-standalone-simulati-7cca3-ks-and-ticket-history-POSTs-webkit-oppo-landscape\trace.zip
+    Usage:
+
+        npx playwright show-trace artifacts\frontend-mobile-qa\results\mobile-standalone-simulati-7cca3-ks-and-ticket-history-POSTs-webkit-oppo-landscape\trace.zip
+
+    ────────────────────────────────────────────────────────────────────────────────────────────────
+
+  2 failed
+    [webkit-oppo-landscape] › tests\browser\mobile.spec.mjs:8:5 › browser › one Back preserves page 4, filters and card offset after five tracks and ticket/history POSTs 
+    [webkit-oppo-landscape] › tests\browser\mobile.spec.mjs:8:5 › standalone-simulation › one Back preserves page 4, filters and card offset after five tracks and ticket/history POSTs 

@@ -1,0 +1,790 @@
+{
+  "matrix_attempt": {
+    "passed": 71,
+    "failed": 1,
+    "exit_code": 1
+  },
+  "mobile_final": {
+    "passed": 48,
+    "total": 48
+  },
+  "desktop_final": {
+    "passed": 24,
+    "total": 24,
+    "exit_code": 0
+  },
+  "latest_unique": {
+    "passed": 72,
+    "total": 72
+  },
+  "cases": [
+    {
+      "file": "mobile.spec.mjs",
+      "suite": [
+        "mobile.spec.mjs",
+        "browser"
+      ],
+      "title": "one Back preserves page 4, filters and card offset after five tracks and ticket/history POSTs",
+      "project": "chromium-iphone-portrait",
+      "status": "passed",
+      "duration_ms": 4162
+    },
+    {
+      "file": "mobile.spec.mjs",
+      "suite": [
+        "mobile.spec.mjs",
+        "browser"
+      ],
+      "title": "Settings re-entry retains working events; layouts, safe edges, queue, EQ, keyboard and rotation",
+      "project": "chromium-iphone-portrait",
+      "status": "passed",
+      "duration_ms": 2442
+    },
+    {
+      "file": "mobile.spec.mjs",
+      "suite": [
+        "mobile.spec.mjs",
+        "browser"
+      ],
+      "title": "responsive artwork covers DPR demand and catalog state survives reload/page 10",
+      "project": "chromium-iphone-portrait",
+      "status": "passed",
+      "duration_ms": 3646
+    },
+    {
+      "file": "mobile.spec.mjs",
+      "suite": [
+        "mobile.spec.mjs",
+        "browser"
+      ],
+      "title": "one Back preserves page 4, filters and card offset after five tracks and ticket/history POSTs",
+      "project": "chromium-iphone-landscape",
+      "status": "passed",
+      "duration_ms": 4230
+    },
+    {
+      "file": "mobile.spec.mjs",
+      "suite": [
+        "mobile.spec.mjs",
+        "browser"
+      ],
+      "title": "Settings re-entry retains working events; layouts, safe edges, queue, EQ, keyboard and rotation",
+      "project": "chromium-iphone-landscape",
+      "status": "passed",
+      "duration_ms": 2359
+    },
+    {
+      "file": "mobile.spec.mjs",
+      "suite": [
+        "mobile.spec.mjs",
+        "browser"
+      ],
+      "title": "responsive artwork covers DPR demand and catalog state survives reload/page 10",
+      "project": "chromium-iphone-landscape",
+      "status": "passed",
+      "duration_ms": 3819
+    },
+    {
+      "file": "mobile.spec.mjs",
+      "suite": [
+        "mobile.spec.mjs",
+        "browser"
+      ],
+      "title": "one Back preserves page 4, filters and card offset after five tracks and ticket/history POSTs",
+      "project": "chromium-oppo-portrait",
+      "status": "passed",
+      "duration_ms": 5122
+    },
+    {
+      "file": "mobile.spec.mjs",
+      "suite": [
+        "mobile.spec.mjs",
+        "browser"
+      ],
+      "title": "Settings re-entry retains working events; layouts, safe edges, queue, EQ, keyboard and rotation",
+      "project": "chromium-oppo-portrait",
+      "status": "passed",
+      "duration_ms": 2590
+    },
+    {
+      "file": "mobile.spec.mjs",
+      "suite": [
+        "mobile.spec.mjs",
+        "browser"
+      ],
+      "title": "responsive artwork covers DPR demand and catalog state survives reload/page 10",
+      "project": "chromium-oppo-portrait",
+      "status": "passed",
+      "duration_ms": 4018
+    },
+    {
+      "file": "mobile.spec.mjs",
+      "suite": [
+        "mobile.spec.mjs",
+        "browser"
+      ],
+      "title": "one Back preserves page 4, filters and card offset after five tracks and ticket/history POSTs",
+      "project": "chromium-oppo-landscape",
+      "status": "passed",
+      "duration_ms": 4629
+    },
+    {
+      "file": "mobile.spec.mjs",
+      "suite": [
+        "mobile.spec.mjs",
+        "browser"
+      ],
+      "title": "Settings re-entry retains working events; layouts, safe edges, queue, EQ, keyboard and rotation",
+      "project": "chromium-oppo-landscape",
+      "status": "passed",
+      "duration_ms": 2277
+    },
+    {
+      "file": "mobile.spec.mjs",
+      "suite": [
+        "mobile.spec.mjs",
+        "browser"
+      ],
+      "title": "responsive artwork covers DPR demand and catalog state survives reload/page 10",
+      "project": "chromium-oppo-landscape",
+      "status": "passed",
+      "duration_ms": 3928
+    },
+    {
+      "file": "mobile.spec.mjs",
+      "suite": [
+        "mobile.spec.mjs",
+        "browser"
+      ],
+      "title": "one Back preserves page 4, filters and card offset after five tracks and ticket/history POSTs",
+      "project": "webkit-iphone-portrait",
+      "status": "passed",
+      "duration_ms": 28073
+    },
+    {
+      "file": "mobile.spec.mjs",
+      "suite": [
+        "mobile.spec.mjs",
+        "browser"
+      ],
+      "title": "Settings re-entry retains working events; layouts, safe edges, queue, EQ, keyboard and rotation",
+      "project": "webkit-iphone-portrait",
+      "status": "passed",
+      "duration_ms": 7540
+    },
+    {
+      "file": "mobile.spec.mjs",
+      "suite": [
+        "mobile.spec.mjs",
+        "browser"
+      ],
+      "title": "responsive artwork covers DPR demand and catalog state survives reload/page 10",
+      "project": "webkit-iphone-portrait",
+      "status": "passed",
+      "duration_ms": 23542
+    },
+    {
+      "file": "mobile.spec.mjs",
+      "suite": [
+        "mobile.spec.mjs",
+        "browser"
+      ],
+      "title": "one Back preserves page 4, filters and card offset after five tracks and ticket/history POSTs",
+      "project": "webkit-iphone-landscape",
+      "status": "passed",
+      "duration_ms": 25188
+    },
+    {
+      "file": "mobile.spec.mjs",
+      "suite": [
+        "mobile.spec.mjs",
+        "browser"
+      ],
+      "title": "Settings re-entry retains working events; layouts, safe edges, queue, EQ, keyboard and rotation",
+      "project": "webkit-iphone-landscape",
+      "status": "passed",
+      "duration_ms": 7359
+    },
+    {
+      "file": "mobile.spec.mjs",
+      "suite": [
+        "mobile.spec.mjs",
+        "browser"
+      ],
+      "title": "responsive artwork covers DPR demand and catalog state survives reload/page 10",
+      "project": "webkit-iphone-landscape",
+      "status": "passed",
+      "duration_ms": 21584
+    },
+    {
+      "file": "mobile.spec.mjs",
+      "suite": [
+        "mobile.spec.mjs",
+        "browser"
+      ],
+      "title": "one Back preserves page 4, filters and card offset after five tracks and ticket/history POSTs",
+      "project": "webkit-oppo-portrait",
+      "status": "passed",
+      "duration_ms": 25699
+    },
+    {
+      "file": "mobile.spec.mjs",
+      "suite": [
+        "mobile.spec.mjs",
+        "browser"
+      ],
+      "title": "Settings re-entry retains working events; layouts, safe edges, queue, EQ, keyboard and rotation",
+      "project": "webkit-oppo-portrait",
+      "status": "passed",
+      "duration_ms": 10614
+    },
+    {
+      "file": "mobile.spec.mjs",
+      "suite": [
+        "mobile.spec.mjs",
+        "browser"
+      ],
+      "title": "responsive artwork covers DPR demand and catalog state survives reload/page 10",
+      "project": "webkit-oppo-portrait",
+      "status": "passed",
+      "duration_ms": 21444
+    },
+    {
+      "file": "mobile.spec.mjs",
+      "suite": [
+        "mobile.spec.mjs",
+        "browser"
+      ],
+      "title": "one Back preserves page 4, filters and card offset after five tracks and ticket/history POSTs",
+      "project": "webkit-oppo-landscape",
+      "status": "passed",
+      "duration_ms": 31467
+    },
+    {
+      "file": "mobile.spec.mjs",
+      "suite": [
+        "mobile.spec.mjs",
+        "browser"
+      ],
+      "title": "Settings re-entry retains working events; layouts, safe edges, queue, EQ, keyboard and rotation",
+      "project": "webkit-oppo-landscape",
+      "status": "passed",
+      "duration_ms": 9452
+    },
+    {
+      "file": "mobile.spec.mjs",
+      "suite": [
+        "mobile.spec.mjs",
+        "browser"
+      ],
+      "title": "responsive artwork covers DPR demand and catalog state survives reload/page 10",
+      "project": "webkit-oppo-landscape",
+      "status": "passed",
+      "duration_ms": 26120
+    },
+    {
+      "file": "mobile.spec.mjs",
+      "suite": [
+        "mobile.spec.mjs",
+        "standalone-simulation"
+      ],
+      "title": "one Back preserves page 4, filters and card offset after five tracks and ticket/history POSTs",
+      "project": "chromium-iphone-portrait",
+      "status": "passed",
+      "duration_ms": 4196
+    },
+    {
+      "file": "mobile.spec.mjs",
+      "suite": [
+        "mobile.spec.mjs",
+        "standalone-simulation"
+      ],
+      "title": "Settings re-entry retains working events; layouts, safe edges, queue, EQ, keyboard and rotation",
+      "project": "chromium-iphone-portrait",
+      "status": "passed",
+      "duration_ms": 2182
+    },
+    {
+      "file": "mobile.spec.mjs",
+      "suite": [
+        "mobile.spec.mjs",
+        "standalone-simulation"
+      ],
+      "title": "responsive artwork covers DPR demand and catalog state survives reload/page 10",
+      "project": "chromium-iphone-portrait",
+      "status": "passed",
+      "duration_ms": 3099
+    },
+    {
+      "file": "mobile.spec.mjs",
+      "suite": [
+        "mobile.spec.mjs",
+        "standalone-simulation"
+      ],
+      "title": "one Back preserves page 4, filters and card offset after five tracks and ticket/history POSTs",
+      "project": "chromium-iphone-landscape",
+      "status": "passed",
+      "duration_ms": 4420
+    },
+    {
+      "file": "mobile.spec.mjs",
+      "suite": [
+        "mobile.spec.mjs",
+        "standalone-simulation"
+      ],
+      "title": "Settings re-entry retains working events; layouts, safe edges, queue, EQ, keyboard and rotation",
+      "project": "chromium-iphone-landscape",
+      "status": "passed",
+      "duration_ms": 2469
+    },
+    {
+      "file": "mobile.spec.mjs",
+      "suite": [
+        "mobile.spec.mjs",
+        "standalone-simulation"
+      ],
+      "title": "responsive artwork covers DPR demand and catalog state survives reload/page 10",
+      "project": "chromium-iphone-landscape",
+      "status": "passed",
+      "duration_ms": 3826
+    },
+    {
+      "file": "mobile.spec.mjs",
+      "suite": [
+        "mobile.spec.mjs",
+        "standalone-simulation"
+      ],
+      "title": "one Back preserves page 4, filters and card offset after five tracks and ticket/history POSTs",
+      "project": "chromium-oppo-portrait",
+      "status": "passed",
+      "duration_ms": 5693
+    },
+    {
+      "file": "mobile.spec.mjs",
+      "suite": [
+        "mobile.spec.mjs",
+        "standalone-simulation"
+      ],
+      "title": "Settings re-entry retains working events; layouts, safe edges, queue, EQ, keyboard and rotation",
+      "project": "chromium-oppo-portrait",
+      "status": "passed",
+      "duration_ms": 3096
+    },
+    {
+      "file": "mobile.spec.mjs",
+      "suite": [
+        "mobile.spec.mjs",
+        "standalone-simulation"
+      ],
+      "title": "responsive artwork covers DPR demand and catalog state survives reload/page 10",
+      "project": "chromium-oppo-portrait",
+      "status": "passed",
+      "duration_ms": 4090
+    },
+    {
+      "file": "mobile.spec.mjs",
+      "suite": [
+        "mobile.spec.mjs",
+        "standalone-simulation"
+      ],
+      "title": "one Back preserves page 4, filters and card offset after five tracks and ticket/history POSTs",
+      "project": "chromium-oppo-landscape",
+      "status": "passed",
+      "duration_ms": 4782
+    },
+    {
+      "file": "mobile.spec.mjs",
+      "suite": [
+        "mobile.spec.mjs",
+        "standalone-simulation"
+      ],
+      "title": "Settings re-entry retains working events; layouts, safe edges, queue, EQ, keyboard and rotation",
+      "project": "chromium-oppo-landscape",
+      "status": "passed",
+      "duration_ms": 2405
+    },
+    {
+      "file": "mobile.spec.mjs",
+      "suite": [
+        "mobile.spec.mjs",
+        "standalone-simulation"
+      ],
+      "title": "responsive artwork covers DPR demand and catalog state survives reload/page 10",
+      "project": "chromium-oppo-landscape",
+      "status": "passed",
+      "duration_ms": 3203
+    },
+    {
+      "file": "mobile.spec.mjs",
+      "suite": [
+        "mobile.spec.mjs",
+        "standalone-simulation"
+      ],
+      "title": "one Back preserves page 4, filters and card offset after five tracks and ticket/history POSTs",
+      "project": "webkit-iphone-portrait",
+      "status": "passed",
+      "duration_ms": 27715
+    },
+    {
+      "file": "mobile.spec.mjs",
+      "suite": [
+        "mobile.spec.mjs",
+        "standalone-simulation"
+      ],
+      "title": "Settings re-entry retains working events; layouts, safe edges, queue, EQ, keyboard and rotation",
+      "project": "webkit-iphone-portrait",
+      "status": "passed",
+      "duration_ms": 8477
+    },
+    {
+      "file": "mobile.spec.mjs",
+      "suite": [
+        "mobile.spec.mjs",
+        "standalone-simulation"
+      ],
+      "title": "responsive artwork covers DPR demand and catalog state survives reload/page 10",
+      "project": "webkit-iphone-portrait",
+      "status": "passed",
+      "duration_ms": 23185
+    },
+    {
+      "file": "mobile.spec.mjs",
+      "suite": [
+        "mobile.spec.mjs",
+        "standalone-simulation"
+      ],
+      "title": "one Back preserves page 4, filters and card offset after five tracks and ticket/history POSTs",
+      "project": "webkit-iphone-landscape",
+      "status": "passed",
+      "duration_ms": 26180
+    },
+    {
+      "file": "mobile.spec.mjs",
+      "suite": [
+        "mobile.spec.mjs",
+        "standalone-simulation"
+      ],
+      "title": "Settings re-entry retains working events; layouts, safe edges, queue, EQ, keyboard and rotation",
+      "project": "webkit-iphone-landscape",
+      "status": "passed",
+      "duration_ms": 8689
+    },
+    {
+      "file": "mobile.spec.mjs",
+      "suite": [
+        "mobile.spec.mjs",
+        "standalone-simulation"
+      ],
+      "title": "responsive artwork covers DPR demand and catalog state survives reload/page 10",
+      "project": "webkit-iphone-landscape",
+      "status": "passed",
+      "duration_ms": 20698
+    },
+    {
+      "file": "mobile.spec.mjs",
+      "suite": [
+        "mobile.spec.mjs",
+        "standalone-simulation"
+      ],
+      "title": "one Back preserves page 4, filters and card offset after five tracks and ticket/history POSTs",
+      "project": "webkit-oppo-portrait",
+      "status": "passed",
+      "duration_ms": 24580
+    },
+    {
+      "file": "mobile.spec.mjs",
+      "suite": [
+        "mobile.spec.mjs",
+        "standalone-simulation"
+      ],
+      "title": "Settings re-entry retains working events; layouts, safe edges, queue, EQ, keyboard and rotation",
+      "project": "webkit-oppo-portrait",
+      "status": "passed",
+      "duration_ms": 6718
+    },
+    {
+      "file": "mobile.spec.mjs",
+      "suite": [
+        "mobile.spec.mjs",
+        "standalone-simulation"
+      ],
+      "title": "responsive artwork covers DPR demand and catalog state survives reload/page 10",
+      "project": "webkit-oppo-portrait",
+      "status": "passed",
+      "duration_ms": 19011
+    },
+    {
+      "file": "mobile.spec.mjs",
+      "suite": [
+        "mobile.spec.mjs",
+        "standalone-simulation"
+      ],
+      "title": "one Back preserves page 4, filters and card offset after five tracks and ticket/history POSTs",
+      "project": "webkit-oppo-landscape",
+      "status": "passed",
+      "duration_ms": 36222
+    },
+    {
+      "file": "mobile.spec.mjs",
+      "suite": [
+        "mobile.spec.mjs",
+        "standalone-simulation"
+      ],
+      "title": "Settings re-entry retains working events; layouts, safe edges, queue, EQ, keyboard and rotation",
+      "project": "webkit-oppo-landscape",
+      "status": "passed",
+      "duration_ms": 11118
+    },
+    {
+      "file": "mobile.spec.mjs",
+      "suite": [
+        "mobile.spec.mjs",
+        "standalone-simulation"
+      ],
+      "title": "responsive artwork covers DPR demand and catalog state survives reload/page 10",
+      "project": "webkit-oppo-landscape",
+      "status": "passed",
+      "duration_ms": 28721
+    },
+    {
+      "file": "navigation.spec.mjs",
+      "suite": [
+        "navigation.spec.mjs"
+      ],
+      "title": "late Albums/Home, Album A/B, Settings/Albums and Back responses cannot overwrite the destination",
+      "project": "chromium-desktop",
+      "status": "passed",
+      "duration_ms": 1281
+    },
+    {
+      "file": "navigation.spec.mjs",
+      "suite": [
+        "navigation.spec.mjs"
+      ],
+      "title": "delayed native Back causes exactly one traversal without the old 220ms fallback",
+      "project": "chromium-desktop",
+      "status": "passed",
+      "duration_ms": 2554
+    },
+    {
+      "file": "navigation.spec.mjs",
+      "suite": [
+        "navigation.spec.mjs"
+      ],
+      "title": "a successful catalog mutation refetches while preserving page, scroll and updated data",
+      "project": "chromium-desktop",
+      "status": "passed",
+      "duration_ms": 1913
+    },
+    {
+      "file": "navigation.spec.mjs",
+      "suite": [
+        "navigation.spec.mjs"
+      ],
+      "title": "search, Home and artist origins return once; a direct album link falls back to Albums",
+      "project": "chromium-desktop",
+      "status": "passed",
+      "duration_ms": 1687
+    },
+    {
+      "file": "navigation.spec.mjs",
+      "suite": [
+        "navigation.spec.mjs"
+      ],
+      "title": "Artists GET failure has a local retry, preserves playback and never reloads the application",
+      "project": "chromium-desktop",
+      "status": "passed",
+      "duration_ms": 738
+    },
+    {
+      "file": "navigation.spec.mjs",
+      "suite": [
+        "navigation.spec.mjs"
+      ],
+      "title": "137 albums restore the third page; search survives a catalog invalidation and reload",
+      "project": "chromium-desktop",
+      "status": "passed",
+      "duration_ms": 1806
+    },
+    {
+      "file": "navigation.spec.mjs",
+      "suite": [
+        "navigation.spec.mjs"
+      ],
+      "title": "desktop resize and keyboard access preserve the catalog and semantic card controls",
+      "project": "chromium-desktop",
+      "status": "passed",
+      "duration_ms": 1954
+    },
+    {
+      "file": "navigation.spec.mjs",
+      "suite": [
+        "navigation.spec.mjs"
+      ],
+      "title": "destructive confirmation traps focus and Escape cancels without a mutation",
+      "project": "chromium-desktop",
+      "status": "passed",
+      "duration_ms": 771
+    },
+    {
+      "file": "navigation.spec.mjs",
+      "suite": [
+        "navigation.spec.mjs"
+      ],
+      "title": "a restored offset below the first lazy batch is not clamped on reload",
+      "project": "chromium-desktop",
+      "status": "passed",
+      "duration_ms": 2313
+    },
+    {
+      "file": "navigation.spec.mjs",
+      "suite": [
+        "navigation.spec.mjs"
+      ],
+      "title": "a pending Settings mutation completes once after leaving without replay or stale errors",
+      "project": "chromium-desktop",
+      "status": "passed",
+      "duration_ms": 1119
+    },
+    {
+      "file": "navigation.spec.mjs",
+      "suite": [
+        "navigation.spec.mjs"
+      ],
+      "title": "late Albums/Home, Album A/B, Settings/Albums and Back responses cannot overwrite the destination",
+      "project": "webkit-desktop",
+      "status": "passed",
+      "duration_ms": 1567
+    },
+    {
+      "file": "navigation.spec.mjs",
+      "suite": [
+        "navigation.spec.mjs"
+      ],
+      "title": "delayed native Back causes exactly one traversal without the old 220ms fallback",
+      "project": "webkit-desktop",
+      "status": "passed",
+      "duration_ms": 7313
+    },
+    {
+      "file": "navigation.spec.mjs",
+      "suite": [
+        "navigation.spec.mjs"
+      ],
+      "title": "a successful catalog mutation refetches while preserving page, scroll and updated data",
+      "project": "webkit-desktop",
+      "status": "passed",
+      "duration_ms": 6856
+    },
+    {
+      "file": "navigation.spec.mjs",
+      "suite": [
+        "navigation.spec.mjs"
+      ],
+      "title": "search, Home and artist origins return once; a direct album link falls back to Albums",
+      "project": "webkit-desktop",
+      "status": "passed",
+      "duration_ms": 2961
+    },
+    {
+      "file": "navigation.spec.mjs",
+      "suite": [
+        "navigation.spec.mjs"
+      ],
+      "title": "Artists GET failure has a local retry, preserves playback and never reloads the application",
+      "project": "webkit-desktop",
+      "status": "passed",
+      "duration_ms": 1205
+    },
+    {
+      "file": "navigation.spec.mjs",
+      "suite": [
+        "navigation.spec.mjs"
+      ],
+      "title": "137 albums restore the third page; search survives a catalog invalidation and reload",
+      "project": "webkit-desktop",
+      "status": "passed",
+      "duration_ms": 5102
+    },
+    {
+      "file": "navigation.spec.mjs",
+      "suite": [
+        "navigation.spec.mjs"
+      ],
+      "title": "desktop resize and keyboard access preserve the catalog and semantic card controls",
+      "project": "webkit-desktop",
+      "status": "passed",
+      "duration_ms": 5145
+    },
+    {
+      "file": "navigation.spec.mjs",
+      "suite": [
+        "navigation.spec.mjs"
+      ],
+      "title": "destructive confirmation traps focus and Escape cancels without a mutation",
+      "project": "webkit-desktop",
+      "status": "passed",
+      "duration_ms": 789
+    },
+    {
+      "file": "navigation.spec.mjs",
+      "suite": [
+        "navigation.spec.mjs"
+      ],
+      "title": "a restored offset below the first lazy batch is not clamped on reload",
+      "project": "webkit-desktop",
+      "status": "passed",
+      "duration_ms": 6421
+    },
+    {
+      "file": "navigation.spec.mjs",
+      "suite": [
+        "navigation.spec.mjs"
+      ],
+      "title": "a pending Settings mutation completes once after leaving without replay or stale errors",
+      "project": "webkit-desktop",
+      "status": "passed",
+      "duration_ms": 1184
+    },
+    {
+      "file": "pwa.spec.mjs",
+      "suite": [
+        "pwa.spec.mjs"
+      ],
+      "title": "real service worker installs one release; offline shell shows a retry instead of a blank page",
+      "project": "chromium-desktop",
+      "status": "passed",
+      "duration_ms": 1321
+    },
+    {
+      "file": "pwa.spec.mjs",
+      "suite": [
+        "pwa.spec.mjs"
+      ],
+      "title": "an available update does not activate during playback; paused user action activates it",
+      "project": "chromium-desktop",
+      "status": "passed",
+      "duration_ms": 899
+    },
+    {
+      "file": "pwa.spec.mjs",
+      "suite": [
+        "pwa.spec.mjs"
+      ],
+      "title": "real service worker installs one release; offline shell shows a retry instead of a blank page",
+      "project": "webkit-desktop",
+      "status": "passed",
+      "duration_ms": 2267
+    },
+    {
+      "file": "pwa.spec.mjs",
+      "suite": [
+        "pwa.spec.mjs"
+      ],
+      "title": "an available update does not activate during playback; paused user action activates it",
+      "project": "webkit-desktop",
+      "status": "passed",
+      "duration_ms": 2285
+    }
+  ]
+}

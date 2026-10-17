@@ -1,0 +1,48 @@
+Checking Python syntax...
+...................................... [ 16%]
+.............................................................. [ 43%]
+......................................................... [ 67%]
+......................................F.............. [ 90%]
+......................                                  [100%]
+================================== FAILURES ===================================
+_ ServerApiTests.test_cover_revision_persists_and_invalidates_all_thumbnail_sizes _
+
+self = <test_server_api.ServerApiTests testMethod=test_cover_revision_persists_and_invalidates_all_thumbnail_sizes>
+
+    def test_cover_revision_persists_and_invalidates_all_thumbnail_sizes(self):
+        thumbs = self.root / "thumbs"
+        thumbs.mkdir()
+        for size in server.THUMB_SIZES:
+            (thumbs / f"1_{size}.jpg").write_bytes(b"old derivative")
+        with patch.object(server, "THUMBS_DIR", thumbs):
+>           server.invalidate_cover_cache(1)
+
+tests\test_server_api.py:978: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+album_id = 1
+
+    def invalidate_cover_cache(album_id: int):
+        """Clear cover cache for an album when cover is updated."""
+        # All callers have successfully changed this cover. A persistent revision
+        # makes browser/SW thumbnail URLs fresh on other clients and after reload.
+        db = get_db()
+        try:
+>           db.execute("UPDATE albums SET updated_at=? WHERE id=?", (str(time.time()), album_id))
+E           sqlite3.OperationalError: no such column: updated_at
+
+server.py:1367: OperationalError
+============================== warnings summary ===============================
+.venv\Lib\site-packages\fastapi\testclient.py:1
+  C:\Users\edwyn\.codex\worktrees\frontend-mobile-pwa\VELVET_NEXT\.venv\Lib\site-packages\fastapi\testclient.py:1: StarletteDeprecationWarning: Using `httpx` with `starlette.testclient` is deprecated; install `httpx2` instead.
+    from starlette.testclient import TestClient as TestClient  # noqa
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ===========================
+FAILED tests/test_server_api.py::ServerApiTests::test_cover_revision_persists_and_invalidates_all_thumbnail_sizes
+1 failed, 231 passed, 1 warning, 95 subtests passed in 41.40s
+Exception: C:\Users\edwyn\.codex\worktrees\frontend-mobile-pwa\VELVET_NEXT\scripts\windows_pr10_local_test.ps1:39
+Line |
+  39 |      if ($LASTEXITCODE -ne 0) { throw "Python tests failed" }
+     |                                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~
+     | Python tests failed

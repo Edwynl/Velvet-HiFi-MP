@@ -1,0 +1,39 @@
+[WebServer] (node:63184) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+[WebServer] (Use `node --trace-warnings ...` to show where the warning was created)
+
+Running 24 tests using 2 workers
+
+(node:48224) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:61568) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+  ok  2 [chromium-desktop] › tests\browser\navigation.spec.mjs:5:1 › late Albums/Home, Album A/B, Settings/Albums and Back responses cannot overwrite the destination (1.3s)
+  ok  1 [chromium-desktop] › tests\browser\navigation.spec.mjs:35:1 › delayed native Back causes exactly one traversal without the old 220ms fallback (2.6s)
+  ok  3 [chromium-desktop] › tests\browser\navigation.spec.mjs:52:1 › a successful catalog mutation refetches while preserving page, scroll and updated data (1.9s)
+  ok  5 [chromium-desktop] › tests\browser\navigation.spec.mjs:84:1 › Artists GET failure has a local retry, preserves playback and never reloads the application (738ms)
+  ok  4 [chromium-desktop] › tests\browser\navigation.spec.mjs:70:1 › search, Home and artist origins return once; a direct album link falls back to Albums (1.7s)
+  ok  6 [chromium-desktop] › tests\browser\navigation.spec.mjs:97:1 › 137 albums restore the third page; search survives a catalog invalidation and reload (1.8s)
+  ok  7 [chromium-desktop] › tests\browser\navigation.spec.mjs:120:1 › desktop resize and keyboard access preserve the catalog and semantic card controls (2.0s)
+  ok  8 [chromium-desktop] › tests\browser\navigation.spec.mjs:130:1 › destructive confirmation traps focus and Escape cancels without a mutation (771ms)
+  ok 10 [chromium-desktop] › tests\browser\navigation.spec.mjs:156:1 › a pending Settings mutation completes once after leaving without replay or stale errors (1.1s)
+  ok  9 [chromium-desktop] › tests\browser\navigation.spec.mjs:142:1 › a restored offset below the first lazy batch is not clamped on reload (2.3s)
+  ok 11 [chromium-desktop] › tests\browser\pwa.spec.mjs:5:1 › real service worker installs one release; offline shell shows a retry instead of a blank page (1.3s)
+  ok 12 [chromium-desktop] › tests\browser\pwa.spec.mjs:23:1 › an available update does not activate during playback; paused user action activates it (899ms)
+(node:38332) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:30468) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+  ok 13 [webkit-desktop] › tests\browser\navigation.spec.mjs:5:1 › late Albums/Home, Album A/B, Settings/Albums and Back responses cannot overwrite the destination (1.6s)
+  ok 14 [webkit-desktop] › tests\browser\navigation.spec.mjs:35:1 › delayed native Back causes exactly one traversal without the old 220ms fallback (7.3s)
+  ok 15 [webkit-desktop] › tests\browser\navigation.spec.mjs:52:1 › a successful catalog mutation refetches while preserving page, scroll and updated data (6.9s)
+  ok 17 [webkit-desktop] › tests\browser\navigation.spec.mjs:84:1 › Artists GET failure has a local retry, preserves playback and never reloads the application (1.2s)
+  ok 16 [webkit-desktop] › tests\browser\navigation.spec.mjs:70:1 › search, Home and artist origins return once; a direct album link falls back to Albums (3.0s)
+  ok 18 [webkit-desktop] › tests\browser\navigation.spec.mjs:97:1 › 137 albums restore the third page; search survives a catalog invalidation and reload (5.1s)
+  ok 20 [webkit-desktop] › tests\browser\navigation.spec.mjs:130:1 › destructive confirmation traps focus and Escape cancels without a mutation (789ms)
+  ok 19 [webkit-desktop] › tests\browser\navigation.spec.mjs:120:1 › desktop resize and keyboard access preserve the catalog and semantic card controls (5.1s)
+  ok 22 [webkit-desktop] › tests\browser\navigation.spec.mjs:156:1 › a pending Settings mutation completes once after leaving without replay or stale errors (1.2s)
+  ok 23 [webkit-desktop] › tests\browser\pwa.spec.mjs:5:1 › real service worker installs one release; offline shell shows a retry instead of a blank page (2.3s)
+  ok 24 [webkit-desktop] › tests\browser\pwa.spec.mjs:23:1 › an available update does not activate during playback; paused user action activates it (2.3s)
+  ok 21 [webkit-desktop] › tests\browser\navigation.spec.mjs:142:1 › a restored offset below the first lazy batch is not clamped on reload (6.4s)
+
+  24 passed (34.0s)

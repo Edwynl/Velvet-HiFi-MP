@@ -1,0 +1,38 @@
+{
+  "original_bytes": 77784,
+  "original_dimensions": [
+    1280,
+    1280
+  ],
+  "derivatives": {
+    "small": {
+      "bytes": 3125,
+      "dimensions": [
+        150,
+        150
+      ]
+    },
+    "medium": {
+      "bytes": 7038,
+      "dimensions": [
+        250,
+        250
+      ]
+    },
+    "large": {
+      "bytes": 15827,
+      "dimensions": [
+        400,
+        400
+      ]
+    },
+    "xlarge": {
+      "bytes": 47000,
+      "dimensions": [
+        800,
+        800
+      ]
+    }
+  },
+  "original_sha256_unchanged": true
+}

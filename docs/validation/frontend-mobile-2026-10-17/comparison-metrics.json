@@ -1,0 +1,1992 @@
+[
+  {
+    "name": "before",
+    "apiDelayMs": 400,
+    "firstCatalogMs": 1056.0427,
+    "backMs": 860.9585000000006,
+    "pageInfo": "Page 1 / 11",
+    "scrollBefore": 532,
+    "scrollAfter": 0,
+    "coverResponses": 243,
+    "syntheticCoverBytes": 173768,
+    "assets": {
+      "static/index.html": {
+        "bytes": 316414,
+        "gzipBytes": 65758
+      },
+      "static/js/library-views.js": {
+        "bytes": 100474,
+        "gzipBytes": 18954
+      },
+      "static/js/library-cards.js": {
+        "bytes": 8611,
+        "gzipBytes": 2761
+      },
+      "static/js/player-ui.js": {
+        "bytes": 14699,
+        "gzipBytes": 4232
+      },
+      "static/js/dsp-controls.js": {
+        "bytes": 9723,
+        "gzipBytes": 3141
+      }
+    },
+    "requests": [
+      {
+        "method": "GET",
+        "path": "/",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/static/js/dsp-controls.js",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/static/js/library-cards.js",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/static/js/player-ui.js",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/static/js/library-views.js",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/stats",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/dsp/profiles",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/albums/page",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/static/logo-hires.png",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/scan/status",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/1/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/2/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/3/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/4/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/5/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/6/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/7/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/8/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/9/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/10/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/11/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/12/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/13/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/14/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/15/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/16/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/17/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/18/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/19/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/20/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/21/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/22/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/23/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/24/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/25/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/26/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/27/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/28/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/29/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/30/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/31/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/32/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/33/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/34/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/35/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/36/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/37/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/38/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/39/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/40/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/41/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/42/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/43/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/44/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/45/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/46/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/47/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/48/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/albums/page",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/61/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/62/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/63/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/64/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/65/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/66/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/67/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/68/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/69/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/70/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/71/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/72/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/73/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/74/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/75/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/76/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/77/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/78/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/79/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/80/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/81/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/82/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/83/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/84/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/85/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/86/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/87/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/88/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/89/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/90/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/91/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/92/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/93/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/94/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/95/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/96/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/97/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/98/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/99/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/100/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/101/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/102/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/103/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/104/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/105/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/106/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/107/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/108/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/albums/page",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/121/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/122/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/123/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/124/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/125/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/126/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/127/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/128/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/129/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/130/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/131/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/132/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/133/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/134/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/135/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/136/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/137/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/138/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/139/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/140/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/141/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/142/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/143/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/144/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/145/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/146/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/147/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/148/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/149/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/150/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/151/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/152/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/153/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/154/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/155/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/156/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/157/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/158/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/159/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/160/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/161/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/162/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/163/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/164/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/165/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/166/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/167/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/168/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/albums/page",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/181/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/182/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/183/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/184/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/185/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/186/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/187/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/188/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/189/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/190/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/191/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/192/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/193/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/194/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/195/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/196/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/197/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/198/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/199/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/200/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/201/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/202/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/203/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/204/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/205/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/206/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/207/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/208/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/209/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/210/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/211/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/212/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/213/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/214/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/215/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/216/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/217/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/218/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/219/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/220/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/221/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/222/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/223/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/224/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/225/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/226/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/227/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/228/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/albums/198",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/albums/198/credits",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/198/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/198/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/198",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/stream/1980",
+        "status": 200
+      },
+      {
+        "method": "POST",
+        "path": "/api/stream-ticket",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/stream/1984",
+        "status": 200
+      },
+      {
+        "method": "POST",
+        "path": "/api/history",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/albums/page",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/1/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/2/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/3/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/4/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/5/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/6/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/7/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/8/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/9/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/10/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/11/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/12/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/13/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/14/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/15/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/16/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/17/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/18/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/19/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/20/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/21/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/22/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/23/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/24/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/25/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/26/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/27/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/28/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/29/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/30/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/31/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/32/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/33/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/34/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/35/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/36/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/37/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/38/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/39/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/40/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/41/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/42/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/43/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/44/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/45/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/46/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/47/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/48/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/stream/1984",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/stream/1984",
+        "status": 200
+      }
+    ]
+  },
+  {
+    "name": "after",
+    "apiDelayMs": 400,
+    "firstCatalogMs": 1011.8086000000003,
+    "backMs": 81.40170000000217,
+    "pageInfo": "Page 4 / 11",
+    "scrollBefore": 2127,
+    "scrollAfter": 2127,
+    "coverResponses": 99,
+    "syntheticCoverBytes": 70806,
+    "assets": {
+      "static/index.html": {
+        "bytes": 320800,
+        "gzipBytes": 67072
+      },
+      "static/js/library-views.js": {
+        "bytes": 104251,
+        "gzipBytes": 19492
+      },
+      "static/js/library-cards.js": {
+        "bytes": 9619,
+        "gzipBytes": 3170
+      },
+      "static/js/player-ui.js": {
+        "bytes": 14699,
+        "gzipBytes": 4232
+      },
+      "static/js/dsp-controls.js": {
+        "bytes": 9723,
+        "gzipBytes": 3141
+      }
+    },
+    "requests": [
+      {
+        "method": "GET",
+        "path": "/",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/static/mobile-layout.css",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/static/js/player-ui.js",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/static/js/library-cards.js",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/static/js/dsp-controls.js",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/static/js/library-views.js",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/stats",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/dsp/profiles",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/albums/page",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/static/logo-hires.png",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/scan/status",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/1/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/2/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/3/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/4/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/5/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/6/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/8/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/7/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/9/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/10/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/11/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/12/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/13/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/14/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/15/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/16/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/17/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/18/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/19/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/20/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/21/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/22/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/23/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/24/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/albums/page",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/61/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/62/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/63/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/64/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/65/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/66/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/67/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/68/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/69/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/70/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/71/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/72/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/73/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/74/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/75/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/76/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/77/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/78/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/79/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/80/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/81/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/82/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/83/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/84/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/albums/page",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/121/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/122/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/123/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/124/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/125/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/126/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/127/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/128/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/129/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/130/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/131/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/132/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/133/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/134/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/135/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/136/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/137/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/138/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/139/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/140/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/141/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/142/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/143/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/144/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/albums/page",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/181/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/182/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/183/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/184/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/185/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/186/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/187/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/188/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/189/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/190/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/191/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/192/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/193/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/194/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/195/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/196/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/197/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/198/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/199/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/200/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/201/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/202/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/203/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/204/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/albums/198",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/albums/198/credits",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/198",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/198/thumb",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/covers/198",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/stream/1980",
+        "status": 200
+      },
+      {
+        "method": "POST",
+        "path": "/api/stream-ticket",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/stream/1984",
+        "status": 200
+      },
+      {
+        "method": "POST",
+        "path": "/api/history",
+        "status": 200
+      }
+    ]
+  }
+]

@@ -1,0 +1,56 @@
+============================= test session starts =============================
+platform win32 -- Python 3.12.10, pytest-9.1.1, pluggy-1.7.0 -- C:\Users\edwyn\.codex\worktrees\frontend-mobile-pwa\VELVET_NEXT\.venv\Scripts\python.exe
+cachedir: .pytest_cache
+rootdir: C:\Users\edwyn\.codex\worktrees\frontend-mobile-pwa\VELVET_NEXT
+plugins: anyio-4.15.1
+collecting ... collected 33 items
+
+tests/test_security_boundaries.py::SecurityBoundaryTests::test_audio_soxr_profiles_use_valid_resampler PASSED [  3%]
+tests/test_security_boundaries.py::SecurityBoundaryTests::test_bootstrap_rejects_public_proxy_host_and_cross_origin PASSED [  6%]
+tests/test_security_boundaries.py::SecurityBoundaryTests::test_configured_cors_preflight_reaches_cors_middleware PASSED [  9%]
+tests/test_security_boundaries.py::SecurityBoundaryTests::test_cover_cookie_never_authorizes_mutations PASSED [ 12%]
+tests/test_security_boundaries.py::SecurityBoundaryTests::test_credential_responses_deliver_a_working_stream_ticket PASSED [ 15%]
+tests/test_security_boundaries.py::SecurityBoundaryTests::test_first_password_bootstrap_requires_loopback PASSED [ 18%]
+tests/test_security_boundaries.py::SecurityBoundaryTests::test_forwarded_header_not_trusted_for_client_identity PASSED [ 21%]
+tests/test_security_boundaries.py::SecurityBoundaryTests::test_forwarded_headers_never_raise_trust_of_remote_peer PASSED [ 24%]
+tests/test_security_boundaries.py::SecurityBoundaryTests::test_local_reverse_proxy_never_inherits_loopback_trust PASSED [ 27%]
+tests/test_security_boundaries.py::SecurityBoundaryTests::test_login_response_has_scoped_cookie_and_no_store PASSED [ 30%]
+tests/test_security_boundaries.py::SecurityBoundaryTests::test_public_pwa_assets_remain_available_when_auth_is_enabled 
+tests/test_security_boundaries.py::SecurityBoundaryTests::test_public_pwa_assets_remain_available_when_auth_is_enabled PASSED [ 33%]
+tests/test_security_boundaries.py::SecurityBoundaryTests::test_security_management_requires_auth_even_when_status_is_public 
+tests/test_security_boundaries.py::SecurityBoundaryTests::test_security_management_requires_auth_even_when_status_is_public PASSED [ 36%]
+tests/test_remote_access_https.py::SecureTailnetTests::test_dns_name_alone_does_not_claim_https_works PASSED [ 39%]
+tests/test_remote_access_https.py::SecureTailnetTests::test_https_is_shown_only_after_serve_is_verified PASSED [ 42%]
+tests/test_media_tickets.py::MediaTicketTests::test_credential_changes_revoke_outstanding_tickets PASSED [ 45%]
+tests/test_media_tickets.py::MediaTicketTests::test_signing_secret_persists_across_restart PASSED [ 48%]
+tests/test_media_tickets.py::MediaTicketTests::test_tampered_malformed_and_expired_tickets_are_rejected 
+tests/test_media_tickets.py::MediaTicketTests::test_tampered_malformed_and_expired_tickets_are_rejected PASSED [ 51%]
+tests/test_media_tickets.py::MediaTicketTests::test_ticket_is_bound_to_scope_and_resource PASSED [ 54%]
+tests/test_media_tickets.py::MediaTicketTests::test_ticket_never_contains_the_api_key PASSED [ 57%]
+tests/test_media_tickets.py::MediaTicketTests::test_ttl_follows_track_length_within_bounds PASSED [ 60%]
+tests/test_media_tickets.py::DlnaBrowseAuthorizationTests::test_browsed_tracks_get_scoped_tickets_not_api_keys PASSED [ 63%]
+tests/test_media_tickets.py::DlnaBrowseAuthorizationTests::test_control_points_need_an_open_window_and_a_private_address 
+tests/test_media_tickets.py::DlnaBrowseAuthorizationTests::test_control_points_need_an_open_window_and_a_private_address PASSED [ 66%]
+tests/test_media_tickets.py::DlnaBrowseAuthorizationTests::test_grant_is_bounded PASSED [ 69%]
+tests/test_media_tickets.py::DlnaBrowseAuthorizationTests::test_window_expires_and_credentials_still_work PASSED [ 72%]
+tests/test_media_tickets.py::StreamSlotTests::test_limit_and_idempotent_release PASSED [ 75%]
+tests/test_media_tickets.py::StreamSlotTests::test_unreleased_lease_is_returned_when_collected PASSED [ 78%]
+tests/test_media_tickets.py::TranscodeLifecycleLimitTests::test_on_close_runs_after_normal_completion PASSED [ 81%]
+tests/test_media_tickets.py::TranscodeLifecycleLimitTests::test_paused_client_does_not_count_as_a_stall PASSED [ 84%]
+tests/test_media_tickets.py::TranscodeLifecycleLimitTests::test_stalled_decoder_is_ended_and_its_slot_released PASSED [ 87%]
+tests/test_media_tickets.py::TranscodeLifecycleLimitTests::test_total_cap_is_wall_clock_and_includes_client_pauses PASSED [ 90%]
+tests/test_tailscale_proxy_security.py::TailscaleProxyHttpTests::test_configured_proxy_requires_credentials_with_enforcement_enabled 
+tests/test_tailscale_proxy_security.py::TailscaleProxyHttpTests::test_configured_proxy_requires_credentials_with_enforcement_enabled PASSED [ 93%]
+tests/test_tailscale_proxy_security.py::TailscaleProxyHttpTests::test_configured_proxy_requires_credentials_with_local_network_bypass_enabled 
+tests/test_tailscale_proxy_security.py::TailscaleProxyHttpTests::test_configured_proxy_requires_credentials_with_local_network_bypass_enabled PASSED [ 96%]
+tests/test_tailscale_proxy_security.py::TailscaleProxyHttpTests::test_unconfigured_proxy_cannot_browse_mutate_or_claim_initial_password 
+tests/test_tailscale_proxy_security.py::TailscaleProxyHttpTests::test_unconfigured_proxy_cannot_browse_mutate_or_claim_initial_password PASSED [100%]
+
+============================== warnings summary ===============================
+.venv\Lib\site-packages\fastapi\testclient.py:1
+  C:\Users\edwyn\.codex\worktrees\frontend-mobile-pwa\VELVET_NEXT\.venv\Lib\site-packages\fastapi\testclient.py:1: StarletteDeprecationWarning: Using `httpx` with `starlette.testclient` is deprecated; install `httpx2` instead.
+    from starlette.testclient import TestClient as TestClient  # noqa
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+- generated xml file: C:\Users\edwyn\.codex\worktrees\frontend-mobile-pwa\VELVET_NEXT\artifacts\frontend-mobile-qa\proxy-security.xml -
+============= 33 passed, 1 warning, 34 subtests passed in 10.41s ==============
