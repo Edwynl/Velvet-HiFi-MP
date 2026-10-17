@@ -110,6 +110,12 @@ function createHarness({ initialHash = '#home' } = {}) {
       return Promise.resolve(makeJsonResponse({ artists: 1, albums: 3, tracks: 5, duration: 3 }));
     }
 
+    if (parsedUrl.pathname === '/api/albums/11' && method === 'DELETE') {
+      return Promise.resolve(makeJsonResponse({
+        detail: 'Album tracks are referenced by playlists or play history. Removal refused',
+      }, 409));
+    }
+
     if (parsedUrl.pathname === '/api/scan/status' && method === 'GET') {
       return Promise.resolve(makeJsonResponse({ running: false, progress: 0, total: 0, current_file: '' }));
     }
@@ -160,11 +166,24 @@ function createHarness({ initialHash = '#home' } = {}) {
     if (parsedUrl.pathname === '/api/albums' && method === 'GET') {
       return Promise.resolve(makeJsonResponse(albumList));
     }
+    if (parsedUrl.pathname === '/api/albums/page' && method === 'GET') {
+      return Promise.resolve(makeJsonResponse({
+        albums: albumList, total: albumList.length,
+        genres: ['Classical', 'Jazz', 'Rock'], decades: ['2020s'],
+        limit: 60, offset: 0,
+      }));
+    }
 
     if (parsedUrl.pathname === '/api/artists' && method === 'GET') {
       return Promise.resolve(makeJsonResponse([
         { id: 7, name: 'Back Test Artist', album_count: 1 },
       ]));
+    }
+    if (parsedUrl.pathname === '/api/artists/page' && method === 'GET') {
+      return Promise.resolve(makeJsonResponse({
+        artists: [{ id: 7, name: 'Back Test Artist', album_count: 1 }],
+        total: 1, limit: 60, offset: 0,
+      }));
     }
 
     if (parsedUrl.pathname === '/api/genres' && method === 'GET') {
@@ -286,7 +305,7 @@ async function testAlbumBackFallsBackWhenHistoryBackDoesNothing() {
 }
 
 function albumListFetches(harness) {
-  return harness.fetchLog.filter(entry => entry === 'GET /api/albums').length;
+  return harness.fetchLog.filter(entry => entry === 'GET /api/albums/page').length;
 }
 
 async function openAlbumFromAlbums(dom, harness, scrollTop) {
@@ -525,6 +544,43 @@ function testLandscapeAlbumLayoutCssGuards() {
   );
 }
 
+async function testAlbumRemovalExplainsFileRecoveryAndAssociationGuard() {
+  const harness = createHarness();
+  const dom = await harness.createDom();
+  try {
+    await dom.window.navigate('album', { id: 11 });
+    const button = await waitFor(() => dom.window.document.querySelector('#del-album-btn'));
+    button.click();
+    const modal = await waitFor(() => dom.window.document.querySelector('#modal-container.open'));
+    assert.match(modal.textContent, /playlists or play history cannot be removed/);
+    assert.match(modal.textContent, /may assign new Track IDs/);
+    assert.match(modal.textContent, /archive audio files \(recoverable\)/);
+    assert.equal(dom.window.document.querySelector('#delete-files-check').checked, false);
+    assert.equal(harness.fetchLog.some(entry => entry === 'DELETE /api/albums/11'), false);
+  } finally {
+    dom.window.close();
+  }
+}
+
+async function testRefusedAlbumRemovalShowsServerReason() {
+  const harness = createHarness();
+  const dom = await harness.createDom();
+  try {
+    await dom.window.navigate('album', { id: 11 });
+    (await waitFor(() => dom.window.document.querySelector('#del-album-btn'))).click();
+    await waitFor(() => dom.window.document.querySelector('#modal-container.open'));
+    dom.window.document.querySelector('#modal-confirm').click();
+    await waitFor(() => harness.fetchLog.includes('DELETE /api/albums/11'));
+    const toast = dom.window.document.querySelector('#toast');
+    await waitFor(() => /referenced by playlists or play history/.test(toast.textContent));
+    await new Promise(resolve => setTimeout(resolve, 50));
+    assert.doesNotMatch(toast.textContent, /Cannot read properties|Delete failed/);
+    assert.equal(dom.window.eval('state.view'), 'album', 'A refused removal stays on the album');
+  } finally {
+    dom.window.close();
+  }
+}
+
 async function main() {
   await testAlbumBackFallsBackWhenHistoryBackDoesNothing();
   await testBackToAlbumsRestoresKeptViewWithoutRefetch();
@@ -536,6 +592,8 @@ async function main() {
   await testTabletMenuNavigationDoesNotFocusSearch();
   await testSearchTrackOpensAlbumAndPlaysMatchedTrack();
   testLandscapeAlbumLayoutCssGuards();
+  await testAlbumRemovalExplainsFileRecoveryAndAssociationGuard();
+  await testRefusedAlbumRemovalShowsServerReason();
 }
 
 try {

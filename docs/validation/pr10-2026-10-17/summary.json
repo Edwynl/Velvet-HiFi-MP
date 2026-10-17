@@ -1,0 +1,19 @@
+{
+  "date": "2026-10-17",
+  "timezone": "Australia/Sydney",
+  "source_commit": "45b784fca84bd3b764459c3edf2d893928a69619",
+  "full_powershell_exit": 0,
+  "python_passed": 229,
+  "python_failed": 0,
+  "python_skipped": 0,
+  "python_subtests_passed": 95,
+  "frontend_suites_passed": 12,
+  "security_passed": 33,
+  "security_failed": 0,
+  "security_skipped": 0,
+  "security_subtests_passed": 34,
+  "real_uvicorn_http_tests": 3,
+  "live_tailnet_https_verified": false,
+  "local_software_verdict": "GO",
+  "production_release_verdict": "NO-GO: real Tailnet/device/backup acceptance pending"
+}

@@ -22,6 +22,9 @@ class TailscaleManager:
         self.ipv4: Optional[str] = None
         self.ipv6: Optional[str] = None
         self.hostname: Optional[str] = None
+        self.dns_name: Optional[str] = None
+        self._serve_last_check = 0.0
+        self._serve_https_ready = False
         self._lock = threading.Lock()
 
     def is_available(self) -> bool:
@@ -32,12 +35,17 @@ class TailscaleManager:
         """Get current Tailscale status"""
         with self._lock:
             self._update_status()
+            self._check_serve_https()
             return {
                 "status": self.status,
                 "ip": self.ipv4,
                 "ipv6": self.ipv6,
                 "hostname": self.hostname,
                 "url": f"http://{self.ipv4}:{VELVET_PORT}" if self.ipv4 else None,
+                "secure_url": f"https://{self.dns_name}" if self._serve_https_ready and self.dns_name else None,
+                "https_ready": self._serve_https_ready,
+                "https_setup_command": f"tailscale serve --bg {VELVET_PORT}",
+                "https_note": "Tailnet-only HTTPS enables browser Service Workers and PWA features.",
                 "port": VELVET_PORT
             }
 
@@ -45,6 +53,8 @@ class TailscaleManager:
         """Update Tailscale status by running CLI commands"""
         if not self.is_available():
             self.status = "not_installed"
+            self.dns_name = None
+            self._serve_https_ready = False
             return
 
         try:
@@ -66,6 +76,8 @@ class TailscaleManager:
             # Check if we have a Tailscale IP
             if "Self" in data:
                 self.hostname = data["Self"].get("HostName", "unknown")
+                dns = str(data["Self"].get("DNSName") or "").rstrip(".").lower()
+                self.dns_name = dns if dns.endswith(".ts.net") else None
                 # Try to find IPv4
                 for addr in data["Self"].get("DNSName", "").split():
                     if "." in addr and not addr.startswith("."):
@@ -103,11 +115,39 @@ class TailscaleManager:
         except Exception:
             self.status = "not_running"
 
+    def _check_serve_https(self) -> None:
+        """Advertise HTTPS only when Tailscale Serve actually proxies VELVET.
+
+        Do not automatically modify the user's VPN configuration or turn on
+        Funnel/public internet exposure. HTTPS is opt-in through Tailscale CLI.
+        """
+        if self.status != "running" or not self.dns_name:
+            self._serve_https_ready = False
+            return
+        now = time.monotonic()
+        if now - self._serve_last_check < 30:
+            return
+        self._serve_last_check = now
+        self._serve_https_ready = False
+        try:
+            result = subprocess.run(
+                ["tailscale", "serve", "status"], capture_output=True, text=True, timeout=3,
+            )
+            description = result.stdout.lower()
+            self._serve_https_ready = (
+                result.returncode == 0
+                and f"https://{self.dns_name}" in description
+                and (f"127.0.0.1:{VELVET_PORT}" in description
+                     or f"localhost:{VELVET_PORT}" in description)
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+
     def open_browser(self) -> bool:
         """Open browser with the VELVET URL"""
         import webbrowser
         if self.ipv4:
-            url = f"http://{self.ipv4}:{VELVET_PORT}"
+            url = f"https://{self.dns_name}" if self._serve_https_ready and self.dns_name else f"http://{self.ipv4}:{VELVET_PORT}"
             webbrowser.open(url)
             return True
         return False

@@ -11,6 +11,7 @@ import hashlib
 import os
 import sqlite3
 from pathlib import Path
+from path_compat import filesystem_path
 from typing import Callable
 
 
@@ -24,7 +25,7 @@ def find_exact_duplicates(
 ) -> dict:
     if max_files < 2 or max_groups < 1:
         raise ValueError("max_files must be >= 2 and max_groups >= 1")
-    roots = [Path(root).resolve() for root in library_roots]
+    roots = [Path(filesystem_path(root)).resolve() for root in library_roots]
     sizes = db.execute(
         """
         SELECT file_size FROM tracks
@@ -57,7 +58,7 @@ def find_exact_duplicates(
         if on_progress:
             on_progress(examined, len(candidates), Path(file_path).name)
         try:
-            resolved = Path(file_path).resolve(strict=True)
+            resolved = Path(filesystem_path(file_path)).resolve(strict=True)
             if not resolved.is_file() or not any(
                 resolved == root or resolved.is_relative_to(root) for root in roots
             ):
@@ -77,14 +78,14 @@ def find_exact_duplicates(
         except OSError:
             continue  # Offline removable drives are not duplicate evidence.
         hashes.setdefault((before.st_size, digest), []).append(
-            {"track_id": track_id, "path": resolved, "verified": verified}
+            {"track_id": track_id, "path": resolved, "display_path": file_path, "verified": verified}
         )
     _confirm_groups(db, hashes)
     groups = [
         {
             "size_bytes": size, "sha256": digest, "count": len(members),
             "tracks": [
-                {"track_id": m["track_id"], "file_path": str(m["path"])}
+                {"track_id": m["track_id"], "file_path": m["display_path"]}
                 for m in sorted(members, key=lambda m: m["track_id"])
             ],
         }

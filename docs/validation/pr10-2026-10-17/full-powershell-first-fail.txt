@@ -1,0 +1,83 @@
+Requirement already satisfied: pytest in c:\antigravity\claude code\velvet_next\.venv\lib\site-packages (9.1.1)
+Requirement already satisfied: fastapi<1.0.0,>=0.110.0 in c:\antigravity\claude code\velvet_next\.venv\lib\site-packages (from -r requirements.txt (line 2)) (0.143.3)
+Requirement already satisfied: uvicorn<1.0.0,>=0.27.0 in c:\antigravity\claude code\velvet_next\.venv\lib\site-packages (from -r requirements.txt (line 3)) (0.54.0)
+Requirement already satisfied: mutagen>=1.47.0 in c:\antigravity\claude code\velvet_next\.venv\lib\site-packages (from -r requirements.txt (line 4)) (1.48.1)
+Requirement already satisfied: pydantic-settings>=2.2.1 in c:\antigravity\claude code\velvet_next\.venv\lib\site-packages (from -r requirements.txt (line 5)) (2.16.0)
+Requirement already satisfied: bcrypt>=4.1.2 in c:\antigravity\claude code\velvet_next\.venv\lib\site-packages (from -r requirements.txt (line 6)) (5.0.0)
+Requirement already satisfied: numpy<3.0.0,>=1.26.0 in c:\antigravity\claude code\velvet_next\.venv\lib\site-packages (from -r requirements.txt (line 7)) (2.5.4)
+Requirement already satisfied: sounddevice<1.0.0,>=0.4.6 in c:\antigravity\claude code\velvet_next\.venv\lib\site-packages (from -r requirements.txt (line 10)) (0.5.6)
+Requirement already satisfied: httpx<1.0.0,>=0.27.0 in c:\antigravity\claude code\velvet_next\.venv\lib\site-packages (from -r requirements.txt (line 13)) (0.28.1)
+Requirement already satisfied: aiofiles>=23.2.1 in c:\antigravity\claude code\velvet_next\.venv\lib\site-packages (from -r requirements.txt (line 14)) (25.1.0)
+Requirement already satisfied: Pillow>=10.0.0 in c:\antigravity\claude code\velvet_next\.venv\lib\site-packages (from -r requirements.txt (line 17)) (13.0.0)
+Requirement already satisfied: cachetools>=5.3.0 in c:\antigravity\claude code\velvet_next\.venv\lib\site-packages (from -r requirements.txt (line 20)) (7.2.2)
+Requirement already satisfied: python-multipart>=0.0.9 in c:\antigravity\claude code\velvet_next\.venv\lib\site-packages (from -r requirements.txt (line 23)) (0.0.32)
+Requirement already satisfied: colorama>=0.4 in c:\antigravity\claude code\velvet_next\.venv\lib\site-packages (from pytest) (0.4.6)
+Requirement already satisfied: iniconfig>=1.0.1 in c:\antigravity\claude code\velvet_next\.venv\lib\site-packages (from pytest) (2.3.1)
+Requirement already satisfied: packaging>=22 in c:\antigravity\claude code\velvet_next\.venv\lib\site-packages (from pytest) (26.3)
+Requirement already satisfied: pluggy<2,>=1.5 in c:\antigravity\claude code\velvet_next\.venv\lib\site-packages (from pytest) (1.7.0)
+Requirement already satisfied: pygments>=2.7.2 in c:\antigravity\claude code\velvet_next\.venv\lib\site-packages (from pytest) (2.21.0)
+Requirement already satisfied: starlette>=0.46.0 in c:\antigravity\claude code\velvet_next\.venv\lib\site-packages (from fastapi<1.0.0,>=0.110.0->-r requirements.txt (line 2)) (1.8.0)
+Requirement already satisfied: pydantic>=2.9.0 in c:\antigravity\claude code\velvet_next\.venv\lib\site-packages (from fastapi<1.0.0,>=0.110.0->-r requirements.txt (line 2)) (2.14.1)
+Requirement already satisfied: typing-extensions>=4.8.0 in c:\antigravity\claude code\velvet_next\.venv\lib\site-packages (from fastapi<1.0.0,>=0.110.0->-r requirements.txt (line 2)) (4.16.0)
+Requirement already satisfied: typing-inspection>=0.4.2 in c:\antigravity\claude code\velvet_next\.venv\lib\site-packages (from fastapi<1.0.0,>=0.110.0->-r requirements.txt (line 2)) (0.4.4)
+Requirement already satisfied: annotated-doc>=0.0.2 in c:\antigravity\claude code\velvet_next\.venv\lib\site-packages (from fastapi<1.0.0,>=0.110.0->-r requirements.txt (line 2)) (0.0.5)
+Requirement already satisfied: opentelemetry-api>=1.44.0 in c:\antigravity\claude code\velvet_next\.venv\lib\site-packages (from fastapi<1.0.0,>=0.110.0->-r requirements.txt (line 2)) (1.45.1)
+Requirement already satisfied: click>=7.0 in c:\antigravity\claude code\velvet_next\.venv\lib\site-packages (from uvicorn<1.0.0,>=0.27.0->-r requirements.txt (line 3)) (8.5.0)
+Requirement already satisfied: h11>=0.8 in c:\antigravity\claude code\velvet_next\.venv\lib\site-packages (from uvicorn<1.0.0,>=0.27.0->-r requirements.txt (line 3)) (0.16.0)
+Requirement already satisfied: python-dotenv>=1.2.2 in c:\antigravity\claude code\velvet_next\.venv\lib\site-packages (from pydantic-settings>=2.2.1->-r requirements.txt (line 5)) (1.2.4)
+Requirement already satisfied: cffi in c:\antigravity\claude code\velvet_next\.venv\lib\site-packages (from sounddevice<1.0.0,>=0.4.6->-r requirements.txt (line 10)) (2.1.1)
+Requirement already satisfied: anyio in c:\antigravity\claude code\velvet_next\.venv\lib\site-packages (from httpx<1.0.0,>=0.27.0->-r requirements.txt (line 13)) (4.15.1)
+Requirement already satisfied: certifi in c:\antigravity\claude code\velvet_next\.venv\lib\site-packages (from httpx<1.0.0,>=0.27.0->-r requirements.txt (line 13)) (2026.7.22)
+Requirement already satisfied: httpcore==1.* in c:\antigravity\claude code\velvet_next\.venv\lib\site-packages (from httpx<1.0.0,>=0.27.0->-r requirements.txt (line 13)) (1.0.9)
+Requirement already satisfied: idna in c:\antigravity\claude code\velvet_next\.venv\lib\site-packages (from httpx<1.0.0,>=0.27.0->-r requirements.txt (line 13)) (3.20)
+Requirement already satisfied: annotated-types>=0.6.0 in c:\antigravity\claude code\velvet_next\.venv\lib\site-packages (from pydantic>=2.9.0->fastapi<1.0.0,>=0.110.0->-r requirements.txt (line 2)) (0.8.0)
+Requirement already satisfied: pydantic-core==2.50.1 in c:\antigravity\claude code\velvet_next\.venv\lib\site-packages (from pydantic>=2.9.0->fastapi<1.0.0,>=0.110.0->-r requirements.txt (line 2)) (2.50.1)
+Requirement already satisfied: pycparser in c:\antigravity\claude code\velvet_next\.venv\lib\site-packages (from cffi->sounddevice<1.0.0,>=0.4.6->-r requirements.txt (line 10)) (3.11)
+
+[notice] A new release of pip is available: 25.0.1 -> 26.2.1
+[notice] To update, run: C:\Antigravity\Claude Code\VELVET_NEXT\.venv\Scripts\python.exe -m pip install --upgrade pip
+Checking Python syntax...
+...................................... [ 16%]
+...............................................F.............. [ 44%]
+......................................................... [ 69%]
+..................................................... [ 93%]
+...............                                                     [100%]
+================================== FAILURES ===================================
+___ AlbumSafetyTests.test_locked_restore_retains_archive_and_can_be_retried ___
+
+self = <test_library_safety.AlbumSafetyTests testMethod=test_locked_restore_retains_archive_and_can_be_retried>
+
+    def test_locked_restore_retains_archive_and_can_be_retried(self):
+        audio = self._file()
+        archive = AlbumFileArchive([str(audio)], [self.music], self.archive_dir)
+        archive.stage()
+        archive.commit()
+        import library_safety
+        real_replace = library_safety.os.replace
+    
+        def locked(src, dst):
+            if str(src) == archive.entries[0]["staged"]:
+                raise PermissionError("simulated Windows file lock")
+            return real_replace(src, dst)
+    
+        with patch.object(library_safety.os, "replace", side_effect=locked):
+>           with self.assertRaisesRegex(ArchiveError, "file lock"):
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E           AssertionError: ArchiveError not raised
+
+tests\test_library_safety.py:161: AssertionError
+============================== warnings summary ===============================
+.venv\Lib\site-packages\fastapi\testclient.py:1
+  C:\Antigravity\Claude Code\VELVET_NEXT\.venv\Lib\site-packages\fastapi\testclient.py:1: StarletteDeprecationWarning: Using `httpx` with `starlette.testclient` is deprecated; install `httpx2` instead.
+    from starlette.testclient import TestClient as TestClient  # noqa
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ===========================
+FAILED tests/test_library_safety.py::AlbumSafetyTests::test_locked_restore_retains_archive_and_can_be_retried
+1 failed, 224 passed, 1 warning, 83 subtests passed in 39.94s
+Exception: C:\Antigravity\Claude Code\VELVET_NEXT\scripts\windows_pr10_local_test.ps1:39
+Line |
+  39 |      if ($LASTEXITCODE -ne 0) { throw "Python tests failed" }
+     |                                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~
+     | Python tests failed
+POWERSHELL_EXIT_CODE=1

@@ -130,62 +130,55 @@ def search_tracks(
     use_variant_fallback = _needs_variant_fallback(q, variants, to_simplified, to_traditional)
 
     if len(tracks) < limit and use_variant_fallback:
-        remaining = max(1, limit - len(tracks))
-        exclude_ids = ",".join("?" * len(matched_track_ids))
-        if matched_track_ids:
-            filter_clause = f"WHERE t.id NOT IN ({exclude_ids})"
-            filter_params = list(matched_track_ids)
-        else:
-            filter_clause = ""
-            filter_params = []
-
-        all_tracks: list[sqlite3.Row] = db.execute(
-            """
-            SELECT t.id, t.title, t.duration, t.format, t.track_number,
-                   t.composer, t.work_title, t.performer, t.conductor, t.ensemble,
-                   ar_primary.name as artist_name, al.title as album_title,
-                   al.id as album_id, al.year
-            FROM tracks t
-            JOIN artists ar_primary ON t.artist_id = ar_primary.id
-            JOIN albums al ON t.album_id = al.id
-            """
-            + f"\n{filter_clause}\nLIMIT ?",
-            (*filter_params, remaining * 3),
-        ).fetchall()
-
-        for track_row in all_tracks:
-            track = dict(track_row)
-            if track["id"] in matched_track_ids:
-                continue
-            for variant in variants:
-                variant_simp = to_simplified(variant)
-                variant_trad = to_traditional(variant)
-                for field in [
-                    track["title"],
-                    track["artist_name"],
-                    track["album_title"],
-                    track.get("composer"),
-                    track.get("work_title"),
-                    track.get("performer"),
-                    track.get("conductor"),
-                    track.get("ensemble"),
-                ]:
-                    if not field:
-                        continue
-                    field_simp = to_simplified(field)
-                    field_trad = to_traditional(field)
-                    if (
-                        variant in field
-                        or variant_simp in field
-                        or variant_trad in field
-                        or field in variant
-                        or field_simp in variant
-                        or field_trad in variant
-                    ):
-                        matched_track_ids.add(track["id"])
-                        break
+        # Do not sample only the first remaining*3 rows: a match near the end
+        # of a 66k-track library would never be returned. Scan bounded batches
+        # by track ID until we have enough verified matches or reach EOF.
+        last_id = 0
+        while len(matched_track_ids) < limit:
+            batch = db.execute(
+                """
+                SELECT t.id, t.title, t.duration, t.format, t.track_number,
+                       t.composer, t.work_title, t.performer, t.conductor, t.ensemble,
+                       ar_primary.name AS artist_name, al.title AS album_title,
+                       al.id AS album_id, al.year
+                FROM tracks t
+                JOIN artists ar_primary ON t.artist_id = ar_primary.id
+                JOIN albums al ON t.album_id = al.id
+                WHERE t.id > ?
+                ORDER BY t.id
+                LIMIT 512
+                """,
+                (last_id,),
+            ).fetchall()
+            if not batch:
+                break
+            last_id = batch[-1]["id"]
+            for track_row in batch:
+                track = dict(track_row)
                 if track["id"] in matched_track_ids:
-                    break
+                    continue
+                for variant in variants:
+                    variant_simp = to_simplified(variant)
+                    variant_trad = to_traditional(variant)
+                    for field in (
+                        track["title"], track["artist_name"], track["album_title"],
+                        track.get("composer"), track.get("work_title"),
+                        track.get("performer"), track.get("conductor"),
+                        track.get("ensemble"),
+                    ):
+                        if not field:
+                            continue
+                        field_simp = to_simplified(field)
+                        field_trad = to_traditional(field)
+                        if (
+                            variant in field or variant_simp in field
+                            or variant_trad in field or field in variant
+                            or field_simp in variant or field_trad in variant
+                        ):
+                            matched_track_ids.add(track["id"])
+                            break
+                    if track["id"] in matched_track_ids:
+                        break
 
         if len(matched_track_ids) > len(tracks):
             id_placeholders = ",".join("?" * len(matched_track_ids))
