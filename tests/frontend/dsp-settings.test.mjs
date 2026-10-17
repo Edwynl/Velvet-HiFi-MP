@@ -205,6 +205,34 @@ function createHarness() {
       return makeJsonResponse([]);
     }
 
+    if (parsedUrl.pathname.startsWith('/api/cast/control/') && method === 'POST') {
+      return makeJsonResponse({ success: true });
+    }
+
+    if (parsedUrl.pathname.startsWith('/api/cast/status/') && method === 'GET') {
+      return makeJsonResponse({ state: 'PLAYING', position: 5, duration: 120, is_playing: true });
+    }
+
+    // Mirrors server.cast_to_device: an active preset gets the DSP transcode.
+    if (parsedUrl.pathname.startsWith('/api/cast/') && method === 'POST') {
+      const requested = body?.dsp_profile_id || null;
+      return makeJsonResponse({
+        success: true,
+        start_offset: requested ? (body.start_seconds || 0) : 0,
+        dsp: {
+          requested_profile_id: requested,
+          effective_profile_id: requested,
+          status: requested ? 'applied' : 'off',
+          stream: requested ? 'dsp_transcode' : 'direct',
+          disabled_filters: [],
+        },
+      });
+    }
+
+    if (parsedUrl.pathname === '/api/playback/stop' && method === 'POST') {
+      return makeJsonResponse({ success: true });
+    }
+
     throw new Error(`Unhandled fetch: ${method} ${parsedUrl.pathname}`);
   }
 
@@ -482,26 +510,81 @@ async function main() {
     const browserLines = dom.window.describeSignalProcessing('browser', null, 'none');
     assert.equal(JSON.stringify(browserLines), JSON.stringify(['No PCM upsampling', 'VELVET DSP off (source direct)']));
 
-    // Codex review 2: in a cast zone, neither DSP nor upsampling reaches the
-    // renderer, so changing them must not re-cast (restart) the track.
-    dom.window.eval(`
-      state.outputMode = 'cast';
-      state.castDevice = { udn: 'uuid:renderer', name: 'EXN100' };
-      state.currentTrack = { id: 1, title: 'Cast Track' };
-    `);
-    const requestsBeforeCastChanges = harness.requests.length;
+    // EQ-3: each output zone keeps its own DSP choice. The browser keeps the
+    // legacy keys, a USB output inherits them until chosen, a renderer starts Off.
+    const dspSelect = document.querySelector('#dsp-select');
+    const chooseDsp = (value) => {
+      dspSelect.value = value;
+      dspSelect.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
+    };
+    const renderer = { type: 'cast', id: 'uuid:renderer', udn: 'uuid:renderer', name: 'EXN100' };
+    const usbDac = { type: 'native', id: 4, device_id: 4, name: 'USB DAC' };
+    const browserZone = { type: 'browser', id: 'browser', name: 'Local Web Player' };
+    const zoneMap = () => JSON.parse(dom.window.localStorage.getItem('velvet:dsp-zone-profiles') || '{}');
+    dom.window.eval('state.currentTrack = null;');
+    chooseDsp('2');
+    await dom.window.activateZone(renderer, false);
+    assert.equal(dom.window.eval('state.dspProfile'), '', 'a renderer never chosen for starts Off');
+    assert.equal(dspSelect.value, '');
+    assert.equal(dom.window.eval('isDspExplicitlyOff()'), true);
+    chooseDsp('3');
+    assert.equal(zoneMap()['cast:uuid:renderer'], '3');
+    assert.equal(dom.window.localStorage.getItem('velvet:dsp-profile-id'), '2', 'browser choice untouched');
+    await dom.window.activateZone(usbDac, false);
+    assert.equal(dom.window.eval('state.dspProfile'), '2', 'a USB output inherits the browser choice');
+    chooseDsp('');
+    assert.equal(zoneMap()['native:USB DAC'], 'off');
+    await dom.window.activateZone(browserZone, false);
+    assert.equal(dom.window.eval('state.dspProfile'), '2');
+    assert.equal(dspSelect.value, '2');
+    await dom.window.activateZone(usbDac, false);
+    assert.equal(dom.window.eval('state.dspProfile'), '');
+    await dom.window.activateZone(renderer, false);
+    assert.equal(dom.window.eval('state.dspProfile'), '3');
+    assert.equal(dspSelect.value, '3');
+    assert.equal(dom.window.eval('isDspExplicitlyOff()'), false);
+
+    // Upsampling never reaches a renderer: changing it must not re-cast.
+    dom.window.eval("state.currentTrack = { id: 1, title: 'Cast Track', duration: 180 }; state.castPosition = 42;");
+    let requestsBefore = harness.requests.length;
     const upsampleSelect = document.querySelector('#upsample-select');
     upsampleSelect.value = '2x';
     upsampleSelect.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
-    const dspSelect = document.querySelector('#dsp-select');
-    dspSelect.value = '';
-    dspSelect.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
-    await new Promise(resolve => setTimeout(resolve, 100));
-    assert.ok(
-      !harness.requests.slice(requestsBeforeCastChanges).some(request => request.path.startsWith('/api/cast/')),
-      'expected no re-cast when upsampling or DSP changes in a cast zone');
+    await new Promise(resolve => setTimeout(resolve, 50));
+    assert.ok(!harness.requests.slice(requestsBefore).some(request => request.path.startsWith('/api/cast/')),
+      'expected no re-cast when upsampling changes in a cast zone');
     assert.equal(dom.window.eval('state.upsample'), '2x');
-    dom.window.eval("state.outputMode = 'browser'; state.castDevice = null; state.currentTrack = null;");
+
+    // A DSP change re-casts the renderer's stream from where it is now.
+    requestsBefore = harness.requests.length;
+    chooseDsp('2');
+    await waitFor(() => dom.window.eval('state.castDsp?.requested_profile_id') === 2);
+    const recast = harness.requests.slice(requestsBefore).find(request => request.path === '/api/cast/uuid:renderer');
+    assert.deepEqual(recast.body, { track_id: 1, dsp_profile_id: 2, start_seconds: 42 });
+    assert.equal(dom.window.eval('state.castStartOffset'), 42);
+    const castDsp = dom.window.eval('state.castDsp');
+    const blackBackground = { id: 2, name: 'Black Background' };
+    const castApplied = dom.window.describeSignalProcessing('cast', blackBackground, '2x',
+      { active: true, headroom_guard_db: -2, effective_preamp_db: -6 }, castDsp);
+    assert.match(castApplied[0], /^VELVET DSP stream to renderer \(24-bit FLAC/);
+    assert.ok(castApplied.includes('DSP Black Background'), castApplied.join(' | '));
+    assert.ok(castApplied.some(line => /Headroom guard: -2\.0 dB/.test(line)));
+    assert.ok(castApplied.some(line => /upsampling not applied/.test(line)));
+    assert.deepEqual({ ...dom.window.describeZoneDsp('cast', blackBackground, null, castDsp) },
+      { requested: 'Black Background', effective: 'Black Background' });
+    // Selected but not yet on the renderer (e.g. the re-cast failed): never claimed.
+    const pending = dom.window.describeSignalProcessing('cast', { id: 3, name: 'Vocal Forward Warm' }, 'none', null, castDsp);
+    assert.ok(pending.some(line => /Vocal Forward Warm not applied on this renderer yet/.test(line)));
+    assert.match(dom.window.describeZoneDsp('cast', { id: 3, name: 'Vocal Forward Warm' }, null, castDsp).effective,
+      /Black Background \(previous selection\)/);
+    // Off re-casts the direct source.
+    chooseDsp('');
+    await waitFor(() => dom.window.eval('state.castDsp?.status') === 'off');
+    assert.equal(dom.window.eval('state.castStartOffset'), 0);
+    assert.equal(dom.window.describeSignalProcessing('cast', null, 'none', null, dom.window.eval('state.castDsp'))[0],
+      'Direct source stream to renderer');
+    dom.window.eval('stopCastPolling(); state.currentTrack = null;');
+    await dom.window.activateZone(browserZone, false);
   } finally {
     dom.window.close();
   }
