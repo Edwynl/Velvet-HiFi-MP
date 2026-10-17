@@ -134,6 +134,39 @@ class LocalPlaybackTests(unittest.TestCase):
             self.assertEqual(len(DummyPlayer.instances), 1)
             self.assertEqual(len(DummyPlayer.instances[0].play_calls), 2)
 
+    def test_unknown_dsp_profile_fails_closed_instead_of_playing_direct(self):
+        with patch.object(local_playback, "SOUNDDEVICE_AVAILABLE", True), \
+             patch.object(local_playback, "_get_library_db_path", return_value=self.db_path), \
+             patch.object(local_playback, "LocalPlayer", DummyPlayer):
+            result = local_playback.play_local(track_id=1, dsp_profile_id=9999)
+
+        self.assertFalse(result["success"])
+        self.assertIn("DSP profile not found", result["error"])
+        self.assertEqual(DummyPlayer.instances, [])
+
+    def test_dsp_profile_chain_is_resolved_at_the_source_rate(self):
+        conn = sqlite3.connect(self.db_path)
+        profile_id = conn.execute(
+            "INSERT INTO dsp_profiles (name, preamp_db, filter_chain_json) VALUES (?, ?, ?)",
+            ("Native test", -2,
+             '[{"type":"peaking","freq":1000,"gain":2,"q":1,"enabled":true},'
+             '{"type":"high_shelf","freq":20000,"gain":2,"q":0.7,"enabled":true}]'),
+        ).lastrowid
+        conn.execute("UPDATE tracks SET sample_rate=32000 WHERE id=1")
+        conn.commit()
+        conn.close()
+        with patch.object(local_playback, "SOUNDDEVICE_AVAILABLE", True), \
+             patch.object(local_playback, "_get_library_db_path", return_value=self.db_path), \
+             patch.object(local_playback, "LocalPlayer", DummyPlayer):
+            result = local_playback.play_local(track_id=1, dsp_profile_id=profile_id)
+
+        self.assertTrue(result["success"])
+        chain = DummyPlayer.instances[0].play_calls[0]["dsp_filter"]
+        self.assertIn("equalizer=f=1000.0", chain)
+        self.assertNotIn("treble", chain)  # 20 kHz is above Nyquist at 32 kHz
+        self.assertEqual(result["dsp"]["status"], "applied")
+        self.assertEqual(len(result["dsp"]["disabled_filters"]), 1)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -120,13 +120,13 @@ async function renderSettings(vc) {
       <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:8px">
         <div>
           <div style="font-size:14px;color:var(--text);font-weight:600">Off</div>
-          <div style="font-size:11px;color:var(--gold);text-transform:uppercase;letter-spacing:.08em;margin-top:4px">Bit-perfect</div>
+          <div style="font-size:11px;color:var(--gold);text-transform:uppercase;letter-spacing:.08em;margin-top:4px">Source Direct</div>
         </div>
         <div style="display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end">
           ${!activeDspId ? '<span style="font-size:10px;padding:4px 8px;border-radius:999px;background:rgba(201,168,76,.18);color:var(--gold)">Active</span>' : ''}
         </div>
       </div>
-      <div style="font-size:12px;color:var(--muted);line-height:1.55;margin-top:8px">No EQ or DSP processing.</div>
+      <div style="font-size:12px;color:var(--muted);line-height:1.55;margin-top:8px">VELVET applies no EQ or DSP. The OS mixer, browser or renderer may still process audio, so this is not a bit-perfect guarantee.</div>
       <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px">
         <button class="btn btn-ghost dsp-apply-btn" data-profile-id="" style="padding:8px 10px">Apply</button>
       </div>
@@ -155,7 +155,7 @@ async function renderSettings(vc) {
     </div>
   `;
   const renderDspPresetGroups = () => `
-      <div class="dsp-category-heading">Off / Bit-perfect</div>
+      <div class="dsp-category-heading">Source Direct / VELVET DSP Off</div>
       ${renderDspOffCard()}
     ` + dspCategoryOrder
     .map(group => {

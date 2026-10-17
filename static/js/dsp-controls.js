@@ -22,16 +22,87 @@ function renderEQPresets() {
   container.innerHTML = html;
 }
 
+// Mirrors dsp_engine.py: RBJ biquads as FFmpeg renders them. FFmpeg's
+// bass/treble shelves behave like an RBJ shelf with Q scaled by sqrt(2).
+const EQ_ANALYSIS_SAMPLE_RATE = 48000;
+const EQ_HEADROOM_MARGIN_DB = 1.0;
+
+function dspBiquadCoefficients(filter, sampleRate) {
+  const isShelf = filter.type === 'low_shelf' || filter.type === 'high_shelf';
+  const q = Number(filter.q) * (isShelf ? Math.SQRT2 : 1);
+  const A = Math.pow(10, Number(filter.gain) / 40);
+  const w0 = 2 * Math.PI * Number(filter.freq) / sampleRate;
+  const cosW0 = Math.cos(w0);
+  const alpha = Math.sin(w0) / (2 * q);
+  const root = 2 * Math.sqrt(A) * alpha;
+  if (filter.type === 'low_shelf') {
+    return [A * ((A + 1) - (A - 1) * cosW0 + root), 2 * A * ((A - 1) - (A + 1) * cosW0),
+      A * ((A + 1) - (A - 1) * cosW0 - root),
+      (A + 1) + (A - 1) * cosW0 + root, -2 * ((A - 1) + (A + 1) * cosW0), (A + 1) + (A - 1) * cosW0 - root];
+  }
+  if (filter.type === 'high_shelf') {
+    return [A * ((A + 1) + (A - 1) * cosW0 + root), -2 * A * ((A - 1) + (A + 1) * cosW0),
+      A * ((A + 1) + (A - 1) * cosW0 - root),
+      (A + 1) - (A - 1) * cosW0 + root, 2 * ((A - 1) - (A + 1) * cosW0), (A + 1) - (A - 1) * cosW0 - root];
+  }
+  return [1 + alpha * A, -2 * cosW0, 1 - alpha * A, 1 + alpha / A, -2 * cosW0, 1 - alpha / A];
+}
+
+// Combined magnitude (dB) of cascaded enabled filters at each frequency.
+function dspFiltersResponseDb(filters, sampleRate, freqs) {
+  const active = filters
+    .filter(f => f.enabled !== false && Number(f.gain))
+    .map(f => dspBiquadCoefficients(f, sampleRate));
+  return freqs.map(freq => {
+    const w = 2 * Math.PI * freq / sampleRate;
+    let re = 1, im = 0;
+    for (const [b0, b1, b2, a0, a1, a2] of active) {
+      // H(e^jw) = (b0 + b1 e^-jw + b2 e^-2jw) / (a0 + a1 e^-jw + a2 e^-2jw)
+      const nRe = b0 + b1 * Math.cos(w) + b2 * Math.cos(2 * w);
+      const nIm = -b1 * Math.sin(w) - b2 * Math.sin(2 * w);
+      const dRe = a0 + a1 * Math.cos(w) + a2 * Math.cos(2 * w);
+      const dIm = -a1 * Math.sin(w) - a2 * Math.sin(2 * w);
+      const dMag = dRe * dRe + dIm * dIm;
+      const hRe = (nRe * dRe + nIm * dIm) / dMag;
+      const hIm = (nIm * dRe - nRe * dIm) / dMag;
+      const nextRe = re * hRe - im * hIm;
+      im = re * hIm + im * hRe;
+      re = nextRe;
+    }
+    return 20 * Math.log10(Math.max(Math.hypot(re, im), 1e-12));
+  });
+}
+
+function dspPeakGainDb(filters, sampleRate = EQ_ANALYSIS_SAMPLE_RATE) {
+  if (!filters.some(f => f.enabled !== false && Number(f.gain))) return 0;
+  const low = 5, high = sampleRate / 2 * 0.999, points = 1024;
+  const ratio = Math.pow(high / low, 1 / (points - 1));
+  const grid = Array.from({ length: points }, (_, i) => low * Math.pow(ratio, i));
+  filters.forEach(f => { if (Number(f.freq) < high) grid.push(Number(f.freq)); });
+  return Math.max(0, ...dspFiltersResponseDb(filters, sampleRate, grid));
+}
+
+function graphicEqFilters() {
+  return GEQ_BANDS
+    .map((freq, i) => ({ type: 'peaking', freq, gain: Number(currentEqGains[i]) || 0, q: GEQ_DEFAULT_Q, enabled: true }))
+    .filter(f => Math.abs(f.gain) > 0.05);
+}
+
+// Headroom from the combined response of all bands, not the largest slider:
+// overlapping boosts add up. Never capped, so the margin is always kept.
 function recommendedGraphicEqPreamp() {
-  const maxBoost = Math.max(0, ...currentEqGains.map(gain => Number(gain) || 0));
-  return maxBoost > 0.05 ? -Math.min(12, Math.ceil((maxBoost + 1) * 10) / 10) : 0;
+  const peak = dspPeakGainDb(graphicEqFilters());
+  return peak > 0.05 ? -Math.ceil((peak + EQ_HEADROOM_MARGIN_DB) * 10 - 1e-9) / 10 : 0;
 }
 
 function updateEQHeadroomNote() {
   const note = $('eq-headroom-note');
   if (!note) return;
+  const peak = dspPeakGainDb(graphicEqFilters());
   const preamp = recommendedGraphicEqPreamp();
-  note.textContent = preamp < 0 ? `Auto headroom: ${preamp.toFixed(1)} dB` : 'Headroom: 0.0 dB';
+  note.textContent = preamp < 0
+    ? `Auto headroom: ${preamp.toFixed(1)} dB (EQ peak +${peak.toFixed(1)} dB)`
+    : 'Headroom: 0.0 dB';
 }
 
 function updateEQSaveButtonLabel() {

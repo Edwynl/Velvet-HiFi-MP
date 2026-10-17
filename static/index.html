@@ -5852,7 +5852,7 @@ input[type=range]::-webkit-slider-thumb:hover { background: var(--gold); }
           <svg id="default-album-art" viewBox="0 0 52 52" style="width:100%;height:100%;padding:14px;color:var(--s4)">
             <path fill="currentColor" d="M40 8H24v24.26A8 8 0 1026 44V20h12V8z"/>
           </svg>
-          <div id="btn-vu-desktop" class="player-art-vu-btn" title="Toggle VU Meters">
+          <div id="btn-vu-desktop" class="player-art-vu-btn" title="Toggle VU Meters (pre-DSP level, not a clipping indicator)">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/></svg>
           </div>
         </div>
@@ -6017,7 +6017,7 @@ input[type=range]::-webkit-slider-thumb:hover { background: var(--gold); }
         <span class="mobile-player-pill-label">EQ</span>
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 21v-7 M4 10V3 M12 21v-9 M12 8V3 M20 21v-5 M20 12V3 M1 14h6 M9 8h6 M17 12h6"/></svg>
       </button>
-      <button class="mobile-player-pill" id="mobile-top-vu" type="button" title="VU Meters">
+      <button class="mobile-player-pill" id="mobile-top-vu" type="button" title="VU Meters (pre-DSP level)">
         <span class="mobile-player-pill-label">VU</span>
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/></svg>
       </button>
@@ -6223,7 +6223,7 @@ input[type=range]::-webkit-slider-thumb:hover { background: var(--gold); }
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>
           <span>Queue</span>
         </button>
-        <button class="mobile-sec-btn" id="mobile-btn-vu" title="VU Meters">
+        <button class="mobile-sec-btn" id="mobile-btn-vu" title="VU Meters (pre-DSP level)">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 12h4l3 8 4-16 3 8h4"/></svg>
           <span>VU</span>
         </button>
@@ -6576,6 +6576,23 @@ async function startRadio(mode, id) {
   playTrack(queue[0], queue, 0);
 }
 
+// What VELVET actually does to the audio on this output, never a mere
+// selection: DLNA renderers fetch the direct source URL, so neither DSP nor
+// upsampling is applied there.
+function describeSignalProcessing(zoneType, dspProfile, upsample) {
+  if (zoneType === 'cast') {
+    return [
+      'Direct source stream to renderer',
+      dspProfile ? `DSP ${dspProfile.name} not applied on this renderer` : 'VELVET DSP off',
+      ...(upsample && upsample !== 'none' ? ['PCM upsampling not applied on this renderer'] : []),
+    ];
+  }
+  return [
+    !upsample || upsample === 'none' ? 'No PCM upsampling' : `${upsample.toUpperCase()} PCM upsampling enabled`,
+    dspProfile ? `DSP ${dspProfile.name}` : 'VELVET DSP off (source direct)',
+  ];
+}
+
 function showSignalPath() {
   if (!state.currentTrack) {
     showToast('Nothing is playing yet');
@@ -6590,12 +6607,8 @@ function showSignalPath() {
     track.bit_depth ? `${track.bit_depth}bit` : ''
   ].filter(Boolean).join(' · ');
 
-  const processing = [
-    state.upsample === 'none' ? 'No PCM upsampling' : `${state.upsample.toUpperCase()} PCM upsampling enabled`,
-    dspProfile ? `DSP ${escHtml(dspProfile.name)}` : 'Flat DSP pipeline'
-  ].join('<br>');
-
   const activeZone = getActiveZone();
+  const processing = describeSignalProcessing(activeZone.type, dspProfile, state.upsample).map(escHtml).join('<br>');
   const output = activeZone.type === 'cast'
     ? `Streaming to ${escHtml(activeZone.name)}`
     : activeZone.type === 'native'
@@ -7983,12 +7996,14 @@ async function castTo(track, device) {
     // The server hands the renderer its own ticketed URL for this track.
     const res = await api(`/cast/${device.udn}`, {
       method: 'POST',
-      body: JSON.stringify({ track_id: track.id })
+      body: JSON.stringify({ track_id: track.id, dsp_profile_id: Number(state.dspProfile) || null })
     });
     if (res.success) {
       markExpectedBrowserPause(1200);
       audio.pause();
-      showToast(`Playing on ${device.name}`);
+      showToast(res.dsp?.status === 'bypassed'
+        ? `Playing on ${device.name} · DSP not applied on this renderer`
+        : `Playing on ${device.name}`);
       startCastPolling();
     } else {
       showToast(`Failed to cast to ${device.name}`);
@@ -8804,7 +8819,13 @@ UI['dsp-select'].addEventListener('change', e => {
   }
   persistDspProfileId(state.dspProfile);
   const selected = state.dspProfiles.find(profile => String(profile.id) === String(state.dspProfile));
-  showToast(selected ? `DSP: ${selected.name}` : 'DSP: Off');
+  if (isCastZone()) {
+    // The renderer plays the direct source: re-casting would restart the
+    // track without changing the sound, so only say so.
+    showToast(selected ? 'DSP not applied on this renderer' : 'DSP: Off');
+  } else {
+    showToast(selected ? `DSP: ${selected.name}` : 'DSP: Off');
+  }
   document.querySelectorAll('.dsp-preset-card').forEach(card => {
     const isActive = String(card.dataset.profileId) === String(state.dspProfile || '');
     card.style.borderColor = isActive ? 'var(--gold)' : 'var(--border)';
@@ -8813,7 +8834,7 @@ UI['dsp-select'].addEventListener('change', e => {
 
   if (state.currentTrack) {
     if (isCastZone()) {
-      castTo(state.currentTrack, state.castDevice);
+      // Direct renderer stream: nothing to restart.
     } else if (isNativeZone()) {
       playTrack(state.currentTrack, state.queue, state.queueIdx);
     } else {

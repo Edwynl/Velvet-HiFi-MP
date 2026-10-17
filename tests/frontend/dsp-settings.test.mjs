@@ -386,6 +386,39 @@ async function main() {
       harness.requests.some(request => request.method === 'DELETE' && request.path === `/api/dsp/profiles/${savedProfile.id}`),
       'expected custom profile delete request to be issued'
     );
+
+    // EQ-1: headroom comes from the combined response, not the largest slider,
+    // and is never capped at -12 dB.
+    dom.window.selectEQPreset('');
+    [4, 5, 6].forEach(band => dom.window.handleEQSliderInput(band, '12'));
+    const peak = dom.window.eval('dspPeakGainDb(graphicEqFilters())');
+    const preamp = dom.window.eval('recommendedGraphicEqPreamp()');
+    assert.ok(peak > 13, `expected stacked +12 dB bands to peak above 13 dB, got ${peak}`);
+    assert.ok(preamp <= -(peak + 1) && preamp > -(peak + 1.11),
+      `expected preamp to cover the combined peak plus 1 dB margin, got ${preamp} for ${peak}`);
+    assert.ok(preamp < -12, 'expected no -12 dB headroom cap');
+    assert.match(document.querySelector('#eq-headroom-note').textContent, /EQ peak \+1\d\.\d dB/);
+    // Same model as dsp_engine.py (FFmpeg-verified there): a single +6 dB
+    // peaking band peaks at exactly +6 dB at its centre frequency.
+    const single = dom.window.eval(
+      "dspFiltersResponseDb([{type:'peaking',freq:1000,gain:6,q:1.41}], 48000, [1000])[0]");
+    assert.ok(Math.abs(single - 6) < 0.01, `expected +6 dB at 1 kHz, got ${single}`);
+    const shelfPeak = dom.window.eval(
+      "dspPeakGainDb([{type:'low_shelf',freq:100,gain:4,q:0.7}], 48000)");
+    assert.ok(shelfPeak > 4 && shelfPeak < 4.6, `expected FFmpeg shelf overshoot, got ${shelfPeak}`);
+
+    // EQ-1: "Off" never claims bit-perfect output, and casting never claims
+    // that DSP or upsampling is applied by a DLNA renderer.
+    assert.ok(
+      !Array.from(document.querySelectorAll('div')).some(el => /^(Off \/ )?Bit-perfect$/i.test(el.textContent.trim())),
+      'Off must not be labelled bit-perfect');
+    assert.match(document.body.textContent, /Source Direct \/ VELVET DSP Off/);
+    const castLines = dom.window.describeSignalProcessing('cast', { name: 'Black Background' }, '4x');
+    assert.ok(castLines.some(line => /not applied on this renderer/.test(line)));
+    assert.ok(!castLines.some(line => /^DSP Black Background$/.test(line)));
+    assert.ok(castLines.some(line => /upsampling not applied/.test(line)));
+    const browserLines = dom.window.describeSignalProcessing('browser', null, 'none');
+    assert.equal(JSON.stringify(browserLines), JSON.stringify(['No PCM upsampling', 'VELVET DSP off (source direct)']));
   } finally {
     dom.window.close();
   }
