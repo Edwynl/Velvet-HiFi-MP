@@ -5583,10 +5583,12 @@ input[type=range]::-webkit-slider-thumb:hover { background: var(--gold); }
       }
     }
 
-/* VU scale labels are aligned to the actual needle pivot at each viewport. */
+/* VU scale labels are aligned to the actual needle pivot at each viewport;
+   !important beats the breakpoint rules above that pin the old flex row. */
 .mobile-vu-overlay .mobile-vu-markings,
 .mobile-vu-overlay.style-2 .mobile-vu-markings {
-  inset: 0; top: 0; left: 0; width: 100%; height: 100%;
+  inset: 0 !important; top: 0 !important; left: 0 !important;
+  width: 100% !important; height: 100% !important;
   display: block; pointer-events: none;
 }
 .mobile-vu-markings span {
@@ -6120,9 +6122,9 @@ input[type=range]::-webkit-slider-thumb:hover { background: var(--gold); }
       <label class="mobile-vu-alignment" for="vu-calibration">0 VU
         <select id="vu-calibration" aria-label="0 VU sine-wave RMS reference level">
           <option value="-20">-20 dBFS</option>
-          <option value="-18" selected>-18 dBFS</option>
+          <option value="-18">-18 dBFS</option>
           <option value="-15">-15 dBFS</option>
-          <option value="-12">-12 dBFS</option>
+          <option value="-12" selected>-12 dBFS</option>
           <option value="-9">-9 dBFS</option>
           <option value="-6">-6 dBFS</option>
         </select>
@@ -7488,9 +7490,11 @@ function initAudioAnalyser() {
     if (audioContext.state === 'suspended') audioContext.resume().catch(() => {});
     audioAnalyserL = audioContext.createAnalyser();
     audioAnalyserR = audioContext.createAnalyser();
-    // ~43ms PCM window at 48kHz; no FFT-domain averaging.
-    audioAnalyserL.fftSize = 2048;
-    audioAnalyserR.fftSize = 2048;
+    // ~43ms PCM window at any context rate (often 96/192kHz on desktop
+    // outputs); no FFT-domain averaging.
+    const vuWindow = window.VelvetVU.analyserFftSize(audioContext.sampleRate);
+    audioAnalyserL.fftSize = vuWindow;
+    audioAnalyserR.fftSize = vuWindow;
     audioDataArrayL = new Float32Array(audioAnalyserL.fftSize);
     audioDataArrayR = new Float32Array(audioAnalyserR.fftSize);
     channelSplitter = audioContext.createChannelSplitter(2);
@@ -8367,15 +8371,18 @@ let vuMeterOpen = false;
 let vuAnimationFrame = null;
 let vuStyle = 1; // Classic gold or McIntosh-inspired blue
 const VU_CONFIG_KEY = 'velvet-vu-v1';
+// -18 dBFS studio line-up pins mastered releases at +3 VU most of the time;
+// -12 dBFS keeps typical mastered music swinging around -3..0 VU.
+const VU_DEFAULT_CALIBRATION = -12;
 function readVUConfig() {
   try {
     const stored = JSON.parse(localStorage.getItem(VU_CONFIG_KEY) || '{}');
     return {
       mode: stored.mode === 'responsive' ? 'responsive' : 'classic',
       calibration: [-20, -18, -15, -12, -9, -6].includes(stored.calibration)
-        ? stored.calibration : -18,
+        ? stored.calibration : VU_DEFAULT_CALIBRATION,
     };
-  } catch { return { mode: 'classic', calibration: -18 }; }
+  } catch { return { mode: 'classic', calibration: VU_DEFAULT_CALIBRATION }; }
 }
 const storedVUConfig = readVUConfig();
 let vuMode = storedVUConfig.mode;
@@ -8530,6 +8537,15 @@ function stopVUAnimation() {
   // audio.play() may go silent after a subsequent lock-screen / visibility-change.
   cleanupSuspendedAudioContextIfNeeded();
 }
+
+// After unlock or a track change outside a gesture, iOS can refuse the mirror
+// play() (30 s back-off). A tap on the meters retries inside a user gesture.
+UI['mobile-vu-meters'].addEventListener('pointerdown', event => {
+  if (!vuMeterOpen || event.target.closest('button, select, input')) return;
+  if (vuAudio && !vuAudio.paused) return;
+  vuLastPlayAttemptAt = 0;
+  syncVUAudioToPlayback();
+});
 
 UI['mobile-btn-vu'].addEventListener('click', () => toggleVUMeters());
 UI['mobile-vu-close'].addEventListener('click', () => toggleVUMeters(false));

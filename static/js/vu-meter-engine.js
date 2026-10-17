@@ -55,6 +55,13 @@
     };
   }
 
+  // Analyser window covering >= ~42 ms (longer than a 30 fps frame) at the
+  // AudioContext's own rate: 2048 at 44.1/48 kHz, 8192 at 192 kHz.
+  function analyserFftSize(sampleRate) {
+    const rate = Number.isFinite(sampleRate) && sampleRate > 0 ? sampleRate : 48000;
+    return clamp(Math.pow(2, Math.ceil(Math.log2(rate * 0.042))), 2048, 32768);
+  }
+
   function vuToPosition(vu) {
     if (!Number.isFinite(vu)) return 0;
     const amplitude = Math.pow(10, clamp(vu, MIN_DB, MAX_DB) / 20);
@@ -88,6 +95,14 @@
       (NATURAL_FREQUENCY * NATURAL_FREQUENCY * error +
        DECAY * motion.velocity) / DAMPED_FREQUENCY * sine);
     return { position, velocity };
+  }
+
+  // Mechanical end stops: the coil cannot wind past the rest or the +3 VU
+  // pin, so an overload releases from the pin instead of from far beyond it.
+  function applyEndStops(motion) {
+    if (motion.position > SCALE_MAX) return { position: SCALE_MAX, velocity: Math.min(0, motion.velocity) };
+    if (motion.position < 0) return { position: 0, velocity: Math.max(0, motion.velocity) };
+    return motion;
   }
 
   class Meter {
@@ -143,7 +158,7 @@
         }
       }
 
-      this.motion = integrateMotion(this.motion, target, seconds);
+      this.motion = applyEndStops(integrateMotion(this.motion, target, seconds));
       const position = amplitudeToPosition(this.motion.position);
       return {
         position,
@@ -155,7 +170,7 @@
   }
 
   root.VelvetVU = Object.freeze({
-    pcmLevel, vuToPosition, vuToAngle, positionToAngle,
+    pcmLevel, analyserFftSize, vuToPosition, vuToAngle, positionToAngle,
     createMeter: options => new Meter(options),
     MIN_ANGLE, MAX_ANGLE,
   });
