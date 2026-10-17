@@ -1,5 +1,6 @@
 import asyncio
 import importlib.util
+import json
 import os
 import sqlite3
 import sys
@@ -770,6 +771,125 @@ class ServerApiTests(unittest.TestCase):
             restored = self.client.post(f"/api/library/trash/{token}/restore")
             self.assertEqual(restored.status_code, 200, restored.text)
             self.assertEqual(album_path.read_bytes(), original)
+            self.assertFalse(restored.json()["track_ids_preserved"])
+            self.assertFalse(restored.json()["index_restored"])
+            with self._connect() as db:
+                self.assertIsNone(db.execute("SELECT id FROM tracks WHERE id=1").fetchone())
+
+    def test_album_removal_refuses_playlist_or_history_links_before_staging(self):
+        audio = self.root / "music" / "one.flac"
+        for association in ("playlist", "history", "both"):
+            with self._connect() as db:
+                db.execute("DELETE FROM playlist_tracks")
+                db.execute("DELETE FROM play_history")
+                db.execute("INSERT OR IGNORE INTO playlists(id, name) VALUES (1, 'Keep')")
+                if association in ("playlist", "both"):
+                    db.execute("INSERT INTO playlist_tracks(id, playlist_id, track_id, position, added_at) "
+                               "VALUES (17, 1, 1, 4, 123)")
+                if association in ("history", "both"):
+                    db.execute("INSERT INTO play_history(id, track_id, played_at, duration_played) "
+                               "VALUES (19, 1, 456, 120)")
+                db.commit()
+                tables = ("albums", "artists", "tracks", "track_artists", "playlists",
+                          "playlist_tracks", "play_history")
+                before = {table: list(map(tuple, db.execute(f"SELECT * FROM {table} ORDER BY rowid")))
+                          for table in tables}
+            for delete_files in ("true", "false"):
+                with self.subTest(association=association, delete_files=delete_files), \
+                     patch.object(server._scan_job, "is_running", return_value=False), \
+                     patch.object(server._duplicate_job, "is_running", return_value=False), \
+                     patch.object(server, "AlbumFileArchive") as staging:
+                    response = self.client.delete(f"/api/albums/1?delete_files={delete_files}")
+                    self.assertEqual(response.status_code, 409, response.text)
+                    self.assertIn("Track IDs and associations are unchanged", response.json()["detail"])
+                    staging.assert_not_called()
+                    self.assertEqual(audio.read_bytes(), b"one")
+                    self.assertFalse(server._album_mutation_active)
+                    with self._connect() as db:
+                        after = {table: list(map(tuple, db.execute(f"SELECT * FROM {table} ORDER BY rowid")))
+                                 for table in tables}
+                        self.assertEqual(after, before)
+                        # The refused request released its writer reservation.
+                        db.execute("BEGIN IMMEDIATE")
+                        db.rollback()
+
+    def test_album_archive_keeps_other_albums_playlist_and_history_links(self):
+        with self._connect() as db:
+            db.execute("INSERT INTO playlists(id, name) VALUES (1, 'Other album')")
+            db.execute("INSERT INTO playlist_tracks(playlist_id, track_id, position) VALUES (1, 2, 1)")
+            db.execute("INSERT INTO play_history(track_id, duration_played) VALUES (2, 99)")
+            db.commit()
+        audio = self.root / "music" / "one.flac"
+        with patch.object(server, "_resolve_library_roots", return_value=[audio.parent]), \
+             patch.object(server._scan_job, "is_running", return_value=False), \
+             patch.object(server._duplicate_job, "is_running", return_value=False):
+            response = self.client.delete("/api/albums/1?delete_files=true")
+            self.assertEqual(response.status_code, 200, response.text)
+            self.assertFalse(response.json()["track_ids_preserved"])
+            token = response.json()["archive_token"]
+            self.assertEqual(self.client.post(f"/api/library/trash/{token}/restore").status_code, 200)
+        with self._connect() as db:
+            self.assertEqual(tuple(db.execute("SELECT track_id, position FROM playlist_tracks").fetchone()), (2, 1))
+            self.assertEqual(tuple(db.execute("SELECT track_id, duration_played FROM play_history").fetchone()), (2, 99))
+            self.assertEqual(db.execute("PRAGMA foreign_key_check").fetchall(), [])
+
+    def test_album_archive_sql_failure_restores_files_and_index(self):
+        with self._connect() as db:
+            db.execute("CREATE TRIGGER fail_album_delete BEFORE DELETE ON albums "
+                       "BEGIN SELECT RAISE(ABORT, 'simulated SQL failure'); END")
+            db.commit()
+        audio = self.root / "music" / "one.flac"
+        with patch.object(server, "_resolve_library_roots", return_value=[audio.parent]), \
+             patch.object(server._scan_job, "is_running", return_value=False), \
+             patch.object(server._duplicate_job, "is_running", return_value=False):
+            with self.assertRaisesRegex(sqlite3.IntegrityError, "simulated SQL failure"):
+                self.client.delete("/api/albums/1?delete_files=true")
+        self.assertEqual(audio.read_bytes(), b"one")
+        with self._connect() as db:
+            self.assertEqual(tuple(db.execute("SELECT id, album_id, artist_id FROM tracks WHERE id=1").fetchone()), (1, 1, 1))
+            self.assertIsNotNone(db.execute("SELECT * FROM track_artists WHERE track_id=1").fetchone())
+            self.assertEqual(db.execute("PRAGMA foreign_key_check").fetchall(), [])
+        manifest = next((server.DATA_DIR / "album-trash").glob("*.json"))
+        self.assertEqual(json.loads(manifest.read_text())["state"], "restored")
+        self.assertFalse(server._album_mutation_active)
+
+    def test_album_archive_reserves_sql_writer_before_staging(self):
+        audio = self.root / "music" / "one.flac"
+        real_stage = server.AlbumFileArchive.stage
+
+        def stage_with_competing_writer(archive):
+            with self._connect() as db:
+                db.execute("PRAGMA busy_timeout=0")
+                with self.assertRaisesRegex(sqlite3.OperationalError, "locked"):
+                    db.execute("INSERT INTO play_history(track_id) VALUES (1)")
+            real_stage(archive)
+
+        with patch.object(server, "_resolve_library_roots", return_value=[audio.parent]), \
+             patch.object(server._scan_job, "is_running", return_value=False), \
+             patch.object(server._duplicate_job, "is_running", return_value=False), \
+             patch.object(server.AlbumFileArchive, "stage", stage_with_competing_writer):
+            response = self.client.delete("/api/albums/1?delete_files=true")
+        self.assertEqual(response.status_code, 200, response.text)
+        with self._connect() as db:
+            self.assertEqual(db.execute("PRAGMA foreign_key_check").fetchall(), [])
+
+    def test_missing_archived_and_original_audio_returns_409_and_remains_in_trash(self):
+        audio = self.root / "music" / "one.flac"
+        with patch.object(server, "_resolve_library_roots", return_value=[audio.parent]), \
+             patch.object(server._scan_job, "is_running", return_value=False), \
+             patch.object(server._duplicate_job, "is_running", return_value=False):
+            deletion = self.client.delete("/api/albums/1?delete_files=true")
+            self.assertEqual(deletion.status_code, 200, deletion.text)
+            token = deletion.json()["archive_token"]
+            manifest = server.DATA_DIR / "album-trash" / f"{token}.json"
+            Path(json.loads(manifest.read_text())["files"][0]["staged"]).unlink()
+            response = self.client.post(f"/api/library/trash/{token}/restore")
+            self.assertEqual(response.status_code, 409, response.text)
+            self.assertIn("missing", response.json()["detail"])
+            self.assertNotIn("restored", response.json())
+            self.assertEqual(self.client.get("/api/library/trash").json()["archives"],
+                             [{"token": token, "state": "recovery_required", "files": 1}])
+        self.assertFalse(server._album_mutation_active)
 
     def test_gzip_reduces_static_payload_only_and_honors_opt_out(self):
         # httpx transparently decodes gzip; the wire header must remain present.

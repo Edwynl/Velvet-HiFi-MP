@@ -2308,20 +2308,20 @@ async function renderAlbum(vc, { id }) {
   UI['del-album-btn'].addEventListener('click', () => {
     showConfirm({
       title: 'Delete Album',
-      body: `Are you sure you want to delete "${album.title}"?<br><br>Choose how to delete:`,
+      body: 'Remove this album from the library?<br><br>Albums referenced by playlists or play history cannot be removed. File restore requires a re-scan and may assign new Track IDs.',
       extra: `
         <label style="display:flex;align-items:center;gap:8px;font-size:13px;cursor:pointer;margin-top:10px">
-          <input type="checkbox" id="delete-files-check"> Also delete files from hard drive
+          <input type="checkbox" id="delete-files-check"> Also archive audio files (recoverable)
         </label>
       `,
       confirmText: 'Delete Now',
       onConfirm: async () => {
         const delFiles = UI['delete-files-check']?.checked;
-        showToast(delFiles ? 'Deleting files and library entry…' : 'Removing from library…');
+        showToast(delFiles ? 'Archiving files and removing library entry…' : 'Removing from library…');
         try {
           const res = await api(`/albums/${album.id}?delete_files=${delFiles}`, { method: 'DELETE' });
           if (res.success) {
-            showToast('Album deleted');
+            showToast(res.message || 'Album removed');
             navigate('albums');
             loadStats(); // Update sidebar counts
           }
