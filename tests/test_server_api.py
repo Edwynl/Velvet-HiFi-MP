@@ -2,6 +2,7 @@ import asyncio
 import importlib.util
 import json
 import os
+import re
 import sqlite3
 import sys
 import tempfile
@@ -466,6 +467,32 @@ class ServerApiTests(unittest.TestCase):
         resp = self.client.get("/api/stream/1", headers={"Range": "bytes=0-3"})
         self.assertEqual(resp.status_code, 403)
 
+    def test_vu_mirror_direct_stream_needs_no_transcode_slot(self):
+        # The VU mirror requests upsample=none without DSP. With every FFmpeg
+        # slot taken (main playback + other clients) it must still be served
+        # and must not hold a slot the main player needs; a duplicate DSP
+        # request in the same state is the 503 the mirror used to risk.
+        self._allow_music_root()
+        with self._connect() as conn:
+            profile_id = conn.execute(
+                "INSERT INTO dsp_profiles (name, preamp_db) VALUES ('Mirror test', -3)").lastrowid
+            conn.commit()
+        leases = [server.TRANSCODE_SLOTS.try_acquire() for _ in range(server.TRANSCODE_SLOTS.limit)]
+        try:
+            self.assertTrue(all(leases))
+            mirror = self.client.get("/api/stream/1?upsample=none", headers={"Range": "bytes=0-3"})
+            self.assertIn(mirror.status_code, {200, 206})
+            self.assertEqual(server.TRANSCODE_SLOTS.active, server.TRANSCODE_SLOTS.limit)
+            with patch.object(server, "TRANSCODE_SLOT_WAIT_SECONDS", 0.05), \
+                 patch.object(server.asyncio, "create_subprocess_exec",
+                              side_effect=AssertionError("no slot, no FFmpeg")):
+                duplicate = self.client.get(f"/api/stream/1?dsp={profile_id}")
+            self.assertEqual(duplicate.status_code, 503)
+        finally:
+            for lease in leases:
+                lease.release()
+        self.assertEqual(server.TRANSCODE_SLOTS.active, 0)
+
     def test_direct_stream_sends_dlna_headers_only_when_requested(self):
         self._allow_music_root()
         ask = {"getcontentFeatures.dlna.org": "1"}
@@ -703,6 +730,16 @@ class ServerApiTests(unittest.TestCase):
                 self.assertIn("javascript", response.headers["content-type"])
             self.assertEqual(self.client.get("/api/stats").status_code, 401)
             self.assertNotEqual(self.client.get("/static/js/server.py").status_code, 200)
+
+    def test_every_shell_and_precached_module_is_served(self):
+        # A module the shell or service worker loads but the server 404s
+        # silently disables that feature (e.g. the VU meter engine).
+        root = Path(server.__file__).parent
+        shell = (root / "static" / "index.html").read_text(encoding="utf-8")
+        worker = (root / "sw.js").read_text(encoding="utf-8")
+        referenced = set(re.findall(r"/static/js/([\w.-]+\.js)", shell + worker))
+        self.assertIn("vu-meter-engine.js", referenced)
+        self.assertEqual(referenced - server.PUBLIC_FRONTEND_JS_MODULES, set())
 
     def test_duplicate_scanner_runs_as_background_read_only_job(self):
         from library_jobs import JobState

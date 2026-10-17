@@ -8,7 +8,7 @@ import { readFileSync } from 'node:fs';
 
 const ALLOWED = new Set([
   'library-views', 'settings-view', 'player-ui',
-  'library-cards', 'dsp-controls', 'remote-settings',
+  'library-cards', 'dsp-controls', 'remote-settings', 'vu-meter-engine',
 ]);
 
 export function inlineFrontendModules(html, { includeLazy = true } = {}) {

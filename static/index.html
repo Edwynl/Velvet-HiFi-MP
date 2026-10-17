@@ -5583,6 +5583,46 @@ input[type=range]::-webkit-slider-thumb:hover { background: var(--gold); }
         padding: 24px;
       }
     }
+
+/* VU scale labels are aligned to the actual needle pivot at each viewport;
+   !important beats the breakpoint rules above that pin the old flex row. */
+.mobile-vu-overlay .mobile-vu-markings,
+.mobile-vu-overlay.style-2 .mobile-vu-markings {
+  inset: 0 !important; top: 0 !important; left: 0 !important;
+  width: 100% !important; height: 100% !important;
+  display: block; pointer-events: none;
+}
+.mobile-vu-markings span {
+  position: absolute; transform: translate(-50%, -50%); white-space: nowrap;
+}
+.mobile-vu-overlay.vu-relative .mobile-vu-markings span { opacity: .3; }
+.mobile-vu-meter-options {
+  display: flex; flex-wrap: wrap; justify-content: center;
+  align-items: center; gap: 10px 18px; position: relative; z-index: 3;
+}
+.mobile-vu-response-toggle { display: flex; gap: 4px; }
+.mobile-vu-mode-btn, .mobile-vu-alignment select {
+  font: 10px 'DM Mono', monospace; color: var(--muted);
+  background: rgba(70, 65, 60, 0.18);
+  border: 1px solid rgba(155, 149, 136, 0.22);
+  border-radius: 6px; padding: 6px 9px;
+}
+.mobile-vu-mode-btn[aria-pressed="true"] {
+  color: var(--gold2); border-color: rgba(230, 195, 100, 0.65);
+}
+.mobile-vu-alignment {
+  display: flex; align-items: center; gap: 8px;
+  font: 10px 'DM Mono', monospace; color: var(--muted);
+}
+.mobile-vu-alignment select { cursor: pointer; }
+.mobile-vu-alignment select:disabled { opacity: .42; cursor: not-allowed; }
+.mobile-vu-overlay.style-2 .mobile-vu-mode-btn[aria-pressed="true"] {
+  color: #00a2ff; border-color: #00a2ff;
+}
+@media (max-width: 400px) {
+  .mobile-vu-meter-options { gap: 7px 9px; }
+  .mobile-vu-mode-btn, .mobile-vu-alignment select { padding: 5px 6px; }
+}
 </style>
 </head>
 <body>
@@ -6004,7 +6044,7 @@ input[type=range]::-webkit-slider-thumb:hover { background: var(--gold); }
         <div class="mobile-vu-scale">
           <div class="mobile-vu-arc"></div>
           <div class="mobile-vu-markings">
-            <span>-20</span><span>-10</span><span>-7</span><span>-5</span><span>-3</span><span class="vu-zero">0</span><span class="vu-plus">+3</span>
+            <span data-vu-db="-20">-20</span><span data-vu-db="-10">-10</span><span data-vu-db="-7">-7</span><span data-vu-db="-5">-5</span><span data-vu-db="-3">-3</span><span class="vu-zero" data-vu-db="0">0</span><span class="vu-plus" data-vu-db="3">+3</span>
           </div>
           <div class="mobile-vu-label">
             <span class="mobile-vu-channel">Left Channel</span>
@@ -6022,7 +6062,7 @@ input[type=range]::-webkit-slider-thumb:hover { background: var(--gold); }
         <div class="mobile-vu-scale">
           <div class="mobile-vu-arc"></div>
           <div class="mobile-vu-markings">
-            <span>-20</span><span>-10</span><span>-7</span><span>-5</span><span>-3</span><span class="vu-zero">0</span><span class="vu-plus">+3</span>
+            <span data-vu-db="-20">-20</span><span data-vu-db="-10">-10</span><span data-vu-db="-7">-7</span><span data-vu-db="-5">-5</span><span data-vu-db="-3">-3</span><span class="vu-zero" data-vu-db="0">0</span><span class="vu-plus" data-vu-db="3">+3</span>
           </div>
           <div class="mobile-vu-label">
             <span class="mobile-vu-channel">Right Channel</span>
@@ -6075,6 +6115,22 @@ input[type=range]::-webkit-slider-thumb:hover { background: var(--gold); }
     <div class="mobile-vu-style-toggle">
       <button class="mobile-vu-style-btn active" id="vu-style-1" data-style="1">Classic</button>
       <button class="mobile-vu-style-btn" id="vu-style-2" data-style="2">Blue</button>
+    </div>
+    <div class="mobile-vu-meter-options">
+      <div class="mobile-vu-response-toggle" role="group" aria-label="Meter response mode">
+        <button type="button" class="mobile-vu-mode-btn" id="vu-mode-classic" aria-pressed="true">Classic VU</button>
+        <button type="button" class="mobile-vu-mode-btn" id="vu-mode-responsive" aria-pressed="false" title="Visual-only dynamic contrast; not a calibrated VU reading">Responsive</button>
+      </div>
+      <label class="mobile-vu-alignment" for="vu-calibration">0 VU
+        <select id="vu-calibration" aria-label="0 VU sine-wave RMS reference level">
+          <option value="-20">-20 dBFS</option>
+          <option value="-18">-18 dBFS</option>
+          <option value="-15">-15 dBFS</option>
+          <option value="-12" selected>-12 dBFS</option>
+          <option value="-9">-9 dBFS</option>
+          <option value="-6">-6 dBFS</option>
+        </select>
+      </label>
     </div>
     <button class="mobile-vu-close" id="mobile-vu-close">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
@@ -6264,6 +6320,7 @@ input[type=range]::-webkit-slider-thumb:hover { background: var(--gold); }
 <script src="/static/js/player-ui.js"></script>
 <script src="/static/js/library-cards.js"></script>
 <script src="/static/js/dsp-controls.js"></script>
+<script src="/static/js/vu-meter-engine.js"></script>
 <script>
 // Load expensive Settings/Remote logic only when the user opens that screen.
 // Keep login/auth and core DSP modules in the initial shell; they are shared.
@@ -7146,6 +7203,7 @@ let audioAnalyserL = null; // Left channel analyser
 let audioAnalyserR = null; // Right channel analyser
 let audioDataArrayL = null;
 let audioDataArrayR = null;
+let vuSilentGain = null; // Pull the analyser graph silently to the destination.
 let channelSplitter = null; // ChannelSplitterNode for L/R separation
 let browserPlaybackToken = 0;
 const browserPlaybackRecoveryConfig = {
@@ -7204,6 +7262,7 @@ function cleanupSuspendedAudioContextIfNeeded() {
     try { audioAnalyser?.disconnect(); } catch {}
     try { audioAnalyserL?.disconnect(); } catch {}
     try { audioAnalyserR?.disconnect(); } catch {}
+    try { vuSilentGain?.disconnect(); } catch {}
     try {
       const closeResult = audioContext.close();
       if (closeResult && typeof closeResult.catch === 'function') {
@@ -7218,8 +7277,13 @@ function cleanupSuspendedAudioContextIfNeeded() {
     audioDataArray = null;
     audioDataArrayL = null;
     audioDataArrayR = null;
+    vuSilentGain = null;
     channelSplitter = null;
   }
+  vuPlayGate?.rearm();
+  vuLastPositionSyncAt = -Infinity;
+  vuResumePending = false;
+  vuLastResumeAt = -Infinity;
   if (vuAudio) {
     try { vuAudio.pause(); } catch {}
     vuAudio.src = '';
@@ -7433,7 +7497,7 @@ function startBrowserPlaybackWatchdog() {
 // HOW IT WORKS:
 //   HTML5 Audio element (this.audio) plays audio independently via the browser's
 //   media pipeline. AudioContext is a SEPARATE API used only for reading audio
-//   data (getByteFrequencyData) to drive the VU meter needle animation.
+//   data (getFloatTimeDomainData) to drive the VU meter needle animation.
 //
 // THE GOLDEN RULE:
 //   DO NOT call initAudioAnalyser() during playback resume, togglePlayAction,
@@ -7451,82 +7515,69 @@ function startBrowserPlaybackWatchdog() {
 // safe call sites (only): startBrowserPlayback (before first play), startVUAnimation
 //
 // ─────────────────────────────────────────────────────────────────────────────
-// Dedicated audio element solely for VU meter analysis — does NOT affect main `audio` playback.
-// Using a separate element avoids hijacking the main audio element's output routing
-// via createMediaElementSource (which breaks audio.play() on Safari/iOS after cleanup).
+// The browser's MAIN audio path must remain independent from Web Audio.
+// Mirror stream is only used while the VU overlay is open; it is never audible.
 let vuAudio = null;
+const vuPlayGate = window.VelvetVU?.createPlayGate() ?? null;
+let vuLastPositionSyncAt = -Infinity;
+let vuResumePending = false;
+let vuLastResumeAt = -Infinity;
+// Mirror is re-seeked when it drifts further than this from the main player.
+const VU_MAX_DRIFT_SECONDS = 0.25;
 
-// initAudioAnalyser — sets up AudioContext + AnalyserNode.
-// createMediaElementSource is NOT called here — it is deferred to
-// syncVUAudioToPlayback which runs when audio is actively playing and
-// AudioContext is guaranteed to be in the "running" state (not suspended).
-// initAudioAnalyser — creates a fresh AudioContext + ChannelSplitter + dual AnalyserNodes
-// (one per channel) + audioDataArrays + vuAudio.
-// This runs when the user opens the VU overlay. If VU is open during a track change,
-// startBrowserPlayback calls initAudioAnalyser again to rebuild the graph with the new track.
+// One resume() in flight at a time: Chrome keeps it pending until a gesture,
+// Safari rejects it, and neither should be re-requested on every frame.
+function resumeVUContext({ force = false } = {}) {
+  if (!audioContext || audioContext.state !== 'suspended') return;
+  const now = performance.now();
+  if (!force && (vuResumePending || now - vuLastResumeAt < 1000)) return;
+  vuResumePending = true;
+  vuLastResumeAt = now;
+  const context = audioContext;
+  Promise.resolve(context.resume()).catch(() => {}).finally(() => {
+    if (context === audioContext) vuResumePending = false;
+  });
+}
+
+function releaseVUMirrorSource() {
+  if (!vuAudio || !vuAudio.getAttribute('src')) return;
+  try { vuAudio.pause(); } catch {}
+  vuAudio.removeAttribute('src');
+  vuAudio.load(); // drops the mirror's HTTP connection while paused
+}
+
 function initAudioAnalyser() {
-  if (audioContext) return;
+  if (audioContext || !vuMeterOpen || document.hidden || !isBrowserZone()) return;
   try {
     audioContext = new (window.AudioContext || window.webkitAudioContext)();
-    if (audioContext.state === 'suspended') {
-      audioContext.resume().catch(() => {});
-    }
-
-    // Dual-channel analysers: ChannelSplitter separates stereo L/R into two mono streams,
-    // each routed through its own AnalyserNode so left = left channel, right = right channel.
-    audioAnalyser = audioContext.createAnalyser();
-    audioAnalyser.fftSize = 256;
-    audioAnalyser.smoothingTimeConstant = 0.2;
-
+    resumeVUContext({ force: true });
     audioAnalyserL = audioContext.createAnalyser();
-    audioAnalyserL.fftSize = 256;
-    audioAnalyserL.smoothingTimeConstant = 0.2;
-
     audioAnalyserR = audioContext.createAnalyser();
-    audioAnalyserR.fftSize = 256;
-    audioAnalyserR.smoothingTimeConstant = 0.2;
-
-    audioDataArray = new Uint8Array(audioAnalyser.frequencyBinCount);
-    audioDataArrayL = new Uint8Array(audioAnalyserL.frequencyBinCount);
-    audioDataArrayR = new Uint8Array(audioAnalyserR.frequencyBinCount);
-
-    // ChannelSplitter: outputs[0] = left channel, outputs[1] = right channel.
+    // ~43ms PCM window at any context rate (often 96/192kHz on desktop
+    // outputs); no FFT-domain averaging.
+    const vuWindow = window.VelvetVU.analyserFftSize(audioContext.sampleRate);
+    audioAnalyserL.fftSize = vuWindow;
+    audioAnalyserR.fftSize = vuWindow;
+    audioDataArrayL = new Float32Array(audioAnalyserL.fftSize);
+    audioDataArrayR = new Float32Array(audioAnalyserR.fftSize);
     channelSplitter = audioContext.createChannelSplitter(2);
-
-    // Create a brand-new audio element each time.
     vuAudio = new Audio();
-    vuAudio.muted = false;
-    vuAudio.volume = 1;
     vuAudio.playsInline = true;
-
-    // createMediaElementSource: captures vuAudio's raw PCM output before volume stage.
+    vuAudio.volume = 1;
     audioSource = audioContext.createMediaElementSource(vuAudio);
-    // Route through ChannelSplitter to separate left/right.
     audioSource.connect(channelSplitter);
-    // Connect each channel to its own analyser (no destination = silent).
-    channelSplitter.connect(audioAnalyserL, 0); // left channel
-    channelSplitter.connect(audioAnalyserR, 1); // right channel
-  } catch (e) {
-    console.warn('[VU] Audio analyser init failed:', e.message);
-    // Disconnect any nodes that were created before the error.
-    // Some may be null (not yet created), but disconnect() on a null ref is a no-op
-    // and disconnecting an already-disconnected node is also safe.
-    try { audioSource?.disconnect(); } catch {}
-    try { channelSplitter?.disconnect(); } catch {}
-    try { audioAnalyser?.disconnect(); } catch {}
-    try { audioAnalyserL?.disconnect(); } catch {}
-    try { audioAnalyserR?.disconnect(); } catch {}
-    try { audioContext?.close(); } catch {}
-    audioContext = null;
-    audioAnalyser = null;
-    audioAnalyserL = null;
-    audioAnalyserR = null;
-    audioSource = null;
-    audioDataArray = null;
-    audioDataArrayL = null;
-    audioDataArrayR = null;
-    channelSplitter = null;
-    vuAudio = null;
+    channelSplitter.connect(audioAnalyserL, 0);
+    channelSplitter.connect(audioAnalyserR, 1);
+    // Browsers may not process a detached analyser node.
+    // Connect through a zero-gain sink: VU audio is never heard.
+    vuSilentGain = audioContext.createGain();
+    vuSilentGain.gain.value = 0;
+    audioAnalyserL.connect(vuSilentGain);
+    audioAnalyserR.connect(vuSilentGain);
+    vuSilentGain.connect(audioContext.destination);
+  } catch (error) {
+    console.warn('[VU] Audio analysis graph unavailable:', error);
+    cleanupSuspendedAudioContextIfNeeded();
   }
 }
 
@@ -7534,71 +7585,69 @@ function initAudioAnalyser() {
 // If AudioContext was destroyed (track change or screen lock) but VU overlay is
 // still open, rebuild the audio graph immediately so the RAF loop doesn't stall.
 function syncVUAudioToPlayback() {
-  // Rebuild audio graph if it was destroyed but VU meter is still open.
-  if (vuMeterOpen && (!vuAudio || !audioContext)) {
-    initAudioAnalyser();
-  }
-  if (!vuAudio || !audioContext) return;
-
-  if (audioContext.state === 'suspended') {
-    audioContext.resume().catch(() => {});
-  }
-
-  const willPlay = !audio.paused && audio.readyState >= 2 && audio.src;
-  if (!willPlay) {
-    if (vuAudio.src) { vuAudio.src = ''; vuAudio.load(); }
+  if (!vuMeterOpen || document.hidden || !vuPlayGate) return;
+  if (!isBrowserZone()) {
+    // Cast/DLNA/native output: the browser stream is not what is heard.
+    if (vuAudio || audioContext) cleanupSuspendedAudioContextIfNeeded();
     return;
   }
+  if (!vuAudio || !audioContext) initAudioAnalyser();
+  if (!vuAudio || !audioContext) return;
+  resumeVUContext();
 
-  // Sync: same src, same currentTime, same playback rate.
-  const needsSrcSync = vuAudio.src !== audio.src;
-  if (needsSrcSync) {
-    vuAudio.src = audio.src;
-    vuAudio.currentTime = audio.currentTime;
+  const shouldPlay = state.playing && !audio.paused && audio.readyState >= 2 && !!audio.src;
+  if (!shouldPlay) {
+    releaseVUMirrorSource();
+    return;
+  }
+  const mirrorUrl = window.VelvetVU.mirrorSourceUrl(audio.src, location.href);
+  const newSource = vuAudio.src !== mirrorUrl;
+  if (newSource) {
+    vuAudio.src = mirrorUrl;
     vuAudio.load();
-  } else if (Math.abs(vuAudio.currentTime - audio.currentTime) > 0.5) {
-    vuAudio.currentTime = audio.currentTime;
+    vuPlayGate.rearm();
+    vuLastPositionSyncAt = -Infinity;
+    vuMeterLeft?.reset();
+    vuMeterRight?.reset();
+  }
+  const now = performance.now();
+  if (now - vuLastPositionSyncAt > 400 && vuAudio.readyState >= 1) {
+    vuLastPositionSyncAt = now;
+    if (Math.abs(vuAudio.currentTime - audio.currentTime) > VU_MAX_DRIFT_SECONDS) {
+      try { vuAudio.currentTime = audio.currentTime; } catch {}
+    }
   }
   if (vuAudio.playbackRate !== audio.playbackRate) {
     vuAudio.playbackRate = audio.playbackRate;
   }
-
-  if (audio.paused) {
-    vuAudio.pause();
-  } else {
-    vuAudio.play().catch(() => {});
+  // The first call runs inside the VU-open gesture; the gate never throttles
+  // it. Retries are throttled so a refused mirror cannot spam play().
+  if (vuAudio.paused && vuPlayGate.canAttempt(now)) {
+    vuPlayGate.begin(now);
+    try {
+      Promise.resolve(vuAudio.play()).then(
+        () => vuPlayGate.settle(null, performance.now()),
+        error => vuPlayGate.settle(error, performance.now()));
+    } catch (error) {
+      vuPlayGate.settle(error, now);
+      console.warn('[VU] Mirror playback failed:', error);
+    }
   }
 }
 
 function getAudioLevel() {
-  // Dual-channel analysers for true left/right stereo.
-  // Uses RMS-style averaging over the full spectrum (not just low bins) for a
-  // more accurate overall loudness reading that is less biased toward bass.
-  if (!audioAnalyserL || !audioAnalyserR || !audioDataArrayL || !audioDataArrayR) {
+  if (!audioContext || audioContext.state !== 'running' ||
+      !vuAudio || vuAudio.paused || !audioAnalyserL || !audioAnalyserR ||
+      !audioDataArrayL || !audioDataArrayR) {
     return { left: 0, right: 0 };
   }
-  audioAnalyserL.getByteFrequencyData(audioDataArrayL);
-  audioAnalyserR.getByteFrequencyData(audioDataArrayR);
-
-  const binsL = audioAnalyserL.frequencyBinCount;
-  const binsR = audioAnalyserR.frequencyBinCount;
-
-  // Full-spectrum RMS: sum all bins, divide by count — reflects total audio energy.
-  let leftSum = 0;
-  let rightSum = 0;
-  for (let i = 0; i < binsL; i++) {
-    leftSum += audioDataArrayL[i];
-    rightSum += audioDataArrayR[i];
-  }
-  const leftLevel = leftSum / binsL / 255;
-  const rightLevel = rightSum / binsR / 255;
-
-  return { left: leftLevel, right: rightLevel };
+  audioAnalyserL.getFloatTimeDomainData(audioDataArrayL);
+  audioAnalyserR.getFloatTimeDomainData(audioDataArrayR);
+  return {
+    left: window.VelvetVU.pcmLevel(audioDataArrayL).sineRms,
+    right: window.VelvetVU.pcmLevel(audioDataArrayR).sineRms,
+  };
 }
-
-// ⚠️  DO NOT DELETE the leftLevel/rightLevel calculation above.
-// This is the VU meter needle driving logic — removing it causes a
-// ReferenceError that silently crashes the animation and freezes the needles.
 
 function streamUrl(trackId, upsample, ticket = '') {
   const u = upsample || state.upsample;
@@ -8384,7 +8433,67 @@ UI['mobile-btn-favorite'].addEventListener('click', toggleCurrentAlbumFavorite);
 // VU Meter toggle
 let vuMeterOpen = false;
 let vuAnimationFrame = null;
-let vuStyle = 1; // 1 = Classic gold, 2 = Mcintosh blue
+let vuStyle = 1; // Classic gold or McIntosh-inspired blue
+const VU_CONFIG_KEY = 'velvet-vu-v1';
+// -18 dBFS studio line-up pins mastered releases at +3 VU most of the time;
+// -12 dBFS keeps typical mastered music swinging around -3..0 VU.
+const VU_DEFAULT_CALIBRATION = -12;
+function readVUConfig() {
+  try {
+    const stored = JSON.parse(localStorage.getItem(VU_CONFIG_KEY) || '{}');
+    return {
+      mode: stored.mode === 'responsive' ? 'responsive' : 'classic',
+      calibration: [-20, -18, -15, -12, -9, -6].includes(stored.calibration)
+        ? stored.calibration : VU_DEFAULT_CALIBRATION,
+    };
+  } catch { return { mode: 'classic', calibration: VU_DEFAULT_CALIBRATION }; }
+}
+const storedVUConfig = readVUConfig();
+let vuMode = storedVUConfig.mode;
+let vuCalibration = storedVUConfig.calibration;
+let vuMeterLeft = null;
+let vuMeterRight = null;
+
+function writeVUConfig() {
+  try {
+    localStorage.setItem(VU_CONFIG_KEY, JSON.stringify({
+      mode: vuMode, calibration: vuCalibration,
+    }));
+  } catch {}
+}
+
+function layoutVUScale() {
+  const overlay = UI['mobile-vu-meters'];
+  if (!overlay?.classList.contains('open') || !window.VelvetVU) return;
+  for (const meter of overlay.querySelectorAll('.mobile-vu-meter')) {
+    const width = meter.clientWidth;
+    const height = meter.clientHeight;
+    if (!width || !height) continue;
+    const radius = Math.min(height * 0.86, width * 0.49);
+    for (const mark of meter.querySelectorAll('[data-vu-db]')) {
+      const angle = window.VelvetVU.vuToAngle(Number(mark.dataset.vuDb));
+      const radians = angle * Math.PI / 180;
+      mark.style.left = (width / 2 + radius * Math.sin(radians)) + 'px';
+      mark.style.top = (height - radius * Math.cos(radians)) + 'px';
+    }
+  }
+}
+window.addEventListener('resize', layoutVUScale);
+
+function syncVUControls() {
+  UI['vu-mode-classic']?.setAttribute('aria-pressed', String(vuMode === 'classic'));
+  UI['vu-mode-responsive']?.setAttribute('aria-pressed', String(vuMode === 'responsive'));
+  // Responsive is a relative visual scale: the printed VU numerals do not apply.
+  UI['mobile-vu-meters']?.classList.toggle('vu-relative', vuMode !== 'classic');
+  const calibration = UI['vu-calibration'];
+  if (calibration) {
+    calibration.value = String(vuCalibration);
+    calibration.disabled = vuMode !== 'classic';
+    calibration.title = vuMode === 'classic'
+      ? '0 VU reference for a sine test tone (RMS dBFS)'
+      : 'Responsive mode uses its own relative visual scale';
+  }
+}
 
 function toggleVUMeters(show) {
   const overlay = UI['mobile-vu-meters'];
@@ -8399,6 +8508,8 @@ function toggleVUMeters(show) {
     if (topBtn) topBtn.classList.add('active');
     if (deskBtn) deskBtn.classList.add('active');
     vuMeterOpen = true;
+    syncVUControls();
+    layoutVUScale();
     updateVUMetersInfo();
     startVUAnimation();
   } else {
@@ -8433,105 +8544,77 @@ function updateVUMetersInfo() {
   if (vuFormat) vuFormat.textContent = track.bit_depth ? `${track.bit_depth}-BIT` : (track.format || '—');
   if (vuSr) vuSr.textContent = track.sample_rate ? fmtCompactSR(track.sample_rate) : '—';
   if (vuCodec) vuCodec.textContent = track.format || '—';
-  if (UI['mobile-vu-status']) UI['mobile-vu-status'].textContent = state.playing ? 'Signal active' : 'No signal';
+  if (UI['mobile-vu-status']) UI['mobile-vu-status'].textContent = !isBrowserZone() ? 'Browser output only' : state.playing ? 'Waiting for meter audio' : 'No signal';
+}
+
+function vuStatusText(active, levels) {
+  if (!isBrowserZone()) return 'VU available on browser output';
+  if (!active) return 'No signal';
+  if (vuPlayGate?.needsGesture || audioContext?.state === 'suspended') return 'Tap the meters to enable';
+  if (levels.left <= 0.0002 && levels.right <= 0.0002) return 'Waiting for meter audio';
+  if (vuMode !== 'classic') return 'Responsive · relative scale, not VU';
+  return state.dspProfile ? 'VU signal active · source, pre-DSP' : 'VU signal active';
 }
 
 function startVUAnimation() {
   if (vuAnimationFrame) return;
-
   const leftNeedle = UI['vu-needle-left'];
   const rightNeedle = UI['vu-needle-right'];
-  if (!leftNeedle || !rightNeedle) return;
-
-  // Initialize audio analyser on first user interaction
-  initAudioAnalyser();
-
-  let leftAngle = -48;
-  let rightAngle = -48;
-  let peakLeftAngle = -48;  // Peak needle — moves fast up, decays slowly
-  let peakRightAngle = -48;
-  const VU_RANGE_DEGREES = 60;   // -48deg to +12deg
-  const VU_NOISE_FLOOR = 0.003;  // Ignore tiny background noise
-  const VU_SENSITIVITY = 2.45;   // Higher = more meter movement at low-mid levels
-  const VU_CURVE_EXP = 0.72;     // <1 boosts quiet passages; >1 tames them
-
-  function mapLevelToNeedle(level) {
-    const cleaned = Math.max(0, (Number(level) || 0) - VU_NOISE_FLOOR);
-    const curved = Math.pow(cleaned, VU_CURVE_EXP) * VU_SENSITIVITY;
-    const normalized = Math.max(0, Math.min(1, curved));
-    return -48 + normalized * VU_RANGE_DEGREES;
+  const engine = window.VelvetVU;
+  if (!leftNeedle || !rightNeedle || !engine) {
+    if (UI['mobile-vu-status']) UI['mobile-vu-status'].textContent = 'Meter engine unavailable';
+    return;
   }
+  vuMeterLeft = engine.createMeter({ calibrationDbfs: vuCalibration, mode: vuMode });
+  vuMeterRight = engine.createMeter({ calibrationDbfs: vuCalibration, mode: vuMode });
+  leftNeedle.style.transform = 'rotate(' + engine.MIN_ANGLE + 'deg)';
+  rightNeedle.style.transform = 'rotate(' + engine.MIN_ANGLE + 'deg)';
+  layoutVUScale();
+  initAudioAnalyser();
+  syncVUAudioToPlayback();
 
   function animate(time) {
     if (!vuMeterOpen) {
       vuAnimationFrame = null;
       return;
     }
-
-    // Keep the dedicated vuAudio in sync with main audio playback
     syncVUAudioToPlayback();
-
-    // Only animate when music is playing, otherwise return to rest position
-    if (state.playing) {
-      const levels = getAudioLevel();
-      const hasSignal = levels.left > 0.005 || levels.right > 0.005;
-      if (UI['mobile-vu-status']) UI['mobile-vu-status'].textContent = hasSignal ? 'Signal active' : 'Waiting for audio';
-
-      // Map level to needle with boosted low-level sensitivity.
-      const leftTarget = mapLevelToNeedle(levels.left);
-      const rightTarget = mapLevelToNeedle(levels.right);
-
-      // Peak hold: needle can rise instantly with audio but decays slowly
-      // when the signal drops — mimics real analog VU meter behavior.
-      if (leftTarget > peakLeftAngle) {
-        peakLeftAngle = leftTarget; // Peak rises instantly to new level
-      } else {
-        peakLeftAngle += (leftTarget - peakLeftAngle) * 0.07; // Slightly faster decay for livelier movement
-      }
-      if (rightTarget > peakRightAngle) {
-        peakRightAngle = rightTarget;
-      } else {
-        peakRightAngle += (rightTarget - peakRightAngle) * 0.07;
-      }
-
-      // Visible needle: fixed lerp coefficient (frame-rate independent).
-      // 0.15 means ~15% of the gap is closed each frame at 60fps.
-      leftAngle += (peakLeftAngle - leftAngle) * 0.22;
-      rightAngle += (peakRightAngle - rightAngle) * 0.22;
-    } else {
-      if (UI['mobile-vu-status']) UI['mobile-vu-status'].textContent = 'No signal';
-      // Return to rest position when not playing
-      leftAngle += (-48 - leftAngle) * 0.1;
-      rightAngle += (-48 - rightAngle) * 0.1;
-      peakLeftAngle += (-48 - peakLeftAngle) * 0.06;
-      peakRightAngle += (-48 - peakRightAngle) * 0.06;
-    }
-
-    // Clamp angles (peak and needle)
-    peakLeftAngle = Math.max(-48, Math.min(12, peakLeftAngle));
-    peakRightAngle = Math.max(-48, Math.min(12, peakRightAngle));
-    leftAngle = Math.max(-48, Math.min(12, leftAngle));
-    rightAngle = Math.max(-48, Math.min(12, rightAngle));
-
-    leftNeedle.style.transform = `rotate(${leftAngle}deg)`;
-    rightNeedle.style.transform = `rotate(${rightAngle}deg)`;
-
+    const active = isBrowserZone() && state.playing && !audio.paused;
+    const levels = active ? getAudioLevel() : { left: 0, right: 0 };
+    const left = vuMeterLeft.tick(levels.left, time);
+    const right = vuMeterRight.tick(levels.right, time);
+    leftNeedle.style.transform = 'rotate(' + left.angle.toFixed(2) + 'deg)';
+    rightNeedle.style.transform = 'rotate(' + right.angle.toFixed(2) + 'deg)';
+    if (UI['mobile-vu-status']) UI['mobile-vu-status'].textContent = vuStatusText(active, levels);
     vuAnimationFrame = requestAnimationFrame(animate);
   }
-
   vuAnimationFrame = requestAnimationFrame(animate);
 }
+
+
 
 function stopVUAnimation() {
   if (vuAnimationFrame) {
     cancelAnimationFrame(vuAnimationFrame);
     vuAnimationFrame = null;
   }
+  vuMeterLeft = null;
+  vuMeterRight = null;
   // Immediately release AudioContext and disconnect MediaElementSource.
   // Without this, the audio element stays "captured" in Safari/iOS and
   // audio.play() may go silent after a subsequent lock-screen / visibility-change.
   cleanupSuspendedAudioContextIfNeeded();
 }
+
+// After unlock or a track change outside a gesture, iOS can refuse the mirror
+// play() (30 s back-off). A tap on the meters retries inside a user gesture.
+UI['mobile-vu-meters'].addEventListener('pointerdown', event => {
+  if (!vuMeterOpen || event.target.closest('button, select, input')) return;
+  resumeVUContext({ force: true });
+  if (vuAudio && !vuAudio.paused) return;
+  vuPlayGate?.rearm();
+  syncVUAudioToPlayback();
+});
 
 UI['mobile-btn-vu'].addEventListener('click', () => toggleVUMeters());
 UI['mobile-vu-close'].addEventListener('click', () => toggleVUMeters(false));
@@ -8557,6 +8640,30 @@ function setVUStyle(style) {
 
 UI['vu-style-1'].addEventListener('click', () => setVUStyle(1));
 UI['vu-style-2'].addEventListener('click', () => setVUStyle(2));
+UI['vu-mode-classic'].addEventListener('click', () => {
+  vuMode = 'classic';
+  vuMeterLeft?.setMode(vuMode);
+  vuMeterRight?.setMode(vuMode);
+  syncVUControls();
+  writeVUConfig();
+});
+UI['vu-mode-responsive'].addEventListener('click', () => {
+  vuMode = 'responsive';
+  vuMeterLeft?.setMode(vuMode);
+  vuMeterRight?.setMode(vuMode);
+  syncVUControls();
+  writeVUConfig();
+});
+UI['vu-calibration'].addEventListener('change', event => {
+  const next = Number(event.target.value);
+  if (![-20, -18, -15, -12, -9, -6].includes(next)) return;
+  vuCalibration = next;
+  vuMeterLeft?.setCalibration(next);
+  vuMeterRight?.setCalibration(next);
+  syncVUControls();
+  writeVUConfig();
+});
+syncVUControls();
 
 // Handle progress scrub on both desktop and mobile bars
 function seekFromClientX(clientX, trackEl) {
