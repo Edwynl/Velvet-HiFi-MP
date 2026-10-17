@@ -13,7 +13,7 @@ const ALLOWED = new Set([
 
 export function inlineFrontendModules(html, { includeLazy = true } = {}) {
   const expanded = html.replace(
-    /<script src="\/static\/js\/([a-z0-9-]+)\.js"><\/script>/g,
+    /<script src="\/static\/js\/([a-z0-9-]+)\.js(?:\?v=[a-z0-9-]+)?"><\/script>/g,
     (original, name) => {
       if (!ALLOWED.has(name)) throw new Error(`Unexpected frontend module: ${name}`);
       const source = readFileSync(`static/js/${name}.js`, 'utf8');

@@ -53,7 +53,7 @@ function request(path, method = 'GET') { return { url: key(path), method }; }
 
 await dispatch('install');
 assert.ok(await caches.match('/static/index.html'));
-assert.equal(networkCalls, 9, 'Install fetches only existing cacheable public assets');
+assert.equal(networkCalls, 10, 'Install fetches only existing cacheable public assets');
 cacheControl = 'private, NO-STORE';
 await dispatch('fetch', request('/'));
 assert.equal(await caches.match('/'), undefined, 'Root no-store must be respected');
@@ -141,7 +141,7 @@ assert.equal(coverCaches().length, 2, 'SW tests above populated both cover cache
 await vm.runInContext('generateNewApiKey()', settingsContext);
 await settle();
 assert.deepEqual(coverCaches(), [], 'API-key rotation purges thumbnail and cover caches');
-assert.ok(stores.has('velvet-v7'), 'The app shell cache is not purged');
+assert.ok(stores.has('velvet-v8'), 'The app shell cache is not purged');
 assert.equal(stored.get('velvet_api_key'), 'rotated-key');
 assert.deepEqual(order, [['ticket', 'rotated-key']], 'The stream ticket is adopted for the new key');
 

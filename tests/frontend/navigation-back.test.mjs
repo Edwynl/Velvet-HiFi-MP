@@ -273,12 +273,11 @@ function createHarness({ initialHash = '#home' } = {}) {
   };
 }
 
-async function testAlbumBackFallsBackWhenHistoryBackDoesNothing() {
-  const harness = createHarness();
+async function testDeepLinkedAlbumBackReplacesEntryWithoutNativeTraversal() {
+  const harness = createHarness({ initialHash: '#album/11' });
   const dom = await harness.createDom();
 
   try {
-    await dom.window.navigate('album', { id: 11 });
     await waitFor(() => dom.window.document.querySelector('.back-btn'));
 
     let backCalls = 0;
@@ -289,8 +288,9 @@ async function testAlbumBackFallsBackWhenHistoryBackDoesNothing() {
     dom.window.document.querySelector('.back-btn').click();
 
     await waitFor(() => dom.window.location.hash === '#albums', { timeoutMs: 2000 });
+    await waitFor(() => dom.window.document.querySelector('#albums-grid'));
 
-    assert.equal(backCalls, 1);
+    assert.equal(backCalls, 0, 'a direct link has no known app predecessor');
     assert.equal(dom.window.eval('state.view'), 'albums');
     assert.equal(dom.window.document.querySelector('#albums-grid') !== null, true);
   } finally {
@@ -557,7 +557,7 @@ async function testAlbumRemovalExplainsFileRecoveryAndAssociationGuard() {
 }
 
 async function main() {
-  await testAlbumBackFallsBackWhenHistoryBackDoesNothing();
+  await testDeepLinkedAlbumBackReplacesEntryWithoutNativeTraversal();
   await testBackToAlbumsRestoresKeptViewWithoutRefetch();
   await testMenuNavigationAndMutationsRenderAlbumsFresh();
   await testAlbumsReRenderDoesNotStackScrollListeners();
@@ -568,6 +568,67 @@ async function main() {
   await testSearchTrackOpensAlbumAndPlaysMatchedTrack();
   testLandscapeAlbumLayoutCssGuards();
   await testAlbumRemovalExplainsFileRecoveryAndAssociationGuard();
+  await testDelayedHistoryBackDoesNotRaceAFallback();
+  await testAlbumsStateSurvivesSuccessfulCatalogInvalidation();
+  await testStaleAlbumPageCannotReplaceHome();
+  await testSettingsHandlersAreReboundOnReentry();
+}
+
+async function testDelayedHistoryBackDoesNotRaceAFallback() {
+  const harness = createHarness(); const dom = await harness.createDom();
+  try {
+    await openAlbumFromAlbums(dom, harness, 640);
+    let calls = 0;
+    const nativeBack = dom.window.history.back.bind(dom.window.history);
+    dom.window.history.back = () => { calls++; dom.window.setTimeout(nativeBack, 600); };
+    dom.window.document.querySelector('.back-btn').click();
+    dom.window.document.querySelector('.back-btn').click();
+    await waitFor(() => dom.window.document.querySelector('#albums-grid'));
+    assert.equal(dom.window.document.querySelector('#main').scrollTop, 640);
+    assert.equal(calls, 1, 'a delayed popstate must not cause a fallback or duplicate traversal');
+  } finally { dom.window.close(); }
+}
+
+async function testAlbumsStateSurvivesSuccessfulCatalogInvalidation() {
+  const harness = createHarness(); const dom = await harness.createDom();
+  try {
+    await openAlbumFromAlbums(dom, harness, 500);
+    const fetches = albumListFetches(harness);
+    await dom.window.api('/albums/11/favorite', { method: 'POST' });
+    dom.window.document.querySelector('.back-btn').click();
+    await waitFor(() => albumListFetches(harness) === fetches + 1 && dom.window.document.querySelector('#albums-grid'));
+    assert.equal(dom.window.document.querySelector('#main').scrollTop, 500);
+    assert.equal(dom.window.history.state.listState.page, 1);
+  } finally { dom.window.close(); }
+}
+
+async function testStaleAlbumPageCannotReplaceHome() {
+  const harness = createHarness(); const dom = await harness.createDom();
+  try {
+    await dom.window.navigate('home');
+    const fetch = dom.window.fetch; let release;
+    const held = new Promise(r => { release = r; });
+    dom.window.fetch = async (url, options) => {
+      if (new URL(url, 'http://localhost').pathname === '/api/albums/page') await held;
+      return fetch(url, options);
+    };
+    const obsolete = dom.window.navigate('albums');
+    await dom.window.navigate('home'); release(); await obsolete;
+    assert.equal(dom.window.document.querySelector('#view-container').className, 'view-home');
+    assert.ok(dom.window.document.querySelector('.home-hero'));
+  } finally { dom.window.close(); }
+}
+
+async function testSettingsHandlersAreReboundOnReentry() {
+  const harness = createHarness(); const dom = await harness.createDom();
+  try {
+    await dom.window.navigate('settings'); await dom.window.navigate('albums');
+    await dom.window.navigate('settings');
+    dom.window.document.querySelector('#dsp-editor-name').value = 'unsaved';
+    dom.window.document.querySelector('#dsp-new-custom-btn').click();
+    assert.equal(dom.window.document.querySelector('#dsp-editor-name').value, '');
+    assert.equal(dom.window.document.querySelector('#dsp-editor-badge').textContent, 'Blank');
+  } finally { dom.window.close(); }
 }
 
 try {

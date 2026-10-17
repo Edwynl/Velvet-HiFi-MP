@@ -944,5 +944,46 @@ class ServerApiTests(unittest.TestCase):
             self.assertIsNotNone(db.execute("SELECT id FROM albums WHERE id=1").fetchone())
 
 
+    def test_mobile_layout_is_public_cacheable_css_even_when_auth_is_enabled(self):
+        with patch.object(server.security, "is_auth_enabled", return_value=True):
+            response = self.client.get("/static/mobile-layout.css?v=mobile-20261017-1")
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("text/css", response.headers["content-type"])
+        self.assertIn("--safe-left", response.text)
+        self.assertEqual(self.client.get("/static/private.css").status_code, 404)
+
+    def test_xlarge_cover_derivative_keeps_the_original_unchanged(self):
+        from PIL import Image
+        original = self.root / "original.png"
+        thumbnail = self.root / "800.jpg"
+        Image.new("RGB", (1600, 1600), "navy").save(original)
+        original_bytes = original.read_bytes()
+        self.assertEqual(server.THUMB_SIZES["xlarge"], (800, 800))
+        self.assertTrue(server._generate_thumbnail(original, thumbnail, server.THUMB_SIZES["xlarge"]))
+        with Image.open(thumbnail) as image:
+            self.assertEqual(image.size, (800, 800))
+        self.assertEqual(original.read_bytes(), original_bytes)
+        with patch.object(server, "_get_or_create_thumbnail", return_value=thumbnail) as generate:
+            response = self.client.get("/api/covers/1/thumb?size=xlarge")
+            self.assertEqual(response.status_code, 200)
+            generate.assert_called_once_with(1, "xlarge")
+        self.assertEqual(self.client.get("/api/covers/1/thumb?size=invalid").status_code, 422)
+
+    def test_cover_revision_persists_and_invalidates_all_thumbnail_sizes(self):
+        thumbs = self.root / "thumbs"
+        thumbs.mkdir()
+        for size in server.THUMB_SIZES:
+            (thumbs / f"1_{size}.jpg").write_bytes(b"old derivative")
+        with patch.object(server, "THUMBS_DIR", thumbs):
+            server.invalidate_cover_cache(1)
+            revision = (thumbs / "1.revision").read_text(encoding="ascii")
+            self.assertEqual(len(revision), 32)
+            self.assertEqual(list(thumbs.glob("*.jpg")), [])
+            server._cover_revision.cache_clear()  # model a new server process
+            response = self.client.get("/api/albums/page?limit=60&offset=0")
+        row = next(album for album in response.json()["albums"] if album["id"] == 1)
+        self.assertEqual(row["cover_version"], revision)
+
+
 if __name__ == "__main__":
     unittest.main()

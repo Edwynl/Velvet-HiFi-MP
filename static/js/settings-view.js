@@ -109,6 +109,7 @@ function setScanControlsRunning(running) {
 }
 
 async function renderSettings(vc) {
+  const api = scopedViewApi(vc);
   const [config, scanStatus, dspProfiles] = await Promise.all([
     api('/config'), api('/scan/status'), api('/dsp/profiles')
   ]);
@@ -168,6 +169,7 @@ async function renderSettings(vc) {
     })
     .join('');
 
+  if (!isCurrentView(vc)) return;
   vc.innerHTML = `
     <div class="topbar">
       ${getTopNavHtml('settings')}
@@ -777,6 +779,7 @@ function applyDspProfile(profileId) {
         showToast('Error: ' + res.message);
       }
     } catch (e) {
+        if (e.name === 'AbortError') return;
       showToast('Reset failed: ' + (e.message || 'Unknown error'));
     }
   });

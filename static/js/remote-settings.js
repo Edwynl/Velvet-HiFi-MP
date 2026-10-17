@@ -3,6 +3,7 @@
  * Keep the module classic (not type=module) until the application state is migrated.
  */
 async function renderRemote(vc) {
+  const api = scopedViewApi(vc);
   // Get Tailscale status and security status
   const [status, security] = await Promise.all([
     api('/remote/status'),
@@ -29,6 +30,7 @@ async function renderRemote(vc) {
     statusClass = 'connected';
   }
 
+  if (!isCurrentView(vc)) return;
   vc.innerHTML = `
     <div class="topbar"></div>
     <div class="section-header">
@@ -292,6 +294,7 @@ async function setDlnaBrowseAccess(enable) {
       : { method: 'DELETE' });
     renderDlnaBrowseStatus(result);
   } catch (e) {
+      if (e.name === 'AbortError') return;
     alert('Failed to update DLNA browsing: ' + e.message);
   }
 }
@@ -362,6 +365,7 @@ async function savePassword() {
       alert(result.message);
     }
   } catch (e) {
+      if (e.name === 'AbortError') return;
     alert('Failed to save password: ' + e.message);
   }
 }
@@ -379,6 +383,7 @@ async function generateNewApiKey() {
       if (input) input.value = '••••••••••••••••';
     }
   } catch (e) {
+      if (e.name === 'AbortError') return;
     alert('Failed to generate API key: ' + e.message);
   }
 }
@@ -389,7 +394,8 @@ setInterval(async () => {
     try {
       const status = await api('/remote/status');
       updateRemoteStatusDot(status.status === 'connected');
-    } catch (e) {}
+    } catch (e) {
+        if (e.name === 'AbortError') return;}
   }
 }, 10000);
 

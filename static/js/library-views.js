@@ -3,6 +3,7 @@
  * Keep the module classic (not type=module) until the application state is migrated.
  */
 async function renderHome(vc) {
+  const api = scopedViewApi(vc);
   log('[VELVET] renderHome started');
   
   // Load stats first
@@ -12,6 +13,7 @@ async function renderHome(vc) {
     if (rawStats) stats = { ...stats, ...rawStats };
     log('[VELVET] Stats loaded:', stats);
   } catch (e) {
+      if (e.name === 'AbortError') return;
     console.warn('[VELVET] Failed to load stats for home:', e);
   }
 
@@ -35,6 +37,7 @@ async function renderHome(vc) {
   }
 
   log('[VELVET] Setting home innerHTML');
+  if (!isCurrentView(vc)) return;
   vc.innerHTML = `
     <div class="topbar">
       ${getTopNavHtml('home')}
@@ -82,6 +85,7 @@ async function renderHome(vc) {
     grid.appendChild(fragment);
     log('[VELVET] Recent albums rendered:', recent.length);
   } catch (e) {
+      if (e.name === 'AbortError') return;
     console.warn('[VELVET] Failed to load recent albums:', e);
     const grid = UI['recent-grid'];
     if (grid) grid.innerHTML = '<div style="color:var(--muted)">Failed to load recent music</div>';
@@ -89,9 +93,11 @@ async function renderHome(vc) {
 }
 
 async function renderDiscover(vc) {
+  const api = scopedViewApi(vc);
   const discover = await api('/discover?limit=12');
   const sections = discover || {};
 
+  if (!isCurrentView(vc)) return;
   vc.innerHTML = `
     <div class="topbar">
       ${getTopNavHtml('discover')}
@@ -223,26 +229,39 @@ function setViewScrollHandler(view, mainEl, handler) {
 }
 
 async function renderAlbums(vc) {
+  const api = scopedViewApi(vc);
   const isMobile = isCompactLayout();
   // Server filters and returns only one page; the device never receives 15k albums.
-  const firstPage = await api('/albums/page?limit=' + ALBUMS_PER_PAGE + '&offset=0');
+  const saved = vc._entry?.listState || {};
+  let currentPage = Math.max(1, Number(saved.page) || 1);
+  let showFavoritesOnly = !!saved.favorites;
+  let currentSort = saved.sort || 'title';
+  let searchQuery = saved.search || '';
+  let currentGenre = saved.genre || '';
+  let currentDecade = saved.decade || '';
+  const pageParams = () => new URLSearchParams({ limit: String(ALBUMS_PER_PAGE),
+    offset: String((currentPage - 1) * ALBUMS_PER_PAGE), sort: currentSort,
+    genre: currentGenre, decade: currentDecade, favorites_only: String(showFavoritesOnly) });
+  let firstPage = await api('/albums/page?' + pageParams());
+  const lastPage = Math.max(1, Math.ceil(Number(firstPage.total || 0) / ALBUMS_PER_PAGE));
+  if (currentPage > lastPage) {
+    currentPage = lastPage;
+    firstPage = await api('/albums/page?' + pageParams());
+  }
+  vc._captureState = () => ({ page: currentPage, sort: currentSort, search: searchQuery,
+    genre: currentGenre, decade: currentDecade, favorites: showFavoritesOnly });
   let allAlbums = firstPage?.albums || [];
   let totalAlbums = Number(firstPage?.total || 0);
   const genres = firstPage?.genres || [];
   const decades = firstPage?.decades || [];
   let pageRequestSerial = 0;
-  let renderedPage = 1;
-  let showFavoritesOnly = false;
-  let currentSort = 'title';
-  let currentPage = 1;
-  let searchQuery = '';
-  let currentGenre = '';
-  let currentDecade = '';
+  let renderedPage = currentPage;
   let searchMode = false;  // Track search mode
   let searchResults = [];   // Matching tracks
   let searchAlbums = [];    // Matching albums
   let allTracks = [];
 
+  if (!isCurrentView(vc)) return;
   vc.innerHTML = `
     <div class="topbar">
       ${getTopNavHtml('albums')}
@@ -252,7 +271,7 @@ async function renderAlbums(vc) {
         </svg>
         <input id="search-input" type="text" placeholder="Search albums or tracks…" value="${escHtml(searchQuery)}">
       </div>
-      <button class="btn btn-ghost" id="favorites-filter-btn" style="padding:6px 10px;color:var(--muted);font-size:12px">♡ Favorites</button>
+      <button class="btn btn-ghost" id="favorites-filter-btn" style="padding:6px 10px;color:var(--muted);font-size:12px">${showFavoritesOnly ? '♥ Favorites' : '♡ Favorites'}</button>
       <div class="v-select" id="album-sort-select">
         <div class="v-select-trigger" style="min-width:80px">
           <span class="v-select-label">${{title:'A–Z',year:'Year',artist:'Artist',added:'Added'}[currentSort] || 'A–Z'}</span>
@@ -353,10 +372,15 @@ async function renderAlbums(vc) {
       ? `${totalAlbums} favorite albums · ${totalPages} pages`
       : `${totalAlbums} albums · ${totalPages} pages`;
     clearFocusBtn.style.opacity = (currentGenre || currentDecade) ? '1' : '0.6';
+    sortSelect.querySelector('.v-select-label').textContent = { title: 'A–Z', year: 'Year', artist: 'Artist', added: 'Added' }[currentSort];
+    genreSelect.querySelector('.v-select-label').textContent = currentGenre || 'All genres';
+    decadeSelect.querySelector('.v-select-label').textContent = currentDecade || 'All decades';
+    saveRoute();
   }
 
   async function loadPage({ reset = false } = {}) {
     if (reset) currentPage = 1;
+    saveRoute();
     const serial = ++pageRequestSerial;
     const params = new URLSearchParams({
       limit: String(ALBUMS_PER_PAGE),
@@ -372,11 +396,14 @@ async function renderAlbums(vc) {
       const page = await api('/albums/page?' + params.toString());
       if (serial !== pageRequestSerial || state.view !== 'albums' || searchMode) return;
       totalAlbums = Number(page.total || 0);
+      const lastPage = Math.max(1, Math.ceil(totalAlbums / ALBUMS_PER_PAGE));
+      if (currentPage > lastPage) { currentPage = lastPage; await loadPage(); return; }
       allAlbums = page.albums || [];
       renderedPage = currentPage;
       renderGrid();
     } catch (err) {
-      if (serial === pageRequestSerial) {
+        if (err.name === 'AbortError') return;
+      if (serial === pageRequestSerial && isCurrentView(vc)) {
         currentPage = renderedPage;
         renderGrid();
         showToast('Unable to load albums. Try again.');
@@ -485,7 +512,7 @@ async function renderAlbums(vc) {
   // Search the actual query server-side; never fetch an empty search as a library dump.
   let searchTimer;
   let searchSerial = 0;
-  async function performSearch(q) {
+  async function performSearch(q, restoring = false) {
     const serial = ++searchSerial;
     q = q.trim();
     if (!q) {
@@ -494,7 +521,7 @@ async function renderAlbums(vc) {
       searchAlbums = [];
       sectionTitle.textContent = 'Albums';
       pagination.style.display = 'flex';
-      await loadPage({ reset: true });
+      await loadPage();
       return;
     }
     try {
@@ -509,10 +536,12 @@ async function renderAlbums(vc) {
       sectionTitle.textContent = searchAlbums.length ? 'Albums' : 'Tracks';
       countEl.textContent = `${albumsResponse?.total || 0} albums, ${searchResults.length} tracks found`;
       pagination.style.display = 'none';
-      scrollToTop();
+      if (!restoring) scrollToTop();
       renderGrid();
+      saveRoute();
     } catch (err) {
-      if (serial === searchSerial) showToast('Search unavailable. Try again.');
+        if (err.name === 'AbortError') return;
+      if (serial === searchSerial && isCurrentView(vc)) showToast('Search unavailable. Try again.');
     }
   }
 
@@ -527,6 +556,7 @@ async function renderAlbums(vc) {
   input.addEventListener('input', () => {
     if (isComposing) return;
     searchQuery = input.value;
+    saveRoute();
     clearTimeout(searchTimer);
     searchTimer = setTimeout(() => performSearch(searchQuery), 300);
   });
@@ -630,19 +660,25 @@ async function renderAlbums(vc) {
     decadeSelect.querySelectorAll('.v-option').forEach(o => o.classList.remove('active'));
     loadPage({ reset: true });
   });
+  if (searchQuery.trim()) await performSearch(searchQuery, true);
+
 }
 
 // ── Artists ───────────────────────────────────────────────────────────────────
 
 async function renderArtists(vc) {
-  const first = await api('/artists/page?limit=' + ARTISTS_PER_PAGE + '&offset=0');
+  const api = scopedViewApi(vc);
+  const saved = vc._entry?.listState || {};
+  let searchQuery = saved.search || '';
+  let currentPage = Math.max(1, Number(saved.page) || 1);
+  const first = await api('/artists/page?limit=' + ARTISTS_PER_PAGE + '&offset=' + ((currentPage - 1) * ARTISTS_PER_PAGE) + '&search=' + encodeURIComponent(searchQuery));
+  vc._captureState = () => ({ page: currentPage, search: searchQuery });
   let allArtists = first.artists || [];
   let totalArtists = Number(first.total || 0);
-  let searchQuery = '';
-  let currentPage = 1;
-  let renderedPage = 1;
+  let renderedPage = currentPage;
   let serial = 0;
 
+  if (!isCurrentView(vc)) return;
   vc.innerHTML = `
     <div class="topbar">
       ${getTopNavHtml('artists')}
@@ -699,6 +735,7 @@ async function renderArtists(vc) {
     countEl.textContent = searchQuery.trim()
       ? `${totalArtists} artists found`
       : `${totalArtists} artists · ${pages} pages`;
+    saveRoute();
     prevBtn.disabled = currentPage <= 1;
     nextBtn.disabled = currentPage >= pages;
   }
@@ -733,7 +770,7 @@ async function renderArtists(vc) {
       renderedPage = currentPage;
       renderGrid();
     } catch {
-      if (thisRequest === serial) {
+      if (thisRequest === serial && isCurrentView(vc)) {
         currentPage = renderedPage;
         renderGrid();
         showToast('Unable to load artists. Try again.');
@@ -782,10 +819,12 @@ async function renderArtists(vc) {
 }
 
 async function renderComposers(vc) {
+  const api = scopedViewApi(vc);
   let searchQuery = '';
   let allComposers = await api('/composers?limit=1000');
   allComposers = allComposers || [];
 
+  if (!isCurrentView(vc)) return;
   vc.innerHTML = `
     <div class="topbar">
       ${getTopNavHtml('composers')}
@@ -839,11 +878,13 @@ async function renderComposers(vc) {
 }
 
 async function renderComposer(vc, { id }) {
+  const api = scopedViewApi(vc);
   const composer = await api(`/composers/${encodeURIComponent(id)}`);
   const works = composer.works || [];
   const tracks = composer.tracks || [];
   const albums = composer.albums || [];
 
+  if (!isCurrentView(vc)) return;
   vc.innerHTML = `
     <div class="topbar">
       <button class="back-btn" onclick="handleHistoryBack('composers')">
@@ -939,9 +980,11 @@ async function renderComposer(vc, { id }) {
 }
 
 async function renderWorks(vc) {
+  const api = scopedViewApi(vc);
   let allWorks = await api('/works?limit=1000');
   allWorks = allWorks || [];
 
+  if (!isCurrentView(vc)) return;
   vc.innerHTML = `
     <div class="topbar">
       ${getTopNavHtml('works')}
@@ -989,6 +1032,7 @@ async function renderWorks(vc) {
 }
 
 async function renderWork(vc, { id, role = '', credit = '', version = '' }) {
+  const api = scopedViewApi(vc);
   const { composer, title } = parseWorkId(id);
   const filterQuery = role && credit ? `&role=${encodeURIComponent(role)}&name=${encodeURIComponent(credit)}` : '';
   const versionQuery = version ? `&version=${encodeURIComponent(version)}` : '';
@@ -1009,6 +1053,7 @@ async function renderWork(vc, { id, role = '', credit = '', version = '' }) {
       }).join('')
     : '<div class="zone-sub">No tags found.</div>';
 
+  if (!isCurrentView(vc)) return;
   vc.innerHTML = `
     <div class="topbar">
       <button class="back-btn" onclick="handleHistoryBack('works')">
@@ -1177,6 +1222,7 @@ async function renderWork(vc, { id, role = '', credit = '', version = '' }) {
 }
 
 async function renderCredits(vc) {
+  const api = scopedViewApi(vc);
   const [performersRes, conductorsRes, ensemblesRes] = await Promise.all([
     api('/credits?role=performer&limit=120'),
     api('/credits?role=conductor&limit=120'),
@@ -1189,6 +1235,7 @@ async function renderCredits(vc) {
     ensemble: ensemblesRes?.items || [],
   };
 
+  if (!isCurrentView(vc)) return;
   vc.innerHTML = `
     <div class="topbar">
       ${getTopNavHtml('credits')}
@@ -1263,6 +1310,7 @@ async function renderCredits(vc) {
 }
 
 async function renderCreditEntity(vc, { id }) {
+  const api = scopedViewApi(vc);
   const { role, name } = parseCreditId(id);
   const detail = await api(`/credits/detail?role=${encodeURIComponent(role)}&name=${encodeURIComponent(name)}`);
   const works = detail.works || [];
@@ -1270,6 +1318,7 @@ async function renderCreditEntity(vc, { id }) {
   const tracks = detail.tracks || [];
   const composers = detail.composers || [];
 
+  if (!isCurrentView(vc)) return;
   vc.innerHTML = `
     <div class="topbar">
       <button class="back-btn" onclick="handleHistoryBack('credits')">
@@ -1371,11 +1420,13 @@ async function renderCreditEntity(vc, { id }) {
 // ── Tracks ────────────────────────────────────────────────────────────────────
 
 async function renderTracks(vc) {
+  const api = scopedViewApi(vc);
   let searchQuery = '';
   let currentPage = 1;
   let currentSort = 'title';
   const PAGE_SIZE = 200;
 
+  if (!isCurrentView(vc)) return;
   vc.innerHTML = `
     <div class="topbar">
       ${getTopNavHtml('tracks')}
@@ -1475,8 +1526,10 @@ async function renderTracks(vc) {
 // ── Genres ────────────────────────────────────────────────────────────────────
 
 async function renderGenres(vc) {
+  const api = scopedViewApi(vc);
   const genres = await api('/genres') || [];
 
+  if (!isCurrentView(vc)) return;
   vc.innerHTML = `
     <div class="topbar">
       ${getTopNavHtml('genres')}
@@ -1531,9 +1584,11 @@ async function renderGenres(vc) {
 }
 
 async function renderGenre(vc, { id }) {
+  const api = scopedViewApi(vc);
   const data = await api(`/genres/${encodeURIComponent(id)}/albums?limit=1000&sort=year`);
   const albums = data?.albums || [];
 
+  if (!isCurrentView(vc)) return;
   vc.innerHTML = `
     <div class="topbar">
       <button class="back-btn" onclick="handleHistoryBack('genres')">
@@ -1563,8 +1618,10 @@ async function renderGenre(vc, { id }) {
 // ── Playlists ─────────────────────────────────────────────────────────────────
 
 async function renderPlaylists(vc) {
+  const api = scopedViewApi(vc);
   const playlists = await api('/playlists') || [];
 
+  if (!isCurrentView(vc)) return;
   vc.innerHTML = `
     <div class="topbar">
       ${getTopNavHtml('playlists')}
@@ -1618,12 +1675,15 @@ async function renderPlaylists(vc) {
 }
 
 async function renderPlaylist(vc, { id }) {
+  const api = scopedViewApi(vc);
   const playlist = await api(`/playlists/${id}`);
   if (!playlist) {
+    if (!isCurrentView(vc)) return;
     vc.innerHTML = `<div class="empty-state"><div class="empty-state-title">Playlist not found</div></div>`;
     return;
   }
 
+  if (!isCurrentView(vc)) return;
   vc.innerHTML = `
     <div class="topbar">
       <button class="back-btn" onclick="handleHistoryBack('playlists')">
@@ -1699,6 +1759,7 @@ async function renderPlaylist(vc, { id }) {
 }
 
 async function renderZones(vc, { refresh = false } = {}) {
+  const api = scopedViewApi(vc);
   const [zones, playbackStatus] = await Promise.all([
     api(refresh ? '/zones?refresh=1' : '/zones'),
     api('/playback/status')
@@ -1708,6 +1769,7 @@ async function renderZones(vc, { refresh = false } = {}) {
   const nativeDevices = zones?.native?.devices || [];
   const networkDevices = zones?.network?.devices || [];
 
+  if (!isCurrentView(vc)) return;
   vc.innerHTML = `
     <div class="topbar">
       ${getTopNavHtml('zones')}
@@ -1839,7 +1901,9 @@ async function renderZones(vc, { refresh = false } = {}) {
 // ── Artist Detail ─────────────────────────────────────────────────────────────
 
 async function renderArtist(vc, { id }) {
+  const api = scopedViewApi(vc);
   if (!id) {
+    if (!isCurrentView(vc)) return;
     vc.innerHTML = `<div class="empty-state"><div class="empty-state-title">Artist not found</div></div>`;
     return;
   }
@@ -1857,6 +1921,7 @@ async function renderArtist(vc, { id }) {
     _cacheData(cacheKey, { artist, albums });
   }
 
+  if (!isCurrentView(vc)) return;
   vc.innerHTML = `
     <div class="topbar">
       <button class="back-btn" onclick="handleHistoryBack('artists')">
@@ -1877,7 +1942,7 @@ async function renderArtist(vc, { id }) {
         <div class="section-sub">${albums.length} albums · ${albums.reduce((s, a) => s + (a.track_count || 0), 0)} tracks</div>
       </div>
     </div>
-    <div class="artist-bio" id="artist-bio"><div class="bio-loading">Loading artist bio…</div></div>
+    <div class="artist-bio" id="artist-bio">${artist.bio ? `<div class="bio-text">${escHtml(artist.bio)}</div>` : ''}</div>
     <div style="padding: 0 24px; margin-bottom: 16px;">
       <button class="btn btn-gold" id="artist-radio-btn">Artist Radio</button>
       <button class="btn btn-ghost" id="refresh-artist-btn" title="Re-read artist name and all album metadata from files">🔄 Re-read Tags</button>
@@ -1901,32 +1966,25 @@ async function renderArtist(vc, { id }) {
       if (res.success) {
         showToast(res.message);
         // Reload page to show updated data
-        loadArtist(id);
+        await render({ restore: true });
       } else {
         showToast('Refresh failed');
       }
     } catch (e) {
+        if (e.name === 'AbortError') return;
       showToast('Error: ' + e.message);
     }
   });
 
-  // Load bio separately
-  try {
-    const bioWrap = UI['artist-bio'];
-    const result = await api(`/artists/${id}/enrich-bio`, { method: 'POST' });
-    if (result.bio) {
-      bioWrap.innerHTML = `<div class="bio-text">${escHtml(result.bio)}</div>`;
-    } else {
-      bioWrap.innerHTML = '';
-    }
-  } catch {
-    if (UI['artist-bio']) UI['artist-bio'].innerHTML = '';
-  }
+  // Browsing (including Back) reads the saved biography from GET /artists/{id}.
+  // Fetching or changing biographies is an explicit administrator action in Settings.
+
 }
 
 // ── Album Detail ──────────────────────────────────────────────────────────────
 
 async function renderAlbum(vc, { id }) {
+  const api = scopedViewApi(vc);
   // Try data cache first for faster back navigation
   const cacheKey = `album:${id}`;
   let album, credits;
@@ -1945,6 +2003,7 @@ async function renderAlbum(vc, { id }) {
 
   const totalDur = tracks.reduce((s, t) => s + (t.duration || 0), 0);
 
+  if (!isCurrentView(vc)) return;
   vc.innerHTML = `
     <div class="topbar">
       <button class="back-btn" onclick="handleHistoryBack('albums')">
@@ -2107,8 +2166,9 @@ async function renderAlbum(vc, { id }) {
   const heroArt = UI['album-art-hero'];
   const placeholder = heroArt.querySelector('.album-art-placeholder');
   const img = document.createElement('img');
-  const albumTs = album.updated_at ? `&t=${album.updated_at}` : `&t=${Date.now()}`;
-  img.src = `/api/covers/${album.id}/thumb?size=medium${albumTs}`;
+  const version = album.cover_version || album.updated_at;
+  const albumTs = version ? `?t=${encodeURIComponent(version)}` : '';
+  img.src = `/api/covers/${album.id}${albumTs}`;
   img.style.cssText = 'width:100%;height:100%;object-fit:cover;display:block';
   img.onerror = function() {
     if (this.src.indexOf('/thumb') > -1) {
@@ -2216,9 +2276,8 @@ async function renderAlbum(vc, { id }) {
   UI['enrich-btn'].addEventListener('click', async () => {
     showToast('Searching all sources (Netease, QQ, Apple Music…)…');
     try {
-      const res = await fetch(`/api/albums/${album.id}/fetch-cover`, { method: 'POST' });
-      const data = await res.json();
-      if (data.success) {
+      const data = await api(`/albums/${album.id}/fetch-cover`, { method: 'POST' });
+      if (data?.success) {
         showToast(`Cover found from ${data.source || 'web'}!`);
         // Force refresh by invalidating server cover cache
         img.src = `/api/covers/${album.id}?t=${Date.now()}`;
@@ -2226,6 +2285,7 @@ async function renderAlbum(vc, { id }) {
         showToast('No cover found, try manual search');
       }
     } catch (e) {
+        if (e.name === 'AbortError') return;
       showToast('Failed to fetch cover');
     }
   });
@@ -2239,6 +2299,7 @@ async function renderAlbum(vc, { id }) {
       const res = await api(`/albums/${album.id}/open-folder`, { method: 'POST' });
       if (!res.success) showToast('Failed to open folder');
     } catch (e) {
+        if (e.name === 'AbortError') return;
       showToast('Error: ' + e.message);
     }
   });
@@ -2251,11 +2312,12 @@ async function renderAlbum(vc, { id }) {
       if (res.success) {
         showToast(res.message);
         // Reload the album page to show updated metadata
-        navigate('album', { id: album.id });
+        await render({ restore: true });
       } else {
         showToast('Refresh failed');
       }
     } catch (e) {
+        if (e.name === 'AbortError') return;
       showToast('Error: ' + e.message);
     }
   });
@@ -2273,6 +2335,7 @@ async function renderAlbum(vc, { id }) {
         showToast(isFavorite ? 'Added to favorites' : 'Removed from favorites');
       }
     } catch (e) {
+        if (e.name === 'AbortError') return;
       showToast('Error: ' + e.message);
     }
   });
@@ -2286,11 +2349,11 @@ async function renderAlbum(vc, { id }) {
       formData.append('file', input.files[0]);
       showToast('Uploading cover…');
       try {
-        const res = await fetch(`/api/albums/${album.id}/cover`, {
+        const res = await api(`/albums/${album.id}/cover`, {
           method: 'POST',
           body: formData
         });
-        if (res.ok) {
+        if (res && res.success !== false) {
           showToast('Cover updated!');
           // Force refresh after upload with timestamp to bust CDN/browser cache
           img.src = `/api/covers/${album.id}?t=${Date.now()}`;
@@ -2298,6 +2361,7 @@ async function renderAlbum(vc, { id }) {
           showToast('Upload failed');
         }
       } catch (e) {
+          if (e.name === 'AbortError') return;
         showToast('Error: ' + e.message);
       }
     };
@@ -2326,6 +2390,7 @@ async function renderAlbum(vc, { id }) {
             loadStats(); // Update sidebar counts
           }
         } catch (e) {
+            if (e.name === 'AbortError') return;
           showToast('Delete failed: ' + e.message);
         }
       }
@@ -2338,12 +2403,14 @@ async function renderAlbum(vc, { id }) {
 // ── Search ────────────────────────────────────────────────────────────────────
 
 async function renderSearch(vc, { q }) {
+  const api = scopedViewApi(vc);
   const results = await api(`/search?q=${encodeURIComponent(q)}`);
   const tracks = results.tracks || [];
   const containerId = 'search-tracks';
   const existingContainer = UI[containerId];
 
   if (!existingContainer) {
+    if (!isCurrentView(vc)) return;
     vc.innerHTML = `
       <div class="topbar">
         ${getTopNavHtml('search')}
@@ -2384,8 +2451,10 @@ async function renderSearch(vc, { q }) {
       (async () => {
         await navigate('album', { id: t.album_id });
         try {
-          const albumData = await api(`/albums/${t.album_id}`);
-          const albumTracks = albumData.tracks || [];
+          // Queue enrichment intentionally outlives the Search view. Its track
+          // identity check below prevents an obsolete song from taking over.
+          const albumData = await window.api(`/albums/${t.album_id}`);
+          const albumTracks = albumData?.tracks || [];
           const trackIdx = albumTracks.findIndex(tr => tr.id === t.id);
           if (trackIdx === -1) return;
           if (!state.currentTrack || String(state.currentTrack.id) !== String(t.id)) return;
@@ -2396,6 +2465,7 @@ async function renderSearch(vc, { q }) {
           if (state.currentTrack) highlightPlaying(state.currentTrack.id);
           if (UI['queue-panel']?.classList.contains('open')) renderQueue();
         } catch (e) {
+            if (e.name === 'AbortError') return;
           console.warn('Failed to sync search playback queue:', e);
         }
       })();

@@ -1,5 +1,6 @@
 // VELVET - Service Worker for PWA
-const CACHE_NAME = 'velvet-v7';
+const CACHE_NAME = 'velvet-v8';
+const SHELL_VERSION = 'mobile-20261017-1';
 const STATIC_ASSETS = [
   '/static/index.html',
   '/static/manifest.json',
@@ -9,8 +10,9 @@ const STATIC_ASSETS = [
   '/static/js/player-ui.js',
   '/static/js/library-cards.js',
   '/static/js/dsp-controls.js',
-  '/static/js/remote-settings.js'
-];
+  '/static/js/remote-settings.js',
+  '/static/mobile-layout.css'
+].map(asset => /\.(js|css)$/.test(asset) ? asset + '?v=' + SHELL_VERSION : asset);
 
 // Separate cache for thumbnails to avoid polluting main cache
 const THUMB_CACHE_NAME = 'velvet-thumbs-v6';
@@ -27,15 +29,22 @@ const entryKey = (cacheName, request) => `${cacheName}|${typeof request === 'str
 // Install event - cache static assets
 self.addEventListener('install', event => {
   event.waitUntil(
-    caches.open(CACHE_NAME)
-      .then(async cache => {
-        for (const asset of STATIC_ASSETS) {
-          const response = await fetch(asset);
-          if (canCache(response)) await cache.put(asset, response);
-        }
-      })
-      .then(() => self.skipWaiting())
+    Promise.all(STATIC_ASSETS.map(async asset => {
+      const response = await fetch(asset, { cache: 'reload' });
+      if (!canCache(response)) throw new Error('Incomplete app update: ' + asset);
+      return [asset, response];
+    })).then(async assets => {
+      const cache = await caches.open(CACHE_NAME);
+      try { for (const [asset, response] of assets) await cache.put(asset, response); }
+      catch (error) { await caches.delete(CACHE_NAME); throw error; }
+    })
   );
+});
+
+// An update waits while an existing app is playing. Only the explicit page
+// action requests activation; no automatic reload can interrupt an audio session.
+self.addEventListener('message', event => {
+  if (event.data?.type === 'ACTIVATE_UPDATE') self.skipWaiting();
 });
 
 // Activate event - clean up old caches
@@ -209,14 +218,23 @@ self.addEventListener('fetch', event => {
   }
 
   // General static assets - network first, fallback to cache
-  if (url.pathname !== '/' && !STATIC_ASSETS.includes(url.pathname)) return;
+  const assetKey = url.pathname + url.search;
+  if (url.pathname !== '/' && !STATIC_ASSETS.includes(assetKey)) return;
+  // Versioned resources belong to the installed shell, including lazy modules.
+  // A newer page uses a different query key and goes directly to the network.
+  if (url.searchParams.get('v') === SHELL_VERSION && STATIC_ASSETS.includes(assetKey)) {
+    event.respondWith(caches.open(CACHE_NAME).then(async cache => (await cache.match(request)) || fetch(request)));
+    return;
+  }
   event.respondWith(
     fetch(request)
       .then(response => {
-        if (canCache(response)) {
+        // Keep the installed HTML snapshot paired with its versioned modules.
+        // A newer online HTML may load, but must not replace the offline shell.
+        if (canCache(response) && url.pathname !== '/static/index.html') {
           const clone = response.clone();
           event.waitUntil(caches.open(CACHE_NAME)
-            .then(cache => cache.put(url.pathname, clone)).catch(() => {}));
+            .then(cache => cache.put(assetKey, clone)).catch(() => {}));
         }
         return response;
       })

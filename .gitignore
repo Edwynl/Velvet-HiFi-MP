@@ -29,6 +29,9 @@ Thumbs.db
 
 # Node modules (if using Node.js projects)
 node_modules/
+artifacts/frontend-mobile-qa/
+playwright-report/
+test-results/
 
 # Python cache (if using Python projects)
 __pycache__/

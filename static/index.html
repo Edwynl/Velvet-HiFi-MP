@@ -5583,6 +5583,7 @@ input[type=range]::-webkit-slider-thumb:hover { background: var(--gold); }
       }
     }
 </style>
+<link rel="stylesheet" href="/static/mobile-layout.css?v=mobile-20261017-1">
 </head>
 <body>
 
@@ -5966,7 +5967,7 @@ input[type=range]::-webkit-slider-thumb:hover { background: var(--gold); }
   <div class="mobile-player-bg-image" id="mobile-player-bg-image"></div>
   <header class="mobile-player-header">
     <div class="mobile-player-header-left">
-      <button class="mobile-player-btn-back" id="mobile-player-back">
+      <button class="mobile-player-btn-back" id="mobile-player-back" aria-label="Collapse player" title="Collapse player">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 9l-7 7-7-7"/></svg>
       </button>
       <h1 class="mobile-player-title">Velvet HiFi Player</h1>
@@ -6259,10 +6260,10 @@ input[type=range]::-webkit-slider-thumb:hover { background: var(--gold); }
   </div>
 </div>
 
-<script src="/static/js/library-views.js"></script>
-<script src="/static/js/player-ui.js"></script>
-<script src="/static/js/library-cards.js"></script>
-<script src="/static/js/dsp-controls.js"></script>
+<script src="/static/js/library-views.js?v=mobile-20261017-1"></script>
+<script src="/static/js/player-ui.js?v=mobile-20261017-1"></script>
+<script src="/static/js/library-cards.js?v=mobile-20261017-1"></script>
+<script src="/static/js/dsp-controls.js?v=mobile-20261017-1"></script>
 <script>
 // Load expensive Settings/Remote logic only when the user opens that screen.
 // Keep login/auth and core DSP modules in the initial shell; they are shared.
@@ -6279,7 +6280,7 @@ function ensureFrontendModule(name) {
   if (!_lazyFrontendModules[name]) {
     _lazyFrontendModules[name] = new Promise((resolve, reject) => {
       const script = document.createElement('script');
-      script.src = '/static/js/' + name + '.js';
+      script.src = '/static/js/' + name + '.js?v=mobile-20261017-1';
       script.async = true;
       script.onload = resolve;
       script.onerror = () => {
@@ -6310,9 +6311,10 @@ const COMPACT_TABLET_PORTRAIT_MAX = 900;
 function isCompactLayout() {
   const win = typeof window !== 'undefined' ? window : null;
   if (!win) return false;
+  // CSS orientation queries track the layout viewport, not the keyboard's visual viewport.
   return win.innerWidth <= COMPACT_PHONE_MAX || (
     win.innerWidth <= COMPACT_TABLET_PORTRAIT_MAX &&
-    win.innerHeight >= win.innerWidth
+    win.matchMedia('(orientation: portrait)').matches
   );
 }
 
@@ -6819,7 +6821,22 @@ function showConfirm({ title, body, extra = '', confirmText = 'Confirm', confirm
     confirmBtn.style.color = '#1a1200';
   }
   
-  const close = () => container.classList.remove('open');
+  container._releaseFocus?.();
+  const previousFocus = document.activeElement;
+  const onDialogKey = event => {
+    if (event.key === 'Escape') { event.preventDefault(); close(); }
+    if (event.key !== 'Tab') return;
+    const buttons = [...container.querySelectorAll('button:not(:disabled), input:not(:disabled), [tabindex="0"]')];
+    const first = buttons[0], last = buttons[buttons.length - 1];
+    if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus(); }
+    if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }
+  };
+  const close = () => {
+    container.classList.remove('open');
+    container._releaseFocus?.();
+    if (previousFocus?.isConnected) previousFocus.focus({ preventScroll: true });
+  };
+  container._releaseFocus = () => document.removeEventListener('keydown', onDialogKey);
   
   $('modal-cancel').onclick = close;
   container.onclick = (e) => {
@@ -6831,6 +6848,11 @@ function showConfirm({ title, body, extra = '', confirmText = 'Confirm', confirm
   };
   
   container.classList.add('open');
+  container.setAttribute('role', 'dialog');
+  container.setAttribute('aria-modal', 'true');
+  container.setAttribute('aria-labelledby', 'modal-title');
+  document.addEventListener('keydown', onDialogKey);
+  $('modal-cancel').focus({ preventScroll: true });
 }
 
 // Auth state
@@ -6842,14 +6864,14 @@ let authState = {
 
 // Views kept alive across back/forward: going back re-attaches their DOM
 // (listeners, filters, page) and scroll position instead of refetching the
-// whole library. Any mutating API call drops them so nothing stale returns.
+// whole library. Only successful catalog mutations invalidate these entries.
 const KEEP_ALIVE_VIEWS = new Set(['albums']);
 const _keptViews = new Map();  // view -> { nodes, scrollTop, savedAt }
 
 async function api(path, opts = {}) {
-  if ((opts.method || 'GET').toUpperCase() !== 'GET') _keptViews.clear();
+  const method = (opts.method || 'GET').toUpperCase();
   const headers = opts.headers || {};
-  if (opts.body && !headers['Content-Type']) {
+  if (opts.body && !(opts.body instanceof FormData) && !headers['Content-Type']) {
     headers['Content-Type'] = 'application/json';
   }
 
@@ -6861,6 +6883,9 @@ async function api(path, opts = {}) {
   // 8-second timeout to prevent infinite hangs on server startup
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), 8000);
+  const abortFromView = () => controller.abort();
+  opts.signal?.addEventListener('abort', abortFromView, { once: true });
+  if (opts.signal?.aborted) controller.abort();
 
   try {
     log(`[VELVET] API Call: ${path}`);
@@ -6892,14 +6917,15 @@ async function api(path, opts = {}) {
     }
 
     const text = await r.text();
-    if (!text) return {};
+    let result = {};
     try {
-      return JSON.parse(text);
-    } catch {
-      return {};
-    }
+      if (text) result = JSON.parse(text);
+    } catch { /* An empty successful response is still a completed mutation. */ }
+    if (method !== 'GET' && result?.success !== false && catalogMutation(path)) invalidateCatalog();
+    return result;
   } catch (e) {
     clearTimeout(timeoutId);
+    if (opts.signal?.aborted) return null;
     if (e.name === 'AbortError') {
       console.warn(`API ${path} timed out`);
       showToast('Connection timed out');
@@ -6911,6 +6937,9 @@ async function api(path, opts = {}) {
       }
     }
     return null;
+  } finally {
+    clearTimeout(timeoutId);
+    opts.signal?.removeEventListener('abort', abortFromView);
   }
 }
 
@@ -8427,6 +8456,7 @@ function updateVUMetersInfo() {
 }
 
 function startVUAnimation() {
+  if (document.hidden || window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
   if (vuAnimationFrame) return;
 
   const leftNeedle = UI['vu-needle-left'];
@@ -8525,6 +8555,13 @@ function stopVUAnimation() {
 
 UI['mobile-btn-vu'].addEventListener('click', () => toggleVUMeters());
 UI['mobile-vu-close'].addEventListener('click', () => toggleVUMeters(false));
+document.addEventListener('visibilitychange', () => {
+  document.documentElement.classList.toggle('page-hidden', document.hidden);
+  if (document.hidden && vuAnimationFrame) {
+    cancelAnimationFrame(vuAnimationFrame);
+    vuAnimationFrame = null; // Stop visuals only; playback and Media Session continue.
+  } else if (!document.hidden && vuMeterOpen) startVUAnimation();
+});
 
 // VU style toggle
 function setVUStyle(style) {
@@ -8783,130 +8820,110 @@ window.addEventListener('pagehide', () => {
 
 // ─── Navigation ───────────────────────────────────────────────────────────────
 
-// Page cache for faster navigation
-const _pageCache = new Map();
-const _maxCacheSize = 5;  // Keep last 5 pages in memory
-
+// Each browser entry owns its catalog state and scroll offset. Playback never
+// writes history. No authentication data is stored in the route snapshot.
+const _pageCache = new Map(); // legacy callers may evict; never restore raw markup
+let _activeRoute = null;
+let _catalogRevision = 0;
+let _backPending = false;
+let _routeSequence = 0;
+function routeHash(view, params = {}) {
+  return '#' + view + (params.id ? '/' + encodeURIComponent(params.id) : '');
+}
+function sameRoute(a, ap = {}, b, bp = {}) {
+  return a === b && JSON.stringify(ap || {}) === JSON.stringify(bp || {});
+}
+function newRoute(view, params, origin = null) {
+  return { velvet: 1, id: Date.now().toString(36) + '-' + (++_routeSequence),
+    view, params, scrollTop: 0, listState: {}, origin };
+}
+function saveRoute() {
+  if (!_activeRoute || !sameRoute(state.view, state.viewParams, _activeRoute.view, _activeRoute.params)) return;
+  const vc = UI['view-container'];
+  if (vc?._entry?.id !== _activeRoute.id || vc.dataset.ready !== 'true') return;
+  _activeRoute.listState = vc?._captureState?.() || _activeRoute.listState || {};
+  _activeRoute.scrollTop = UI['main']?.scrollTop || 0;
+  // A popstate has already selected its destination: never overwrite that entry.
+  if (history.state?.id === _activeRoute.id) {
+    history.replaceState(_activeRoute, '', routeHash(_activeRoute.view, _activeRoute.params));
+  }
+}
+function catalogMutation(path) {
+  if (/\/open-folder$/.test(path)) return false;
+  return /^\/(albums(?:\/|$)|artists\/[^/]+\/refresh$|library(?:\/|$)|scan(?:\/|$)|config\/libraries(?:\/|$)|enrich\/(?:fingerprint|bios)(?:\/|$))/.test(path);
+}
+function invalidateCatalog() {
+  _catalogRevision++;
+  _keptViews.clear();
+  _pageCache.clear();
+  _dataCache.clear();
+}
+function isCurrentView(vc) { return UI['view-container'] === vc; }
+function scopedViewApi(vc) {
+  return async (path, opts = {}) => {
+    const read = (opts.method || 'GET').toUpperCase() === 'GET';
+    if (read && !isCurrentView(vc)) throw new DOMException('View superseded', 'AbortError');
+    const data = await api(path, read ? { ...opts, signal: vc._abort?.signal } : opts);
+    if (!isCurrentView(vc)) throw new DOMException('View superseded', 'AbortError');
+    if (read && data === null) throw new Error('Server unavailable. Try this page again.');
+    return data;
+  };
+}
 async function navigate(view, params = {}, push = true) {
-  log(`[VELVET] Navigating to: ${view}`, params);
   const prevView = state.view;
   const prevParams = state.viewParams;
-
-  // Page changes must not carry an active editor into the next view. This also
-  // dismisses tablet keyboards in landscape, where viewport width looks desktop-like.
+  saveRoute();
+  const previous = _activeRoute;
+  const old = UI['view-container'];
+  old?._abort?.abort(); // page GETs only; audio/tickets/mutations have independent lifetimes
+  if (previous && KEEP_ALIVE_VIEWS.has(prevView) && old?.dataset.ready === 'true' && old._revision === _catalogRevision) {
+    _keptViews.set(previous.id, { vc: old, savedAt: Date.now() });
+    while (_keptViews.size > 3) _keptViews.delete(_keptViews.keys().next().value);
+  }
   if (view !== 'search') blurActiveEditor();
-
   if (view === 'search' && prevView !== 'search') {
-    state.prevView = prevView || 'home';
-    state.prevParams = prevParams || {};
+    state.prevView = prevView || 'home'; state.prevParams = prevParams || {};
   }
-
-  // FORCE re-render by clearing current view if navigating to the same type (e.g. album -> album)
-  if (state.view === view && view !== 'search') {
-    log('[VELVET] Same view type navigation, forcing fresh render');
-  }
-
-  state.view = view;
-  state.viewParams = params;
-
   if (push) {
-    const idPart = params.id ? '/' + encodeURIComponent(params.id) : '';
-    history.pushState({ view, params }, '', '#' + view + idPart);
+    _activeRoute = newRoute(view, params, previous ? { id: previous.id, view: previous.view, params: previous.params } : null);
+    history.pushState(_activeRoute, '', routeHash(view, params));
+  } else {
+    const selected = history.state;
+    _activeRoute = selected?.velvet === 1 && sameRoute(view, params, selected.view, selected.params)
+      ? selected : newRoute(view, params);
+    history.replaceState(_activeRoute, '', routeHash(view, params));
   }
-
-  // Update nav active state
+  state.view = view; state.viewParams = params;
   const activeView = ({ album: 'albums', artist: 'artists', composer: 'composers', work: 'works', credit: 'credits', genre: 'genres', playlist: 'playlists' }[view]) || view;
-  $$('.nav-item').forEach(el => {
-    el.classList.toggle('active', el.dataset.view === activeView);
-  });
-  $$('.bottom-nav-item').forEach(el => {
-    el.classList.toggle('active', el.dataset.view === activeView);
-  });
-
-  // Cache current page before rendering new one
-  const vc = UI['view-container'];
-  if (prevView && KEEP_ALIVE_VIEWS.has(prevView) && vc.firstChild) {
-    // Read the offset first: removing the content clamps it to 0.
-    const scrollTop = UI['main']?.scrollTop || 0;
-    const nodes = document.createDocumentFragment();
-    nodes.append(...vc.childNodes);
-    _keptViews.set(prevView, { nodes, scrollTop, savedAt: Date.now() });
-  } else if (prevView && vc.innerHTML) {
-    _cachePage(prevView, vc.innerHTML);
-  }
-
-  // Close overlays
-  UI['sidebar-overlay']?.classList.remove('open', 'active');
-  UI['sidebar']?.classList.remove('open');
-
-  // Back/forward restores a kept view; menu clicks and links render fresh.
+  $$('.nav-item, .bottom-nav-item').forEach(el => el.classList.toggle('active', el.dataset.view === activeView));
+  UI['sidebar-overlay']?.classList.remove('open', 'active'); UI['sidebar']?.classList.remove('open');
   await render({ restore: !push });
 }
-
-function routeHash(view, params = {}) {
-  const idPart = params.id ? '/' + encodeURIComponent(params.id) : '';
-  return '#' + view + idPart;
-}
-
-function sameRoute(viewA, paramsA = {}, viewB, paramsB = {}) {
-  return viewA === viewB && JSON.stringify(paramsA || {}) === JSON.stringify(paramsB || {});
-}
-
 function handleHistoryBack(fallbackView = 'home', fallbackParams = {}) {
-  const currentView = state.view;
-  const currentParams = state.viewParams || {};
-  let settled = false;
-
-  const markSettled = () => {
-    settled = true;
-  };
-
-  window.addEventListener('popstate', markSettled, { once: true });
-  history.back();
-
-  window.setTimeout(() => {
-    if (settled) return;
-    if (!sameRoute(state.view, state.viewParams, currentView, currentParams)) return;
-
-    const nextHash = routeHash(fallbackView, fallbackParams);
-    history.replaceState({ view: fallbackView, params: fallbackParams }, '', nextHash);
-    navigate(fallbackView, fallbackParams, false);
-  }, 220);
-}
-
-window.addEventListener('popstate', (event) => {
-  // Don't clear page cache on back/forward — interactive cards (with addEventListener)
-  // will be re-rendered by navigate() anyway via render(). We only clear cache when
-  // memory pressure is high (handled by _cachePage eviction policy).
-  if (event.state && event.state.view) {
-    log('[VELVET] Popstate navigation (from state):', event.state.view);
-    navigate(event.state.view, event.state.params, false);
+  if (_backPending) return;
+  if (_activeRoute?.origin) {
+    saveRoute(); _backPending = true; history.back();
   } else {
-    // Falls back to URL hash decoding if state is missing
-    const hash = location.hash.replace('#', '');
-    log('[VELVET] Popstate navigation (from hash):', hash || 'home');
-    if (hash) {
-      const [view, id] = hash.split('/');
-      navigate(view, id ? { id: decodeURIComponent(id) } : {}, false);
-    } else {
-      navigate('home', {}, false);
-    }
+    // Direct links have no known app predecessor. Replace synchronously; no timer
+    // may race a delayed native popstate or navigate outside the application.
+    history.replaceState(newRoute(fallbackView, fallbackParams), '', routeHash(fallbackView, fallbackParams));
+    navigate(fallbackView, fallbackParams, false);
   }
+}
+window.addEventListener('popstate', event => {
+  _backPending = false;
+  const hash = location.hash.slice(1);
+  const [view, id] = hash.split('/');
+  const entry = event.state;
+  navigate(entry?.view || view || 'home', entry?.params || (id ? { id: decodeURIComponent(id) } : {}), false);
 });
-
-// Simple page caching
-function _cachePage(view, html) {
-  if (_pageCache.size >= _maxCacheSize) {
-    // Remove oldest entry
-    const firstKey = _pageCache.keys().next().value;
-    _pageCache.delete(firstKey);
-  }
-  _pageCache.set(view, html);
-}
-
-function _getCachedPage(view) {
-  return _pageCache.get(view);
-}
+window.addEventListener('pagehide', saveRoute);
+window.addEventListener('pageshow', () => { _backPending = false; });
+document.addEventListener('visibilitychange', () => { if (document.hidden) saveRoute(); });
+let _saveScrollFrame = 0;
+UI['main']?.addEventListener('scroll', () => {
+  if (!_saveScrollFrame) _saveScrollFrame = requestAnimationFrame(() => { _saveScrollFrame = 0; saveRoute(); });
+}, { passive: true });
 
 // ─── API Response Data Cache ─────────────────────────────────────────────────
 // Caches album/artist/etc data to avoid re-fetching on back navigation.
@@ -8944,56 +8961,34 @@ $$('.player-info').forEach(el => {
 
 async function render({ restore = false } = {}) {
   log('[VELVET] render() started');
-  const vc = UI['view-container'];
-  if (!vc) {
-    console.error('[VELVET] Critical Error: #view-container not found in DOM');
+  const old = UI['view-container'];
+  if (!old) return;
+  const view = state.view;
+  const params = { ...state.viewParams };
+  const entry = _activeRoute;
+  old._abort?.abort();
+  const kept = _keptViews.get(entry?.id);
+  _keptViews.delete(entry?.id);
+  if (restore && kept && Date.now() - kept.savedAt < _DATA_CACHE_TTL_MS && kept.vc._revision === _catalogRevision) {
+    old.replaceWith(kept.vc);
+    kept.vc._entry = entry;
+    kept.vc._abort = new AbortController();
+    UI['main'].scrollTop = entry.scrollTop || 0;
     return;
   }
-  
+  // A renderer owns its container. A late response can only touch its detached
+  // container; scoped GETs additionally abort and reject obsolete continuations.
+  const vc = document.createElement('div');
+  vc.id = 'view-container'; vc.className = 'view-' + view;
+  vc._entry = entry; vc._revision = _catalogRevision; vc._abort = new AbortController();
+  old.replaceWith(vc);
   scrollToTop();
-
-  if (state.view !== 'search' && searchOutsideHandler) {
-    document.removeEventListener('pointerdown', searchOutsideHandler, true);
-    searchOutsideHandler = null;
+  if (view !== 'search' && searchOutsideHandler) {
+    document.removeEventListener('pointerdown', searchOutsideHandler, true); searchOutsideHandler = null;
   }
-
-  // Show loading immediately with smoother transition
-  vc.style.opacity = '0.5';
-  vc.className = 'view-' + state.view;
-
-  const kept = _keptViews.get(state.view);
-  _keptViews.delete(state.view);
-  if (kept && restore && Date.now() - kept.savedAt < _DATA_CACHE_TTL_MS) {
-    vc.replaceChildren(kept.nodes);
-    vc.style.opacity = '1';
-    const main = UI['main'];
-    if (main) main.scrollTop = kept.scrollTop;
-    log('[VELVET] Render complete (kept view):', state.view);
-    return;
-  }
-
-  // Restore from cache if available (faster than re-fetching/re-rendering)
-  // Skip cache for views that use addEventListener on rendered cards (album cards,
-  // track rows, etc.) — innerHTML restore loses all event bindings, making cards
-  // unclickable. home and albums use makeAlbumCard with addEventListener.
-  const NO_CACHE_VIEWS = new Set([
-    'album', 'artist', 'playlist', 'work', 'credit',
-    'home', 'albums', 'discover',
-    'artists', 'tracks', 'genres', 'playlists',
-    'composers', 'works', 'credits', 'history', 'most-played',
-    'genre', 'search'
-  ]);
-  const cached = NO_CACHE_VIEWS.has(state.view) ? null : _getCachedPage(state.view);
-  if (cached) {
-    vc.innerHTML = cached;
-    vc.style.opacity = '1';
-    log('[VELVET] Render complete (cached):', state.view);
-    return;
-  }
-
   try {
     log('[VELVET] Rendering view:', state.view);
-    switch (state.view) {
+    switch (view) {
       case 'home':        await renderHome(vc);    break;
       case 'discover':    await renderDiscover(vc); break;
       case 'albums':      await renderAlbums(vc);  break;
@@ -9003,33 +8998,36 @@ async function render({ restore = false } = {}) {
       case 'credits':     await renderCredits(vc); break;
       case 'tracks':      await renderTracks(vc); break;
       case 'genres':      await renderGenres(vc); break;
-      case 'genre':       await renderGenre(vc, state.viewParams); break;
+      case 'genre':       await renderGenre(vc, params); break;
       case 'playlists':   await renderPlaylists(vc); break;
       case 'zones':       await renderZones(vc); break;
-      case 'playlist':    await renderPlaylist(vc, state.viewParams); break;
-      case 'album':       await renderAlbum(vc, state.viewParams); break;
-      case 'artist':      await renderArtist(vc, state.viewParams); break;
-      case 'composer':    await renderComposer(vc, state.viewParams); break;
-      case 'work':        await renderWork(vc, state.viewParams); break;
-      case 'credit':      await renderCreditEntity(vc, state.viewParams); break;
-      case 'settings':    await ensureFrontendModule('settings-view'); if (state.view === 'settings') await renderSettings(vc); break;
-      case 'search':      await renderSearch(vc, state.viewParams); break;
+      case 'playlist':    await renderPlaylist(vc, params); break;
+      case 'album':       await renderAlbum(vc, params); break;
+      case 'artist':      await renderArtist(vc, params); break;
+      case 'composer':    await renderComposer(vc, params); break;
+      case 'work':        await renderWork(vc, params); break;
+      case 'credit':      await renderCreditEntity(vc, params); break;
+      case 'settings':    await ensureFrontendModule('settings-view'); if (isCurrentView(vc)) await renderSettings(vc); break;
+      case 'search':      await renderSearch(vc, params); break;
       case 'history':     await renderHistory(vc); break;
       case 'most-played':await renderMostPlayed(vc); break;
-      case 'remote':      await ensureFrontendModule('remote-settings'); if (state.view === 'remote') await renderRemote(vc); break;
+      case 'remote':      await ensureFrontendModule('remote-settings'); if (isCurrentView(vc)) await renderRemote(vc); break;
     }
-    log('[VELVET] Render complete:', state.view);
+    if (!isCurrentView(vc)) return;
+    vc.dataset.ready = 'true';
+    if (restore) UI['main'].scrollTop = entry?.scrollTop || 0;
+    saveRoute();
   } catch (e) {
-    console.error('[VELVET] render error:', state.view, e);
-    vc.innerHTML = `<div class="empty-state">
-      <div class="empty-state-icon">⚠</div>
+    if (!isCurrentView(vc) || e.name === 'AbortError') return;
+    console.warn('[VELVET] Page unavailable:', view, e.message);
+    vc.innerHTML = `<div class="empty-state" role="status">
       <div class="empty-state-title">Could not load page</div>
-      <div class="empty-state-sub">${e.message}</div>
-      <button class="btn btn-gold" style="margin-top:16px" onclick="location.reload()">Reload Application</button>
+      <div class="empty-state-sub">${escHtml(e.message)}</div>
+      <button class="btn btn-gold" id="retry-view-btn">Try again</button>
     </div>`;
-  } finally {
-    vc.style.opacity = '1';
+    vc.querySelector('#retry-view-btn').onclick = () => render({ restore: true });
   }
+
 }
 
 // ── Home ──────────────────────────────────────────────────────────────────────
@@ -9044,7 +9042,10 @@ async function render({ restore = false } = {}) {
 
 // Use smaller thumbnails on mobile for better performance
 function getThumbSize() {
-  return window.innerWidth <= 500 ? 'small' : 'medium';
+  const width = window.innerWidth;
+  const columns = width <= 768 ? 2 : (isCompactLayout() ? 4 : 5);
+  const pixels = ((width - 48) / columns) * Math.min(window.devicePixelRatio || 1, 3);
+  return pixels > 400 ? 'xlarge' : pixels > 250 ? 'large' : pixels > 150 ? 'medium' : 'small';
 }
 
 // library-cards functions are loaded from /static/js/library-cards.js.
@@ -9058,7 +9059,7 @@ function exitSearch() {
   }
   const fallbackView = state.prevView || 'home';
   const fallbackParams = state.prevParams || {};
-  history.replaceState({ view: fallbackView, params: fallbackParams }, '', routeHash(fallbackView, fallbackParams));
+  history.replaceState(newRoute(fallbackView, fallbackParams, _activeRoute?.origin), '', routeHash(fallbackView, fallbackParams));
   navigate(fallbackView, fallbackParams, false);
 }
 function setupSearch({ autoFocus = state.view === 'search' } = {}) {
@@ -9179,16 +9180,17 @@ function escHtml(str) {
 
 // Handle image load errors - try fallback, then show placeholder
 function handleImgError(img, fallbackUrl) {
+  img.removeAttribute('srcset');
   if (fallbackUrl && img.src !== fallbackUrl) {
     img.src = fallbackUrl;
     img.onerror = function() {
       // Both thumbnail and full cover failed - show placeholder
       img.style.display = 'none';
-      showPlaceholder(img.parentElement);
+      showPlaceholder(img.closest('.card-art') || img.parentElement);
     };
   } else {
     img.style.display = 'none';
-    showPlaceholder(img.parentElement);
+    showPlaceholder(img.closest('.card-art') || img.parentElement);
   }
 }
 
@@ -9210,7 +9212,7 @@ function showPlaceholder(container) {
 // Hide placeholder when image loads successfully
 function handleImgLoad(img) {
   img.style.display = 'block';
-  hidePlaceholder(img.parentElement);
+  hidePlaceholder(img.closest('.card-art') || img.parentElement);
 }
 
 // Hide placeholder for the container
@@ -9274,12 +9276,14 @@ async function showCoverPicker(albumId) {
 async function setAlbumCover(albumId, url) {
   try {
     showToast('Downloading cover to folder...');
-    await api(`/albums/${albumId}/set-cover`, {
+    const result = await api(`/albums/${albumId}/set-cover`, {
       method: 'POST',
       body: JSON.stringify({ url })
     });
-    showToast('✅ Cover updated in folder!');
-    setTimeout(() => location.reload(), 1000);
+    if (!result || result.success === false) { showToast('Cover update failed'); return; }
+    showToast('Cover updated in folder');
+    document.querySelector('.cover-picker-modal')?.closest('.modal-backdrop')?.remove();
+    if (state.view === 'album' && String(state.viewParams.id) === String(albumId)) await render({ restore: true });
   } catch (err) {
     showToast('❌ Failed to update cover');
   }
@@ -9354,6 +9358,7 @@ async function loadLyrics(track) {
 
   try {
     const data = await api(`/tracks/${track.id}/lyrics`);
+    if (track.id !== _lyricsTrackId) return;
     _lyricsData = data;
 
     if (data.synced) {
@@ -9482,6 +9487,7 @@ audio.addEventListener('ended', () => {
 // remote-settings functions are loaded from /static/js/remote-settings.js.
 
 async function renderHistory(vc) {
+  const api = scopedViewApi(vc);
   const [history, lstats] = await Promise.all([
     api('/history?limit=80'),
     api('/stats/listening')
@@ -9537,6 +9543,7 @@ async function renderHistory(vc) {
 // ─── Most Played View ─────────────────────────────────────────────────────────
 
 async function renderMostPlayed(vc) {
+  const api = scopedViewApi(vc);
   const tracks = await api('/most-played?limit=100');
 
   vc.innerHTML = `
@@ -9796,7 +9803,8 @@ window.addEventListener('DOMContentLoaded', async () => {
   const hash = location.hash.replace('#', '');
   if (hash) {
     const [view, id] = hash.split('/');
-    await navigate(view, id ? { id: decodeURIComponent(id) } : {}, false);
+    const saved = history.state;
+    await navigate(view, saved?.velvet === 1 && saved.view === view ? saved.params : (id ? { id: decodeURIComponent(id) } : {}), false);
   } else {
     state.view = null;
     await navigate('home', {}, false);
@@ -9805,7 +9813,7 @@ window.addEventListener('DOMContentLoaded', async () => {
   // Replace initial state so back from home works. We use replaceState here specifically
   // after navigate() completes so that state.view and state.params are valid.
   if (typeof history !== 'undefined' && history?.replaceState) {
-    history.replaceState({ view: state.view, params: state.viewParams }, '', location.hash || '#home');
+    saveRoute();
   }
 
   // Poll scan status if scan is running
@@ -9827,6 +9835,23 @@ window.addEventListener('keydown', e => {
   if ('serviceWorker' in navigator) {
     window.addEventListener('load', () => {
       navigator.serviceWorker.register('/sw.js').then(reg => {
+        const offerUpdate = () => {
+          if (!reg.waiting || document.getElementById('pwa-update-btn')) return;
+          const button = document.createElement('button');
+          button.id = 'pwa-update-btn'; button.className = 'btn btn-gold';
+          button.textContent = 'Update available';
+          button.onclick = () => {
+            if (state.playing) { showToast('Pause playback before updating'); return; }
+            saveRoute();
+            navigator.serviceWorker.addEventListener('controllerchange', () => location.reload(), { once: true });
+            reg.waiting?.postMessage({ type: 'ACTIVATE_UPDATE' });
+          };
+          document.body.appendChild(button);
+        };
+        offerUpdate();
+        reg.addEventListener('updatefound', () => {
+          reg.installing?.addEventListener('statechange', offerUpdate);
+        });
         log('SW registered:', reg);
       }).catch(err => {
         log('SW registration failed:', err);

@@ -200,6 +200,7 @@ THUMB_SIZES = {
     'small': (150, 150),   # Mobile grid - optimized for 4-column layout
     'medium': (250, 250),  # Tablet / Desktop grid
     'large': (400, 400),   # Album detail view / hero images
+    'xlarge': (800, 800),  # DPR 3 catalog cards; original artwork stays untouched
 }
 THUMB_QUALITY = 85  # JPEG quality (balanced for file size)
 ARTIST_IMAGE_MAX_SIZE = (300, 300)
@@ -426,13 +427,29 @@ _album_mutation_active = False
 _cover_cache: TTLCache = TTLCache(maxsize=10000, ttl=86400)  # album_id -> path
 _cover_cache_lock = threading.Lock()
 
-def _prime_cover_cache(rows) -> None:
-    """Prime in-memory cover cache from query rows without extra file-system checks."""
+@lru_cache(maxsize=10000)
+def _cover_revision(directory: str, album_id: int) -> Optional[str]:
+    """Small local cache markers; never stat or open the user's music files."""
+    try:
+        return (Path(directory) / f"{album_id}.revision").read_text(encoding="ascii").strip()
+    except FileNotFoundError:
+        return None
+
+
+def _prime_cover_cache(rows) -> list[dict]:
+    """Prime paths from query rows and attach local, persistent cover revisions."""
+    result = []
     with _cover_cache_lock:
         for row in rows:
             album_id = row["id"]
             if album_id not in _cover_cache:
                 _cover_cache[album_id] = row["cover_path"] or None
+            data = dict(row)
+            revision = _cover_revision(str(THUMBS_DIR), album_id)
+            if revision:
+                data["cover_version"] = revision
+            result.append(data)
+    return result
 
 init_db()
 
@@ -1090,7 +1107,7 @@ def get_artist_albums(artist_id: int):
         (artist_id,)
     ).fetchall()
 
-    _prime_cover_cache(rows)
+    rows = _prime_cover_cache(rows)
 
     db.close()
     return [dict(r) for r in rows]
@@ -1114,7 +1131,7 @@ def get_albums(
             to_traditional=to_traditional,
         )
 
-        _prime_cover_cache(rows)
+        rows = _prime_cover_cache(rows)
 
         return rows
     finally:
@@ -1140,7 +1157,7 @@ def get_album_page(
             raise HTTPException(422, str(exc)) from exc
         if offset == 0:
             result.update(album_catalog_filters(db))
-        _prime_cover_cache(result["albums"])
+        result["albums"] = _prime_cover_cache(result["albums"])
         _log_baseline_metric("album_page", started, limit=limit, offset=offset,
                              result_count=len(result["albums"]), total=result["total"])
         return result
@@ -1159,7 +1176,7 @@ def get_album(album_id: int, background_tasks: BackgroundTasks):
     if not result["cover_path"]:
         background_tasks.add_task(enrich_album_covers)
 
-    return result
+    return _prime_cover_cache([result])[0]
 
 
 @app.get("/api/albums/{album_id}/credits")
@@ -1325,7 +1342,7 @@ def recently_added(limit: int = 30):
     finally:
         db.close()
 
-    _prime_cover_cache(rows)
+    rows = _prime_cover_cache(rows)
 
     return rows
 
@@ -1359,6 +1376,13 @@ def get_artist_radio(artist_id: int, limit: int = 80):
 
 def invalidate_cover_cache(album_id: int):
     """Clear cover cache for an album when cover is updated."""
+    # Schema 9 albums have no updated_at column. Keep revisions beside derived
+    # thumbnails rather than altering the library schema or original artwork.
+    marker = THUMBS_DIR / f"{album_id}.revision"
+    temporary = marker.with_suffix(f".{uuid.uuid4().hex}.tmp")
+    temporary.write_text(uuid.uuid4().hex, encoding="ascii")
+    os.replace(temporary, marker)
+    _cover_revision.cache_clear()
     with _cover_cache_lock:
         if album_id in _cover_cache:
             del _cover_cache[album_id]
@@ -1660,10 +1684,10 @@ def get_cover(album_id: int):
     raise HTTPException(404, "No cover")
 
 @app.api_route("/api/covers/{album_id}/thumb", methods=["GET", "HEAD"])
-def get_cover_thumbnail(album_id: int, size: str = Query("small", pattern="^(small|medium|large)$")):
+def get_cover_thumbnail(album_id: int, size: str = Query("small", pattern="^(small|medium|large|xlarge)$")):
     """
     Get a thumbnail-sized version of an album cover.
-    Sizes: small (150x150), medium (250x250), large (400x400)
+    Sizes: small (150x150), medium (250x250), large (400x400), xlarge (800x800)
     Optimized for mobile and list views.
     """
     thumb_path = _get_or_create_thumbnail(album_id, size)
@@ -3751,6 +3775,7 @@ async def auth_middleware(request: Request, call_next):
                 "/static/manifest.json", "/static/icon.png",
                 "/static/logo-hires.png",
                 "/static/index.html",
+                "/static/mobile-layout.css",
             } | PUBLIC_FRONTEND_JS_PATHS
         )
         if not setup_visible:
@@ -3767,6 +3792,7 @@ async def auth_middleware(request: Request, call_next):
         "/api/health/check-ffmpeg", "/docs", "/redoc", "/openapi.json",
         "/sw.js", "/static/index.html", "/static/manifest.json",
         "/static/icon.png", "/static/logo-hires.png",
+        "/static/mobile-layout.css",
     }
     should_skip = request.method == "GET" and (
         path in public_get_paths or path in PUBLIC_FRONTEND_JS_PATHS
@@ -3914,6 +3940,13 @@ def serve_frontend_module(module_name: str, request: Request):
 def serve_manifest():
     path = Path(__file__).parent / "static" / "manifest.json"
     return FileResponse(path, media_type="application/manifest+json")
+
+
+@app.get("/static/mobile-layout.css")
+def serve_mobile_layout(request: Request):
+    return _serve_static_text(
+        request, Path(__file__).parent / "static" / "mobile-layout.css", "text/css", "no-cache"
+    )
 
 @app.get("/sw.js")
 def serve_sw():

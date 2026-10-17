@@ -6,6 +6,9 @@
 // Browsers lacking IntersectionObserver (including the old JSDOM harness) see
 // the entire bounded page. The observer never changes artwork resolution.
 function renderCardsOnDemand(container, items, cardFactory, batchSize = 24) {
+  // Restoring a deep scroll needs the complete bounded page before the browser
+  // clamps scrollTop. This still retains at most 60 records, never the catalog.
+  if (container.closest('#view-container')?._entry?.scrollTop > 0) batchSize = items.length || batchSize;
   container._velvetCardObserver?.disconnect();
   container._velvetCardObserver = null;
   let index = 0;
@@ -43,17 +46,23 @@ function makeAlbumCard(album) {
   // Use dynamic thumbnail size based on screen width
   const thumbSize = getThumbSize();
   // Use album.updated_at for cache busting only when cover actually changed
-  const albumTs = album.updated_at ? `&t=${album.updated_at}` : '';
+  const version = album.cover_version || album.updated_at;
+  const albumTs = version ? `&t=${encodeURIComponent(version)}` : '';
   const thumbUrl = `/api/covers/${album.id}/thumb?size=${thumbSize}${albumTs}`;
-  const fullUrl = `/api/covers/${album.id}${albumTs}`;
+  const fullUrl = `/api/covers/${album.id}${version ? '?t=' + encodeURIComponent(version) : ''}`;
+  const sizes = '(orientation: landscape) and (max-height: 500px) calc((100vw - 96px) / 5), (max-width: 768px) calc((100vw - 44px) / 2), (orientation: portrait) and (max-width: 900px) calc((100vw - 88px) / 4), calc((100vw - 300px) / 5)';
+  const srcset = [['small',150], ['medium',250], ['large',400], ['xlarge',800]]
+    .map(([size, width]) => `/api/covers/${album.id}/thumb?size=${size}${albumTs} ${width}w`).join(', ');
   div.innerHTML = `
     <div class="card-art">
+      <button class="card-open" type="button" aria-label="Open ${escHtml(album.title)}">
       <img src="${thumbUrl}" alt="" onerror="handleImgError(this, '${fullUrl}')" onload="handleImgLoad(this)"
-           loading="lazy" decoding="async">
+           srcset="${srcset}" sizes="${sizes}" loading="lazy" decoding="async">
+      </button>
       <div class="card-art-placeholder"></div>
-      <div class="card-play-btn">
+      <button class="card-play-btn" type="button" aria-label="Play ${escHtml(album.title)}">
         <svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
-      </div>
+      </button>
       ${isFav ? '<div class="card-fav-btn" style="position:absolute;top:6px;right:6px;background:rgba(0,0,0,0.6);border-radius:50%;width:24px;height:24px;display:flex;align-items:center;justify-content:center;color:#ff6b6b;font-size:14px;pointer-events:none">♥</div>' : ''}
     </div>
     <div class="card-title-row" style="display:flex;align-items:center;justify-content:space-between;gap:6px;min-width:0">
@@ -69,7 +78,7 @@ function makeAlbumCard(album) {
   div.querySelector('.card-play-btn').addEventListener('click', async e => {
     e.stopPropagation();
     const data = await api(`/albums/${album.id}`);
-    if (data.tracks?.length) playTrack(data.tracks[0], data.tracks, 0);
+    if (data?.tracks?.length) playTrack(data.tracks[0], data.tracks, 0);
   });
   return div;
 }
