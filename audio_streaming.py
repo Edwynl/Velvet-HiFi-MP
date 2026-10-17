@@ -14,6 +14,8 @@ import threading
 from functools import lru_cache
 from collections.abc import AsyncIterator, Callable, Sequence
 
+from starlette.responses import StreamingResponse
+
 log = logging.getLogger("velvet.audio_streaming")
 
 
@@ -164,3 +166,30 @@ async def iter_ffmpeg_stdout(
                     await process.communicate()
         if on_close is not None:
             on_close()
+
+
+class TranscodeStreamingResponse(StreamingResponse):
+    """StreamingResponse that closes its body generator as soon as it ends.
+
+    On a client disconnect Starlette cancels the send loop while the body
+    generator is parked at ``yield``, and leaves the generator for the garbage
+    collector to finalize. Behind ``@app.middleware("http")`` layers that can
+    take seconds, holding FFmpeg and its transcode slot long enough for the
+    next track's request to 503. Closing it here reaps the decoder at once.
+    ``on_close`` then runs even if the body was never started (no decoder).
+    """
+
+    def __init__(self, content, *args, on_close: Callable[[], None] | None = None, **kwargs):
+        super().__init__(content, *args, **kwargs)
+        self._on_close = on_close
+
+    async def __call__(self, scope, receive, send) -> None:
+        try:
+            await super().__call__(scope, receive, send)
+        finally:
+            with anyio.CancelScope(shield=True):
+                aclose = getattr(self.body_iterator, "aclose", None)
+                if aclose is not None:
+                    await aclose()
+            if self._on_close is not None:
+                self._on_close()

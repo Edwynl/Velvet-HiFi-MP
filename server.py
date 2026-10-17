@@ -40,7 +40,9 @@ import remote_access
 import security
 from cover_art import find_folder_cover as find_folder_cover_bytes, save_cover_bytes
 from dsp_engine import build_dsp_filter_chain, profile_filters, sanitize_dsp_filters
-from audio_streaming import StreamLease, StreamSlots, iter_ffmpeg_stdout, ffmpeg_supports_soxr
+from audio_streaming import (
+    StreamLease, StreamSlots, TranscodeStreamingResponse, iter_ffmpeg_stdout, ffmpeg_supports_soxr,
+)
 from db_pool import (
     DatabaseConnection,
     _return_db,
@@ -2037,8 +2039,9 @@ async def _stream_upsampled(file_path: str, target_rate: str, quality: str = "hi
         "-loglevel", "error"
     ]
 
-    return StreamingResponse(
+    return TranscodeStreamingResponse(
         iter_ffmpeg_stdout(cmd, timeout_seconds=timeout_seconds, on_close=lease.release),
+        on_close=lease.release,
         media_type="audio/wav",
         headers={
             "X-Upsampled-Rate": target_rate,
@@ -2069,8 +2072,9 @@ async def _stream_with_dsp(file_path: str, dsp_filter: str, timeout_seconds: int
         "-loglevel", "error"
     ]
 
-    return StreamingResponse(
+    return TranscodeStreamingResponse(
         iter_ffmpeg_stdout(cmd, timeout_seconds=timeout_seconds, on_close=lease.release),
+        on_close=lease.release,
         media_type="audio/flac",
         headers={
             "X-Output-Mode": "DSP",
