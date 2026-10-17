@@ -1,9 +1,11 @@
 """EQ-1 regression tests: DSP validation, explicit bypass, combined headroom."""
 import json
 import math
+import random
 import shutil
 import subprocess
 import unittest
+from pathlib import Path
 
 import dsp_engine
 from dsp_engine import (
@@ -261,6 +263,64 @@ class HeadroomPolicyTests(unittest.TestCase):
                 validate_dsp_headroom(json.loads(preset["filter_chain_json"]))
         validate_dsp_headroom([{"type": "peaking", "freq": f, "gain": 12, "q": 1.41, "enabled": True}
                                for f in (500, 1000, 2000)])
+
+
+def _random_adversarial_filter_sets(seed, count):
+    """Valid filter sets biased toward high Q at the 20 Hz and near-Nyquist edges."""
+    rng = random.Random(seed)
+    cases = [(44100, [{"type": "high_shelf", "freq": 19900, "gain": 12, "q": 10, "enabled": True}])]
+    for _ in range(count):
+        rate = rng.choice([22050, 32000, 44100, 48000, 96000, 192000])
+        top = min(20000.0, rate / 2 * 0.999)
+        filters = []
+        for _ in range(rng.randint(1, 6)):
+            freq = rng.choice([rng.uniform(20, 40), rng.uniform(top * 0.75, top), 10 ** rng.uniform(1.3, 4.3)])
+            filters.append({"type": rng.choice(["peaking", "low_shelf", "high_shelf"]),
+                            "freq": round(min(freq, top), 2), "gain": round(rng.uniform(-18, 18), 2),
+                            "q": rng.choice([10, 8, 5, round(rng.uniform(0.1, 10), 2)]), "enabled": True})
+        cases.append((rate, filters))
+    return cases
+
+
+@unittest.skipUnless(numpy is not None, "numpy required")
+class PeakSearchPropertyTests(unittest.TestCase):
+    """The refined search must never underestimate a brute-force dense sweep."""
+
+    def test_never_underestimates_brute_force_peak(self):
+        for rate, filters in _random_adversarial_filter_sets(seed=1234, count=60):
+            freqs = numpy.concatenate([numpy.geomspace(0.5, rate / 2, 200_000), [0.0, rate / 2]])
+            z1 = numpy.exp(-2j * numpy.pi * freqs / rate)
+            response = numpy.ones_like(z1)
+            for b0, b1, b2, a0, a1, a2 in dsp_engine._active_coefficients(filters, rate):
+                response *= (b0 + b1 * z1 + b2 * z1 * z1) / (a0 + a1 * z1 + a2 * z1 * z1)
+            brute = max(0.0, float(20 * numpy.log10(numpy.abs(response).max())))
+            with self.subTest(rate=rate, filters=filters):
+                self.assertGreaterEqual(peak_gain_db(filters, rate), brute - 0.01)
+
+
+@unittest.skipUnless(shutil.which("node"), "Node.js required")
+class JavaScriptParityTests(unittest.TestCase):
+    """static/js/dsp-controls.js must compute the same peaks/headroom as Python."""
+
+    def test_js_peak_and_preamp_match_python(self):
+        cases = _random_adversarial_filter_sets(seed=99, count=40)
+        script = Path(__file__).resolve().parents[1] / "static" / "js" / "dsp-controls.js"
+        runner = (
+            "const vm=require('vm'),fs=require('fs');"
+            "const ctx=vm.createContext({window:{},console,GEQ_BANDS:[],GEQ_DEFAULT_Q:1.41,currentEqGains:[]});"
+            f"vm.runInContext(fs.readFileSync({json.dumps(str(script))},'utf8'),ctx);"
+            "const cases=JSON.parse(fs.readFileSync(0,'utf8'));"
+            "ctx.cases=cases;"
+            "process.stdout.write(JSON.stringify(vm.runInContext("
+            "'cases.map(([r,f])=>dspPeakGainDb(f,r))',ctx)));"
+        )
+        result = subprocess.run(["node", "-e", runner], input=json.dumps(cases),
+                                capture_output=True, text=True, check=True)
+        js_peaks = json.loads(result.stdout)
+        self.assertEqual(len(js_peaks), len(cases))
+        for (rate, filters), js_peak in zip(cases, js_peaks):
+            with self.subTest(rate=rate, filters=filters):
+                self.assertAlmostEqual(js_peak, peak_gain_db(filters, rate), delta=0.01)
 
 
 @unittest.skipUnless(shutil.which("ffmpeg") and numpy is not None, "FFmpeg and numpy required")
