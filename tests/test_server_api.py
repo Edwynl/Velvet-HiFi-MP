@@ -1,6 +1,7 @@
 import asyncio
 import importlib.util
 import json
+import math
 import os
 import re
 import sqlite3
@@ -470,6 +471,106 @@ class ServerApiTests(unittest.TestCase):
                     resp = getattr(self.client, method)("/api/stream/1?dsp=9999")
                     self.assertEqual(resp.status_code, 404)
         self.assertIn("DSP profile not found", resp.json()["detail"])
+
+    AUTOEQ_TEXT = ("Preamp: -6.4 dB\n"
+                   "Filter 1: ON LSC Fc 105 Hz Gain 6.3 dB Q 0.70\n"
+                   "Filter 2: ON PK Fc 2840 Hz Gain 3.5 dB Q 2.43\n"
+                   "Filter 3: OFF PK Fc 3720 Hz Gain 1.1 dB Q 4.67\n"
+                   "Filter 4: ON HSC Fc 10000 Hz Gain -2.4 dB Q 0.70\n")
+
+    def test_autoeq_import_saves_an_exact_correction_preset_and_exports_it_back(self):
+        resp = self.client.post("/api/dsp/profiles/import/autoeq",
+                                json={"name": "HD 600 (AutoEq)", "text": self.AUTOEQ_TEXT})
+        self.assertEqual(resp.status_code, 200, resp.text)
+        saved = self.client.get(f"/api/dsp/profiles/{resp.json()['id']}").json()
+        self.assertEqual(saved["name"], "HD 600 (AutoEq)")
+        self.assertEqual(saved["category"], "correction")
+        self.assertEqual(json.loads(saved["tags"]), ["autoeq", "correction"])
+        self.assertEqual(saved["is_factory"], 0)
+        self.assertEqual(saved["preamp_db"], -6.4)
+        self.assertEqual(json.loads(saved["filter_chain_json"]), [
+            {"type": "low_shelf", "freq": 105.0, "gain": 6.3, "q": 0.7 / math.sqrt(2), "enabled": True},
+            {"type": "peaking", "freq": 2840.0, "gain": 3.5, "q": 2.43, "enabled": True},
+            {"type": "peaking", "freq": 3720.0, "gain": 1.1, "q": 4.67, "enabled": False},
+            {"type": "high_shelf", "freq": 10000.0, "gain": -2.4, "q": 0.7 / math.sqrt(2), "enabled": True},
+        ])
+
+        exported = self.client.get(f"/api/dsp/profiles/{resp.json()['id']}/autoeq")
+        self.assertEqual(exported.status_code, 200)
+        self.assertEqual(exported.json()["filename"], "HD 600 (AutoEq) ParametricEQ.txt")
+        again = self.client.post("/api/dsp/profiles/import/autoeq",
+                                 json={"name": "Again", "text": exported.json()["text"]}).json()
+        copy = self.client.get(f"/api/dsp/profiles/{again['id']}").json()
+        self.assertEqual(copy["filter_chain_json"], saved["filter_chain_json"])
+        self.assertEqual(copy["preamp_db"], saved["preamp_db"])
+
+    def test_autoeq_import_rejects_invalid_files_without_mutation(self):
+        before = self._dsp_profile_count()
+        for body in ({"name": "x", "text": "Filter 1: ON LS Fc 100 Hz Gain 2 dB"},
+                     {"name": "x", "text": "Preamp: -1 dB"},
+                     {"name": "", "text": self.AUTOEQ_TEXT},
+                     {"name": "x", "text": 5},
+                     {"name": "x", "text": "x" * 100_001}):
+            with self.subTest(body=str(body)[:60]):
+                self.assertEqual(self.client.post("/api/dsp/profiles/import/autoeq", json=body).status_code, 422)
+        self.assertEqual(self._dsp_profile_count(), before)
+        self.assertEqual(self.client.get("/api/dsp/profiles/9999/autoeq").status_code, 404)
+
+    def _capture_dsp_stream(self, url, tags):
+        captured = {}
+
+        async def fake_stream(fp, dsp_filter, limit, start_seconds=0):
+            captured.update(chain=dsp_filter, start=start_seconds)
+            return server.Response(b"", media_type="audio/flac")
+
+        with patch.object(server, "_stream_with_dsp", side_effect=fake_stream), \
+                patch.object(server, "read_replaygain_tags", return_value=tags):
+            resp = self.client.get(url)
+        return resp, captured.get("chain")
+
+    def test_stream_applies_replaygain_without_a_dsp_preset(self):
+        self._allow_music_root()
+        tags = {"track_gain": -6.53, "track_peak": 0.98, "album_gain": -7.1, "album_peak": 0.99}
+        resp, chain = self._capture_dsp_stream("/api/stream/1?replaygain=album", tags)
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(chain, "volume=-7.1dB:precision=double")
+        _, chain = self._capture_dsp_stream("/api/stream/1?replaygain=track", tags)
+        self.assertEqual(chain, "volume=-6.53dB:precision=double")
+        # No tags (or off): the source is streamed directly, bit for bit.
+        for url, file_tags in (("/api/stream/1?replaygain=album", {}), ("/api/stream/1", tags)):
+            with self.subTest(url=url):
+                resp, chain = self._capture_dsp_stream(url, file_tags)
+                self.assertEqual(resp.status_code, 200)
+                self.assertIsNone(chain)
+                self.assertEqual(resp.content, b"one")
+        self.assertEqual(self.client.get("/api/stream/1?replaygain=loud").status_code, 422)
+
+    def test_replaygain_only_transcode_accepts_a_start_offset(self):
+        # EQ-3's start= applies to transcoded streams; a ReplayGain gain is one.
+        self._allow_music_root()
+        captured = {}
+
+        async def fake_stream(fp, dsp_filter, limit, start_seconds=0):
+            captured.update(chain=dsp_filter, start=start_seconds)
+            return server.Response(b"", media_type="audio/flac")
+
+        with patch.object(server, "_stream_with_dsp", side_effect=fake_stream):
+            with patch.object(server, "read_replaygain_tags", return_value={"track_gain": -3.0}):
+                self.assertEqual(self.client.get("/api/stream/1?replaygain=track&start=30").status_code, 200)
+            self.assertEqual(captured, {"chain": "volume=-3.0dB:precision=double", "start": 30})
+            # Untagged: nothing to transcode, so start is refused as before.
+            with patch.object(server, "read_replaygain_tags", return_value={}):
+                self.assertEqual(self.client.get("/api/stream/1?replaygain=track&start=30").status_code, 422)
+
+    def test_track_replaygain_route_reports_what_the_stream_applies(self):
+        self._allow_music_root()
+        with patch.object(server, "read_replaygain_tags", return_value={"track_gain": 8.0, "track_peak": 0.5}):
+            info = self.client.get("/api/tracks/1/replaygain?mode=album").json()
+        self.assertEqual(info["source"], "track")
+        self.assertAlmostEqual(info["applied_db"], 20 * math.log10(2))
+        self.assertTrue(info["limited_by_peak"])
+        self.assertEqual(self.client.get("/api/tracks/1/replaygain?mode=loud").status_code, 422)
+        self.assertEqual(self.client.get("/api/tracks/999/replaygain?mode=album").status_code, 404)
 
     def _cast(self, body):
         sent = {}

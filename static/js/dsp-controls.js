@@ -480,6 +480,9 @@ function updateEQApplyState() {
   if (bypass) bypass.setAttribute('aria-pressed', String(eqEditor.bypassedProfileId !== null));
   const duplicate = $('eq-btn-duplicate');
   if (duplicate) duplicate.disabled = !draft.sourceId && !draft.edited;
+  // Export writes the saved preset, so unsaved edits are not exported.
+  const exportBtn = $('eq-btn-export');
+  if (exportBtn) exportBtn.disabled = !draft.sourceId || draft.edited;
 }
 
 function updateEQConversionNote() {
@@ -717,6 +720,103 @@ window.saveEQDraftAs = function() {
   const draft = eqActiveDraft();
   const name = String(window.prompt('Save EQ preset as', `${draft.name} Copy`) || '').trim();
   return name ? eqSaveCopy(name) : Promise.resolve();
+};
+
+// ─── AutoEq import / export ──────────────────────────────────────────────────
+// The server parses ParametricEQ.txt strictly (dsp_engine.parse_autoeq_parametric_eq)
+// and maps AutoEq's shelf Q exactly; the editor only collects the text.
+function setAutoEqImportError(message) {
+  const error = $('eq-import-error');
+  if (!error) return;
+  error.textContent = message || '';
+  error.hidden = !message;
+}
+
+window.toggleAutoEqImport = function(open) {
+  const panel = $('eq-import-panel');
+  if (!panel) return;
+  const show = typeof open === 'boolean' ? open : panel.hidden;
+  panel.hidden = !show;
+  $('eq-btn-import')?.setAttribute('aria-expanded', String(show));
+  if (show) {
+    setAutoEqImportError('');
+    $('eq-import-text')?.focus();
+  }
+};
+
+// "Sennheiser HD 600 ParametricEQ.txt" -> "Sennheiser HD 600 (AutoEq)"
+function autoEqNameFromFile(fileName) {
+  const base = String(fileName || '').replace(/\.txt$/i, '').replace(/\s*ParametricEQ$/i, '').trim();
+  return base ? `${base} (AutoEq)`.slice(0, 120) : '';
+}
+
+window.loadAutoEqFile = async function(file) {
+  if (!file) return;
+  const text = await file.text();
+  const textArea = $('eq-import-text');
+  if (textArea) textArea.value = text;
+  const nameInput = $('eq-import-name');
+  if (nameInput && !nameInput.value.trim()) nameInput.value = autoEqNameFromFile(file.name);
+  setAutoEqImportError('');
+};
+
+async function autoEqRequest(path, body) {
+  const headers = { 'Content-Type': 'application/json' };
+  if (authState.apiKey) headers['X-API-Key'] = authState.apiKey;
+  const res = await fetch('/api' + path, { method: 'POST', headers, body: JSON.stringify(body) });
+  let data = null;
+  try { data = await res.json(); } catch {}
+  if (res.status === 401) {
+    showLoginModal(data?.error);
+    throw new Error('Sign in to import presets.');
+  }
+  if (!res.ok) {
+    const detail = typeof data?.detail === 'string' ? data.detail : '';
+    throw new Error(detail.replace(/^Invalid (AutoEq|DSP) profile: /, '') || `Import failed (${res.status})`);
+  }
+  return data;
+}
+
+window.submitAutoEqImport = async function() {
+  const text = $('eq-import-text')?.value || '';
+  const name = ($('eq-import-name')?.value || '').trim();
+  if (!text.trim()) return setAutoEqImportError('Paste the ParametricEQ.txt contents or choose the file.');
+  if (!name) return setAutoEqImportError('Enter a name for the preset.');
+  const submit = $('eq-import-submit');
+  if (submit) submit.disabled = true;
+  try {
+    const res = await autoEqRequest('/dsp/profiles/import/autoeq', { name, text });
+    await loadDspProfiles();
+    eqEditor.slots[eqEditor.active] = eqSourceDraft(String(res.id));
+    window.toggleAutoEqImport(false);
+    $('eq-import-text').value = '';
+    $('eq-import-name').value = '';
+    $('eq-import-file').value = '';
+    eqRenderEditor();
+    showToast(`Imported "${name}" (not yet applied)`);
+  } catch (err) {
+    setAutoEqImportError(err.message);
+  } finally {
+    if (submit) submit.disabled = false;
+  }
+};
+
+window.exportAutoEq = async function() {
+  const draft = eqActiveDraft();
+  if (!draft.sourceId || draft.edited) return;
+  const res = await api(`/dsp/profiles/${draft.sourceId}/autoeq`);
+  if (!res?.text) {
+    showToast('Export failed');
+    return;
+  }
+  const url = URL.createObjectURL(new Blob([res.text], { type: 'text/plain' }));
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = res.filename.replace(/[\\/:*?"<>|]/g, '_');
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
 };
 
 window.closeGraphicEQ = function() {

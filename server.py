@@ -21,7 +21,7 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Optional, AsyncGenerator
+from typing import Literal, Optional, AsyncGenerator
 from dataclasses import dataclass, field
 
 import env_loader  # noqa: F401 - load .env before modules read os.environ
@@ -47,7 +47,12 @@ from dsp_engine import (
     DspValidationError,
     build_dsp_filter_chain,
     dsp_effective_status,
+    format_autoeq_parametric_eq,
+    parse_autoeq_parametric_eq,
+    profile_filters,
+    read_replaygain_tags,
     resolve_dsp_plan,
+    resolve_replaygain,
     validate_dsp_filters,
     validate_dsp_headroom,
     validate_dsp_number,
@@ -2271,6 +2276,8 @@ async def stream_track(
     dsp: int = Query(None, description="DSP profile ID to apply"),
     start: float = Query(0, ge=0, le=TRANSCODE_MAX_SECONDS,
                          description="Start offset in seconds (transcoded streams only)"),
+    replaygain: Literal["off", "track", "album"] = Query(
+        "off", description="ReplayGain from the file's tags: off|track|album"),
     timeout_minutes: int | None = Query(
         None, ge=5, le=720,
         description="Transcode time limit in minutes (default: VELVET_STREAM_TIMEOUT_MINUTES); "
@@ -2287,6 +2294,7 @@ async def stream_track(
     - dsp: DSP profile ID to apply (parametric EQ, volume, etc.)
     - start: Start offset for a transcoded (DSP/upsampled) stream; direct
       streams seek with HTTP Range instead
+    - replaygain: static track/album gain from tags (see /api/tracks/{id}/replaygain)
     - timeout_minutes: Minimum transcode time limit; long tracks get their full length
     """
     db = get_db()
@@ -2327,9 +2335,11 @@ async def stream_track(
         raise HTTPException(404, f"File not found on disk: {fp}")
 
     # Build DSP filter chain
-    dsp_filter = ""
-    if dsp_profile:
-        dsp_filter = build_dsp_filter_chain(dsp_profile, track["sample_rate"])
+    replaygain_db = 0.0
+    if replaygain != "off":
+        tags = await asyncio.to_thread(read_replaygain_tags, filesystem_path(fp))
+        replaygain_db = resolve_replaygain(tags, replaygain)["applied_db"]
+    dsp_filter = build_dsp_filter_chain(dsp_profile, track["sample_rate"], replaygain_db)
 
     # A WAV/PCM stream is not DoP: until genuine DSD marker packing and
     # compatible DAC transport are implemented, fail clearly instead of
@@ -3380,6 +3390,63 @@ def clone_dsp_profile(profile_id: int, body: dict | None = None):
     clone_id = db.execute("SELECT last_insert_rowid()").fetchone()[0]
     db.close()
     return {"id": clone_id, "name": clone_name}
+
+
+AUTOEQ_MAX_TEXT_LENGTH = 100_000
+
+
+@app.post("/api/dsp/profiles/import/autoeq")
+def import_autoeq_profile(body: dict):
+    """Save an AutoEq ParametricEQ.txt as a custom correction preset.
+
+    Filters keep the file's order and values (shelf Q mapped exactly onto
+    FFmpeg's shelves); the file's preamp is kept and the playback headroom
+    guard adds attenuation where it is not enough.
+    """
+    text = body.get("text") if isinstance(body, dict) else None
+    if not isinstance(text, str) or len(text) > AUTOEQ_MAX_TEXT_LENGTH:
+        raise HTTPException(422, f"Invalid AutoEq profile: text must be at most {AUTOEQ_MAX_TEXT_LENGTH} characters")
+    try:
+        imported = parse_autoeq_parametric_eq(text)
+    except DspValidationError as exc:
+        raise HTTPException(422, f"Invalid AutoEq profile: {exc}")
+    return create_dsp_profile({
+        "name": body.get("name"),
+        "description": "Imported from an AutoEq ParametricEQ.txt headphone correction.",
+        "category": "correction",
+        "tags": ["autoeq", "correction"],
+        "preamp_db": imported["preamp_db"],
+        "filters": imported["filters"],
+    })
+
+
+@app.get("/api/dsp/profiles/{profile_id}/autoeq")
+def export_autoeq_profile(profile_id: int):
+    """A profile's EQ as AutoEq ParametricEQ.txt (other effects are not part of the format)."""
+    db = get_db()
+    profile = db.execute("SELECT * FROM dsp_profiles WHERE id=?", (profile_id,)).fetchone()
+    db.close()
+    if not profile:
+        raise HTTPException(404, "DSP profile not found")
+    profile = dict(profile)
+    text = format_autoeq_parametric_eq(profile.get("preamp_db") or 0.0, profile_filters(profile))
+    return {"filename": f"{profile['name']} ParametricEQ.txt", "text": text}
+
+
+@app.get("/api/tracks/{track_id}/replaygain")
+def get_track_replaygain(track_id: int, mode: Literal["off", "track", "album"] = Query("album")):
+    """The ReplayGain the stream applies to a track in a mode, read from its tags."""
+    db = get_db()
+    track = db.execute("SELECT file_path FROM tracks WHERE id=?", (track_id,)).fetchone()
+    library_roots = _resolve_library_roots(db)
+    db.close()
+    if not track:
+        raise HTTPException(404, "Track not found")
+    resolved_path = Path(track["file_path"]).resolve()
+    if not any(resolved_path == root or resolved_path.is_relative_to(root) for root in library_roots):
+        raise HTTPException(403, "Access denied: path outside configured libraries")
+    tags = read_replaygain_tags(filesystem_path(track["file_path"])) if mode != "off" else {}
+    return resolve_replaygain(tags, mode)
 
 
 @app.delete("/api/dsp/profiles/{profile_id}")

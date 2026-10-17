@@ -36,6 +36,13 @@ const STUDIO_PEQ_FILTERS = [
   { type: 'peaking', freq: 3150, gain: -2.5, q: 6, enabled: true },
 ];
 
+// What the server stores for "Filter 1: ON LSC Fc 105 Hz Gain 6.3 dB Q 0.70" etc.
+const AUTOEQ_IMPORTED_FILTERS = [
+  { type: 'low_shelf', freq: 105, gain: 6.3, q: 0.7 / Math.SQRT2, enabled: true },
+  { type: 'peaking', freq: 2840, gain: 3.5, q: 2.43, enabled: true },
+  { type: 'peaking', freq: 3720, gain: 1.1, q: 4.67, enabled: false },
+];
+
 function createHarness() {
   let nextProfileId = 100;
   const requests = [];
@@ -199,6 +206,30 @@ function createHarness() {
       });
       dspProfiles.push(clone);
       return makeJsonResponse({ id: clone.id, name: clone.name });
+    }
+
+    // EQ-4: the server parses ParametricEQ.txt; this fake rejects LS lines
+    // the way dsp_engine does and stores the filters the real parser returns.
+    if (parsedUrl.pathname === '/api/dsp/profiles/import/autoeq' && method === 'POST') {
+      if (/\bLS\b/.test(body?.text || '')) {
+        return makeJsonResponse({ detail: 'Invalid AutoEq profile: line 2: filter type LS is not supported (PK, LSC or HSC)' }, 422);
+      }
+      const profile = normalizeProfile({
+        id: nextProfileId++,
+        name: body.name,
+        category: 'correction',
+        preamp_db: -6.4,
+        filter_chain_json: JSON.stringify(AUTOEQ_IMPORTED_FILTERS),
+        tags: JSON.stringify(['autoeq', 'correction']),
+      });
+      dspProfiles.push(profile);
+      return makeJsonResponse({ id: profile.id, name: profile.name });
+    }
+
+    const exportMatch = parsedUrl.pathname.match(/^\/api\/dsp\/profiles\/(\d+)\/autoeq$/);
+    if (exportMatch && method === 'GET') {
+      const profile = dspProfiles.find(item => String(item.id) === exportMatch[1]);
+      return makeJsonResponse({ filename: `${profile.name} ParametricEQ.txt`, text: 'Preamp: -6.4 dB\n' });
     }
 
     if (parsedUrl.pathname === '/api/recently-added' && method === 'GET') {
@@ -781,9 +812,105 @@ async function eqEditorFidelityChecks() {
   }
 }
 
+// EQ-4: AutoEq import/export in the EQ editor, and ReplayGain as a player setting.
+async function autoEqAndReplayGainChecks() {
+  const harness = createHarness();
+  const dom = await harness.createDom();
+  const { document } = dom.window;
+  const draft = () => JSON.parse(dom.window.eval('JSON.stringify(eqActiveDraft())'));
+  const downloads = [];
+  dom.window.URL.createObjectURL = blob => { downloads.push(blob); return 'blob:autoeq'; };
+  dom.window.URL.revokeObjectURL = () => {};
+  const savedAs = [];
+  dom.window.HTMLAnchorElement.prototype.click = function() { savedAs.push(this.download); };
+  const blobText = blob => new Promise(resolve => {
+    const reader = new dom.window.FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.readAsText(blob);
+  });
+  try {
+    await dom.window.loadDspProfiles();
+    await dom.window.openGraphicEQ();
+    const panel = document.querySelector('#eq-import-panel');
+    assert.equal(panel.hidden, true);
+    document.querySelector('#eq-btn-import').click();
+    assert.equal(panel.hidden, false);
+    assert.equal(document.querySelector('#eq-btn-import').getAttribute('aria-expanded'), 'true');
+
+    // A rejected file keeps the panel and the pasted text, and says why.
+    const bad = 'Preamp: -1 dB\nFilter 1: ON LS Fc 100 Hz Gain 2 dB';
+    document.querySelector('#eq-import-text').value = bad;
+    document.querySelector('#eq-import-submit').click();
+    await waitFor(() => !document.querySelector('#eq-import-error').hidden);
+    assert.equal(document.querySelector('#eq-import-error').textContent, 'Enter a name for the preset.');
+    document.querySelector('#eq-import-name').value = 'HD 600 (AutoEq)';
+    document.querySelector('#eq-import-submit').click();
+    await waitFor(() => /line 2/.test(document.querySelector('#eq-import-error').textContent));
+    assert.match(document.querySelector('#eq-import-error').textContent, /^line 2: filter type LS/);
+    assert.equal(document.querySelector('#eq-import-text').value, bad);
+    assert.equal(panel.hidden, false);
+
+    // A chosen file fills the text and a name derived from the file name.
+    document.querySelector('#eq-import-name').value = '';
+    const good = 'Preamp: -6.4 dB\nFilter 1: ON LSC Fc 105 Hz Gain 6.3 dB Q 0.70\n';
+    await dom.window.loadAutoEqFile({ name: 'Sennheiser HD 600 ParametricEQ.txt', text: async () => good });
+    assert.equal(document.querySelector('#eq-import-text').value, good);
+    assert.equal(document.querySelector('#eq-import-name').value, 'Sennheiser HD 600 (AutoEq)');
+    const selectedBefore = document.querySelector('#dsp-select').value;
+    document.querySelector('#eq-import-submit').click();
+    await waitFor(() => document.querySelector('#eq-current-name').textContent === 'Sennheiser HD 600 (AutoEq)');
+    const imported = harness.dspProfiles.find(p => p.name === 'Sennheiser HD 600 (AutoEq)');
+    assert.ok(harness.requests.some(r => r.path === '/api/dsp/profiles/import/autoeq' && r.body.text === good));
+    // The editor shows the stored filters exactly, previewed but not applied.
+    assert.deepEqual(draft().filters, AUTOEQ_IMPORTED_FILTERS);
+    assert.equal(draft().preampDb, -6.4);
+    assert.equal(draft().edited, false);
+    assert.equal(panel.hidden, true);
+    assert.equal(document.querySelector('#eq-apply-state').textContent.trim(), 'Preview (not yet applied)');
+    assert.equal(document.querySelector('#dsp-select').value, selectedBefore);
+    assert.ok(document.querySelector(`#dsp-select option[value="${imported.id}"]`), 'imported preset is selectable');
+
+    // Export downloads the saved preset; an edited draft cannot be exported.
+    assert.equal(document.querySelector('#eq-btn-export').disabled, false);
+    document.querySelector('#eq-btn-export').click();
+    await waitFor(() => downloads.length === 1);
+    assert.equal(await blobText(downloads[0]), 'Preamp: -6.4 dB\n');
+    assert.deepEqual(savedAs, ['Sennheiser HD 600 (AutoEq) ParametricEQ.txt']);
+    dom.window.handleEQSliderInput(2, '1');
+    assert.equal(document.querySelector('#eq-btn-export').disabled, true);
+    await dom.window.selectEQPreset('');
+    assert.equal(document.querySelector('#eq-btn-export').disabled, true);
+
+    // ReplayGain: off by default, persisted, and sent only with browser streams.
+    const replaygain = document.querySelector('#eq-replaygain');
+    assert.equal(replaygain.value, 'off');
+    assert.doesNotMatch(dom.window.streamUrl(5, 'none'), /replaygain/);
+    replaygain.value = 'album';
+    replaygain.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
+    assert.equal(dom.window.localStorage.getItem('velvet:replaygain'), 'album');
+    assert.match(dom.window.streamUrl(5, 'none'), /^\/api\/stream\/5\?upsample=none&replaygain=album$/);
+    const browserLines = dom.window.describeSignalProcessing('browser', null, 'none', null, null,
+      { mode: 'album', applied_db: -7.1, reason: null });
+    assert.ok(browserLines.includes('ReplayGain album: -7.10 dB'), browserLines.join(' | '));
+    const untagged = dom.window.describeSignalProcessing('browser', null, 'none', null, null,
+      { mode: 'track', applied_db: 0, reason: 'No ReplayGain tags' });
+    assert.ok(untagged.includes('ReplayGain track: 0.00 dB (No ReplayGain tags)'));
+    assert.ok(dom.window.describeSignalProcessing('cast', null, 'none', null, null, { mode: 'album' })
+      .includes('ReplayGain not applied on this renderer'));
+    assert.ok(dom.window.describeSignalProcessing('native', null, 'none', null, null, { mode: 'album' })
+      .includes('ReplayGain not applied on this output'));
+    replaygain.value = 'off';
+    replaygain.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
+    assert.doesNotMatch(dom.window.streamUrl(5, 'none'), /replaygain/);
+  } finally {
+    dom.window.close();
+  }
+}
+
 try {
   await main();
   await eqEditorFidelityChecks();
+  await autoEqAndReplayGainChecks();
   console.log('frontend_dsp_settings_check=OK');
   process.exit(0);
 } catch (error) {
