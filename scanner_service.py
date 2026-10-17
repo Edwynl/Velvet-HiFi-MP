@@ -420,6 +420,15 @@ def _artist_id(db: sqlite3.Connection, artist_name: str, artists_cache: dict[str
         elif (alias_owner := resolve_alias(db, artist_name)) is not None:
             # A name merged into another artist must not recreate its row.
             artist_id = alias_owner
+        elif (
+            folded := db.execute(
+                "SELECT id FROM artists WHERE name=? COLLATE NOCASE ORDER BY id LIMIT 1", (artist_name,)
+            ).fetchone()
+        ) is not None:
+            # "G-DRAGON" and "G-Dragon" are one artist. artist_aliases.name is
+            # UNIQUE COLLATE NOCASE, so a case-only spelling cannot be stored as
+            # an alias at all; without this the next scan inserts it again.
+            artist_id = folded["id"] if isinstance(folded, sqlite3.Row) else folded[0]
         else:
             db.execute(
                 "INSERT INTO artists (name, sort_name) VALUES (?, ?)",

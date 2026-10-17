@@ -175,6 +175,24 @@ class ArtistMergeTests(unittest.TestCase):
             count = conn.execute("SELECT COUNT(*) FROM artists").fetchone()[0]
         self.assertEqual(count, 2)
 
+    def test_case_only_spelling_folds_instead_of_recreating_the_artist(self):
+        with self._connect() as conn:
+            # artist_aliases.name is UNIQUE COLLATE NOCASE, so "KAREN MOK"
+            # cannot be recorded as an alias of "Karen Mok" at all.
+            self.assertFalse(add_alias(conn, 2, "KAREN MOK"))
+            cache: dict[str, int] = {}
+            self.assertEqual(_artist_id(conn, "KAREN MOK", cache), 2)
+            self.assertEqual(_artist_id(conn, "Karen MOK", cache), 2)
+            names = [row["name"] for row in conn.execute("SELECT name FROM artists ORDER BY id")]
+        self.assertEqual(names, ["莫文蔚", "Karen Mok", "Somebody Else"])
+
+    def test_a_genuinely_different_artist_is_still_created(self):
+        with self._connect() as conn:
+            new_id = _artist_id(conn, "Karen Williams", {})
+            names = [row["name"] for row in conn.execute("SELECT name FROM artists ORDER BY id")]
+        self.assertEqual(names, ["莫文蔚", "Karen Mok", "Somebody Else", "Karen Williams"])
+        self.assertNotIn(new_id, (1, 2, 3))
+
     def test_artist_lists_and_track_search_match_aliases(self):
         with self._connect() as conn:
             merge_artists(conn, 1, [2])
