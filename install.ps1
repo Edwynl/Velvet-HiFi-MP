@@ -30,6 +30,21 @@ function Test-Command {
     return [bool](Get-Command $Name -ErrorAction SilentlyContinue)
 }
 
+function Invoke-NativeOutput {
+    # Windows PowerShell 5.1 wraps redirected native stderr in ErrorRecords, so
+    # under "Stop" a tool that merely writes to stderr (ffmpeg's banner and
+    # -buildconf, a Python warning) aborts the whole script. Relax the
+    # preference for this call only and return stdout+stderr as plain text;
+    # callers check $LASTEXITCODE.
+    param(
+        [Parameter(Mandatory = $true)][string]$Exe,
+        [string[]]$Arguments = @()
+    )
+
+    $ErrorActionPreference = "Continue"
+    & $Exe @Arguments 2>&1 | ForEach-Object { "$_" } | Out-String
+}
+
 function Invoke-WingetInstall {
     param(
         [string]$PackageId,
@@ -60,7 +75,7 @@ function Get-PythonCommand {
         }
 
         $versionArgs = @($candidate.Args + @("-c", "import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)"))
-        & $candidate.Exe @versionArgs *> $null
+        $null = Invoke-NativeOutput $candidate.Exe $versionArgs
         if ($LASTEXITCODE -eq 0) {
             return [pscustomobject]$candidate
         }
@@ -142,7 +157,7 @@ function Test-ToolOnPath {
     }
 
     if ($Tool -eq "ffmpeg") {
-        & $Tool -version *> $null
+        $null = Invoke-NativeOutput $Tool @("-version")
         return ($LASTEXITCODE -eq 0)
     }
 
@@ -206,7 +221,7 @@ if (-not (Test-ToolOnPath "ffmpeg")) {
     }
 } else {
     Write-Ok "FFmpeg is available"
-    $ffmpegConfig = & ffmpeg -buildconf 2>&1 | Out-String
+    $ffmpegConfig = Invoke-NativeOutput "ffmpeg" @("-hide_banner", "-buildconf")
     if ($ffmpegConfig -notmatch '--enable-libsoxr') {
         Write-Warn "This FFmpeg build lacks libsoxr. Install the full build (Gyan.FFmpeg) for PCM upsampling, then restart VELVET."
     }
