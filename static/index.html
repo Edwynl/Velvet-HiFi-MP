@@ -4858,7 +4858,9 @@ input[type=range]::-webkit-slider-thumb:hover { background: var(--gold); }
       padding: 16px 24px;
       position: sticky;
       top: 0;
-      background: var(--bg-color);
+      /* --bg-color is not defined: without a fallback the sticky header
+         was transparent over the scrolled curve. */
+      background: var(--bg-color, #000);
       z-index: 10;
     }
     .eq-title {
@@ -4913,32 +4915,121 @@ input[type=range]::-webkit-slider-thumb:hover { background: var(--gold); }
     .eq-curve-path {
       filter: drop-shadow(0 0 8px rgba(230, 195, 100, 0.4));
     }
-    .eq-curve-labels {
-      position: absolute;
-      inset: 0;
-      padding: 16px 24px;
-      pointer-events: none;
-      display: flex;
-      flex-direction: column;
-      justify-content: space-between;
-    }
-    .eq-curve-y-labels {
-      display: flex;
-      justify-content: space-between;
-      color: rgba(255,255,255,0.2);
-      font-family: 'DM Mono', monospace;
-      font-size: 10px;
-    }
+    .eq-curve-y-labels,
     .eq-curve-x-labels {
       position: absolute;
-      bottom: 16px;
-      left: 24px;
-      right: 24px;
-      display: flex;
-      justify-content: space-between;
-      color: rgba(255,255,255,0.2);
+      inset: 0;
+      pointer-events: none;
+      color: rgba(255,255,255,0.32);
       font-family: 'DM Mono', monospace;
       font-size: 10px;
+    }
+    .eq-curve-y-labels span {
+      position: absolute;
+      left: 10px;
+      transform: translateY(-50%);
+    }
+    .eq-curve-y-labels span:first-child { transform: translateY(0); }
+    .eq-curve-x-labels span {
+      position: absolute;
+      bottom: 8px;
+      transform: translateX(-50%);
+      white-space: nowrap;
+    }
+    .eq-curve-ghost {
+      stroke: rgba(242, 238, 230, 0.5);
+      stroke-width: 1.5;
+      stroke-dasharray: 6 5;
+    }
+    .eq-preamp-line {
+      stroke: #7fb3d5;
+      stroke-width: 1.25;
+      stroke-dasharray: 3 4;
+    }
+    .eq-preamp-label {
+      position: absolute;
+      right: 12px;
+      transform: translateY(-130%);
+      color: #7fb3d5;
+      font-family: 'DM Mono', monospace;
+      font-size: 10px;
+      pointer-events: none;
+      white-space: nowrap;
+    }
+    .eq-curve-legend {
+      position: absolute;
+      top: 10px;
+      right: 14px;
+      display: flex;
+      gap: 12px;
+      font-family: 'DM Mono', monospace;
+      font-size: 10px;
+      color: rgba(255,255,255,0.45);
+      pointer-events: none;
+    }
+    .eq-curve-legend span::before {
+      content: '';
+      display: inline-block;
+      width: 14px;
+      height: 0;
+      margin-right: 5px;
+      vertical-align: middle;
+      border-top: 2px solid #e6c364;
+    }
+    .eq-curve-legend .eq-legend-preamp::before { border-top: 1px dashed #7fb3d5; }
+    .eq-curve-legend .eq-legend-ghost::before { border-top: 1px dashed rgba(242,238,230,0.6); }
+    .eq-curve-container:not(.has-ghost) .eq-legend-ghost { display: none; }
+    .eq-curve-container.is-bypassed svg { opacity: 0.3; }
+    .eq-conversion-note {
+      margin: -16px 0 0;
+      padding: 10px 14px;
+      border-left: 2px solid var(--gold);
+      background: rgba(230, 195, 100, 0.06);
+      border-radius: 0 10px 10px 0;
+      color: var(--text-muted);
+      font-size: 0.8125rem;
+      line-height: 1.45;
+    }
+    .eq-conversion-note[hidden] { display: none; }
+    .eq-toolbar {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: -12px;
+    }
+    .eq-tool-btn {
+      padding: 8px 16px;
+      min-height: 36px;
+      border-radius: 10px;
+      font-family: 'DM Mono', monospace;
+      font-size: 0.6875rem;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--text-muted);
+      border: 1px solid rgba(255,255,255,0.1);
+      background: transparent;
+      cursor: pointer;
+      transition: background 0.2s, color 0.2s, border-color 0.2s;
+    }
+    .eq-tool-btn:hover:not(:disabled) { background: rgba(255,255,255,0.08); color: var(--text-color); }
+    .eq-tool-btn[aria-pressed="true"] { color: var(--gold); border-color: var(--gold); }
+    .eq-tool-btn:disabled { opacity: 0.4; cursor: default; }
+    .eq-status-block { min-width: 0; }
+    .eq-status-kicker {
+      font-family: 'DM Mono', monospace;
+      font-size: 10px;
+      text-transform: uppercase;
+      color: var(--text-muted);
+      margin-bottom: 4px;
+    }
+    .eq-apply-state[data-state="preview"] { color: #e8a65a; }
+    .eq-apply-state[data-state="applied"] { color: #8fc79a; }
+    .eq-apply-state[data-state="bypassed"] { color: #7fb3d5; }
+    .eq-current-name {
+      font-family: 'Cormorant Garamond', serif;
+      font-size: 1.125rem;
+      font-style: italic;
+      color: var(--text-color);
     }
     /* Sliders */
     .eq-sliders-panel {
@@ -5057,20 +5148,6 @@ input[type=range]::-webkit-slider-thumb:hover { background: var(--gold); }
       color: var(--gold);
       border-left-color: var(--gold);
     }
-    .eq-btn-reset {
-      padding: 8px 24px;
-      border-radius: 12px;
-      font-family: 'DM Mono', monospace;
-      font-size: 0.75rem;
-      text-transform: uppercase;
-      letter-spacing: 0.1em;
-      color: var(--text-muted);
-      border: 1px solid rgba(255,255,255,0.1);
-      background: transparent;
-      cursor: pointer;
-      transition: background 0.2s;
-    }
-    .eq-btn-reset:hover { background: rgba(255,255,255,0.1); }
     .eq-btn-save {
       padding: 8px 24px;
       border-radius: 12px;
@@ -5135,7 +5212,7 @@ input[type=range]::-webkit-slider-thumb:hover { background: var(--gold); }
     }
     @media (max-width: 768px), (orientation: portrait) and (min-width: 769px) and (max-width: 900px) {
       .eq-overlay {
-        padding: calc(env(safe-area-inset-top, 0px) + 14px) 14px calc(env(safe-area-inset-bottom, 0px) + 92px);
+        padding: calc(env(safe-area-inset-top, 0px) + 14px) 14px 0;
       }
       .eq-header {
         padding: 10px 0 12px;
@@ -5144,9 +5221,16 @@ input[type=range]::-webkit-slider-thumb:hover { background: var(--gold); }
         font-size: 1.25rem;
       }
       .eq-container {
-        padding: 0;
+        /* Room for the fixed status/Apply bar: scroll containers drop
+           their own bottom padding, so the content carries it. */
+        padding: 0 0 calc(env(safe-area-inset-bottom, 0px) + 140px);
+        /* Portrait tablets too: presets on top, not in a narrow side column. */
+        grid-template-columns: minmax(0, 1fr);
         gap: 18px;
         overflow-x: hidden;
+        /* overflow-x makes the flex item shrinkable to the viewport, which
+           cut the sliders off instead of letting the overlay scroll. */
+        flex-shrink: 0;
       }
       .eq-container > aside,
       .eq-workspace {
@@ -5190,9 +5274,51 @@ input[type=range]::-webkit-slider-thumb:hover { background: var(--gold); }
         padding: 24px 14px;
         border-radius: 16px;
       }
+      /* All 10 bands fit the width: no sideways scroll on a phone. */
+      .eq-sliders-panel {
+        overflow-x: hidden;
+      }
       .eq-sliders-wrapper {
-        min-width: 720px;
-        width: max-content;
+        min-width: 0;
+        width: 100%;
+        gap: 2px;
+      }
+      .eq-band {
+        flex: 1 1 0;
+        min-width: 0;
+        gap: 12px;
+      }
+      .eq-band-gain {
+        min-width: 0;
+        font-size: 0.625rem;
+      }
+      .eq-band-freq {
+        font-size: 0.5625rem;
+      }
+      .eq-unit {
+        display: none;
+      }
+      .eq-slider-track {
+        height: 160px;
+      }
+      .eq-vertical-slider {
+        width: 160px;
+      }
+      .eq-toolbar {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        margin-top: -6px;
+      }
+      .eq-tool-btn {
+        padding: 8px 6px;
+        min-height: 40px;
+      }
+      .eq-conversion-note {
+        margin-top: -8px;
+      }
+      .eq-curve-legend {
+        gap: 8px;
+        right: 10px;
       }
       .eq-controls-panel {
         position: fixed;
@@ -5203,6 +5329,7 @@ input[type=range]::-webkit-slider-thumb:hover { background: var(--gold); }
         margin: 0;
         border-radius: 18px 18px 0 0;
         padding: 12px 16px calc(env(safe-area-inset-bottom, 0px) + 12px);
+        flex-wrap: nowrap;
         background: rgba(14, 14, 16, 0.96);
         backdrop-filter: blur(16px);
       }
@@ -6262,23 +6389,20 @@ input[type=range]::-webkit-slider-thumb:hover { background: var(--gold); }
 
     <!-- Main Workspace -->
     <div class="eq-workspace">
-      <!-- Frequency Response Curve -->
-      <div class="eq-curve-container">
-        <div class="frequency-grid"></div>
-        <div class="eq-curve-labels">
-          <div class="eq-curve-y-labels">
-            <span>+12dB</span>
-            <span>0dB</span>
-            <span>-12dB</span>
-          </div>
-        </div>
-        <svg viewBox="0 0 1000 300" id="eq-curve-svg" style="width:100%; height:100%; position: absolute; inset: 0;">
+      <!-- Frequency Response Curve: the real cascaded biquad response -->
+      <div class="eq-curve-container" id="eq-curve-container">
+        <div class="eq-curve-y-labels" id="eq-curve-y-labels" aria-hidden="true"></div>
+        <svg viewBox="0 0 1000 300" preserveAspectRatio="none" id="eq-curve-svg" role="img" aria-label="EQ frequency response" style="width:100%; height:100%; position: absolute; inset: 0;">
           <!-- Baseline -->
-          <line stroke="rgba(153, 144, 126, 0.1)" stroke-width="1" x1="0" x2="1000" y1="150" y2="150"></line>
+          <line stroke="rgba(153, 144, 126, 0.25)" stroke-width="1" x1="0" x2="1000" y1="150" y2="150" vector-effect="non-scaling-stroke"></line>
           <!-- Area under curve -->
-          <path id="eq-curve-fill" d="M 0 150 L 1000 150 V 300 H 0 Z" fill="url(#goldGradientEQ)" opacity="0.05"></path>
+          <path id="eq-curve-fill" d="M 0 150 L 1000 150 Z" fill="url(#goldGradientEQ)" opacity="0.08"></path>
+          <!-- Other A/B slot, level-matched through its preamp -->
+          <path id="eq-curve-ghost" class="eq-curve-ghost" d="" fill="none" vector-effect="non-scaling-stroke"></path>
+          <!-- Effective preamp the server applies -->
+          <line id="eq-preamp-line" class="eq-preamp-line" x1="0" x2="1000" y1="150" y2="150" vector-effect="non-scaling-stroke"></line>
           <!-- Dynamic Path -->
-          <path id="eq-curve-path" class="eq-curve-path" d="M 0 150 L 1000 150" fill="none" stroke="#e6c364" stroke-width="3"></path>
+          <path id="eq-curve-path" class="eq-curve-path" d="M 0 150 L 1000 150" fill="none" stroke="#e6c364" stroke-width="2.5" vector-effect="non-scaling-stroke"></path>
           <defs>
             <linearGradient id="goldGradientEQ" x1="0%" y1="0%" x2="0%" y2="100%">
               <stop offset="0%" style="stop-color:#e6c364;stop-opacity:1"></stop>
@@ -6286,9 +6410,22 @@ input[type=range]::-webkit-slider-thumb:hover { background: var(--gold); }
             </linearGradient>
           </defs>
         </svg>
-        <div class="eq-curve-x-labels">
-          <span>31.5Hz</span><span>125Hz</span><span>500Hz</span><span>2kHz</span><span>8kHz</span><span>16kHz</span>
+        <span id="eq-preamp-label" class="eq-preamp-label">Preamp 0.0 dB</span>
+        <div class="eq-curve-legend" aria-hidden="true">
+          <span class="eq-legend-curve">EQ</span><span class="eq-legend-preamp">Preamp</span><span class="eq-legend-ghost">Other slot</span>
         </div>
+        <div class="eq-curve-x-labels" aria-hidden="true">
+          <span style="left:5.87%">30</span><span style="left:23.3%">100</span><span style="left:39.2%">300</span><span style="left:56.63%">1k</span><span style="left:72.53%">3k</span><span style="left:89.97%">10k Hz</span>
+        </div>
+      </div>
+      <p id="eq-conversion-note" class="eq-conversion-note" hidden></p>
+
+      <div class="eq-toolbar" role="toolbar" aria-label="EQ editor tools">
+        <button class="eq-tool-btn" id="eq-btn-ab" aria-pressed="false" title="Switch between two edit slots; the other slot is drawn level-matched through its preamp">A/B: A</button>
+        <button class="eq-tool-btn" id="eq-btn-bypass" aria-pressed="false" title="Listen without EQ; press again to restore">Bypass</button>
+        <button class="eq-tool-btn" id="eq-btn-reset" title="Discard unsaved edits to this slot">Reset</button>
+        <button class="eq-tool-btn" id="eq-btn-duplicate" title="Save a copy of this slot as a new custom preset">Duplicate</button>
+        <button class="eq-tool-btn" id="eq-btn-save-as" title="Save this slot as a new preset with a name">Save as…</button>
       </div>
 
       <!-- Graphic EQ Sliders -->
@@ -6300,17 +6437,12 @@ input[type=range]::-webkit-slider-thumb:hover { background: var(--gold); }
 
       <!-- Quick Controls -->
       <div class="eq-controls-panel">
-        <div style="display:flex; gap: 32px">
-            <div>
-              <p style="font-family: 'DM Mono', monospace; font-size: 10px; text-transform: uppercase; color: var(--text-muted); margin-bottom: 4px;">Preset</p>
-              <p id="eq-current-name" style="font-family: 'Cormorant Garamond', serif; font-size: 1.125rem; font-style: italic; color: var(--text-color);">Custom EQ</p>
-              <p id="eq-headroom-note" class="eq-headroom-note">Headroom: 0.0 dB</p>
-            </div>
+        <div class="eq-status-block">
+          <p class="eq-status-kicker">Preset · <span id="eq-apply-state" class="eq-apply-state" data-state="preview" aria-live="polite">Preview (not yet applied)</span></p>
+          <p id="eq-current-name" class="eq-current-name">Custom EQ</p>
+          <p id="eq-headroom-note" class="eq-headroom-note">Headroom: 0.0 dB</p>
         </div>
-        <div style="display:flex; gap: 16px;">
-          <button class="eq-btn-reset" id="eq-btn-reset">Reset</button>
-          <button class="eq-btn-save" id="eq-btn-save">Save & Apply</button>
-        </div>
+        <button class="eq-btn-save" id="eq-btn-save">Save & Apply</button>
       </div>
     </div>
   </div>
@@ -8452,7 +8584,7 @@ UI['mobile-top-eq']?.addEventListener('click', (e) => {
 });
 UI['eq-close-btn']?.addEventListener('click', (e) => {
   e.stopPropagation();
-  UI['eq-overlay']?.classList.remove('active');
+  window.closeGraphicEQ();
 });
 UI['mobile-top-vu']?.addEventListener('click', (e) => { e.stopPropagation(); toggleVUMeters(); });
 UI['mobile-top-upsample'].addEventListener('click', (e) => {
@@ -9286,8 +9418,6 @@ function setupSearch({ autoFocus = state.view === 'search' } = {}) {
 const GEQ_BANDS = [31.5, 63, 125, 250, 500, 1000, 2000, 4000, 8000, 16000];
 const GEQ_DEFAULT_Q = 1.41;
 let currentEqGains = new Array(10).fill(0);
-let currentEqProfileId = null;
-let currentEqDirty = false;
 
 // dsp-controls functions are loaded from /static/js/dsp-controls.js.
 
@@ -9885,80 +10015,12 @@ window.addEventListener('DOMContentLoaded', async () => {
   maintainStreamTicket();
   log('[VELVET] DOM ready, performing initial navigation...');
   // EQ Controls
-  UI['eq-btn-reset']?.addEventListener('click', () => {
-    currentEqGains.fill(0);
-    if (UI['eq-current-name']) UI['eq-current-name'].textContent = 'Off';
-    currentEqProfileId = '';
-    currentEqDirty = false;
-    renderEQSliders();
-    renderEQPresets();
-    updateEQCurve();
-    updateEQHeadroomNote();
-    updateEQSaveButtonLabel();
-  });
-
-  UI['eq-btn-save']?.addEventListener('click', async () => {
-    const btn = UI['eq-btn-save'];
-    if (btn) btn.textContent = 'Saving...';
-    
-    const filters = [];
-    GEQ_BANDS.forEach((f, i) => {
-      if (Math.abs(currentEqGains[i]) > 0.05) {
-        filters.push({ type: 'peaking', freq: f, gain: currentEqGains[i], q: GEQ_DEFAULT_Q });
-      }
-    });
-    
-    try {
-      const existingProfile = state.dspProfiles.find(p => String(p.id) === String(currentEqProfileId));
-      const isExistingCustom = existingProfile && !existingProfile.is_factory;
-      if (!currentEqDirty && (existingProfile || !currentEqProfileId)) {
-        const dispatched = applyEqProfileToPlayer(existingProfile?.id || '');
-        if (!dispatched) showToast(existingProfile ? `DSP: ${existingProfile.name}` : 'DSP: Off');
-        UI['eq-overlay']?.classList.remove('active');
-        updateEQSaveButtonLabel();
-        return;
-      }
-      if (!filters.length && !isExistingCustom) {
-        showToast('No EQ changes to save');
-        updateEQSaveButtonLabel();
-        return;
-      }
-
-      const profile = {
-        name: 'Custom EQ',
-        description: 'Saved from the EQ Editor.',
-        category: 'custom',
-        preamp_db: recommendedGraphicEqPreamp(),
-        filters: filters,
-        tags: ['custom', 'graphic-eq']
-      };
-      if (isExistingCustom) {
-        profile.name = existingProfile.name || profile.name;
-        profile.description = existingProfile.description || profile.description;
-      }
-      const endpoint = isExistingCustom ? `/dsp/profiles/${existingProfile.id}` : '/dsp/profiles';
-      const method = isExistingCustom ? 'PUT' : 'POST';
-      const res = await api(endpoint, { method, body: JSON.stringify(profile) });
-      if (res && (res.success || res.id)) {
-        const savedProfileId = String(res?.id || res?.profile_id || res?.profile?.id || existingProfile?.id || '');
-        await loadDspProfiles();
-        const select = $('dsp-select');
-        if (select && savedProfileId) {
-          currentEqProfileId = savedProfileId;
-          state.lastEqProfile = savedProfileId;
-          state.dspProfile = savedProfileId;
-          select.value = savedProfileId;
-          select.dispatchEvent(new Event('change', { bubbles: true }));
-        }
-        currentEqDirty = false;
-        showToast('Preset saved and applied');
-        UI['eq-overlay']?.classList.remove('active');
-      }
-    } catch (err) {
-      showToast('Failed to save EQ');
-    }
-    updateEQSaveButtonLabel();
-  });
+  UI['eq-btn-reset']?.addEventListener('click', () => window.resetEQDraft());
+  UI['eq-btn-save']?.addEventListener('click', () => window.saveEQDraft());
+  UI['eq-btn-ab']?.addEventListener('click', () => window.toggleEQAB());
+  UI['eq-btn-bypass']?.addEventListener('click', () => window.toggleEQBypass());
+  UI['eq-btn-duplicate']?.addEventListener('click', () => window.duplicateEQDraft());
+  UI['eq-btn-save-as']?.addEventListener('click', () => window.saveEQDraftAs());
 
   // Initialization sequence MUST await first navigation
   const hash = location.hash.replace('#', '');

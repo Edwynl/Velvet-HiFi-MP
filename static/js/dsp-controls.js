@@ -10,11 +10,12 @@ function renderEQPresets() {
   const container = $('eq-presets-container');
   if (!container || !state.dspProfiles) return;
   
-  let html = `<button class="eq-preset-btn ${!currentEqProfileId ? 'active' : ''}" onclick="selectEQPreset('')">Off</button>`;
+  const sourceId = eqActiveDraft().sourceId;
+  let html = `<button class="eq-preset-btn ${!sourceId ? 'active' : ''}" onclick="selectEQPreset('')">Off</button>`;
   const usedLabels = new Map([['Off', 1]]);
   
   visibleDspProfiles(state.dspProfiles).forEach((profile, i) => {
-    const isActive = String(currentEqProfileId || '') === String(profile.id);
+    const isActive = sourceId === String(profile.id);
     const shortLabel = uniqueDspLabel(dspDisplayLabel(profile, `DSP ${i + 1}`), usedLabels);
     html += `<button class="eq-preset-btn ${isActive ? 'active' : ''}" title="${escHtml(profile.name || shortLabel)}" onclick="selectEQPreset('${profile.id}')">${escHtml(shortLabel)}</button>`;
   });
@@ -153,9 +154,9 @@ function dspPeakGainDb(filters, sampleRate = EQ_ANALYSIS_SAMPLE_RATE) {
   return Math.max(0, best);
 }
 
-function graphicEqFilters() {
+function graphicEqFilters(gains = currentEqGains) {
   return GEQ_BANDS
-    .map((freq, i) => ({ type: 'peaking', freq, gain: Number(currentEqGains[i]) || 0, q: GEQ_DEFAULT_Q, enabled: true }))
+    .map((freq, i) => ({ type: 'peaking', freq, gain: Number(gains[i]) || 0, q: GEQ_DEFAULT_Q, enabled: true }))
     .filter(f => Math.abs(f.gain) > 0.05);
 }
 
@@ -177,11 +178,140 @@ function dspWorstCasePreampDb(filters) {
   return dspWorstCaseHeadroom(filters).preampDb;
 }
 
+// Same as dsp_engine._guarded_processing at an unknown source rate: the saved
+// preamp is kept while it leaves DSP_HEADROOM_GUARD_MIN_DB of headroom at the
+// worst-case rate; otherwise playback applies the recommended preamp instead.
+const DSP_HEADROOM_GUARD_MIN_DB = 0.5;
+
+function dspGuardedPreampDb(peakDb, preampDb, neededDb) {
+  const insufficient = peakDb + preampDb > -DSP_HEADROOM_GUARD_MIN_DB && (peakDb > 0.05 || preampDb > 0);
+  return insufficient ? Math.min(preampDb, neededDb) : preampDb;
+}
+
+function dspEffectivePreampDb(filters, preampDb) {
+  const active = filters.filter(f => f.enabled !== false && Number(f.gain));
+  const { peakDb, preampDb: neededDb } = dspWorstCaseHeadroom(active);
+  return dspGuardedPreampDb(peakDb, Number(preampDb) || 0, neededDb);
+}
+
 // Headroom from the combined response of all bands, not the largest slider:
 // overlapping boosts add up. Never capped, so the margin is always kept, at
 // every source rate the saved preset may be played at.
 function recommendedGraphicEqPreamp() {
   return dspWorstCasePreampDb(graphicEqFilters());
+}
+
+// ─── EQ editor model ─────────────────────────────────────────────────────────
+// Each A/B slot holds a draft: the preset it came from (sourceId, '' = Off)
+// and the exact filters it would save. Showing a preset never rewrites its
+// filters; only moving a slider turns a draft into a graphic-EQ edit, and for
+// a parametric/shelf preset that edit is an explicit converted copy.
+const EQ_PROFILE_EXTRAS = ['volume_normalize', 'stereo_width', 'reverb_room_size', 'reverb_wet_dry'];
+const eqEditor = { slots: { A: null, B: null }, active: 'A', bypassedProfileId: null, lastPreampDb: { A: 0, B: 0 } };
+
+function dspProfileById(id) {
+  if (!id) return null;
+  return (state.dspProfiles || []).find(p => String(p.id) === String(id)) || null;
+}
+
+function dspProfileFilters(profile) {
+  if (!profile) return [];
+  if (Array.isArray(profile.filters)) return profile.filters;
+  try {
+    const filters = JSON.parse(profile.filter_chain_json || '[]');
+    return Array.isArray(filters) ? filters : [];
+  } catch (e) {
+    console.error('[VELVET] Failed to parse filters:', e);
+    return [];
+  }
+}
+
+// True when the filters are exactly what the 10 sliders produce, so the
+// sliders can show and edit them without approximation.
+function isGraphicEqChain(filters) {
+  const seen = new Set();
+  return filters.every(f => {
+    const band = GEQ_BANDS.indexOf(Number(f.freq));
+    if (f.type !== 'peaking' || band < 0 || seen.has(band) || Number(f.q) !== GEQ_DEFAULT_Q
+        || f.enabled === false || !(Math.abs(Number(f.gain)) <= 12)) return false;
+    seen.add(band);
+    return true;
+  });
+}
+
+// Slider positions for a filter chain: exact for a graphic chain; otherwise
+// the 10 bands fitted to the real response at the band centres. The fit is
+// only shown until a slider moves, which converts a copy.
+function eqGraphicGains(filters) {
+  const gains = new Array(GEQ_BANDS.length).fill(0);
+  if (isGraphicEqChain(filters)) {
+    filters.forEach(f => { gains[GEQ_BANDS.indexOf(Number(f.freq))] = Number(f.gain); });
+    return gains;
+  }
+  const target = dspFiltersResponseDb(filters, EQ_ANALYSIS_SAMPLE_RATE, GEQ_BANDS);
+  for (let step = 0; step < 40; step++) {
+    const current = dspFiltersResponseDb(graphicEqFilters(gains), EQ_ANALYSIS_SAMPLE_RATE, GEQ_BANDS);
+    gains.forEach((gain, i) => {
+      gains[i] = Math.max(-12, Math.min(12, gain + 0.7 * (target[i] - current[i])));
+    });
+  }
+  return gains.map(gain => Math.round(gain * 10) / 10);
+}
+
+function eqSourceDraft(id) {
+  const profile = dspProfileById(id);
+  const filters = JSON.parse(JSON.stringify(dspProfileFilters(profile)));
+  const extras = {};
+  EQ_PROFILE_EXTRAS.forEach(key => {
+    if (profile && profile[key] != null) extras[key] = profile[key];
+  });
+  return {
+    sourceId: profile ? String(profile.id) : '',
+    name: profile ? (profile.name || 'Custom EQ') : 'Off',
+    filters,
+    preampDb: profile ? Number(profile.preamp_db) || 0 : 0,
+    extras,
+    gains: eqGraphicGains(filters),
+    edited: false,
+    converted: false,
+  };
+}
+
+function eqCloneDraft(draft) {
+  return JSON.parse(JSON.stringify(draft));
+}
+
+function eqActiveDraft() {
+  const slot = eqEditor.active;
+  if (!eqEditor.slots[slot]) eqEditor.slots[slot] = eqSourceDraft('');
+  return eqEditor.slots[slot];
+}
+
+function eqInactiveDraft() {
+  return eqEditor.slots[eqEditor.active === 'A' ? 'B' : 'A'];
+}
+
+// Worst-case headroom over 12 source rates is the slow part of the editor:
+// cache it per filter set. An edited draft gets the recommended preamp when
+// saved; an untouched one keeps its own saved preamp.
+const eqHeadroomCache = new Map();
+function eqDraftHeadroom(draft, { compute = true } = {}) {
+  const key = JSON.stringify([draft.filters, draft.edited ? null : draft.preampDb]);
+  let result = eqHeadroomCache.get(key);
+  if (!result && compute) {
+    const active = draft.filters.filter(f => f.enabled !== false && Number(f.gain));
+    const { peakDb, preampDb: neededDb } = dspWorstCaseHeadroom(active);
+    const savedPreampDb = draft.edited ? neededDb : draft.preampDb;
+    result = { peakDb, savedPreampDb, effectivePreampDb: dspGuardedPreampDb(peakDb, savedPreampDb, neededDb) };
+    if (eqHeadroomCache.size > 64) eqHeadroomCache.clear();
+    eqHeadroomCache.set(key, result);
+  }
+  return result || null;
+}
+
+function eqDraftIsApplied(draft) {
+  return eqEditor.bypassedProfileId === null && !draft.edited
+    && draft.sourceId === String(state.dspProfile || '');
 }
 
 // The worst-case search covers 12 sample rates; while a slider is dragged,
@@ -193,27 +323,191 @@ function scheduleEQHeadroomNote() {
 }
 
 function updateEQHeadroomNote() {
+  const draft = eqActiveDraft();
+  const { peakDb, savedPreampDb, effectivePreampDb } = eqDraftHeadroom(draft);
   const note = $('eq-headroom-note');
-  if (!note) return;
-  const { peakDb, preampDb } = dspWorstCaseHeadroom(graphicEqFilters());
-  note.textContent = preampDb < 0
-    ? `Auto headroom: ${preampDb.toFixed(1)} dB (EQ peak +${peakDb.toFixed(1)} dB, worst case 22-768 kHz)`
-    : 'Headroom: 0.0 dB';
+  if (note) {
+    const scope = `EQ peak +${peakDb.toFixed(1)} dB, worst case 22-768 kHz`;
+    if (draft.edited) {
+      note.textContent = effectivePreampDb < 0
+        ? `Auto headroom: ${effectivePreampDb.toFixed(1)} dB (${scope})`
+        : 'Headroom: 0.0 dB';
+    } else if (effectivePreampDb !== savedPreampDb) {
+      note.textContent = `Preamp ${savedPreampDb.toFixed(1)} dB, guard applies ${effectivePreampDb.toFixed(1)} dB (${scope})`;
+    } else {
+      note.textContent = peakDb > 0.05 || savedPreampDb
+        ? `Preamp: ${savedPreampDb.toFixed(1)} dB (${scope})`
+        : 'Headroom: 0.0 dB';
+    }
+  }
+  updateEQCurve();
 }
 
+// ─── Frequency response plot ─────────────────────────────────────────────────
+// 20 Hz-20 kHz on a log axis; dB scale grows in 6 dB steps to fit the curves.
+const EQ_CURVE_W = 1000;
+const EQ_CURVE_H = 300;
+const EQ_CURVE_MIN_HZ = 20;
+const EQ_CURVE_MAX_HZ = 20000;
+const EQ_CURVE_POINTS = 256;
+
+function eqCurveX(freq) {
+  return EQ_CURVE_W * Math.log(freq / EQ_CURVE_MIN_HZ) / Math.log(EQ_CURVE_MAX_HZ / EQ_CURVE_MIN_HZ);
+}
+
+function eqCurveY(db, rangeDb) {
+  const y = EQ_CURVE_H / 2 - db * (EQ_CURVE_H / 2) / rangeDb;
+  return Math.max(0, Math.min(EQ_CURVE_H, y));
+}
+
+// Log grid plus each filter's centre and exact extremum frequencies, so a
+// narrow peak is drawn at its true height rather than between two samples.
+function eqCurveFrequencies(filters) {
+  const freqs = [];
+  for (let i = 0; i < EQ_CURVE_POINTS; i++) {
+    freqs.push(EQ_CURVE_MIN_HZ * Math.pow(EQ_CURVE_MAX_HZ / EQ_CURVE_MIN_HZ, i / (EQ_CURVE_POINTS - 1)));
+  }
+  filters.forEach(f => freqs.push(Number(f.freq)));
+  dspActiveCoefficients(filters, EQ_ANALYSIS_SAMPLE_RATE)
+    .forEach(c => freqs.push(...dspBiquadExtremumFreqs(c, EQ_ANALYSIS_SAMPLE_RATE)));
+  return [...new Set(freqs.filter(f => f >= EQ_CURVE_MIN_HZ && f <= EQ_CURVE_MAX_HZ))].sort((a, b) => a - b);
+}
+
+function eqCurvePathD(freqs, db, rangeDb) {
+  return freqs.map((f, i) => `${i ? 'L' : 'M'} ${eqCurveX(f).toFixed(2)} ${eqCurveY(db[i], rangeDb).toFixed(2)}`).join(' ');
+}
+
+function eqCurveRangeDb(values) {
+  const maxAbs = Math.max(0, ...values.map(v => Math.abs(v)));
+  return Math.min(36, Math.max(12, Math.ceil((maxAbs + 0.5) / 6) * 6));
+}
+
+function updateEQCurve() {
+  const path = $('eq-curve-path');
+  const fill = $('eq-curve-fill');
+  if (!path || !fill) return;
+  const draft = eqActiveDraft();
+  const other = eqInactiveDraft();
+  // While a slider is dragged the headroom is not recomputed per tick: the
+  // preamp line keeps its last position until the debounced update.
+  const headroom = eqDraftHeadroom(draft, { compute: false });
+  const preampDb = headroom ? headroom.effectivePreampDb : eqEditor.lastPreampDb[eqEditor.active];
+  eqEditor.lastPreampDb[eqEditor.active] = preampDb;
+
+  const freqs = eqCurveFrequencies([...draft.filters, ...(other ? other.filters : [])]);
+  const db = dspFiltersResponseDb(draft.filters, EQ_ANALYSIS_SAMPLE_RATE, freqs);
+  // A/B is level-matched through the preamp: the other slot is drawn at its
+  // net level (EQ + preamp) relative to this slot's preamp.
+  let ghostDb = null;
+  if (other) {
+    const otherPreampDb = eqDraftHeadroom(other).effectivePreampDb;
+    ghostDb = dspFiltersResponseDb(other.filters, EQ_ANALYSIS_SAMPLE_RATE, freqs)
+      .map(v => v + otherPreampDb - preampDb);
+  }
+  const rangeDb = eqCurveRangeDb([...db, ...(ghostDb || []), preampDb]);
+
+  const d = eqCurvePathD(freqs, db, rangeDb);
+  const zeroY = eqCurveY(0, rangeDb).toFixed(2);
+  path.setAttribute('d', d);
+  fill.setAttribute('d', `${d} L ${eqCurveX(freqs[freqs.length - 1]).toFixed(2)} ${zeroY} L ${eqCurveX(freqs[0]).toFixed(2)} ${zeroY} Z`);
+  const svg = $('eq-curve-svg');
+  if (svg) svg.dataset.rangeDb = String(rangeDb);
+
+  const ghost = $('eq-curve-ghost');
+  if (ghost) ghost.setAttribute('d', ghostDb ? eqCurvePathD(freqs, ghostDb, rangeDb) : '');
+
+  const preampLine = $('eq-preamp-line');
+  if (preampLine) {
+    const y = eqCurveY(preampDb, rangeDb).toFixed(2);
+    preampLine.setAttribute('y1', y);
+    preampLine.setAttribute('y2', y);
+    preampLine.dataset.preampDb = String(preampDb);
+  }
+  const preampLabel = $('eq-preamp-label');
+  if (preampLabel) {
+    preampLabel.textContent = `Preamp ${preampDb.toFixed(1)} dB`;
+    preampLabel.style.top = `${(eqCurveY(preampDb, rangeDb) / EQ_CURVE_H) * 100}%`;
+  }
+  const yLabels = $('eq-curve-y-labels');
+  if (yLabels && yLabels.dataset.rangeDb !== String(rangeDb)) {
+    yLabels.dataset.rangeDb = String(rangeDb);
+    // No label at the bottom edge: the frequency labels sit there.
+    yLabels.innerHTML = [rangeDb, rangeDb / 2, 0, -rangeDb / 2]
+      .map(v => `<span style="top:${(eqCurveY(v, rangeDb) / EQ_CURVE_H) * 100}%">${v > 0 ? '+' : ''}${v}dB</span>`)
+      .join('');
+  }
+  const container = $('eq-curve-container');
+  container?.classList.toggle('is-bypassed', eqEditor.bypassedProfileId !== null);
+  container?.classList.toggle('has-ghost', Boolean(ghostDb));
+}
+
+// ─── Editor rendering ────────────────────────────────────────────────────────
 function updateEQSaveButtonLabel() {
   const btn = UI['eq-btn-save'];
   if (!btn) return;
-  const selectedProfile = state.dspProfiles?.find(p => String(p.id) === String(currentEqProfileId));
-  if (!currentEqDirty && selectedProfile) {
-    btn.textContent = 'Apply';
-  } else if (!currentEqDirty && !currentEqProfileId) {
-    btn.textContent = 'Apply Off';
-  } else if (selectedProfile && !selectedProfile.is_factory) {
+  const draft = eqActiveDraft();
+  const source = dspProfileById(draft.sourceId);
+  if (!draft.edited) {
+    btn.textContent = draft.sourceId ? 'Apply' : 'Apply Off';
+  } else if (source && !source.is_factory && !draft.converted) {
     btn.textContent = 'Save & Apply';
   } else {
     btn.textContent = 'Save as Custom';
   }
+}
+
+function updateEQApplyState() {
+  const draft = eqActiveDraft();
+  const status = $('eq-apply-state');
+  if (status) {
+    let phase = 'preview', label = 'Preview (not yet applied)';
+    if (eqEditor.bypassedProfileId !== null) {
+      phase = 'bypassed';
+      label = 'Bypassed (source direct)';
+    } else if (eqDraftIsApplied(draft)) {
+      phase = 'applied';
+      label = 'Applied';
+    }
+    status.dataset.state = phase;
+    status.textContent = label;
+  }
+  const ab = $('eq-btn-ab');
+  if (ab) {
+    ab.textContent = `A/B: ${eqEditor.active}`;
+    ab.setAttribute('aria-pressed', String(eqEditor.active === 'B'));
+  }
+  const bypass = $('eq-btn-bypass');
+  if (bypass) bypass.setAttribute('aria-pressed', String(eqEditor.bypassedProfileId !== null));
+  const duplicate = $('eq-btn-duplicate');
+  if (duplicate) duplicate.disabled = !draft.sourceId && !draft.edited;
+}
+
+function updateEQConversionNote() {
+  const note = $('eq-conversion-note');
+  if (!note) return;
+  const draft = eqActiveDraft();
+  const sourceName = dspProfileById(draft.sourceId)?.name || 'the preset';
+  let text = '';
+  if (draft.converted) {
+    text = `Editing a 10-band graphic copy of "${sourceName}". The original preset is unchanged; Reset discards the copy.`;
+  } else if (!draft.edited && !isGraphicEqChain(draft.filters)) {
+    text = 'Parametric preset: the curve is exact, the sliders show a 10-band approximation. Moving a slider edits a graphic copy; the preset itself is never changed.';
+  }
+  note.textContent = text;
+  note.hidden = !text;
+}
+
+function eqRenderEditor() {
+  const draft = eqActiveDraft();
+  currentEqGains = draft.gains;
+  const nameEl = $('eq-current-name');
+  if (nameEl) nameEl.textContent = draft.name;
+  renderEQPresets();
+  renderEQSliders();
+  updateEQConversionNote();
+  updateEQApplyState();
+  updateEQSaveButtonLabel();
+  updateEQHeadroomNote();
 }
 
 function applyEqProfileToPlayer(profileId) {
@@ -232,86 +526,34 @@ function applyEqProfileToPlayer(profileId) {
 }
 
 window.selectEQPreset = async function(id) {
-  currentEqProfileId = id;
-  currentEqDirty = false;
   log('[VELVET] Selecting EQ Preset:', id);
-  
-  if (!id) {
-    currentEqGains.fill(0);
-    $('eq-current-name').textContent = 'Off';
-  } else {
-    const profile = state.dspProfiles.find(p => String(p.id) === String(id));
-    if (profile) {
-      $('eq-current-name').textContent = profile.name || 'Custom EQ';
-      currentEqGains.fill(0);
-      
-      let filters = profile.filters;
-      if (!filters && profile.filter_chain_json) {
-        try {
-          filters = JSON.parse(profile.filter_chain_json);
-        } catch (e) {
-          console.error('[VELVET] Failed to parse filters:', e);
-        }
-      }
+  eqEditor.slots[eqEditor.active] = eqSourceDraft(id);
+  eqRenderEditor();
+}
 
-      if (filters && Array.isArray(filters)) {
-        filters.forEach(f => {
-          // Both 'peaking' and 'shelf' filters contribute to the perceived curve
-          if (f.type !== 'peaking' && !f.type.includes('shelf')) return;
-          
-          let minDiff = 999999;
-          let bestIdx = -1;
-          GEQ_BANDS.forEach((bf, idx) => {
-            const diff = Math.abs(bf - f.freq);
-            if(diff < minDiff) { 
-              minDiff = diff; 
-              bestIdx = idx; 
-            }
-          });
-          
-          // Map to the closest band if it's within a reasonable octave range
-          // Graphic EQ is an approximation of the underlying DSP
-          if (bestIdx !== -1) {
-            const gain = parseFloat(f.gain) || 0;
-            // If multiple filters map to the same band, we sum them (simple approximation)
-            currentEqGains[bestIdx] += gain;
-          }
-        });
-        
-        // Clamp gains to +/- 12dB
-        for(let i=0; i<currentEqGains.length; i++) {
-          currentEqGains[i] = Math.max(-12, Math.min(12, currentEqGains[i]));
-        }
-      }
-    }
-  }
-  
-  renderEQPresets();
-  renderEQSliders();
-  updateEQCurve();
-  updateEQHeadroomNote();
-  updateEQSaveButtonLabel();
+function eqGainLabelHtml(val) {
+  return `${val > 0 ? '+' : ''}${val.toFixed(1)}<span class="eq-unit"> dB</span>`;
 }
 
 function renderEQSliders() {
   const wrapper = $('eq-sliders-wrapper');
   if (!wrapper) return;
-  
+
   let html = '';
   GEQ_BANDS.forEach((f, i) => {
     const val = currentEqGains[i] || 0;
-    const sign = val > 0 ? '+' : '';
     const colorClass = val > 0 ? 'positive' : '';
     const label = formatFreq(f);
-    
+    const shortLabel = f >= 1000 ? `${f / 1000}k` : String(f);
+
     html += `
       <div class="eq-band">
-        <span class="eq-band-gain ${colorClass}" id="eq-gain-val-${i}">${sign}${val.toFixed(1)} dB</span>
+        <span class="eq-band-gain ${colorClass}" id="eq-gain-val-${i}">${eqGainLabelHtml(val)}</span>
         <div class="eq-slider-track">
-          <input class="eq-vertical-slider" type="range" min="-12" max="12" step="0.1" value="${val}" 
+          <input class="eq-vertical-slider" type="range" min="-12" max="12" step="0.1" value="${val}" aria-label="${label} gain"
                  oninput="handleEQSliderInput(${i}, this.value)">
         </div>
-        <span class="eq-band-freq">${label}</span>
+        <span class="eq-band-freq">${shortLabel}<span class="eq-unit">Hz</span></span>
       </div>
     `;
   });
@@ -319,60 +561,168 @@ function renderEQSliders() {
 }
 
 window.handleEQSliderInput = function(i, value) {
+  const draft = eqActiveDraft();
   const val = parseFloat(value);
+  currentEqGains = draft.gains;
   currentEqGains[i] = val;
   const gainEl = $(`eq-gain-val-${i}`);
   if (gainEl) {
-    const sign = val > 0 ? '+' : '';
-    gainEl.textContent = `${sign}${val.toFixed(1)} dB`;
-    if (val > 0) gainEl.classList.add('positive');
-    else gainEl.classList.remove('positive');
+    gainEl.innerHTML = eqGainLabelHtml(val);
+    gainEl.classList.toggle('positive', val > 0);
   }
-  $('eq-current-name').textContent = 'Custom EQ';
-  currentEqDirty = true;
-  const selectedProfile = state.dspProfiles.find(p => String(p.id) === String(currentEqProfileId));
-  if (!selectedProfile || selectedProfile.is_factory) {
-    currentEqProfileId = 'custom';
+  const firstEdit = !draft.edited;
+  if (firstEdit) {
+    const source = dspProfileById(draft.sourceId);
+    draft.converted = !isGraphicEqChain(draft.filters);
+    draft.edited = true;
+    if (draft.converted) draft.name = `${source?.name || draft.name} (Graphic)`;
+    else if (!source || source.is_factory) draft.name = 'Custom EQ';
   }
-  renderEQPresets(); 
+  draft.filters = graphicEqFilters(draft.gains);
+  if (firstEdit) {
+    const nameEl = $('eq-current-name');
+    if (nameEl) nameEl.textContent = draft.name;
+    updateEQConversionNote();
+    updateEQApplyState();
+    updateEQSaveButtonLabel();
+  }
   updateEQCurve();
   scheduleEQHeadroomNote();
-  updateEQSaveButtonLabel();
 };
 
-function updateEQCurve() {
-  const path = $('eq-curve-path');
-  const fill = $('eq-curve-fill');
-  if (!path || !fill) return;
-  
-  const points = [];
-  const W = 1000;
-  const H = 300;
-  const midY = 150;
-  const pixelsPerDb = 10; 
-  
-  for (let x = 0; x <= W; x += 5) {
-    const freq = 20 * Math.pow(2, (x / W) * 9.965784);
-    
-    let totalDb = 0;
-    for (let i=0; i<10; i++) {
-      const g = currentEqGains[i];
-      if (Math.abs(g) < 0.1) continue;
-      const ratio = freq / GEQ_BANDS[i];
-      const invRatio = GEQ_BANDS[i] / freq;
-      const qTerm = GEQ_DEFAULT_Q * (ratio - invRatio);
-      const mag = g / (1 + qTerm * qTerm);
-      totalDb += mag;
-    }
-    
-    const y = midY - (totalDb * pixelsPerDb);
-    points.push(`${x},${y}`);
+window.toggleEQAB = function() {
+  if (!eqEditor.slots.B) eqEditor.slots.B = eqCloneDraft(eqActiveDraft());
+  eqEditor.active = eqEditor.active === 'A' ? 'B' : 'A';
+  eqRenderEditor();
+};
+
+// Bypass is a listening check on playback: Off now, the applied preset back
+// on the second press (or when the editor closes).
+window.toggleEQBypass = function() {
+  if (eqEditor.bypassedProfileId !== null) {
+    const profileId = eqEditor.bypassedProfileId;
+    eqEditor.bypassedProfileId = null;
+    applyEqProfileToPlayer(profileId);
+  } else if (state.dspProfile) {
+    eqEditor.bypassedProfileId = String(state.dspProfile);
+    applyEqProfileToPlayer('');
+  } else {
+    showToast('No EQ applied to bypass');
   }
-  
-  const d = `M 0 150 L ${points.map(p => p.replace(',', ' ')).join(' L ')} L 1000 150`;
-  path.setAttribute('d', d);
-  fill.setAttribute('d', d + ' V 300 H 0 Z');
+  updateEQApplyState();
+  updateEQCurve();
+};
+
+window.resetEQDraft = function() {
+  eqEditor.slots[eqEditor.active] = eqSourceDraft(eqActiveDraft().sourceId);
+  eqRenderEditor();
+};
+
+// Saves a draft's exact filters: an untouched preset keeps its type, freq,
+// gain, Q, enabled and order, its saved preamp and its other effects.
+async function eqPersistDraft(draft, { target = null, name = draft.name } = {}) {
+  const profile = {
+    ...draft.extras,
+    name,
+    description: target?.description || (draft.sourceId
+      ? `Saved from the EQ Editor, based on ${dspProfileById(draft.sourceId)?.name || 'a preset'}.`
+      : 'Saved from the EQ Editor.'),
+    category: 'custom',
+    preamp_db: eqDraftHeadroom(draft).savedPreampDb,
+    filters: draft.filters,
+    tags: isGraphicEqChain(draft.filters) ? ['custom', 'graphic-eq'] : ['custom'],
+  };
+  const endpoint = target ? `/dsp/profiles/${target.id}` : '/dsp/profiles';
+  const res = await api(endpoint, { method: target ? 'PUT' : 'POST', body: JSON.stringify(profile) });
+  if (!res || !(res.success || res.id)) return '';
+  const savedId = String(res.id || res.profile_id || res.profile?.id || target?.id || '');
+  await loadDspProfiles();
+  return savedId;
 }
+
+function eqApplyAndClose(profileId) {
+  eqEditor.bypassedProfileId = null;
+  applyEqProfileToPlayer(profileId);
+  UI['eq-overlay']?.classList.remove('active');
+}
+
+// After a save the slot shows the stored preset, unless it was switched to
+// another preset while the request was in flight.
+function eqReplaceSavedDraft(draft, savedId) {
+  ['A', 'B'].forEach(slot => {
+    if (eqEditor.slots[slot] === draft) eqEditor.slots[slot] = eqSourceDraft(savedId);
+  });
+}
+
+window.saveEQDraft = async function() {
+  const btn = UI['eq-btn-save'];
+  const draft = eqActiveDraft();
+  if (!draft.edited) {
+    // Untouched preset: applied as stored, nothing is written.
+    if (!eqDraftIsApplied(draft)) {
+      eqEditor.bypassedProfileId = null;
+      if (!applyEqProfileToPlayer(draft.sourceId)) showToast(draft.sourceId ? `DSP: ${draft.name}` : 'DSP: Off');
+    }
+    UI['eq-overlay']?.classList.remove('active');
+    return;
+  }
+  const source = dspProfileById(draft.sourceId);
+  const overwrite = source && !source.is_factory && !draft.converted ? source : null;
+  if (!draft.filters.length && !overwrite) {
+    showToast('No EQ changes to save');
+    return;
+  }
+  if (btn) btn.textContent = 'Saving...';
+  try {
+    const savedId = await eqPersistDraft(draft, { target: overwrite });
+    if (savedId) {
+      eqReplaceSavedDraft(draft, savedId);
+      eqApplyAndClose(savedId);
+      showToast('Preset saved and applied');
+    }
+  } catch (err) {
+    showToast('Failed to save EQ');
+  }
+  eqRenderEditor();
+};
+
+async function eqSaveCopy(name) {
+  const draft = eqActiveDraft();
+  try {
+    let savedId = '';
+    if (!draft.edited && draft.sourceId) {
+      // Server-side copy: every stored field of the preset, unchanged.
+      const res = await api(`/dsp/profiles/${draft.sourceId}/clone`, { method: 'POST', body: JSON.stringify({ name }) });
+      savedId = res?.id ? String(res.id) : '';
+      if (savedId) await loadDspProfiles();
+    } else {
+      savedId = await eqPersistDraft(draft, { name });
+    }
+    if (!savedId) throw new Error('not saved');
+    eqReplaceSavedDraft(draft, savedId);
+    eqRenderEditor();
+    showToast(`Saved "${name}" (not yet applied)`);
+  } catch (err) {
+    showToast('Failed to save EQ copy');
+  }
+}
+
+window.duplicateEQDraft = function() {
+  const draft = eqActiveDraft();
+  if (!draft.sourceId && !draft.edited) return Promise.resolve();
+  return eqSaveCopy(`${draft.name} Copy`);
+};
+
+window.saveEQDraftAs = function() {
+  const draft = eqActiveDraft();
+  const name = String(window.prompt('Save EQ preset as', `${draft.name} Copy`) || '').trim();
+  return name ? eqSaveCopy(name) : Promise.resolve();
+};
+
+window.closeGraphicEQ = function() {
+  if (eqEditor.bypassedProfileId !== null) window.toggleEQBypass();
+  UI['eq-overlay']?.classList.remove('active');
+};
 
 window.openGraphicEQ = async function() {
   $('eq-overlay').classList.add('active');
@@ -383,12 +733,11 @@ window.openGraphicEQ = async function() {
   const hasProfile = activeProfileId
     ? visibleDspProfiles(state.dspProfiles).some(profile => String(profile.id) === String(activeProfileId))
     : false;
-  currentEqProfileId = hasProfile ? String(activeProfileId) : '';
-  selectEQPreset(currentEqProfileId);
-  updateEQHeadroomNote();
+  eqEditor.slots = { A: eqSourceDraft(hasProfile ? String(activeProfileId) : ''), B: null };
+  eqEditor.active = 'A';
+  eqEditor.bypassedProfileId = null;
+  eqRenderEditor();
 }
-
-
 
 async function loadDspProfiles() {
   try {

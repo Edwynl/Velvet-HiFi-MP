@@ -367,8 +367,8 @@ class PeakSearchPropertyTests(unittest.TestCase):
 class JavaScriptParityTests(unittest.TestCase):
     """static/js/dsp-controls.js must compute the same peaks/headroom as Python."""
 
-    def test_js_peak_and_preamp_match_python(self):
-        cases = _random_adversarial_filter_sets(seed=99, count=40)
+    def _run_js(self, expression, cases):
+        """Evaluate `expression` over `cases` with dsp-controls.js loaded."""
         script = Path(__file__).resolve().parents[1] / "static" / "js" / "dsp-controls.js"
         runner = (
             "const vm=require('vm'),fs=require('fs');"
@@ -376,17 +376,48 @@ class JavaScriptParityTests(unittest.TestCase):
             f"vm.runInContext(fs.readFileSync({json.dumps(str(script))},'utf8'),ctx);"
             "const cases=JSON.parse(fs.readFileSync(0,'utf8'));"
             "ctx.cases=cases;"
-            "process.stdout.write(JSON.stringify(vm.runInContext("
-            "'cases.map(([r,f])=>[dspPeakGainDb(f,r),dspWorstCasePreampDb(f)])',ctx)));"
+            f"process.stdout.write(JSON.stringify(vm.runInContext({json.dumps(expression)},ctx)));"
         )
         result = subprocess.run(["node", "-e", runner], input=json.dumps(cases),
                                 capture_output=True, text=True, check=True)
-        js_peaks = json.loads(result.stdout)
-        self.assertEqual(len(js_peaks), len(cases))
+        values = json.loads(result.stdout)
+        self.assertEqual(len(values), len(cases))
+        return values
+
+    def test_js_peak_and_preamp_match_python(self):
+        cases = _random_adversarial_filter_sets(seed=99, count=40)
+        js_peaks = self._run_js("cases.map(([r,f])=>[dspPeakGainDb(f,r),dspWorstCasePreampDb(f)])", cases)
         for (rate, filters), (js_peak, js_preamp) in zip(cases, js_peaks):
             with self.subTest(rate=rate, filters=filters):
                 self.assertAlmostEqual(js_peak, peak_gain_db(filters, rate), delta=0.01)
                 self.assertAlmostEqual(js_preamp, worst_case_preamp_db(filters), delta=0.11)
+
+    def test_js_curve_response_matches_python(self):
+        # The EQ editor plots dspFiltersResponseDb; shelves must keep FFmpeg's Q*sqrt(2).
+        freqs = [20, 31.5, 47, 90, 110, 1000, 3150, 9500, 15000, 20000]
+        cases = [(rate, filters, [f for f in freqs if f < rate / 2])
+                 for rate, filters in _random_adversarial_filter_sets(seed=7, count=20)]
+        js_curves = self._run_js("cases.map(([r,f,q])=>dspFiltersResponseDb(f,r,q))", cases)
+        for (rate, filters, points), js_curve in zip(cases, js_curves):
+            with self.subTest(rate=rate, filters=filters):
+                for got, want in zip(js_curve, filters_response_db(filters, rate, points)):
+                    self.assertAlmostEqual(got, want, delta=1e-6)
+
+    def test_js_effective_preamp_matches_server_plan(self):
+        # The editor's preamp line is the preamp the server applies at an
+        # unknown source rate, including the playback headroom guard.
+        rng = random.Random(5)
+        cases = []
+        for _, filters in _random_adversarial_filter_sets(seed=11, count=30):
+            for flt in filters:
+                flt["enabled"] = rng.random() > 0.2
+            cases.append((filters, rng.choice([0.0, 2.0, -1.0, -6.0, round(rng.uniform(-30, 6), 1)])))
+        cases.append(([{"type": "peaking", "freq": 1000, "gain": 9, "q": 1, "enabled": True}], -2.0))
+        js_preamps = self._run_js("cases.map(([f,p])=>dspEffectivePreampDb(f,p))", cases)
+        for (filters, preamp), js_preamp in zip(cases, js_preamps):
+            with self.subTest(preamp=preamp, filters=filters):
+                plan = resolve_dsp_plan({"preamp_db": preamp, "filter_chain_json": json.dumps(filters)})
+                self.assertAlmostEqual(js_preamp, plan["effective_preamp_db"], delta=0.11)
 
 
 @unittest.skipUnless(shutil.which("ffmpeg") and numpy is not None, "FFmpeg and numpy required")
