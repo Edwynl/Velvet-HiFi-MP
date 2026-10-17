@@ -9,6 +9,8 @@ from pathlib import Path
 from typing import Callable, Optional
 
 from album_grouping import UNKNOWN_ARTIST, VARIOUS_ARTISTS, album_folder_of, plan_album_folder
+from artist_aliases import resolve_alias
+from library_search_index import refresh_track_search_index
 from path_compat import filesystem_path
 
 
@@ -212,6 +214,8 @@ def scan_music_dirs(
     def commit_with_stats() -> None:
         nonlocal commit_count, commit_total_seconds
         commit_started = time.perf_counter()
+        # Index this batch's tracks in the same transaction as the tracks.
+        refresh_track_search_index(db)
         db.commit()
         commit_total_seconds += time.perf_counter() - commit_started
         commit_count += 1
@@ -388,13 +392,8 @@ def _backfill_track_artists(db: sqlite3.Connection, file_path: str) -> None:
 
     artist_name = artist_name_row["name"] if isinstance(artist_name_row, sqlite3.Row) else artist_name_row[0]
     for name in split_artists(artist_name):
-        db.execute(
-            "INSERT OR IGNORE INTO artists (name, sort_name) VALUES (?, ?)",
-            (name, sort_name(name)),
-        )
-        individual_artist_row = db.execute("SELECT id FROM artists WHERE name=?", (name,)).fetchone()
-        if individual_artist_row:
-            individual_artist_id = individual_artist_row["id"] if isinstance(individual_artist_row, sqlite3.Row) else individual_artist_row[0]
+        individual_artist_id = _artist_id(db, name, {})
+        if individual_artist_id:
             db.execute(
                 "INSERT OR IGNORE INTO track_artists (track_id, artist_id) VALUES (?, ?)",
                 (track_id, individual_artist_id),
@@ -418,6 +417,9 @@ def _artist_id(db: sqlite3.Connection, artist_name: str, artists_cache: dict[str
         existing = db.execute("SELECT id FROM artists WHERE name=?", (artist_name,)).fetchone()
         if existing:
             artist_id = existing["id"] if isinstance(existing, sqlite3.Row) else existing[0]
+        elif (alias_owner := resolve_alias(db, artist_name)) is not None:
+            # A name merged into another artist must not recreate its row.
+            artist_id = alias_owner
         else:
             db.execute(
                 "INSERT INTO artists (name, sort_name) VALUES (?, ?)",

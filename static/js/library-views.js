@@ -1874,6 +1874,7 @@ async function renderArtist(vc, { id }) {
       </div>
       <div class="artist-hero-info">
         <div class="section-title">${escHtml(artist.name)}</div>
+        ${(artist.aliases || []).length ? `<div class="section-sub artist-aliases">Also known as ${escHtml(artist.aliases.join(' · '))}</div>` : ''}
         <div class="section-sub">${albums.length} albums · ${albums.reduce((s, a) => s + (a.track_count || 0), 0)} tracks</div>
       </div>
     </div>

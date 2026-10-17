@@ -4,7 +4,7 @@ import sqlite3
 from dsp_engine import FACTORY_DSP_PRESETS, legacy_eq_bands_to_filters
 
 
-LATEST_SCHEMA_VERSION = 9
+LATEST_SCHEMA_VERSION = 11
 
 
 def _table_columns(conn: sqlite3.Connection, table_name: str) -> set[str]:
@@ -307,6 +307,141 @@ def migration_009_track_file_state_and_query_indexes(conn: sqlite3.Connection) -
         "CREATE INDEX IF NOT EXISTS idx_tracks_album_quality ON tracks(album_id, sample_rate DESC, bit_depth DESC)"
     )
 
+
+def migration_010_track_search_index(conn: sqlite3.Connection) -> None:
+    """Precomputed search keys (see library_search_index.py).
+
+    The keys need Python (simplified-Chinese folding), so the triggers only
+    queue changed tracks in track_search_dirty; any writer stays correct
+    without knowing about the index. The table starts empty and unsigned:
+    search uses the exact path until refresh_track_search_index() builds it.
+    """
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS track_search_index (
+            track_id    INTEGER PRIMARY KEY,
+            search_text TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS track_search_terms (
+            term     TEXT NOT NULL,
+            track_id INTEGER NOT NULL,
+            PRIMARY KEY (term, track_id)
+        ) WITHOUT ROWID;
+        CREATE INDEX IF NOT EXISTS idx_track_search_terms_track ON track_search_terms(track_id);
+        CREATE TABLE IF NOT EXISTS track_search_dirty (
+            track_id INTEGER PRIMARY KEY
+        );
+        CREATE TABLE IF NOT EXISTS search_index_meta (
+            key   TEXT PRIMARY KEY,
+            value TEXT
+        );
+
+        CREATE TRIGGER IF NOT EXISTS trg_search_track_insert AFTER INSERT ON tracks
+        BEGIN
+            INSERT OR IGNORE INTO track_search_dirty(track_id) VALUES (NEW.id);
+        END;
+        CREATE TRIGGER IF NOT EXISTS trg_search_track_update
+        AFTER UPDATE OF id, title, artist_id, album_id, composer, work_title,
+                        performer, conductor, ensemble ON tracks
+        BEGIN
+            INSERT OR IGNORE INTO track_search_dirty(track_id) VALUES (OLD.id), (NEW.id);
+        END;
+        CREATE TRIGGER IF NOT EXISTS trg_search_track_delete AFTER DELETE ON tracks
+        BEGIN
+            DELETE FROM track_search_index WHERE track_id = OLD.id;
+            DELETE FROM track_search_terms WHERE track_id = OLD.id;
+            DELETE FROM track_search_dirty WHERE track_id = OLD.id;
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS trg_search_track_artists_insert AFTER INSERT ON track_artists
+        BEGIN
+            INSERT OR IGNORE INTO track_search_dirty(track_id) VALUES (NEW.track_id);
+        END;
+        CREATE TRIGGER IF NOT EXISTS trg_search_track_artists_update AFTER UPDATE ON track_artists
+        BEGIN
+            INSERT OR IGNORE INTO track_search_dirty(track_id) VALUES (OLD.track_id), (NEW.track_id);
+        END;
+        CREATE TRIGGER IF NOT EXISTS trg_search_track_artists_delete AFTER DELETE ON track_artists
+        BEGIN
+            INSERT OR IGNORE INTO track_search_dirty(track_id) VALUES (OLD.track_id);
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS trg_search_artist_insert AFTER INSERT ON artists
+        BEGIN
+            INSERT OR IGNORE INTO track_search_dirty(track_id)
+                SELECT id FROM tracks WHERE artist_id = NEW.id;
+        END;
+        CREATE TRIGGER IF NOT EXISTS trg_search_artist_update AFTER UPDATE OF id, name ON artists
+        BEGIN
+            INSERT OR IGNORE INTO track_search_dirty(track_id)
+                SELECT id FROM tracks WHERE artist_id IN (OLD.id, NEW.id);
+            INSERT OR IGNORE INTO track_search_dirty(track_id)
+                SELECT track_id FROM track_artists WHERE artist_id IN (OLD.id, NEW.id);
+        END;
+        CREATE TRIGGER IF NOT EXISTS trg_search_artist_delete AFTER DELETE ON artists
+        BEGIN
+            INSERT OR IGNORE INTO track_search_dirty(track_id)
+                SELECT id FROM tracks WHERE artist_id = OLD.id;
+            INSERT OR IGNORE INTO track_search_dirty(track_id)
+                SELECT track_id FROM track_artists WHERE artist_id = OLD.id;
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS trg_search_album_insert AFTER INSERT ON albums
+        BEGIN
+            INSERT OR IGNORE INTO track_search_dirty(track_id)
+                SELECT id FROM tracks WHERE album_id = NEW.id;
+        END;
+        CREATE TRIGGER IF NOT EXISTS trg_search_album_update AFTER UPDATE OF id, title ON albums
+        BEGIN
+            INSERT OR IGNORE INTO track_search_dirty(track_id)
+                SELECT id FROM tracks WHERE album_id IN (OLD.id, NEW.id);
+        END;
+        CREATE TRIGGER IF NOT EXISTS trg_search_album_delete AFTER DELETE ON albums
+        BEGIN
+            INSERT OR IGNORE INTO track_search_dirty(track_id)
+                SELECT id FROM tracks WHERE album_id = OLD.id;
+        END;
+        """
+    )
+
+
+def migration_011_artist_aliases(conn: sqlite3.Connection) -> None:
+    """Other names of one artist (English, pinyin, other script).
+
+    A merged artist keeps one row whose name is the display name; the names
+    of the rows merged into it live here, so the artist page can list them,
+    search finds them, and a rescan that reads an old name from a file tag
+    resolves to the same artist instead of recreating the duplicate.
+    """
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS artist_aliases (
+            id         INTEGER PRIMARY KEY,
+            artist_id  INTEGER NOT NULL REFERENCES artists(id) ON DELETE CASCADE,
+            name       TEXT NOT NULL UNIQUE COLLATE NOCASE,
+            created_at REAL DEFAULT (strftime('%s', 'now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_artist_aliases_artist ON artist_aliases(artist_id);
+
+        CREATE TRIGGER IF NOT EXISTS trg_search_alias_insert AFTER INSERT ON artist_aliases
+        BEGIN
+            INSERT OR IGNORE INTO track_search_dirty(track_id)
+                SELECT track_id FROM track_artists WHERE artist_id = NEW.artist_id;
+        END;
+        CREATE TRIGGER IF NOT EXISTS trg_search_alias_update AFTER UPDATE ON artist_aliases
+        BEGIN
+            INSERT OR IGNORE INTO track_search_dirty(track_id)
+                SELECT track_id FROM track_artists WHERE artist_id IN (OLD.artist_id, NEW.artist_id);
+        END;
+        CREATE TRIGGER IF NOT EXISTS trg_search_alias_delete AFTER DELETE ON artist_aliases
+        BEGIN
+            INSERT OR IGNORE INTO track_search_dirty(track_id)
+                SELECT track_id FROM track_artists WHERE artist_id = OLD.artist_id;
+        END;
+        """
+    )
+
+
 MIGRATIONS = (
     (1, "create_base_schema", migration_001_create_base_schema),
     (2, "align_album_columns", migration_002_add_album_favorites),
@@ -317,6 +452,8 @@ MIGRATIONS = (
     (7, "seed_expanded_factory_dsp_presets", migration_007_seed_expanded_factory_dsp_presets),
     (8, "add_performance_indexes", migration_008_add_performance_indexes),
     (9, "track_file_state_and_query_indexes", migration_009_track_file_state_and_query_indexes),
+    (10, "track_search_index", migration_010_track_search_index),
+    (11, "artist_aliases", migration_011_artist_aliases),
 )
 
 
