@@ -1878,7 +1878,7 @@ async function renderArtist(vc, { id }) {
         <div class="section-sub">${albums.length} albums · ${albums.reduce((s, a) => s + (a.track_count || 0), 0)} tracks</div>
       </div>
     </div>
-    <div class="artist-bio" id="artist-bio"><div class="bio-loading">Loading artist bio…</div></div>
+    <div class="artist-bio" id="artist-bio">${artist.bio ? `<div class="bio-text">${escHtml(artist.bio)}</div>` : ''}</div>
     <div style="padding: 0 24px; margin-bottom: 16px;">
       <button class="btn btn-gold" id="artist-radio-btn">Artist Radio</button>
       <button class="btn btn-ghost" id="refresh-artist-btn" title="Re-read artist name and all album metadata from files">🔄 Re-read Tags</button>
@@ -1899,6 +1899,7 @@ async function renderArtist(vc, { id }) {
     showToast('Re-reading metadata from files…');
     try {
       const res = await api(`/artists/${id}/refresh`, { method: 'POST' });
+      if (res?.adminCancelled) return;
       if (res.success) {
         showToast(res.message);
         // Reload page to show updated data
@@ -1911,18 +1912,9 @@ async function renderArtist(vc, { id }) {
     }
   });
 
-  // Load bio separately
-  try {
-    const bioWrap = UI['artist-bio'];
-    const result = await api(`/artists/${id}/enrich-bio`, { method: 'POST' });
-    if (result.bio) {
-      bioWrap.innerHTML = `<div class="bio-text">${escHtml(result.bio)}</div>`;
-    } else {
-      bioWrap.innerHTML = '';
-    }
-  } catch {
-    if (UI['artist-bio']) UI['artist-bio'].innerHTML = '';
-  }
+  // Browsing (including Back) reads the saved biography from GET /artists/{id}.
+  // Fetching or changing biographies is an explicit administrator action in Settings.
+
 }
 
 // ── Album Detail ──────────────────────────────────────────────────────────────

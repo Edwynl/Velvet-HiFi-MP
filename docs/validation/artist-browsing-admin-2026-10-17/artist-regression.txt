@@ -1,0 +1,1 @@
+frontend_artist_readonly_navigation=OK (3 biography cases, 9 Back traversals)

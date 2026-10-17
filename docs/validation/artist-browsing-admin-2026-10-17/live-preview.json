@@ -1,0 +1,11 @@
+{
+  "result": "PASS",
+  "origin": "http://localhost:8765",
+  "sourceBranch": "codex/manage-admin-password",
+  "artistId": 239,
+  "albumId": 10391,
+  "backTraversals": 3,
+  "artistMutationRequests": [],
+  "unexpectedDialogs": 0,
+  "errors": []
+}

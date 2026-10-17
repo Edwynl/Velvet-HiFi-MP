@@ -1,0 +1,25 @@
+
+> test:frontend
+> node tests/frontend/settings-library-import.test.mjs && node tests/frontend/dsp-settings.test.mjs && node tests/frontend/playback-race.test.mjs && node tests/frontend/mobile-background-recovery.test.mjs && node tests/frontend/mobile-player-behavior.test.mjs && node tests/frontend/navigation-back.test.mjs && node tests/frontend/pwa-auth.test.mjs && node tests/frontend/stream-ticket.test.mjs && node tests/frontend/stream-ticket-startup.test.mjs && node tests/frontend/pwa-cache-budget.test.mjs && node tests/frontend/mobile-catalog-paging.test.mjs && node tests/frontend/lazy-modules.test.mjs && node tests/frontend/admin-management.test.mjs && node tests/frontend/artist-readonly-navigation.test.mjs
+
+frontend_settings_library_import=OK
+frontend_dsp_settings_check=OK
+frontend_playback_race_check=OK
+[VELVET] Recovering browser playback (waiting) attempt 1
+[VELVET] DSP auto-fallback to Off: media-src-not-supported profile= 2
+[VELVET] DSP auto-fallback to Off: startup-no-source profile= 2
+[VELVET] DSP auto-fallback to Off: play-rejected-unsupported profile= 2
+[VELVET] Browser playback failed: Media source not supported
+[VELVET] Browser playback failed: Media source not supported
+frontend_mobile_background_recovery_check=OK
+frontend_mobile_player_behavior=OK
+frontend_navigation_back=OK
+frontend_pwa_auth_check=OK
+frontend_stream_ticket_check=OK
+[VELVET] Browser playback failed: gesture required
+frontend_stream_ticket_startup_check=OK
+frontend_pwa_byte_budget_check=OK
+frontend_mobile_catalog_paging_check=OK
+frontend_lazy_modules_check=OK
+frontend_admin_management=OK
+frontend_artist_readonly_navigation=OK (3 biography cases, 9 Back traversals)

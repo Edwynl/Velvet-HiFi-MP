@@ -1,0 +1,19 @@
+API error: /artists/7/enrich-bio response.clone is not a function
+node:internal/modules/run_main:107
+    triggerUncaughtException(
+    ^
+
+AssertionError [ERR_ASSERTION]: browsing must not submit biography updates
+
+1 !== 0
+
+    at file:///C:/Users/edwyn/.codex/worktrees/manage-admin-password/VELVET_NEXT/tests/frontend/artist-readonly-navigation.test.mjs:43:12 {
+  generatedMessage: false,
+  code: 'ERR_ASSERTION',
+  actual: 1,
+  expected: 0,
+  operator: 'strictEqual',
+  diff: 'simple'
+}
+
+Node.js v24.13.1
