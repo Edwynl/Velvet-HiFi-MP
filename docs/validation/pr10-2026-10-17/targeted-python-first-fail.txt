@@ -1,0 +1,35 @@
+.F.................................................. [ 94%]
+...                                                                      [100%]
+================================== FAILURES ===================================
+___ AlbumSafetyTests.test_locked_restore_retains_archive_and_can_be_retried ___
+
+self = <test_library_safety.AlbumSafetyTests testMethod=test_locked_restore_retains_archive_and_can_be_retried>
+
+    def test_locked_restore_retains_archive_and_can_be_retried(self):
+        audio = self._file()
+        archive = AlbumFileArchive([str(audio)], [self.music], self.archive_dir)
+        archive.stage()
+        archive.commit()
+        import library_safety
+        real_replace = library_safety.os.replace
+    
+        def locked(src, dst):
+            if str(src) == archive.entries[0]["staged"]:
+                raise PermissionError("simulated Windows file lock")
+            return real_replace(src, dst)
+    
+        with patch.object(library_safety.os, "replace", side_effect=locked):
+>           with self.assertRaisesRegex(ArchiveError, "file lock"):
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E           AssertionError: ArchiveError not raised
+
+tests\test_library_safety.py:161: AssertionError
+============================== warnings summary ===============================
+.venv\Lib\site-packages\fastapi\testclient.py:1
+  C:\Antigravity\Claude Code\VELVET_NEXT\.venv\Lib\site-packages\fastapi\testclient.py:1: StarletteDeprecationWarning: Using `httpx` with `starlette.testclient` is deprecated; install `httpx2` instead.
+    from starlette.testclient import TestClient as TestClient  # noqa
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ===========================
+FAILED tests/test_library_safety.py::AlbumSafetyTests::test_locked_restore_retains_archive_and_can_be_retried
+1 failed, 54 passed, 1 warning, 20 subtests passed in 12.34s

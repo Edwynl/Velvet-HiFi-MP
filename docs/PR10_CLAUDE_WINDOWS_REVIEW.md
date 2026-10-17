@@ -3,7 +3,8 @@
 **Branch:** `feat/library-mobile-windows-hardening` (based on `main` at `8274dbf`)
 **Pull request:** https://github.com/Edwynl/Velvet-HiFi-MP/pull/10
 **Status:** Draft. Do not merge until owner explicitly approves.
-**CI policy:** GitHub Actions minutes exhausted. ALL final development commits have `[skip ci]`. DO NOT launch/rerun GitHub Actions, modify GitHub CI into a permanent disabled state, or describe CI as green. Owner will run Windows tests locally.
+**CI policy:** GitHub Actions minutes exhausted. ALL final development commits have `[skip ci]`. DO NOT launch/rerun GitHub Actions, modify GitHub CI into a permanent disabled state, or describe CI as green.
+**Windows local evidence (2026-10-17):** See [validation report and raw logs](validation/pr10-2026-10-17/README.md) for the actual runs, counts, initial failure, correction, and acceptance limits. This supersedes the earlier unexecuted-test handoff below.
 **Out of scope:** PR #2 Android Signal Path, PR #6/7 security branches, EXN100/UPnP cover image resolution and encoding, original FLAC precision and streaming DSP.
 
 ## Implemented changes
@@ -13,6 +14,8 @@
 - `library_safety.py`: album deletion with `delete_files=true` moves audio into hidden files on their original volumes via `os.replace`, accompanied by a durable per-operation manifest in `velvet_data/album-trash`. It does **not** permanently unlink FLAC.
 - Aborts before changing the DB if any source file is missing or outside a configured library root; attempts to restore staged files after file or DB failures.
 - `GET /api/library/trash` and `POST /api/library/trash/{token}/restore` list and restore archives. After restoring, a normal library scan rebuilds deleted track rows; the old track ID is **not** automatically recreated.
+- Both index-only removal and file archival now refuse albums with playlist or play-history references (HTTP 409), before moving files or deleting rows. The writer is reserved with `BEGIN IMMEDIATE` through the reference check and deletion. Keep referenced albums to preserve their Track IDs and associations. File archives contain no relational database snapshot; they cannot recover links already lost in older versions. UI and API responses explain this limitation.
+- Missing originals and staged files keep the manifest in `recovery_required`; restore returns HTTP 409 without a successful count. An unverified original with a missing staged file is also refused when `moved=true`. A prior durable restore (`moved=false`) remains retryable if the original still exists. Manual recovery after a crash requires verifying files against a backup before reconciling the manifest; do not simply mark unknown files restored.
 - Deletion and restore now reserve the shared library-maintenance flag. Normal scan/refresh and SHA-256 duplicate jobs are refused while an album is being moved, and deletion is refused during their execution.
 - `db_pool.py`: on API `.close()`, roll back any uncommitted transaction. Recycling marks owner-thread connections stale instead of attempting illegal cross-thread `sqlite3.Connection.close()`. Owner thread replaces stale connection upon next `get_db()`.
 - Tests: `tests/test_library_safety.py`, `tests/test_db_pool_lifecycle.py`, plus added API tests in `tests/test_server_api.py`.
@@ -88,7 +91,7 @@
 
 ## Known limitations (do not conceal)
 
-- Local tests and real-device tests have NOT been run by the author in this session because the owner will run them on Windows. GitHub Actions are deliberately skipped.
+- Windows local automated test results are recorded in the linked validation report. Real-device acceptance remains separate. GitHub Actions are deliberately skipped.
 - A crash can leave a pending archive; manifest-assisted recovery is required; DB records are not automatically reconstructed on restore.
 - Simplified/traditional fallback may scan the full library at worst.
 - Album/artist pagination is offset-based rather than seek/keyset; page membership may change if library is edited during navigation.
