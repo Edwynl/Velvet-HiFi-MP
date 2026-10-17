@@ -164,3 +164,40 @@ def rename_artist(db: sqlite3.Connection, artist_id: int, new_name: str, *, keep
     )
     aliases = [old_name] if keep_old_name and add_alias(db, artist_id, old_name) else []
     return {"artist_id": artist_id, "aliases": aliases}
+
+
+def reassign_album_artist(db: sqlite3.Connection, album_id: int, expected_artist_id: int,
+                          new_name: str) -> dict:
+    """Split one misattributed album without renaming/merging either person.
+
+    The caller owns the transaction and file-tag corrections. Track, album,
+    playlist and history IDs remain unchanged. Refuse mixed primary credits
+    or an alias of the old artist rather than guessing an identity.
+    """
+    new_name = (new_name or "").strip()
+    album = db.execute("SELECT artist_id FROM albums WHERE id=?", (album_id,)).fetchone()
+    if not new_name or album is None or album[0] != expected_artist_id:
+        raise ValueError("Album artist changed since the correction was reviewed")
+    tracks = db.execute("SELECT id, artist_id FROM tracks WHERE album_id=?", (album_id,)).fetchall()
+    if not tracks or any(row[1] != expected_artist_id for row in tracks):
+        raise ValueError("Album contains mixed primary credits; review each track first")
+    if resolve_alias(db, new_name) is not None:
+        raise ValueError("The proposed name is already an alias; use a distinct artist identity")
+    matches = db.execute("SELECT id FROM artists WHERE name=? COLLATE NOCASE", (new_name,)).fetchall()
+    if len(matches) > 1 or (matches and matches[0][0] == expected_artist_id):
+        raise ValueError("The proposed artist identity is not distinct")
+    if matches:
+        target_id = matches[0][0]
+    else:
+        from scanner_service import sort_name
+        target_id = db.execute("INSERT INTO artists(name,sort_name) VALUES (?,?)",
+                               (new_name, sort_name(new_name))).lastrowid
+    db.execute("UPDATE albums SET artist_id=? WHERE id=?", (target_id, album_id))
+    db.execute("UPDATE tracks SET artist_id=? WHERE album_id=?", (target_id, album_id))
+    for track_id, _ in tracks:
+        db.execute("DELETE FROM track_artists WHERE track_id=? AND artist_id=?",
+                   (track_id, expected_artist_id))
+        db.execute("INSERT OR IGNORE INTO track_artists(track_id,artist_id) VALUES (?,?)",
+                   (track_id, target_id))
+    return {"album_id": album_id, "from_artist_id": expected_artist_id,
+            "artist_id": target_id, "artist_name": new_name, "tracks": len(tracks)}

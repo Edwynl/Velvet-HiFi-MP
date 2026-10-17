@@ -4,7 +4,7 @@ import unittest
 from contextlib import closing
 from pathlib import Path
 
-from artist_aliases import add_alias, fetch_aliases, merge_artists, rename_artist, resolve_alias
+from artist_aliases import add_alias, fetch_aliases, merge_artists, rename_artist, resolve_alias, reassign_album_artist
 from chinese_variants import get_all_variants, to_simplified, to_traditional
 from db_schema import MIGRATIONS, apply_migrations
 from library_browse import fetch_artists
@@ -174,6 +174,38 @@ class ArtistMergeTests(unittest.TestCase):
             self.assertEqual(_artist_id(conn, "莫文蔚", cache), 1)
             count = conn.execute("SELECT COUNT(*) FROM artists").fetchone()[0]
         self.assertEqual(count, 2)
+
+    def test_same_name_album_correction_preserves_tracks_links_and_other_albums(self):
+        with self._connect() as conn:
+            conn.execute("UPDATE artists SET name='鄧紫棋' WHERE id=1")
+            add_alias(conn, 1, "G.E.M.")
+            conn.execute("INSERT INTO playlists(id,name) VALUES (1,'Keep')")
+            conn.execute("INSERT INTO playlist_tracks(playlist_id,track_id,position,added_at) VALUES (1,1,7,123)")
+            conn.execute("INSERT INTO play_history(track_id,played_at,duration_played) VALUES (1,456,100)")
+            conn.execute("INSERT INTO track_artists(track_id,artist_id) VALUES (1,3)")
+            result = reassign_album_artist(conn, 1, 1, "Gem")
+            new_id = result["artist_id"]
+            self.assertNotEqual(new_id, 1)
+            self.assertEqual(tuple(conn.execute("SELECT id,album_id,artist_id FROM tracks WHERE id=1").fetchone()), (1,1,new_id))
+            self.assertEqual(tuple(conn.execute("SELECT track_id,position,added_at FROM playlist_tracks").fetchone()), (1,7,123))
+            self.assertEqual(tuple(conn.execute("SELECT track_id,played_at,duration_played FROM play_history").fetchone()), (1,456,100))
+            self.assertEqual({row[0] for row in conn.execute("SELECT artist_id FROM track_artists WHERE track_id=1")}, {new_id,3})
+            self.assertEqual(conn.execute("SELECT artist_id FROM tracks WHERE id=2").fetchone()[0], 2)
+            self.assertEqual(_artist_id(conn, "G.E.M.", {}), 1)
+            self.assertEqual(_artist_id(conn, "Gem", {}), new_id)
+            self.assertEqual(conn.execute("PRAGMA foreign_key_check").fetchall(), [])
+
+    def test_album_correction_refuses_aliases_and_stale_or_mixed_credits(self):
+        with self._connect() as conn:
+            add_alias(conn, 1, "G.E.M.")
+            with self.assertRaises(ValueError):
+                reassign_album_artist(conn, 1, 1, "G.E.M.")
+            with self.assertRaises(ValueError):
+                reassign_album_artist(conn, 1, 2, "Gem")
+            conn.execute("UPDATE tracks SET artist_id=3 WHERE id=4")
+            with self.assertRaises(ValueError):
+                reassign_album_artist(conn, 2, 2, "Gem")  # A different primary artist on the duet.
+            self.assertEqual(conn.execute("SELECT artist_id FROM albums WHERE id=1").fetchone()[0], 1)
 
     def test_artist_lists_and_track_search_match_aliases(self):
         with self._connect() as conn:
