@@ -317,6 +317,15 @@ def cast_control(device_udn, action):
     res = soap_request(dev["control_url"], svc, action, args)
     return res is not None
 
+def seek(device_udn, seconds):
+    """Seek the renderer's current (direct) stream to `seconds` (REL_TIME)."""
+    dev = discovered_devices.get(device_udn)
+    if not dev or not seconds:
+        return False
+    svc = "urn:schemas-upnp-org:service:AVTransport:1"
+    args = f'<Unit>REL_TIME</Unit><Target>{_format_duration(seconds)}</Target>'
+    return soap_request(dev["control_url"], svc, "Seek", args) is not None
+
 def get_transport_info(device_udn):
     """Get current state (PLAYING, PAUSED_PLAYBACK, STOPPED, etc)."""
     dev = discovered_devices.get(device_udn)
@@ -429,16 +438,17 @@ def container_xml(id_, parent_id, title, child_count):
         f'</container>'
     )
 
-def media_urls(track, extra_seconds=0):
+def media_urls(track, extra_seconds=0, stream_query=""):
     """Stream and cover URLs for a renderer, each with its own scoped ticket.
 
     Renderers cannot send API headers; a ticket authorizes GET of this one
     track (or album cover) until the track length plus grace has passed.
+    `stream_query` (e.g. "&dsp=5") selects a server-side transcode.
     """
     ttl = security.media_ticket_ttl(track.get("duration")) + max(int(extra_seconds), 0)
     tid = int(track["id"])
     ticket, _ = security.issue_media_ticket("stream", tid, ttl)
-    stream_url = f"http://{LOCAL_IP}:{MAIN_PORT}/api/stream/{tid}?ticket={quote(ticket)}"
+    stream_url = f"http://{LOCAL_IP}:{MAIN_PORT}/api/stream/{tid}?ticket={quote(ticket)}{stream_query}"
     album_id = track.get("album_id") or 0
     cover_url = ""
     if album_id:
@@ -454,7 +464,16 @@ def _browse_ticket_extra_seconds():
     return int(expires_at - time.time()) if expires_at else 0
 
 
-def track_xml(track, parent_id, extra_seconds=0):
+# A VELVET DSP transcode (_stream_with_dsp): 24-bit FLAC at the source rate,
+# of unknown length and without byte seeking.
+TRANSCODED_BITS_PER_SAMPLE = 24
+TRANSCODED_DLNA_FEATURES = ("DLNA.ORG_PN=FLAC;DLNA.ORG_OP=00;DLNA.ORG_CI=1;"
+                            "DLNA.ORG_FLAGS=01700000000000000000000000000000")
+
+
+def track_xml(track, parent_id, extra_seconds=0, stream_query="", start_seconds=0):
+    """DIDL-Lite item. With `stream_query` the resource is a DSP transcode that
+    starts `start_seconds` into the track."""
     tid   = track["id"]
     title = _esc(track.get("title") or "Unknown")
     artist= _esc(track.get("artist_name") or "")
@@ -477,10 +496,15 @@ def track_xml(track, parent_id, extra_seconds=0):
         "APE":  "audio/x-ape",
     }
     mime = mime_map.get(fmt, "audio/flac")
-    stream_url, cover_url = media_urls(track, extra_seconds)
+    stream_url, cover_url = media_urls(track, extra_seconds, stream_query)
 
     # Use correct DLNA profile for the format
     dlna_profile = _get_dlna_profile(mime, fmt)
+    if stream_query:
+        fmt, mime, dlna_profile = "FLAC", "audio/flac", TRANSCODED_DLNA_FEATURES
+        bd, size = TRANSCODED_BITS_PER_SAMPLE, 0
+        if start_seconds:
+            dur = _format_duration(max(float(track.get("duration") or 0) - start_seconds, 0))
     res_attrs = f'protocolInfo="http-get:*:{mime}:{dlna_profile}"'
     if size:
         res_attrs += f' size="{size}"'

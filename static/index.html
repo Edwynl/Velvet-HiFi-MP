@@ -6686,6 +6686,11 @@ async function activateZone(zone, transferPlayback = true) {
     state.playing = false;
   }
 
+  // A new zone has not been cast to yet, and has its own DSP choice.
+  state.castDsp = null;
+  state.castStartOffset = 0;
+  state.castPosition = 0;
+  restoreZoneDspSelection();
   updatePlayerUI(state.currentTrack || {});
   updatePlayBtnUI();
 
@@ -6708,18 +6713,73 @@ async function startRadio(mode, id) {
   playTrack(queue[0], queue, 0);
 }
 
+// Load the active zone's own DSP choice into the player controls.
+function restoreZoneDspSelection() {
+  let profileId = zoneDspProfileId(getActiveZone());
+  if (profileId && state.dspProfiles.length
+      && !state.dspProfiles.some(profile => String(profile.id) === profileId)) {
+    profileId = '';
+  }
+  state.dspProfile = profileId;
+  if (profileId) state.lastEqProfile = profileId;
+  resetDspErrorStreak();
+  const select = UI['dsp-select'];
+  if (select) select.value = profileId;
+  syncDspPresetCards();
+}
+
+function syncDspPresetCards() {
+  document.querySelectorAll('.dsp-preset-card').forEach(card => {
+    const isActive = String(card.dataset.profileId) === String(state.dspProfile || '');
+    card.style.borderColor = isActive ? 'var(--gold)' : 'var(--border)';
+    card.style.boxShadow = isActive ? '0 0 0 1px rgba(201,168,76,0.18)' : 'none';
+  });
+}
+
+function dspPlanLines(plan) {
+  const lines = [];
+  if (plan?.disabled_filters?.length) {
+    lines.push(`${plan.disabled_filters.length} filter(s) above Nyquist disabled`);
+  }
+  if (plan?.headroom_guard_db < 0) {
+    lines.push(`Headroom guard: ${plan.headroom_guard_db.toFixed(1)} dB extra attenuation (preamp ${plan.effective_preamp_db.toFixed(1)} dB)`);
+  }
+  if (plan?.eq_clipping_risk) {
+    lines.push(`EQ may clip: estimated peak ${plan.net_peak_db > 0 ? '+' : ''}${plan.net_peak_db} dB`);
+  }
+  return lines;
+}
+
+// Whether the renderer's current stream carries this preset.
+function castDspMatches(castDsp, dspProfile) {
+  return !!castDsp && String(castDsp.requested_profile_id || '') === String(dspProfile?.id || '');
+}
+
 // What VELVET actually does to the audio on this output, never a mere
-// selection: DLNA renderers fetch the direct source URL, so neither DSP nor
-// upsampling is applied there.
+// selection. A DLNA renderer gets the server's DSP transcode only when the
+// cast reported it applied (`castDsp`, from /api/cast); upsampling never
+// reaches a renderer.
 // `plan` is the server's resolved plan (/dsp/profiles/{id}/resolved): a
 // selected preset whose processing graph is empty is reported as bypassed.
-function describeSignalProcessing(zoneType, dspProfile, upsample, plan = null) {
+function describeSignalProcessing(zoneType, dspProfile, upsample, plan = null, castDsp = null) {
   if (zoneType === 'cast') {
-    return [
-      'Direct source stream to renderer',
-      dspProfile ? `DSP ${dspProfile.name} not applied on this renderer` : 'VELVET DSP off',
-      ...(upsample && upsample !== 'none' ? ['PCM upsampling not applied on this renderer'] : []),
-    ];
+    const transcoded = castDsp?.stream === 'dsp_transcode';
+    const lines = [transcoded
+      ? 'VELVET DSP stream to renderer (24-bit FLAC, source sample rate)'
+      : 'Direct source stream to renderer'];
+    if (dspProfile && !castDspMatches(castDsp, dspProfile)) {
+      lines.push(`DSP ${dspProfile.name} not applied on this renderer yet`);
+    } else if (!dspProfile && transcoded) {
+      lines.push('VELVET DSP off; renderer still plays the previous DSP stream');
+    } else if (!dspProfile) {
+      lines.push('VELVET DSP off');
+    } else if (castDsp.status === 'bypassed') {
+      lines.push(`DSP ${dspProfile.name} selected but bypassed: no active processing`);
+    } else {
+      lines.push(`DSP ${dspProfile.name}`, ...dspPlanLines(plan));
+    }
+    if (upsample && upsample !== 'none') lines.push('PCM upsampling not applied on this renderer');
+    return lines;
   }
   const lines = [
     !upsample || upsample === 'none' ? 'No PCM upsampling' : `${upsample.toUpperCase()} PCM upsampling enabled`,
@@ -6730,17 +6790,25 @@ function describeSignalProcessing(zoneType, dspProfile, upsample, plan = null) {
     lines.push(`DSP ${dspProfile.name} selected but bypassed: no active processing`);
   } else {
     lines.push(plan ? `DSP ${dspProfile.name}` : `DSP ${dspProfile.name} (status unavailable)`);
-    if (plan?.disabled_filters?.length) {
-      lines.push(`${plan.disabled_filters.length} filter(s) above Nyquist disabled`);
-    }
-    if (plan?.headroom_guard_db < 0) {
-      lines.push(`Headroom guard: ${plan.headroom_guard_db.toFixed(1)} dB extra attenuation (preamp ${plan.effective_preamp_db.toFixed(1)} dB)`);
-    }
-    if (plan?.eq_clipping_risk) {
-      lines.push(`EQ may clip: estimated peak ${plan.net_peak_db > 0 ? '+' : ''}${plan.net_peak_db} dB`);
-    }
+    lines.push(...dspPlanLines(plan));
   }
   return lines;
+}
+
+// Requested (this zone's selection) vs effective (what reaches the output).
+function describeZoneDsp(zoneType, dspProfile, plan = null, castDsp = null) {
+  const requested = dspProfile ? dspProfile.name : 'Off';
+  if (zoneType === 'cast') {
+    if (!castDsp) return { requested, effective: dspProfile ? 'Not applied (not cast yet)' : 'Off (source direct)' };
+    let effective = 'Off (source direct)';
+    if (castDsp.status === 'applied') effective = castDsp.effective_name || 'DSP applied';
+    if (castDsp.status === 'bypassed') effective = 'Bypassed: no active processing';
+    if (!castDspMatches(castDsp, dspProfile)) effective += ' (previous selection)';
+    return { requested, effective };
+  }
+  if (!dspProfile) return { requested, effective: 'Off (source direct)' };
+  if (plan && !plan.active) return { requested, effective: 'Bypassed: no active processing' };
+  return { requested, effective: plan ? dspProfile.name : `${dspProfile.name} (status unavailable)` };
 }
 
 async function showSignalPath() {
@@ -6758,12 +6826,16 @@ async function showSignalPath() {
   ].filter(Boolean).join(' · ');
 
   const activeZone = getActiveZone();
+  const castDsp = activeZone.type === 'cast' ? state.castDsp : null;
   let plan = null;
-  if (dspProfile && activeZone.type !== 'cast') {
+  // A renderer's transcode was resolved at the source rate, as this plan is.
+  if (dspProfile && (activeZone.type !== 'cast'
+      || (castDsp?.status === 'applied' && castDspMatches(castDsp, dspProfile)))) {
     const rate = Number(track.sample_rate) >= 8000 ? `?sample_rate=${Math.round(Number(track.sample_rate))}` : '';
     plan = await api(`/dsp/profiles/${dspProfile.id}/resolved${rate}`).catch(() => null);
   }
-  const processing = describeSignalProcessing(activeZone.type, dspProfile, state.upsample, plan).map(escHtml).join('<br>');
+  const processing = describeSignalProcessing(activeZone.type, dspProfile, state.upsample, plan, castDsp).map(escHtml).join('<br>');
+  const zoneDsp = describeZoneDsp(activeZone.type, dspProfile, plan, castDsp);
   const output = activeZone.type === 'cast'
     ? `Streaming to ${escHtml(activeZone.name)}`
     : activeZone.type === 'native'
@@ -6781,6 +6853,10 @@ async function showSignalPath() {
         <div class="signal-path-card">
           <div class="signal-path-label">Source</div>
           <div class="signal-path-value">${escHtml(sourceQuality)}</div>
+        </div>
+        <div class="signal-path-card">
+          <div class="signal-path-label">DSP for ${escHtml(activeZone.name)}</div>
+          <div class="signal-path-value">Requested: ${escHtml(zoneDsp.requested)}<br>Effective: ${escHtml(zoneDsp.effective)}</div>
         </div>
         <div class="signal-path-card">
           <div class="signal-path-label">Processing</div>
@@ -7306,10 +7382,52 @@ function readPersistedLastDspProfileId() {
   }
 }
 
+// Each output zone keeps its own DSP choice. The browser zone uses the keys
+// above; USB outputs (by name: indexes change across reboots) and DLNA
+// renderers (by UDN) are stored in this map.
+const DSP_ZONE_STORAGE_KEY = 'velvet:dsp-zone-profiles';
+
+function dspZoneKey(zone) {
+  if (zone.type === 'cast') return `cast:${zone.id}`;
+  if (zone.type === 'native') return `native:${zone.name}`;
+  return 'browser';
+}
+
+function readZoneDspProfiles() {
+  try {
+    const zones = JSON.parse(localStorage.getItem(DSP_ZONE_STORAGE_KEY) || '{}');
+    return zones && typeof zones === 'object' && !Array.isArray(zones) ? zones : {};
+  } catch {
+    return {};
+  }
+}
+
+// The zone's preset id, '' for Off. A renderer never chosen for starts Off
+// (direct source, as before per-zone DSP); a USB output inherits the browser's.
+function zoneDspProfileId(zone) {
+  const browserStored = readPersistedDspProfileId();
+  const browserChoice = browserStored === DSP_OFF_STORAGE_VALUE
+    ? '' : (browserStored || readPersistedLastDspProfileId());
+  if (zone.type === 'browser') return browserChoice;
+  const stored = readZoneDspProfiles()[dspZoneKey(zone)];
+  if (stored !== undefined) return stored === DSP_OFF_STORAGE_VALUE ? '' : String(stored);
+  return zone.type === 'cast' ? '' : browserChoice;
+}
+
 // Choosing Off never forgets the last preset; `lastProfileId` updates it.
+// The choice is stored for the active output zone.
 function persistDspProfileId(profileId, { lastProfileId = '' } = {}) {
   try {
     const value = String(profileId || '');
+    const zone = getActiveZone();
+    if (zone.type !== 'browser') {
+      const zones = readZoneDspProfiles();
+      zones[dspZoneKey(zone)] = value || DSP_OFF_STORAGE_VALUE;
+      localStorage.setItem(DSP_ZONE_STORAGE_KEY, JSON.stringify(zones));
+      const lastValue = value || String(lastProfileId || '');
+      if (lastValue) localStorage.setItem(DSP_LAST_PROFILE_STORAGE_KEY, lastValue);
+      return;
+    }
     if (value) {
       localStorage.setItem(DSP_PROFILE_STORAGE_KEY, value);
       localStorage.setItem(DSP_LAST_PROFILE_STORAGE_KEY, value);
@@ -7321,13 +7439,18 @@ function persistDspProfileId(profileId, { lastProfileId = '' } = {}) {
   } catch {}
 }
 
+// Off for the active zone: chosen Off, or a renderer never chosen for.
 function isDspExplicitlyOff() {
-  return readPersistedDspProfileId() === DSP_OFF_STORAGE_VALUE;
+  const zone = getActiveZone();
+  if (zone.type === 'browser') return readPersistedDspProfileId() === DSP_OFF_STORAGE_VALUE;
+  return zoneDspProfileId(zone) === '';
 }
 
-const persistedDspProfileId = isDspExplicitlyOff() ? '' : readPersistedDspProfileId();
+// Playback starts in the browser zone.
+const browserDspOff = readPersistedDspProfileId() === DSP_OFF_STORAGE_VALUE;
+const persistedDspProfileId = browserDspOff ? '' : readPersistedDspProfileId();
 const persistedLastDspProfileId = readPersistedLastDspProfileId();
-const initialDspProfileId = isDspExplicitlyOff() ? '' : (persistedDspProfileId || persistedLastDspProfileId);
+const initialDspProfileId = browserDspOff ? '' : (persistedDspProfileId || persistedLastDspProfileId);
 
 const state = {
   view: null, // Start as null to ensure initial navigate() triggers render
@@ -7350,6 +7473,9 @@ const state = {
   scanPollId: null,
   castDevice: null, // { udn, name }
   castPollId: null,
+  castDsp: null, // the server's DSP status for what the renderer is playing
+  castStartOffset: 0, // seconds into the track where the renderer's stream starts
+  castPosition: 0, // track position on the renderer (offset included)
   isComposing: false,
   mobilePlayerDismissed: false,
 };
@@ -8130,11 +8256,14 @@ function startCastPolling() {
       updatePlayBtnUI();
 
       if (status.duration > 0) {
-        const pct = (status.position / status.duration) * 100;
+        // A resumed DSP stream starts castStartOffset seconds into the track.
+        const offset = state.castStartOffset || 0;
+        state.castPosition = offset + status.position;
+        const pct = (state.castPosition / (offset + status.duration)) * 100;
         UI['progress-fill'].style.width = pct + '%';
         UI['progress-fill'].style.setProperty('--prog', pct + '%');
-        UI['time-current'].textContent  = fmt(status.position);
-        UI['time-total'].textContent    = fmt(status.duration);
+        UI['time-current'].textContent  = fmt(state.castPosition);
+        UI['time-total'].textContent    = fmt(offset + status.duration);
       }
     } catch (e) {
       console.warn("Cast polling error:", e);
@@ -8149,20 +8278,31 @@ function stopCastPolling() {
   }
 }
 
-async function castTo(track, device) {
+// `startSeconds` resumes the track there (a DSP change mid-track).
+async function castTo(track, device, { startSeconds = 0 } = {}) {
   showToast(`Casting to ${device.name}...`);
   try {
-    // The server hands the renderer its own ticketed URL for this track.
+    // The server hands the renderer its own ticketed URL for this track:
+    // the direct source, or its DSP transcode when this zone's preset is active.
+    const dspProfile = state.dspProfiles.find(profile => String(profile.id) === String(state.dspProfile));
     const res = await api(`/cast/${device.udn}`, {
       method: 'POST',
-      body: JSON.stringify({ track_id: track.id, dsp_profile_id: Number(state.dspProfile) || null })
+      body: JSON.stringify({
+        track_id: track.id,
+        dsp_profile_id: Number(state.dspProfile) || null,
+        ...(startSeconds > 0 ? { start_seconds: Math.round(startSeconds * 10) / 10 } : {}),
+      })
     });
     if (res.success) {
       markExpectedBrowserPause(1200);
       audio.pause();
-      showToast(res.dsp?.status === 'bypassed'
-        ? `Playing on ${device.name} · DSP not applied on this renderer`
-        : `Playing on ${device.name}`);
+      state.castDsp = res.dsp ? { ...res.dsp, effective_name: res.dsp.effective_profile_id ? dspProfile?.name : null } : null;
+      state.castStartOffset = Number(res.start_offset) || 0;
+      state.castPosition = startSeconds > 0 ? startSeconds : 0;
+      let dspNote = '';
+      if (res.dsp?.status === 'applied') dspNote = ` · DSP ${dspProfile?.name || ''}`.trimEnd();
+      if (res.dsp?.status === 'bypassed') dspNote = ' · DSP bypassed (no active processing)';
+      showToast(`Playing on ${device.name}${dspNote}`);
       startCastPolling();
     } else {
       showToast(`Failed to cast to ${device.name}`);
@@ -8981,22 +9121,17 @@ UI['dsp-select'].addEventListener('change', e => {
   }
   persistDspProfileId(state.dspProfile);
   const selected = state.dspProfiles.find(profile => String(profile.id) === String(state.dspProfile));
-  if (isCastZone()) {
-    // The renderer plays the direct source: re-casting would restart the
-    // track without changing the sound, so only say so.
-    showToast(selected ? 'DSP not applied on this renderer' : 'DSP: Off');
-  } else {
+  // In a cast zone castTo reports the renderer's result instead.
+  if (!(isCastZone() && state.currentTrack)) {
     showToast(selected ? `DSP: ${selected.name}` : 'DSP: Off');
   }
-  document.querySelectorAll('.dsp-preset-card').forEach(card => {
-    const isActive = String(card.dataset.profileId) === String(state.dspProfile || '');
-    card.style.borderColor = isActive ? 'var(--gold)' : 'var(--border)';
-    card.style.boxShadow = isActive ? '0 0 0 1px rgba(201,168,76,0.18)' : 'none';
-  });
+  syncDspPresetCards();
 
   if (state.currentTrack) {
     if (isCastZone()) {
-      // Direct renderer stream: nothing to restart.
+      // Re-cast the renderer's stream (DSP transcode or direct source) from
+      // where it is now.
+      castTo(state.currentTrack, state.castDevice, { startSeconds: state.castPosition || 0 });
     } else if (isNativeZone()) {
       playTrack(state.currentTrack, state.queue, state.queueIdx);
     } else {

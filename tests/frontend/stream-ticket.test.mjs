@@ -137,13 +137,13 @@ const hours = h => Math.floor(1_700_000_000_000 / 1000) + h * 3600;
   assert.equal(called, false);
 }
 
-// 8. Casting sends only the track id (plus the requested DSP preset, which
-// the server reports as bypassed); the server mints the renderer's URL.
+// 8. Casting sends only the track id (plus the zone's DSP preset); the
+// server mints the renderer's URL, ticketed, direct or DSP-transcoded.
 {
   const castCalls = [];
   const castContext = vm.createContext({
     JSON,
-    state: { dspProfile: '2' },
+    state: { dspProfile: '2', dspProfiles: [] },
     location: { origin: 'http://localhost:8765' },
     audio: { pause() {} },
     showToast() {},
