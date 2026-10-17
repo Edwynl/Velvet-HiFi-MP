@@ -79,6 +79,111 @@ class StreamSlots:
             self._active = max(0, self._active - 1)
 
 
+# FFmpeg gets this long to exit after terminate(), then again after kill().
+TERMINATE_GRACE_SECONDS = 2.0
+KILL_GRACE_SECONDS = 5.0
+# Strong references for cleanup tasks that must outlive a cancelled request.
+_CLEANUP_TASKS: set[asyncio.Future] = set()
+
+
+def _keep_alive(task: asyncio.Future) -> asyncio.Future:
+    _CLEANUP_TASKS.add(task)
+    task.add_done_callback(_CLEANUP_TASKS.discard)
+    return task
+
+
+def _send_signal(process, method: str) -> None:
+    try:
+        getattr(process, method)()
+    except ProcessLookupError:
+        pass  # already gone
+    except OSError:
+        # e.g. Windows access denied on a process that is just exiting.
+        log.warning("FFmpeg %s() failed", method, exc_info=True)
+
+
+async def _drain(process, timeout: float) -> None:
+    """Close the pipes and wait for exit, bounded by ``timeout``.
+
+    wait() alone can hang when the child's stdout StreamReader is full.
+    """
+    try:
+        await asyncio.wait_for(process.communicate(), timeout)
+    except asyncio.TimeoutError:
+        pass
+    except Exception:
+        log.warning("FFmpeg cleanup failed", exc_info=True)
+
+
+async def _reap(process) -> bool:
+    """Terminate, then kill, FFmpeg; return True once it has really exited."""
+    if process.returncode is None:
+        _send_signal(process, "terminate")
+    await _drain(process, TERMINATE_GRACE_SECONDS)
+    if process.returncode is None:
+        _send_signal(process, "kill")
+        await _drain(process, KILL_GRACE_SECONDS)
+    return process.returncode is not None
+
+
+class TranscodeGuard:
+    """Owns one transcode: its FFmpeg process and the slot it occupies.
+
+    ``finish()`` reaps FFmpeg and calls ``on_exit`` (the slot release) exactly
+    once, and only after the process has exited or when none was started.
+    The body generator and the response both call it, so release depends
+    neither on which side ends first, on ``aclose()`` succeeding, nor on
+    garbage collection. If FFmpeg survives kill() the slot stays held and a
+    background task releases it when the process finally exits.
+    """
+
+    def __init__(self, on_exit: Callable[[], None] | None = None):
+        self._on_exit = on_exit
+        self._spawning: asyncio.Future | None = None
+        self._finishing: asyncio.Future | None = None
+        self.process = None
+
+    @property
+    def closing(self) -> bool:
+        return self._finishing is not None
+
+    async def spawn(self, command: Sequence[str]):
+        # Its own task, so a request cancelled mid-spawn cannot orphan a
+        # process that finish() never sees.
+        self._spawning = _keep_alive(asyncio.ensure_future(asyncio.create_subprocess_exec(
+            *command,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL,
+        )))
+        self.process = await asyncio.shield(self._spawning)
+        return self.process
+
+    async def finish(self) -> None:
+        if self._finishing is None:
+            self._finishing = _keep_alive(asyncio.ensure_future(self._finish()))
+        with anyio.CancelScope(shield=True):
+            await asyncio.shield(self._finishing)
+
+    async def _finish(self) -> None:
+        if self._spawning is not None:
+            try:
+                self.process = await self._spawning
+            except Exception:
+                self.process = None  # spawn failed: nothing to reap
+        process = self.process
+        if process is not None and not await _reap(process):
+            log.error("FFmpeg pid %s survived kill(); its slot is held until it exits",
+                      getattr(process, "pid", "?"))
+            try:
+                await process.wait()
+            except Exception:
+                log.exception("Waiting for FFmpeg to exit failed")
+            if process.returncode is None:
+                return  # never free a slot for a decoder that may still run
+        if self._on_exit is not None:
+            self._on_exit()
+
+
 async def iter_ffmpeg_stdout(
     command: Sequence[str],
     *,
@@ -86,6 +191,7 @@ async def iter_ffmpeg_stdout(
     chunk_size: int = 262144,
     idle_timeout_seconds: float = 120,
     on_close: Callable[[], None] | None = None,
+    guard: TranscodeGuard | None = None,
 ) -> AsyncIterator[bytes]:
     """Yield encoded audio bytes; reap the FFmpeg subprocess on every exit path.
 
@@ -93,7 +199,7 @@ async def iter_ffmpeg_stdout(
     time a paused or slow client spends not reading DOES count toward it.
     ``idle_timeout_seconds`` separately ends a decoder that produces no output;
     only that idle check ignores time spent waiting for the client.
-    ``on_close`` runs once the process has been reaped.
+    ``on_close`` (or ``guard``'s ``on_exit``) runs once the process has exited.
 
     Raises on cancellation so Starlette can release response resources.
     On a transcode failure the HTTP response may have already started, so the
@@ -103,14 +209,13 @@ async def iter_ffmpeg_stdout(
         raise ValueError("timeouts must be positive")
     if chunk_size <= 0:
         raise ValueError("chunk_size must be positive")
+    if guard is None:
+        guard = TranscodeGuard(on_close)
 
-    process = None
     try:
-        process = await asyncio.create_subprocess_exec(
-            *command,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.DEVNULL,
-        )
+        if guard.closing:
+            return  # the response already ended; never start a decoder
+        process = await guard.spawn(command)
         # Enforce the deadline per read. A timeout context spanning `yield`
         # would deliver its cancellation to whatever the consumer is awaiting
         # (e.g. Starlette's send()) while the generator is suspended.
@@ -145,43 +250,26 @@ async def iter_ffmpeg_stdout(
     except Exception:
         log.exception("FFmpeg audio stream failed")
     finally:
-        if process is not None:
-            # Starlette disconnects cancel an AnyIO task group. Shield the
-            # reap operation from repeated cancellation during cleanup.
-            with anyio.CancelScope(shield=True):
-                if process.returncode is None:
-                    try:
-                        process.terminate()
-                    except ProcessLookupError:
-                        pass
-                try:
-                    # Drain the pipe as well: wait() alone can hang when a
-                    # terminated child's stdout StreamReader is full.
-                    await asyncio.wait_for(process.communicate(), timeout=2)
-                except asyncio.TimeoutError:
-                    try:
-                        process.kill()
-                    except ProcessLookupError:
-                        pass
-                    await process.communicate()
-        if on_close is not None:
-            on_close()
+        # Starlette disconnects cancel an AnyIO task group; finish() shields
+        # the reap from repeated cancellation during cleanup.
+        await guard.finish()
 
 
 class TranscodeStreamingResponse(StreamingResponse):
-    """StreamingResponse that closes its body generator as soon as it ends.
+    """StreamingResponse that reaps its transcode as soon as it ends.
 
     On a client disconnect Starlette cancels the send loop while the body
     generator is parked at ``yield``, and leaves the generator for the garbage
     collector to finalize. Behind ``@app.middleware("http")`` layers that can
     take seconds, holding FFmpeg and its transcode slot long enough for the
-    next track's request to 503. Closing it here reaps the decoder at once.
-    ``on_close`` then runs even if the body was never started (no decoder).
+    next track's request to 503. Closing the body here reaps the decoder at
+    once; ``guard.finish()`` then releases the slot even if ``aclose()``
+    raised or the body was never started (no decoder).
     """
 
-    def __init__(self, content, *args, on_close: Callable[[], None] | None = None, **kwargs):
+    def __init__(self, content, *args, guard: TranscodeGuard, **kwargs):
         super().__init__(content, *args, **kwargs)
-        self._on_close = on_close
+        self._guard = guard
 
     async def __call__(self, scope, receive, send) -> None:
         try:
@@ -190,6 +278,8 @@ class TranscodeStreamingResponse(StreamingResponse):
             with anyio.CancelScope(shield=True):
                 aclose = getattr(self.body_iterator, "aclose", None)
                 if aclose is not None:
-                    await aclose()
-            if self._on_close is not None:
-                self._on_close()
+                    try:
+                        await aclose()
+                    except Exception:
+                        log.warning("Closing the transcode body failed", exc_info=True)
+                await self._guard.finish()
