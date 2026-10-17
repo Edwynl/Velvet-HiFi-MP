@@ -62,6 +62,47 @@
     return clamp(Math.pow(2, Math.ceil(Math.log2(rate * 0.042))), 2048, 32768);
   }
 
+  // The VU mirror never requests an upsampled or DSP stream: each of those
+  // holds one of the server's few FFmpeg slots and could leave the MAIN
+  // player with a 503. Upsampling does not change levels; with DSP active the
+  // meter reads the source (pre-DSP) signal.
+  function mirrorSourceUrl(src, base) {
+    if (!src) return '';
+    let url;
+    try { url = new URL(src, base); } catch { return src; }
+    if (!/^\/api\/stream\/\d+$/.test(url.pathname)) return url.href;
+    url.searchParams.set('upsample', 'none');
+    url.searchParams.delete('dsp');
+    url.searchParams.delete('quality');
+    return url.href;
+  }
+
+  // Retry policy for the mirror's play(). It starts armed, so the first
+  // request (inside the VU-open gesture) is never throttled however early
+  // after page load performance.now() reads.
+  function createPlayGate({ retryMs = 1200, failureMs = 5000, deniedMs = 30000 } = {}) {
+    let nextAt = -Infinity;
+    let pending = false;
+    let needsGesture = false;
+    return {
+      canAttempt: now => !pending && now >= nextAt,
+      begin(now) { pending = true; nextAt = now + retryMs; },
+      settle(error, now) {
+        pending = false;
+        if (!error) { needsGesture = false; return; }
+        if (error.name === 'NotAllowedError') {
+          needsGesture = true;
+          nextAt = now + deniedMs;
+        } else if (error.name !== 'AbortError') {
+          nextAt = now + failureMs; // e.g. 401/404/undecodable: no request storm
+        }
+      },
+      rearm() { nextAt = -Infinity; needsGesture = false; },
+      get needsGesture() { return needsGesture; },
+      get pending() { return pending; },
+    };
+  }
+
   function vuToPosition(vu) {
     if (!Number.isFinite(vu)) return 0;
     const amplitude = Math.pow(10, clamp(vu, MIN_DB, MAX_DB) / 20);
@@ -170,7 +211,7 @@
   }
 
   root.VelvetVU = Object.freeze({
-    pcmLevel, analyserFftSize, vuToPosition, vuToAngle, positionToAngle,
+    pcmLevel, analyserFftSize, mirrorSourceUrl, createPlayGate, vuToPosition, vuToAngle, positionToAngle,
     createMeter: options => new Meter(options),
     MIN_ANGLE, MAX_ANGLE,
   });

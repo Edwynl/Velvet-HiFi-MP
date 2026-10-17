@@ -466,6 +466,32 @@ class ServerApiTests(unittest.TestCase):
         resp = self.client.get("/api/stream/1", headers={"Range": "bytes=0-3"})
         self.assertEqual(resp.status_code, 403)
 
+    def test_vu_mirror_direct_stream_needs_no_transcode_slot(self):
+        # The VU mirror requests upsample=none without DSP. With every FFmpeg
+        # slot taken (main playback + other clients) it must still be served
+        # and must not hold a slot the main player needs; a duplicate DSP
+        # request in the same state is the 503 the mirror used to risk.
+        self._allow_music_root()
+        with self._connect() as conn:
+            profile_id = conn.execute(
+                "INSERT INTO dsp_profiles (name, preamp_db) VALUES ('Mirror test', -3)").lastrowid
+            conn.commit()
+        leases = [server.TRANSCODE_SLOTS.try_acquire() for _ in range(server.TRANSCODE_SLOTS.limit)]
+        try:
+            self.assertTrue(all(leases))
+            mirror = self.client.get("/api/stream/1?upsample=none", headers={"Range": "bytes=0-3"})
+            self.assertIn(mirror.status_code, {200, 206})
+            self.assertEqual(server.TRANSCODE_SLOTS.active, server.TRANSCODE_SLOTS.limit)
+            with patch.object(server, "TRANSCODE_SLOT_WAIT_SECONDS", 0.05), \
+                 patch.object(server.asyncio, "create_subprocess_exec",
+                              side_effect=AssertionError("no slot, no FFmpeg")):
+                duplicate = self.client.get(f"/api/stream/1?dsp={profile_id}")
+            self.assertEqual(duplicate.status_code, 503)
+        finally:
+            for lease in leases:
+                lease.release()
+        self.assertEqual(server.TRANSCODE_SLOTS.active, 0)
+
     def test_direct_stream_sends_dlna_headers_only_when_requested(self):
         self._allow_music_root()
         ask = {"getcontentFeatures.dlna.org": "1"}

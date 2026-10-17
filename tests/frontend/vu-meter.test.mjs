@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
 
 // Execute the exact browser classic-script implementation in isolation.
-const sandbox = { Math, Number, Float32Array };
+const sandbox = { Math, Number, Float32Array, URL };
 sandbox.globalThis = sandbox;
 vm.runInNewContext(readFileSync('static/js/vu-meter-engine.js', 'utf8'), sandbox);
 const VU = sandbox.VelvetVU;
@@ -98,6 +98,46 @@ for (const [rate, size] of [[44100, 2048], [48000, 2048], [96000, 4096], [192000
 }
 assert.equal(VU.analyserFftSize(undefined), 2048);
 
+// Mirror play() gate. Regression: a 0 timestamp sentinel with
+// `now - last >= 1200` skipped the VU-open gesture's play() for the first
+// 1.2 s after page load (performance.now() starts at 0).
+for (const pageAge of [0, 16, 500, 1199]) {
+  assert.ok(VU.createPlayGate().canAttempt(pageAge), `first play() throttled at ${pageAge} ms`);
+}
+const gate = VU.createPlayGate();
+gate.begin(500);
+assert.equal(gate.canAttempt(600), false, 'one play() in flight at a time');
+gate.settle(null, 700);
+assert.equal(gate.canAttempt(1699), false, 'retries are throttled');
+assert.equal(gate.canAttempt(1700), true);
+gate.begin(1700);
+gate.settle({ name: 'NotAllowedError' }, 1750);
+assert.equal(gate.needsGesture, true, 'UI must ask for a tap');
+assert.equal(gate.canAttempt(20000), false, 'denied play() backs off');
+gate.rearm(); // tap on the meters, or a new track
+assert.equal(gate.needsGesture, false);
+assert.equal(gate.canAttempt(20001), true, 'a tap retries immediately');
+gate.begin(20001);
+gate.settle({ name: 'NotSupportedError' }, 20100);
+assert.equal(gate.canAttempt(24000), false, 'a broken source does not retry every 1.2 s');
+assert.equal(gate.canAttempt(25100), true);
+gate.begin(25100);
+gate.settle({ name: 'AbortError' }, 25200); // play() interrupted by load()/pause()
+assert.equal(gate.canAttempt(26300), true);
+
+// The mirror never asks for a transcoded stream (FFmpeg slot) and keeps the
+// stream-only ticket; non-stream sources pass through untouched.
+const base = 'http://velvet.local:8765/#home';
+const mirrored = new URL(VU.mirrorSourceUrl('/api/stream/42?upsample=4x&dsp=3&ticket=abc.def', base));
+assert.equal(mirrored.pathname, '/api/stream/42');
+assert.equal(mirrored.searchParams.get('upsample'), 'none');
+assert.equal(mirrored.searchParams.has('dsp'), false);
+assert.equal(mirrored.searchParams.get('ticket'), 'abc.def');
+assert.equal(VU.mirrorSourceUrl('http://velvet.local:8765/api/stream/42?upsample=none', base),
+  'http://velvet.local:8765/api/stream/42?upsample=none');
+assert.equal(VU.mirrorSourceUrl('blob:http://velvet.local/x', base), 'blob:http://velvet.local/x');
+assert.equal(VU.mirrorSourceUrl('', base), '');
+
 // Integration checks: all units from PCM and all test resources present.
 const html = readFileSync('static/index.html','utf8');
 const sw = readFileSync('sw.js','utf8');
@@ -110,6 +150,17 @@ assert.ok(html.includes('vu-calibration'));
 assert.ok(html.includes('vu-mode-responsive'));
 assert.ok(html.includes('vuSilentGain.connect(audioContext.destination)'));
 assert.ok(html.includes('VelvetVU.analyserFftSize(audioContext.sampleRate)'));
+const sync = html.slice(html.indexOf('function syncVUAudioToPlayback()'), html.indexOf('function getAudioLevel()'));
+assert.ok(sync.includes('VelvetVU.mirrorSourceUrl(audio.src'), 'mirror must use the direct stream');
+assert.ok(!/vuAudio\.src = audio\.src/.test(html), 'mirror must not copy a transcoded URL');
+assert.ok(sync.includes('vuPlayGate.canAttempt(now)') && !html.includes('vuLastPlayAttemptAt'));
+assert.ok(sync.includes('releaseVUMirrorSource()'), 'pause releases the mirror connection');
+assert.ok(/if \(!isBrowserZone\(\)\) \{[^}]*cleanupSuspendedAudioContextIfNeeded\(\)/.test(sync),
+  'leaving browser output releases the analysis graph');
+assert.ok(!/\.resume\(\)\.catch/.test(sync), 'no resume() per animation frame');
+assert.ok(html.includes('const VU_MAX_DRIFT_SECONDS = 0.25;'));
+assert.ok(html.includes("classList.toggle('vu-relative', vuMode !== 'classic')"));
+assert.ok(html.includes("'Tap the meters to enable'"));
 assert.ok(!/fftSize = 2048/.test(html), 'analyser window must follow the context rate');
 // Mastered releases pin at -18 dBFS; the shipped default is -12 dBFS.
 assert.ok(html.includes('const VU_DEFAULT_CALIBRATION = -12;'));
