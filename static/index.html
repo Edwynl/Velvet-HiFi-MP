@@ -6884,9 +6884,18 @@ async function api(path, opts = {}) {
     if (!r.ok) {
       const errText = `API ${path} failed with status ${r.status}`;
       console.warn(errText);
-      // For non-GET requests (mutations), show a toast error
+      // For non-GET requests (mutations), show the server's reason when it
+      // gives one (FastAPI `detail`), e.g. why an album removal was refused.
       if (opts.method && opts.method !== 'GET') {
-        showToast('Operation failed: ' + r.status);
+        let reason = '';
+        try {
+          const data = await r.json();
+          reason = typeof data?.detail === 'string' ? data.detail : (data?.error || '');
+        } catch {
+          // Non-JSON error body: fall back to the status code.
+        }
+        if (reason) showToast(reason, 6000);
+        else showToast('Operation failed: ' + r.status);
       }
       return null;
     }

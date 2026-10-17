@@ -110,6 +110,12 @@ function createHarness({ initialHash = '#home' } = {}) {
       return Promise.resolve(makeJsonResponse({ artists: 1, albums: 3, tracks: 5, duration: 3 }));
     }
 
+    if (parsedUrl.pathname === '/api/albums/11' && method === 'DELETE') {
+      return Promise.resolve(makeJsonResponse({
+        detail: 'Album tracks are referenced by playlists or play history. Removal refused',
+      }, 409));
+    }
+
     if (parsedUrl.pathname === '/api/scan/status' && method === 'GET') {
       return Promise.resolve(makeJsonResponse({ running: false, progress: 0, total: 0, current_file: '' }));
     }
@@ -556,6 +562,25 @@ async function testAlbumRemovalExplainsFileRecoveryAndAssociationGuard() {
   }
 }
 
+async function testRefusedAlbumRemovalShowsServerReason() {
+  const harness = createHarness();
+  const dom = await harness.createDom();
+  try {
+    await dom.window.navigate('album', { id: 11 });
+    (await waitFor(() => dom.window.document.querySelector('#del-album-btn'))).click();
+    await waitFor(() => dom.window.document.querySelector('#modal-container.open'));
+    dom.window.document.querySelector('#modal-confirm').click();
+    await waitFor(() => harness.fetchLog.includes('DELETE /api/albums/11'));
+    const toast = dom.window.document.querySelector('#toast');
+    await waitFor(() => /referenced by playlists or play history/.test(toast.textContent));
+    await new Promise(resolve => setTimeout(resolve, 50));
+    assert.doesNotMatch(toast.textContent, /Cannot read properties|Delete failed/);
+    assert.equal(dom.window.eval('state.view'), 'album', 'A refused removal stays on the album');
+  } finally {
+    dom.window.close();
+  }
+}
+
 async function main() {
   await testAlbumBackFallsBackWhenHistoryBackDoesNothing();
   await testBackToAlbumsRestoresKeptViewWithoutRefetch();
@@ -568,6 +593,7 @@ async function main() {
   await testSearchTrackOpensAlbumAndPlaysMatchedTrack();
   testLandscapeAlbumLayoutCssGuards();
   await testAlbumRemovalExplainsFileRecoveryAndAssociationGuard();
+  await testRefusedAlbumRemovalShowsServerReason();
 }
 
 try {

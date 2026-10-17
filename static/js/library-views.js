@@ -2320,7 +2320,8 @@ async function renderAlbum(vc, { id }) {
         showToast(delFiles ? 'Archiving files and removing library entry…' : 'Removing from library…');
         try {
           const res = await api(`/albums/${album.id}?delete_files=${delFiles}`, { method: 'DELETE' });
-          if (res.success) {
+          // api() returns null after toasting a refusal (e.g. 409 with reason).
+          if (res?.success) {
             showToast(res.message || 'Album removed');
             navigate('albums');
             loadStats(); // Update sidebar counts
