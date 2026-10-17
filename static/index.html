@@ -6316,13 +6316,40 @@ input[type=range]::-webkit-slider-thumb:hover { background: var(--gold); }
 </div>
 
 <script src="/static/js/library-views.js"></script>
-<script src="/static/js/settings-view.js"></script>
 <script src="/static/js/player-ui.js"></script>
 <script src="/static/js/library-cards.js"></script>
 <script src="/static/js/dsp-controls.js"></script>
-<script src="/static/js/remote-settings.js"></script>
 <script src="/static/js/vu-meter-engine.js"></script>
 <script>
+// Load expensive Settings/Remote logic only when the user opens that screen.
+// Keep login/auth and core DSP modules in the initial shell; they are shared.
+const _lazyFrontendModules = Object.create(null);
+function ensureFrontendModule(name) {
+  const ready = (
+    name === 'settings-view' ? typeof renderSettings === 'function' :
+    name === 'remote-settings' ? typeof renderRemote === 'function' : false
+  );
+  if (ready) return Promise.resolve();
+  if (!['settings-view', 'remote-settings'].includes(name)) {
+    return Promise.reject(new Error('Unknown frontend module'));
+  }
+  if (!_lazyFrontendModules[name]) {
+    _lazyFrontendModules[name] = new Promise((resolve, reject) => {
+      const script = document.createElement('script');
+      script.src = '/static/js/' + name + '.js';
+      script.async = true;
+      script.onload = resolve;
+      script.onerror = () => {
+        delete _lazyFrontendModules[name];
+        script.remove();
+        reject(new Error('Cannot load ' + name + ' while offline'));
+      };
+      document.head.appendChild(script);
+    });
+  }
+  return _lazyFrontendModules[name];
+}
+
 // ─── Utilities ────────────────────────────────────────────────────────────────
 
 const $ = id => {
@@ -6914,9 +6941,18 @@ async function api(path, opts = {}) {
     if (!r.ok) {
       const errText = `API ${path} failed with status ${r.status}`;
       console.warn(errText);
-      // For non-GET requests (mutations), show a toast error
+      // For non-GET requests (mutations), show the server's reason when it
+      // gives one (FastAPI `detail`), e.g. why an album removal was refused.
       if (opts.method && opts.method !== 'GET') {
-        showToast('Operation failed: ' + r.status);
+        let reason = '';
+        try {
+          const data = await r.json();
+          reason = typeof data?.detail === 'string' ? data.detail : (data?.error || '');
+        } catch {
+          // Non-JSON error body: fall back to the status code.
+        }
+        if (reason) showToast(reason, 6000);
+        else showToast('Operation failed: ' + r.status);
       }
       return null;
     }
@@ -9092,11 +9128,11 @@ async function render({ restore = false } = {}) {
       case 'composer':    await renderComposer(vc, state.viewParams); break;
       case 'work':        await renderWork(vc, state.viewParams); break;
       case 'credit':      await renderCreditEntity(vc, state.viewParams); break;
-      case 'settings':    await renderSettings(vc); break;
+      case 'settings':    await ensureFrontendModule('settings-view'); if (state.view === 'settings') await renderSettings(vc); break;
       case 'search':      await renderSearch(vc, state.viewParams); break;
       case 'history':     await renderHistory(vc); break;
       case 'most-played':await renderMostPlayed(vc); break;
-      case 'remote':      await renderRemote(vc); break;
+      case 'remote':      await ensureFrontendModule('remote-settings'); if (state.view === 'remote') await renderRemote(vc); break;
     }
     log('[VELVET] Render complete:', state.view);
   } catch (e) {
@@ -9737,19 +9773,26 @@ let _scanPollId = null;
 let _scanPollToken = 0;
 let _latestScanStatus = {};
 
+// The scan panel lives in the lazily loaded Settings module. Startup polling
+// runs on every view, so record the status and paint only once it exists.
+function reportScanStatus(status) {
+  _latestScanStatus = status || {};
+  if (typeof updateScanStatusPanel === 'function') updateScanStatusPanel(_latestScanStatus);
+}
+
 function startScanPolling(initialState = null) {
   if (_scanPollId) clearTimeout(_scanPollId);
   const token = ++_scanPollToken;
   let sawRunning = !!initialState?.running;
   let waitingChecks = 0;
 
-  if (initialState) updateScanStatusPanel(initialState);
+  if (initialState) reportScanStatus(initialState);
 
   const poll = async () => {
     try {
       const status = await api('/scan/status');
       if (token !== _scanPollToken || !status) return;
-      updateScanStatusPanel(status);
+      reportScanStatus(status);
 
       if (status.running) {
         sawRunning = true;

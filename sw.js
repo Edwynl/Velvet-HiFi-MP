@@ -1,5 +1,5 @@
 // VELVET - Service Worker for PWA
-const CACHE_NAME = 'velvet-vu-v7';
+const CACHE_NAME = 'velvet-v8';
 const STATIC_ASSETS = [
   '/static/index.html',
   '/static/manifest.json',
@@ -14,14 +14,15 @@ const STATIC_ASSETS = [
 ];
 
 // Separate cache for thumbnails to avoid polluting main cache
-const THUMB_CACHE_NAME = 'velvet-thumbs-v5';
-const COVER_CACHE_NAME = 'velvet-covers-v3';
+const THUMB_CACHE_NAME = 'velvet-thumbs-v6';
+const COVER_CACHE_NAME = 'velvet-covers-v4';
 const MAX_THUMBS = 400;
 const MAX_COVERS = 80;
 const MAX_THUMB_BYTES = 24 * 1024 * 1024;
 const MAX_COVER_BYTES = 40 * 1024 * 1024;
 // Keep per-response sizes in memory to avoid repeatedly reading 400 bodies.
 const coverByteSizes = new Map();
+const coverWriteChains = new Map();
 const entryKey = (cacheName, request) => `${cacheName}|${typeof request === 'string' ? request : request.url}`;
 
 // Install event - cache static assets
@@ -96,6 +97,17 @@ async function trimCache(cacheName, maxItems, maxBytes) {
   }
 }
 
+function serialCoverWork(cacheName, work) {
+  // Serialize cache.put() + trimCache(): two concurrent arrivals previously
+  // each saw an incomplete picture and could both exceed the quota.
+  const previous = coverWriteChains.get(cacheName) || Promise.resolve();
+  const current = previous.catch(() => {}).then(work);
+  coverWriteChains.set(cacheName, current);
+  return current.finally(() => {
+    if (coverWriteChains.get(cacheName) === current) coverWriteChains.delete(cacheName);
+  });
+}
+
 async function putBoundedCover(cacheName, request, response, maxItems, maxBytes) {
   const url = new URL(request.url);
   // Never persist tickets or credentials that are encoded in URLs.
@@ -103,10 +115,12 @@ async function putBoundedCover(cacheName, request, response, maxItems, maxBytes)
       url.searchParams.has('api_key') || url.searchParams.has('password')) return;
   const bytes = await cacheResponseBytes(response);
   if (!Number.isFinite(bytes) || bytes > maxBytes) return;
-  const cache = await caches.open(cacheName);
-  await cache.put(request, response.clone());
-  coverByteSizes.set(entryKey(cacheName, request), bytes);
-  await trimCache(cacheName, maxItems, maxBytes);
+  await serialCoverWork(cacheName, async () => {
+    const cache = await caches.open(cacheName);
+    await cache.put(request, response.clone());
+    coverByteSizes.set(entryKey(cacheName, request), bytes);
+    await trimCache(cacheName, maxItems, maxBytes);
+  });
 }
 
 // Fetch event - network first, fallback to cache
@@ -142,12 +156,12 @@ self.addEventListener('fetch', event => {
           const response = await fetch(request);
           // Covers use an HttpOnly credential cookie. Never persist a
           // response under a URL containing a long-lived API key.
-          try {
-            await putBoundedCover(THUMB_CACHE_NAME, request, response,
-                                  MAX_THUMBS, MAX_THUMB_BYTES);
-          } catch {
-            // Storage quota errors should never interrupt cover display.
-          }
+          // Cache in the background. Do not stall first-paint of a cover while
+          // measuring sizes or evicting old entries on a mobile device.
+          const copy = response.clone();
+          event.waitUntil(putBoundedCover(
+            THUMB_CACHE_NAME, request, copy, MAX_THUMBS, MAX_THUMB_BYTES,
+          ).catch(() => {}));
           return response;
         } catch (err) {
           // If offline and not cached, return a placeholder or transparent 1x1 pixel

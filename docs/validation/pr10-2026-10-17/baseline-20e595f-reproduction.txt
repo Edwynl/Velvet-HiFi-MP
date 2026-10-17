@@ -1,0 +1,27 @@
+test_missing_staged_and_original_requires_recovery_for_either_moved_flag (test_library_safety.AlbumSafetyTests.test_missing_staged_and_original_requires_recovery_for_either_moved_flag) ... 
+  test_missing_staged_and_original_requires_recovery_for_either_moved_flag (test_library_safety.AlbumSafetyTests.test_missing_staged_and_original_requires_recovery_for_either_moved_flag) (moved=True) ... FAIL
+  test_missing_staged_and_original_requires_recovery_for_either_moved_flag (test_library_safety.AlbumSafetyTests.test_missing_staged_and_original_requires_recovery_for_either_moved_flag) (moved=False) ... FAIL
+
+======================================================================
+FAIL: test_missing_staged_and_original_requires_recovery_for_either_moved_flag (test_library_safety.AlbumSafetyTests.test_missing_staged_and_original_requires_recovery_for_either_moved_flag) (moved=True)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "C:\Antigravity\Claude Code\VELVET_NEXT\tests\test_library_safety.py", line 87, in test_missing_staged_and_original_requires_recovery_for_either_moved_flag
+    with self.assertRaisesRegex(ArchiveError, "missing"):
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: ArchiveError not raised
+
+======================================================================
+FAIL: test_missing_staged_and_original_requires_recovery_for_either_moved_flag (test_library_safety.AlbumSafetyTests.test_missing_staged_and_original_requires_recovery_for_either_moved_flag) (moved=False)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "C:\Antigravity\Claude Code\VELVET_NEXT\tests\test_library_safety.py", line 87, in test_missing_staged_and_original_requires_recovery_for_either_moved_flag
+    with self.assertRaisesRegex(ArchiveError, "missing"):
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: ArchiveError not raised
+
+----------------------------------------------------------------------
+Ran 1 test in 0.072s
+
+FAILED (failures=2)
+EXPECTED_REGRESSION_EXIT_CODE=1

@@ -94,6 +94,30 @@ async function renderRemote(vc) {
         </div>
       </div>
 
+      <!-- Secure browser origin: required for PWA and Service Workers on mobile -->
+      <div class="settings-card" style="margin-top:20px">
+        <div class="settings-title">Secure PWA Access (HTTPS)</div>
+        <div class="settings-desc" style="margin-top:8px">
+          The http://100.x Tailscale address is encrypted inside your VPN but is not a
+          secure browser origin. Android/iOS browsers usually require HTTPS for
+          Service Worker caching and installed PWA features.
+        </div>
+        ${status.https_ready && status.secure_url ? `
+          <div class="settings-desc" style="margin-top:12px;color:var(--gold)">Tailscale Serve is active.</div>
+          <a href="${escHtml(status.secure_url)}" target="_blank" rel="noopener"
+             class="btn btn-gold" style="display:inline-block;margin-top:12px;text-decoration:none">
+            Open secure VELVET
+          </a>
+        ` : `
+          <div class="settings-desc" style="margin-top:12px">On your Windows server, open PowerShell and run:</div>
+          <code style="display:block;overflow:auto;padding:12px;margin-top:8px;background:var(--s3)">tailscale serve --bg 8765</code>
+          <div class="settings-desc" style="margin-top:8px">
+            Enable HTTPS certificates/MagicDNS in your tailnet if prompted.
+            Verify with <code>tailscale serve status</code>. This uses Serve within
+            your tailnet only; do not use public Funnel.
+          </div>
+        `}
+      </div>
       <!-- Setup Guide Card -->
       <div class="settings-card" style="margin-top:24px">
         <div class="settings-title" style="margin-bottom:16px">Setup Guide</div>

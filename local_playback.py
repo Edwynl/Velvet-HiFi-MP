@@ -232,6 +232,8 @@ class LocalPlayer:
         self.process = None
         self.current_file = None
         self.output_sample_rate = None
+        self._played_frames = 0
+        self._gain = 1.0  # Unity gain leaves the PCM samples unchanged.
         # Plain counters written only by the audio callback.
         self.xrun_flags = 0     # callbacks where PortAudio reported a status flag
         self.starvations = 0    # callbacks the ring could not fill before EOF
@@ -290,7 +292,12 @@ class LocalPlayer:
             log.error(f"File not found: {file_path}")
             return False
 
+        gain = float(volume)
+        if not numpy.isfinite(gain) or not 0.0 <= gain <= 1.0:
+            raise ValueError("Volume must be a finite number between 0 and 1")
         self.stop()
+        self._played_frames = 0
+        self._gain = gain
 
         device_info = self._get_device_info()
         resolved_rate = int(output_sample_rate or device_info.get("sample_rate") or 48000)
@@ -341,14 +348,13 @@ class LocalPlayer:
                 daemon=True,
             )
             self._decoder.start()
-            gain = float(volume)
-
             # PortAudio real-time thread: memory copy only. Pipe reads, process
             # control, logging and playback-state updates happen elsewhere.
             def callback(outdata, frames, time_info, status):
                 if status:
                     self.xrun_flags += 1
-                copied = ring.read_into(outdata, gain)
+                copied = ring.read_into(outdata, self._gain)
+                self._played_frames += copied
                 if copied < frames:
                     outdata[copied:] = 0
                     if ring.drained:
@@ -372,9 +378,9 @@ class LocalPlayer:
                 dtype='float32'
             )
 
-            self.stream.start()
             self.current_file = file_path
             self.output_sample_rate = resolved_rate
+            self.stream.start()
             return True
 
         except Exception as e:
@@ -472,6 +478,7 @@ class LocalPlayer:
         self._ring = None
         self.current_file = None
         self.output_sample_rate = None
+        self._played_frames = 0
 
     def pause(self) -> bool:
         """Pause playback without destroying the decoder process."""
@@ -495,17 +502,24 @@ class LocalPlayer:
             log.warning(f"Failed to resume local playback: {exc}")
             return False
 
-    def set_volume(self, volume: float):
-        """Set playback volume (0.0 to 1.0)."""
-        if self.stream:
-            # Note: sounddevice doesn't have per-stream volume
-            # This would need to be implemented in the callback
-            pass
+    def set_volume(self, volume: float) -> bool:
+        """Adjust digital gain in the PCM callback; unity is untouched.
+
+        Digital attenuation is not bit-perfect. This does NOT control the
+        physical DAC amplifier or request WASAPI exclusive mode.
+        """
+        gain = float(volume)
+        if not numpy.isfinite(gain) or not 0.0 <= gain <= 1.0:
+            raise ValueError("Volume must be a finite number between 0 and 1")
+        if self.stream is None:
+            return False
+        self._gain = gain
+        return True
 
     def get_position(self) -> float:
-        """Get current playback position in seconds."""
-        # Would need to track this in callback
-        return 0.0
+        """Approximate PCM progress from frames actually dequeued by PortAudio."""
+        rate = self.output_sample_rate or 0
+        return round(self._played_frames / rate, 3) if rate else 0.0
 
 
 # ─── Player Management ───────────────────────────────────────────────────────────
@@ -607,6 +621,21 @@ def play_local(
         return {"success": False, "error": str(e)}
 
 
+def set_local_volume(volume: float) -> dict:
+    """Set digital PCM gain for native zone; does not modify Windows/DAC volume."""
+    with _player_lock:
+        if _active_player is None:
+            return {"success": False, "error": "Native playback is not active"}
+        try:
+            success = _active_player.set_volume(float(volume))
+        except (TypeError, ValueError) as exc:
+            return {"success": False, "error": str(exc)}
+    if success:
+        with _state_lock:
+            _playback_state["volume"] = float(volume)
+    return {"success": success, "volume": float(volume), "digital_gain": True}
+
+
 def stop_local() -> dict:
     """Stop local playback."""
     global _active_player
@@ -648,6 +677,10 @@ def resume_local() -> dict:
 
 
 def get_playback_status() -> dict:
-    """Get current playback status."""
-    with _state_lock:
-        return dict(_playback_state)
+    """Return decoder-consumed PCM position (not a fabricated zero)."""
+    with _player_lock:
+        position = _active_player.get_position() if _active_player is not None else 0.0
+        with _state_lock:
+            status = dict(_playback_state)
+            status["position"] = position if status.get("track_id") is not None else 0.0
+            return status

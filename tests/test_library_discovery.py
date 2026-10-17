@@ -87,6 +87,27 @@ class LibraryDiscoveryTests(unittest.TestCase):
         self.assertEqual(len(result["tracks"]), 2)
         self.assertEqual(result["tracks"][0]["artist_name"], "Artist One")
 
+    def test_variant_search_reaches_far_end_of_library(self):
+        """Previous fallback sampled only first remaining*3 songs."""
+        with self._connect() as db:
+            for i in range(10, 700):
+                db.execute(
+                    "INSERT INTO tracks(album_id,artist_id,title,file_path) VALUES(1,1,?,?)",
+                    (f"Other song {i}", f"C:/music/{i}.flac"),
+                )
+            db.execute(
+                "INSERT INTO tracks(album_id,artist_id,title,file_path) "
+                "VALUES(1,1,'快樂的音樂','C:/music/last.flac')"
+            )
+            db.commit()
+            result = search_tracks(
+                db, q="快乐", limit=10,
+                get_all_variants=lambda q: [q],
+                to_simplified=lambda x: x.replace("樂", "乐"),
+                to_traditional=lambda x: x.replace("乐", "樂"),
+            )
+        self.assertTrue(any("快樂" in track["title"] for track in result["tracks"]))
+
     def test_fetch_discover_returns_sections(self):
         with self._connect() as conn:
             result = fetch_discover(conn, 5)

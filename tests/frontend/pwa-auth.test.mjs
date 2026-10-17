@@ -69,12 +69,12 @@ assert.equal(await caches.match('/api/stream/1?api_key=secret'), undefined);
 await dispatch('fetch', request('/api/covers/1?api_key=secret'));
 assert.equal(await caches.match('/api/covers/1?api_key=secret'), undefined);
 for (let i = 0; i < 410; i++) await dispatch('fetch', request(`/api/covers/${i}/thumb`));
-assert.equal(stores.get('velvet-thumbs-v5').size, 400);
+assert.equal(stores.get('velvet-thumbs-v6').size, 400);
 const before = networkCalls;
 await dispatch('fetch', request('/api/covers/409/thumb'));
 assert.equal(networkCalls, before, 'Cached thumbnail avoids a new request');
 for (let i = 0; i < 90; i++) await dispatch('fetch', request(`/api/covers/${i}`));
-assert.equal(stores.get('velvet-covers-v3').size, 80);
+assert.equal(stores.get('velvet-covers-v4').size, 80);
 await dispatch('fetch', request('https://external.example/image'));
 await dispatch('fetch', request('/api/covers/1', 'POST'));
 assert.equal(networkCalls, before + 90, 'Cross-origin and mutation requests are untouched');
@@ -134,7 +134,7 @@ const coverCaches = () => [...stores.keys()].filter(name => /^velvet-(thumbs|cov
 async function seedCoverCaches() {
   await dispatch('fetch', request('/api/covers/1/thumb'));
   await dispatch('fetch', request('/api/covers/1'));
-  assert.deepEqual(coverCaches().sort(), ['velvet-covers-v3', 'velvet-thumbs-v5']);
+  assert.deepEqual(coverCaches().sort(), ['velvet-covers-v4', 'velvet-thumbs-v6']);
 }
 
 assert.equal(coverCaches().length, 2, 'SW tests above populated both cover caches');
@@ -163,5 +163,5 @@ const beforeOffline = networkCalls;
 await dispatch('fetch', request('/api/covers/7/thumb'));
 await dispatch('fetch', request('/api/covers/7/thumb'));
 assert.equal(networkCalls, beforeOffline + 1, 'Thumbnail caching works again after a purge');
-assert.equal(stores.get('velvet-thumbs-v5').size, 1);
+assert.equal(stores.get('velvet-thumbs-v6').size, 1);
 console.log('frontend_pwa_auth_check=OK');

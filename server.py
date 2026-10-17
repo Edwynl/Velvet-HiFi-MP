@@ -5,6 +5,8 @@ A Roon-like music management system for Windows
 """
 
 import asyncio
+import gzip
+from functools import lru_cache
 import io
 import ipaddress
 import json
@@ -40,7 +42,10 @@ import remote_access
 import security
 from cover_art import find_folder_cover as find_folder_cover_bytes, save_cover_bytes
 from dsp_engine import build_dsp_filter_chain, profile_filters, sanitize_dsp_filters
-from audio_streaming import StreamLease, StreamSlots, iter_ffmpeg_stdout, ffmpeg_supports_soxr
+from audio_streaming import (
+    StreamLease, StreamSlots, TranscodeGuard, TranscodeStreamingResponse, iter_ffmpeg_stdout,
+    ffmpeg_supports_soxr,
+)
 from db_pool import (
     DatabaseConnection,
     _return_db,
@@ -50,6 +55,8 @@ from db_pool import (
 )
 from db_schema import init_db
 from library_browse import fetch_albums, fetch_artists, fetch_tracks
+from library_paging import album_catalog_filters, fetch_album_page, fetch_artist_page
+from library_safety import AlbumFileArchive, ArchiveError, list_album_archives, restore_album_files
 from library_discovery import (
     fetch_album_radio,
     fetch_artist_detail_summary,
@@ -416,6 +423,7 @@ _duplicate_job = JobState({"running": False, "progress": 0, "total": 0, "current
 # commit per file, and a commit from one job between another job's per-file
 # read and write fails that file with "database is locked" (BUSY_SNAPSHOT).
 _library_task_lock = threading.Lock()
+_album_mutation_active = False
 
 # In-memory cover cache with TTL support
 _cover_cache: TTLCache = TTLCache(maxsize=10000, ttl=86400)  # album_id -> path
@@ -1008,6 +1016,26 @@ async def set_album_cover(album_id: int, request: Request):
     else:
         raise HTTPException(500, "Failed to download/save cover")
 
+@app.get("/api/artists/page")
+def get_artist_page(
+    limit: int = Query(60, ge=1, le=200), offset: int = Query(0, ge=0),
+    search: str = "",
+):
+    """Serve one artist page instead of all 5000 artist records to a phone."""
+    started = time.perf_counter()
+    db = get_db()
+    try:
+        result = fetch_artist_page(
+            db, search=search, limit=limit, offset=offset,
+            get_all_variants=get_all_variants,
+        )
+        _log_baseline_metric("artist_page", started, limit=limit, offset=offset,
+                             result_count=len(result["artists"]), total=result["total"])
+        return result
+    finally:
+        db.close()
+
+
 @app.get("/api/artists/{artist_id}")
 def get_artist(artist_id: int):
     """Get artist details with statistics."""
@@ -1094,6 +1122,34 @@ def get_albums(
         return rows
     finally:
         db.close()
+
+@app.get("/api/albums/page")
+def get_album_page(
+    limit: int = Query(60, ge=1, le=200), offset: int = Query(0, ge=0),
+    search: str = "", sort: str = "title", genre: str = "",
+    decade: str = "", favorites_only: bool = False,
+):
+    """Server-side album paging: never send the entire library to phones."""
+    started = time.perf_counter()
+    db = get_db()
+    try:
+        try:
+            result = fetch_album_page(
+                db, search=search, limit=limit, offset=offset, sort=sort,
+                genre=genre, decade=decade, favorites_only=favorites_only,
+                get_all_variants=get_all_variants,
+            )
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
+        if offset == 0:
+            result.update(album_catalog_filters(db))
+        _prime_cover_cache(result["albums"])
+        _log_baseline_metric("album_page", started, limit=limit, offset=offset,
+                             result_count=len(result["albums"]), total=result["total"])
+        return result
+    finally:
+        db.close()
+
 
 @app.get("/api/albums/{album_id}")
 def get_album(album_id: int, background_tasks: BackgroundTasks):
@@ -1694,50 +1750,123 @@ async def upload_album_cover(album_id: int, file: UploadFile = File(...)):
     return {"success": True, "path": str(target_path)}
 
 @app.delete("/api/albums/{album_id}")
-async def delete_album(album_id: int, delete_files: bool = Query(False)):
-    """Delete an album from the library, optionally deleting physical files."""
-    db = get_db()
-    album = db.execute("SELECT * FROM albums WHERE id=?", (album_id,)).fetchone()
-    if not album:
-        db.close()
-        raise HTTPException(404, "Album not found")
-    
-    tracks = db.execute("SELECT id, file_path FROM tracks WHERE album_id=?", (album_id,)).fetchall()
-    
-    # Physical deletion if requested
-    if delete_files:
-        deleted_dirs = set()
-        for track in tracks:
-            fp = Path(track["file_path"])
-            if fp.exists():
-                try:
-                    fp.unlink()
-                    deleted_dirs.add(fp.parent)
-                except Exception as e:
-                    log.error(f"Failed to delete file {fp}: {e}")
-        
-        # Try to remove empty directories
-        for d in deleted_dirs:
-            if d.exists() and not any(d.iterdir()):
-                try:
-                    d.rmdir()
-                except: pass
+def delete_album(album_id: int, delete_files: bool = Query(False)):
+    """Remove an album's index; optionally archive audio to recoverable storage.
 
-    # Database deletion (Cascade should handle tracks if FK is set, but let's be safe or check schema)
-    # The schema usually has ON DELETE CASCADE for tracks.
-    db.execute("DELETE FROM tracks WHERE album_id=?", (album_id,))
-    db.execute("DELETE FROM albums WHERE id=?", (album_id,))
-    
-    # Clean up artist if no tracks left
-    artist_id = album["artist_id"]
-    count = db.execute("SELECT COUNT(*) FROM tracks WHERE artist_id=?", (artist_id,)).fetchone()[0]
-    if count == 0:
-        db.execute("DELETE FROM artists WHERE id=?", (artist_id,))
-        
-    db.commit()
-    db.close()
-    
-    return {"success": True, "message": "Album deleted" + (" and files removed" if delete_files else "")}
+    Audio is never unlinked. If file staging or the SQL transaction fails,
+    rollback restores the original files and retains the music index.
+    Refuse removal when tracks have playlist/history references: file-only
+    recovery cannot safely reconstruct those relations or their original IDs.
+    """
+    global _album_mutation_active
+    # Hold the task reservation throughout filesystem staging and DB commit.
+    with _library_task_lock:
+        if _album_mutation_active or _scan_job.is_running() or _duplicate_job.is_running():
+            raise HTTPException(409, "Library maintenance is busy; try again when scans finish")
+        _album_mutation_active = True
+    db = None
+    archive = None
+    try:
+        db = get_db()
+        # Reserve SQLite's writer before checking references, so another
+        # request cannot add history/playlist links between the check and DELETE.
+        db.execute("BEGIN IMMEDIATE")
+        album = db.execute("SELECT * FROM albums WHERE id=?", (album_id,)).fetchone()
+        if not album:
+            raise HTTPException(404, "Album not found")
+        linked = db.execute(
+            "SELECT EXISTS(SELECT 1 FROM playlist_tracks p JOIN tracks t ON t.id=p.track_id "
+            "WHERE t.album_id=?) OR "
+            "EXISTS(SELECT 1 FROM play_history h JOIN tracks t ON t.id=h.track_id "
+            "WHERE t.album_id=?)", (album_id, album_id),
+        ).fetchone()[0]
+        if linked:
+            raise HTTPException(409,
+                "Album tracks are referenced by playlists or play history. Removal refused; "
+                "files, Track IDs and associations are unchanged. File-only restore cannot "
+                "preserve these associations. Keep the album to retain them.")
+        tracks = db.execute("SELECT file_path FROM tracks WHERE album_id=?", (album_id,)).fetchall()
+        if delete_files:
+            try:
+                archive = AlbumFileArchive(
+                    [track["file_path"] for track in tracks],
+                    _resolve_library_roots(db),
+                    Path(DATA_DIR) / "album-trash",
+                )
+                archive.stage()
+            except ArchiveError as exc:
+                raise HTTPException(409, str(exc)) from exc
+
+        try:
+            db.execute("DELETE FROM tracks WHERE album_id=?", (album_id,))
+            db.execute("DELETE FROM albums WHERE id=?", (album_id,))
+            # Other credits/compilations may still reference this artist; do
+            # not delete an artist simply because their primary tracks left.
+            artist_id = album["artist_id"]
+            refs = db.execute(
+                "SELECT EXISTS(SELECT 1 FROM albums WHERE artist_id=?) OR "
+                "EXISTS(SELECT 1 FROM tracks WHERE artist_id=?) OR "
+                "EXISTS(SELECT 1 FROM track_artists WHERE artist_id=?)",
+                (artist_id, artist_id, artist_id),
+            ).fetchone()[0]
+            if not refs:
+                db.execute("DELETE FROM artists WHERE id=?", (artist_id,))
+            db.commit()
+        except Exception:
+            db.rollback()
+            if archive:
+                archive.restore()
+            raise
+
+        result = {"success": True,
+                  "message": "Album removed from the library index; re-scanning may assign new Track IDs",
+                  "track_ids_preserved": False}
+        if archive:
+            try:
+                archive.commit()
+            except OSError as exc:
+                log.error("Album archive manifest needs reconciliation: %s", exc)
+                result["warning"] = "Files archived; manifest needs recovery check"
+            result.update({
+                "message": "Album removed; audio moved to recoverable local archive. "
+                           "Restoring files and re-scanning may assign new Track IDs; "
+                           "playlists and play history are not stored in file archives.",
+                "archive_token": archive.token,
+                "archived_files": len(archive.entries),
+            })
+        return result
+    finally:
+        if db is not None:
+            if db.in_transaction:
+                db.rollback()
+            db.close()
+        with _library_task_lock:
+            _album_mutation_active = False
+
+
+@app.get("/api/library/trash")
+def list_library_trash():
+    """List recoverable archived audio sets (never purge them implicitly)."""
+    return {"archives": list_album_archives(Path(DATA_DIR) / "album-trash")}
+
+
+@app.post("/api/library/trash/{token}/restore")
+def restore_library_trash(token: str):
+    """Restore archived audio safely while library scanning is paused."""
+    global _album_mutation_active
+    with _library_task_lock:
+        if _album_mutation_active or _scan_job.is_running() or _duplicate_job.is_running():
+            raise HTTPException(409, "Library maintenance is busy; retry when scans finish")
+        _album_mutation_active = True
+    try:
+        try:
+            return restore_album_files(Path(DATA_DIR) / "album-trash", token)
+        except ArchiveError as exc:
+            raise HTTPException(409, str(exc)) from exc
+    finally:
+        with _library_task_lock:
+            _album_mutation_active = False
+
 
 @app.post("/api/albums/{album_id}/open-folder")
 async def open_album_folder(album_id: int):
@@ -2037,8 +2166,11 @@ async def _stream_upsampled(file_path: str, target_rate: str, quality: str = "hi
         "-loglevel", "error"
     ]
 
-    return StreamingResponse(
-        iter_ffmpeg_stdout(cmd, timeout_seconds=timeout_seconds, on_close=lease.release),
+    # Releases the slot only after FFmpeg has exited (or never started).
+    guard = TranscodeGuard(lease.release)
+    return TranscodeStreamingResponse(
+        iter_ffmpeg_stdout(cmd, timeout_seconds=timeout_seconds, guard=guard),
+        guard=guard,
         media_type="audio/wav",
         headers={
             "X-Upsampled-Rate": target_rate,
@@ -2069,8 +2201,11 @@ async def _stream_with_dsp(file_path: str, dsp_filter: str, timeout_seconds: int
         "-loglevel", "error"
     ]
 
-    return StreamingResponse(
-        iter_ffmpeg_stdout(cmd, timeout_seconds=timeout_seconds, on_close=lease.release),
+    # Releases the slot only after FFmpeg has exited (or never started).
+    guard = TranscodeGuard(lease.release)
+    return TranscodeStreamingResponse(
+        iter_ffmpeg_stdout(cmd, timeout_seconds=timeout_seconds, guard=guard),
+        guard=guard,
         media_type="audio/flac",
         headers={
             "X-Output-Mode": "DSP",
@@ -2240,6 +2375,8 @@ def _claim_library_scan(begin) -> str | None:
     which a duplicate check could start before the scan thread does.
     """
     with _library_task_lock:
+        if _album_mutation_active:
+            return "Album file maintenance in progress"
         if _scan_job.is_running():
             return "Scan already in progress"
         if _duplicate_job.is_running():
@@ -2406,6 +2543,8 @@ def _duplicate_scan_worker() -> None:
 def start_duplicate_scan(background_tasks: BackgroundTasks):
     """Queue a read-only, byte-exact duplicate check in the background."""
     with _library_task_lock:
+        if _album_mutation_active:
+            raise HTTPException(409, "Album file maintenance in progress")
         if _scan_job.is_running():
             raise HTTPException(409, "Finish the library scan before checking duplicates")
         if _duplicate_job.is_running():
@@ -3265,6 +3404,18 @@ def resume_local_playback():
         return {"success": False, "error": str(e)}
 
 
+@app.post("/api/playback/volume")
+def set_native_playback_volume(body: dict):
+    """Optional 0..1 digital attenuation; unity gain preserves the original PCM."""
+    if not isinstance(body, dict) or "volume" not in body:
+        raise HTTPException(422, "volume is required")
+    import local_playback
+    result = local_playback.set_local_volume(body["volume"])
+    if not result["success"]:
+        raise HTTPException(422, result.get("error", "Native audio is unavailable"))
+    return result
+
+
 @app.get("/api/playback/status")
 def get_playback_status():
     """Get current local playback status."""
@@ -3372,12 +3523,27 @@ def get_remote_info():
 
 # ─── Security (Authentication) ───────────────────────────────────────────────────
 
+_PROXY_HEADERS = ("x-forwarded-for", "forwarded", "x-real-ip",
+                  "x-forwarded-host", "tailscale-user-login")
+
+
 def get_client_ip(request: Request) -> str:
     """Use the ASGI client address, not an untrusted X-Forwarded-For header.
 
-    Configure trusted proxies at the ASGI server/proxy layer if deployed behind one.
+    A local reverse proxy (e.g. `tailscale serve`) connects from 127.0.0.1 on
+    behalf of remote devices. Such a request must never inherit loopback
+    trust, so it is reported as a non-IP "proxied:<hop>" identity: never
+    loopback/private, yet still a per-device key for login rate limiting.
+    Forwarded headers only ever lower trust; they never grant it.
     """
-    return request.client.host if request.client else "unknown"
+    peer = request.client.host if request.client else "unknown"
+    if not _is_loopback_client_ip(peer):
+        return peer
+    forwarded = any(request.headers.get(name) for name in _PROXY_HEADERS)
+    if not forwarded and _is_loopback_client_ip(request.url.hostname or ""):
+        return peer
+    hop = request.headers.get("x-forwarded-for", "").split(",")[-1].strip()
+    return "proxied:" + (hop[:64] if hop else "unknown")
 
 
 def _is_local_client_ip(client_ip: str) -> bool:
@@ -3697,32 +3863,61 @@ async def request_id_middleware(request: Request, call_next):
 
 # ─── Frontend ─────────────────────────────────────────────────────────────────
 
+@lru_cache(maxsize=18)
+def _compressed_static_asset(file_path: str, mtime_ns: int, file_size: int) -> bytes:
+    """Compress versioned public assets once per file revision, never audio."""
+    return gzip.compress(Path(file_path).read_bytes(), compresslevel=5)
+
+
+def _accepts_gzip(request: Request) -> bool:
+    for item in request.headers.get("Accept-Encoding", "").split(","):
+        token, *params = item.strip().split(";")
+        if token.strip().lower() != "gzip":
+            continue
+        for param in params:
+            if param.strip().startswith("q="):
+                try:
+                    return float(param.strip()[2:]) > 0
+                except ValueError:
+                    return False
+        return True
+    return False
+
+
+def _serve_static_text(request: Request, file_path: Path, media_type: str,
+                       cache_control: str) -> Response:
+    headers = {"Cache-Control": cache_control, "Vary": "Accept-Encoding"}
+    if _accepts_gzip(request):
+        stat = file_path.stat()
+        payload = _compressed_static_asset(str(file_path), stat.st_mtime_ns, stat.st_size)
+        headers["Content-Encoding"] = "gzip"
+        return Response(content=payload, media_type=media_type, headers=headers)
+    return FileResponse(file_path, media_type=media_type, headers=headers)
+
+
 @app.get("/")
-def serve_frontend():
-    html = Path(__file__).parent / "static" / "index.html"
-    return HTMLResponse(
-        content=html.read_text(encoding="utf-8"),
-        headers={
-            "Cache-Control": "no-cache, no-store, must-revalidate",
-            "Pragma": "no-cache",
-            "Expires": "0"
-        }
-    )
+def serve_frontend(request: Request):
+    path = Path(__file__).parent / "static" / "index.html"
+    response = _serve_static_text(request, path, "text/html", "no-cache, no-store, must-revalidate")
+    response.headers["Pragma"] = "no-cache"
+    response.headers["Expires"] = "0"
+    return response
 
 
 @app.get("/static/index.html")
-def serve_public_shell():
-    # No credentials or user data are embedded in the public application shell.
-    html = Path(__file__).parent / "static" / "index.html"
-    return HTMLResponse(html.read_text(encoding="utf-8"), headers={"Cache-Control": "no-cache"})
+def serve_public_shell(request: Request):
+    return _serve_static_text(
+        request, Path(__file__).parent / "static" / "index.html", "text/html", "no-cache"
+    )
+
+
 @app.get("/static/js/{module_name}")
-def serve_frontend_module(module_name: str):
-    """Serve only reviewed browser modules; never expose arbitrary server files."""
+def serve_frontend_module(module_name: str, request: Request):
+    """Allowlisted public JS only; transparent gzip never touches FLAC or artwork."""
     if module_name not in PUBLIC_FRONTEND_JS_MODULES:
         raise HTTPException(404, "Unknown frontend module")
     file_path = Path(__file__).parent / "static" / "js" / module_name
-    return FileResponse(file_path, media_type="text/javascript",
-                        headers={"Cache-Control": "no-cache"})
+    return _serve_static_text(request, file_path, "text/javascript", "no-cache")
 
 
 @app.get("/static/manifest.json")
