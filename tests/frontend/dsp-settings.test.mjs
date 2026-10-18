@@ -244,19 +244,24 @@ function createHarness() {
       return makeJsonResponse({ state: 'PLAYING', position: 5, duration: 120, is_playing: true });
     }
 
-    // Mirrors server.cast_to_device: an active preset gets the DSP transcode.
+    // Mirrors server.cast_to_device: an active preset or a ReplayGain gain
+    // (this track is tagged -7.1 dB) gets the DSP transcode.
     if (parsedUrl.pathname.startsWith('/api/cast/') && method === 'POST') {
       const requested = body?.dsp_profile_id || null;
+      const rgMode = body?.replaygain || 'off';
+      const rgDb = rgMode === 'off' ? 0 : -7.1;
+      const transcoded = Boolean(requested || rgDb);
       return makeJsonResponse({
         success: true,
-        start_offset: requested ? (body.start_seconds || 0) : 0,
+        start_offset: transcoded ? (body.start_seconds || 0) : 0,
         dsp: {
           requested_profile_id: requested,
           effective_profile_id: requested,
           status: requested ? 'applied' : 'off',
-          stream: requested ? 'dsp_transcode' : 'direct',
+          stream: transcoded ? 'dsp_transcode' : 'direct',
           disabled_filters: [],
         },
+        replaygain: { mode: rgMode, applied_db: rgDb, reason: rgMode === 'off' ? 'ReplayGain off' : null },
       });
     }
 
@@ -615,6 +620,35 @@ async function main() {
     assert.equal(dom.window.eval('state.castStartOffset'), 0);
     assert.equal(dom.window.describeSignalProcessing('cast', null, 'none', null, dom.window.eval('state.castDsp'))[0],
       'Direct source stream to renderer');
+
+    // A ReplayGain change re-casts too: the gain reaches the renderer through
+    // the same transcode, and Signal Path reports what the cast applied.
+    dom.window.eval('stopCastPolling(); state.castPosition = 42;');
+    requestsBefore = harness.requests.length;
+    dom.window.setReplayGainMode('album');
+    await waitFor(() => dom.window.eval('state.castDsp?.replaygain?.mode') === 'album');
+    const rgRecast = harness.requests.slice(requestsBefore).find(request => request.path === '/api/cast/uuid:renderer');
+    assert.deepEqual(rgRecast.body, { track_id: 1, dsp_profile_id: null, replaygain: 'album', start_seconds: 42 });
+    assert.equal(dom.window.eval('state.castStartOffset'), 42);
+    const rgLines = dom.window.describeSignalProcessing('cast', null, 'none', null,
+      dom.window.eval('state.castDsp'), { mode: 'album' });
+    assert.match(rgLines[0], /^VELVET DSP stream to renderer/);
+    assert.ok(rgLines.includes('VELVET DSP off'), rgLines.join(' | '));
+    assert.ok(rgLines.includes('ReplayGain album: -7.10 dB'), rgLines.join(' | '));
+    assert.ok(!rgLines.some(line => /not applied/.test(line)), rgLines.join(' | '));
+    // Changed but not yet on the renderer (e.g. the re-cast failed): never claimed.
+    assert.ok(dom.window.describeSignalProcessing('cast', null, 'none', null, dom.window.eval('state.castDsp'),
+      { mode: 'track' }).includes('ReplayGain track not applied on this renderer yet'));
+    assert.ok(dom.window.describeSignalProcessing('cast', null, 'none', null, dom.window.eval('state.castDsp'),
+      { mode: 'off' }).includes('ReplayGain off; renderer still plays the previous ReplayGain stream'));
+    dom.window.eval('stopCastPolling(); state.castPosition = 42;');
+    requestsBefore = harness.requests.length;
+    dom.window.setReplayGainMode('off');
+    await waitFor(() => dom.window.eval('state.castDsp?.replaygain?.mode') === 'off');
+    const offRecast = harness.requests.slice(requestsBefore).find(request => request.path === '/api/cast/uuid:renderer');
+    assert.deepEqual(offRecast.body, { track_id: 1, dsp_profile_id: null, start_seconds: 42 });
+    assert.equal(dom.window.describeSignalProcessing('cast', null, 'none', null, dom.window.eval('state.castDsp'),
+      { mode: 'off' }).join(' | '), 'Direct source stream to renderer | VELVET DSP off');
     dom.window.eval('stopCastPolling(); state.currentTrack = null;');
     await dom.window.activateZone(browserZone, false);
   } finally {
@@ -896,7 +930,7 @@ async function autoEqAndReplayGainChecks() {
       { mode: 'track', applied_db: 0, reason: 'No ReplayGain tags' });
     assert.ok(untagged.includes('ReplayGain track: 0.00 dB (No ReplayGain tags)'));
     assert.ok(dom.window.describeSignalProcessing('cast', null, 'none', null, null, { mode: 'album' })
-      .includes('ReplayGain not applied on this renderer'));
+      .includes('ReplayGain album not applied on this renderer yet'));
     assert.ok(dom.window.describeSignalProcessing('native', null, 'none', null, null, { mode: 'album' })
       .includes('ReplayGain not applied on this output'));
     replaygain.value = 'off';

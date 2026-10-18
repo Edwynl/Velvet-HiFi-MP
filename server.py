@@ -44,6 +44,7 @@ from cover_art import find_folder_cover as find_folder_cover_bytes, save_cover_b
 from dsp_engine import (
     MAX_PREAMP_DB,
     MIN_PREAMP_DB,
+    REPLAYGAIN_MODES,
     DspValidationError,
     build_dsp_filter_chain,
     dsp_effective_status,
@@ -821,9 +822,11 @@ async def cast_to_device(device_udn: str, request: Request):
 
     With an active DSP preset the renderer gets the same server-side DSP
     transcode as the browser (24-bit FLAC at the source rate, EQ-1 headroom
-    guard at that rate); otherwise the direct source file. `start_seconds`
-    resumes the track there: the transcode starts at that offset, a direct
-    stream is seeked by the renderer after Play.
+    guard at that rate); otherwise the direct source file. `replaygain`
+    (off|track|album) adds the file's tagged gain the same way: a non-zero
+    gain also selects the transcode. `start_seconds` resumes the track there:
+    the transcode starts at that offset, a direct stream is seeked by the
+    renderer after Play.
     """
     data = await request.json()
     track_id = data.get("track_id")
@@ -837,6 +840,9 @@ async def cast_to_device(device_udn: str, request: Request):
             or not 0 <= start <= TRANSCODE_MAX_SECONDS):
         raise HTTPException(422, f"start_seconds must be 0-{TRANSCODE_MAX_SECONDS}")
     start = round(float(start), 3)
+    replaygain_mode = data.get("replaygain", "off")
+    if not isinstance(replaygain_mode, str) or replaygain_mode not in REPLAYGAIN_MODES:
+        raise HTTPException(422, f"replaygain must be one of {list(REPLAYGAIN_MODES)}")
 
     db = get_db()
     track = db.execute(
@@ -858,10 +864,19 @@ async def cast_to_device(device_udn: str, request: Request):
     track = dict(track)
     dsp_status = dsp_effective_status(requested_dsp, dict(dsp_profile) if dsp_profile else None,
                                       track["sample_rate"])
-    transcoded = dsp_status["status"] == "applied"
+    tags = {}
+    if replaygain_mode != "off":
+        tags = await asyncio.to_thread(read_replaygain_tags, filesystem_path(track["file_path"]))
+    # The same resolution /api/stream applies to the URL handed to the renderer.
+    replaygain = resolve_replaygain(tags, replaygain_mode)
+    dsp_applied = dsp_status["status"] == "applied"
+    replaygain_applied = replaygain["applied_db"] != 0
+    transcoded = dsp_applied or replaygain_applied
     stream_query = ""
     if transcoded:
-        stream_query = f"&dsp={requested_dsp}" + (f"&start={start:g}" if start else "")
+        stream_query = ((f"&dsp={requested_dsp}" if dsp_applied else "")
+                        + (f"&replaygain={replaygain_mode}" if replaygain_applied else "")
+                        + (f"&start={start:g}" if start else ""))
     dsp_status["stream"] = "dsp_transcode" if transcoded else "direct"
     stream_url, _ = upnp_server.media_urls(track, stream_query=stream_query)
     # Use upnp_server's DIDL-Lite builder for rich metadata (important for some hi-fi players)
@@ -877,7 +892,7 @@ async def cast_to_device(device_udn: str, request: Request):
         if not await asyncio.to_thread(upnp_server.seek, device_udn, start):
             log.warning("[CAST] Renderer did not seek to %.1fs; playing from the start", start)
     # Renderer positions are relative to the stream: the UI adds start_offset.
-    return {"success": success, "dsp": dsp_status, "start_offset": start_offset}
+    return {"success": success, "dsp": dsp_status, "replaygain": replaygain, "start_offset": start_offset}
 
 @app.post("/api/cast/control/{device_udn}/{action}")
 async def cast_control(device_udn: str, action: str):
@@ -2093,6 +2108,8 @@ def _resolve_library_roots(db) -> list[Path]:
 TRANSCODE_SLOTS = StreamSlots(settings.max_concurrent_streams)
 TRANSCODE_DURATION_MARGIN_SECONDS = 30 * 60
 TRANSCODE_MAX_SECONDS = 12 * 3600
+# libFLAC's default block size; within the FLAC subset at every sample rate.
+FLAC_TRANSCODE_BLOCK_SIZE = 4096
 
 
 def _transcode_time_limit_seconds(duration_seconds, timeout_minutes: int | None = None) -> int:
@@ -2215,6 +2232,10 @@ async def _stream_with_dsp(file_path: str, dsp_filter: str, timeout_seconds: int
         "-af", dsp_filter,
         "-c:a", "flac",
         "-compression_level", "0",
+        # Fixed blocks: by default the encoder takes its block size from the
+        # first decoded frame, which after -ss can be a few samples (FLAC's
+        # minimum is 16) and FFmpeg then exits without writing any audio.
+        "-frame_size", str(FLAC_TRANSCODE_BLOCK_SIZE),
         "-f", "flac",
         "pipe:1",
         "-loglevel", "error"

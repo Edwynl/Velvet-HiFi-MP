@@ -76,6 +76,24 @@ class FFmpegIntegrationTests(unittest.IsolatedAsyncioTestCase):
                                   "-ac", "1", "pipe:1"], check=True, capture_output=True).stdout
             self.assertAlmostEqual(len(pcm) / 2 / 44100, 0.5, delta=0.02)
 
+    async def test_dsp_stream_resumes_where_the_first_decoded_frame_is_tiny(self):
+        # An FFmpeg-made FLAC has 1024-sample blocks; seeking to 15 s lands
+        # 4 samples before a block edge. The FLAC encoder must not take its
+        # block size from that first frame ("invalid block size: 4", empty 200).
+        with tempfile.TemporaryDirectory() as folder:
+            source = Path(folder) / "source.flac"
+            subprocess.run(["ffmpeg", "-v", "error", "-f", "lavfi", "-i",
+                            "sine=frequency=440:sample_rate=44100:duration=16",
+                            "-ac", "2", str(source)], check=True, capture_output=True)
+            dsp = build_dsp_filter_chain({"preamp_db": -1}, 44100)
+            response = await server._stream_with_dsp(str(source), dsp, start_seconds=15)
+            output = Path(folder) / "output.flac"
+            output.write_bytes(b"".join([block async for block in response.body_iterator]))
+            self.assertEqual(output.read_bytes()[:4], b"fLaC")
+            pcm = subprocess.run(["ffmpeg", "-v", "error", "-i", str(output), "-f", "s16le",
+                                  "-ac", "1", "pipe:1"], check=True, capture_output=True).stdout
+            self.assertEqual(len(pcm) // 2, 44100)
+
 
 class DisconnectIntegrationTests(unittest.IsolatedAsyncioTestCase):
     async def test_missing_soxr_fails_before_http_stream_starts(self):

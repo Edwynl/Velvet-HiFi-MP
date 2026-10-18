@@ -667,6 +667,59 @@ class ServerApiTests(unittest.TestCase):
                 seek.assert_called_once_with("renderer-1", 30.0)
                 self.assertEqual(result["start_offset"], 0)
 
+    def test_cast_applies_replaygain_through_the_transcode(self):
+        # A renderer gets ReplayGain the way a browser does: the 24-bit FLAC
+        # transcode with &replaygain=, resumed at the requested position.
+        self._hot_profile_at_44k()
+        tags = {"track_gain": -6.53, "track_peak": 0.98, "album_gain": -7.1, "album_peak": 0.99}
+        with patch.object(server, "read_replaygain_tags", return_value=tags):
+            response, sent, seek = self._cast({"track_id": 1, "replaygain": "album", "start_seconds": 42.5})
+        body = response.json()
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(body["replaygain"]["mode"], "album")
+        self.assertEqual(body["replaygain"]["applied_db"], -7.1)
+        self.assertEqual(body["dsp"]["status"], "off")
+        self.assertEqual(body["dsp"]["stream"], "dsp_transcode")
+        self.assertEqual(body["start_offset"], 42.5)
+        self.assertNotIn("dsp=", sent["url"])
+        self.assertIn("&replaygain=album&start=42.5", sent["url"])
+        self.assertIn("http-get:*:audio/flac:DLNA.ORG_PN=FLAC;DLNA.ORG_OP=00;DLNA.ORG_CI=1", sent["meta"])
+        self.assertIn('duration="0:02:17.500"', sent["meta"])
+        seek.assert_not_called()
+
+        path = sent["url"].split(f":{upnp_server.MAIN_PORT}", 1)[1]
+        resp, chain = self._capture_dsp_stream(path, tags)
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(chain, "volume=-7.1dB:precision=double")
+
+    def test_cast_combines_replaygain_with_a_dsp_preset(self):
+        profile_id = self._hot_profile_at_44k()
+        tags = {"track_gain": -3.0}
+        with patch.object(server, "read_replaygain_tags", return_value=tags):
+            response, sent, _ = self._cast({"track_id": 1, "dsp_profile_id": profile_id, "replaygain": "track"})
+        self.assertEqual(response.json()["replaygain"]["applied_db"], -3.0)
+        self.assertIn(f"&dsp={profile_id}&replaygain=track", sent["url"])
+        path = sent["url"].split(f":{upnp_server.MAIN_PORT}", 1)[1]
+        _, chain = self._capture_dsp_stream(path, tags)
+        # ReplayGain comes before the preamp and the EQ's guarded preamp.
+        self.assertTrue(chain.startswith("volume=-3.0dB:precision=double,volume=-13.0dB"), chain)
+
+    def test_cast_without_a_replaygain_gain_streams_the_direct_source(self):
+        self._allow_music_root()
+        for body, tags, reason in (({"replaygain": "album"}, {}, "No ReplayGain tags"),
+                                   ({"replaygain": "off"}, {"track_gain": -3.0}, "ReplayGain off"),
+                                   ({}, {"track_gain": -3.0}, "ReplayGain off")):
+            with self.subTest(body=body), patch.object(server, "read_replaygain_tags", return_value=tags):
+                response, sent, seek = self._cast({"track_id": 1, "start_seconds": 30, **body})
+                result = response.json()
+                self.assertEqual(result["replaygain"]["applied_db"], 0.0)
+                self.assertEqual(result["replaygain"]["reason"], reason)
+                self.assertEqual(result["dsp"]["stream"], "direct")
+                self.assertNotIn("replaygain=", sent["url"])
+                self.assertNotIn("start=", sent["url"])
+                seek.assert_called_once_with("renderer-1", 30.0)
+                self.assertEqual(result["start_offset"], 0)
+
     def test_cast_with_unknown_or_invalid_dsp_fails_closed(self):
         self._allow_music_root()
         with patch.object(upnp_server, "cast_track",
@@ -675,7 +728,8 @@ class ServerApiTests(unittest.TestCase):
             self.assertEqual(missing.status_code, 404)
             self.assertIn("DSP profile not found", missing.json()["detail"])
             for body in ({"dsp_profile_id": "2"}, {"dsp_profile_id": True}, {"start_seconds": -1},
-                         {"start_seconds": "10"}, {"start_seconds": True}):
+                         {"start_seconds": "10"}, {"start_seconds": True},
+                         {"replaygain": "loud"}, {"replaygain": 1}, {"replaygain": None}):
                 with self.subTest(body=body):
                     response = self.client.post("/api/cast/renderer-1", json={"track_id": 1, **body})
                     self.assertEqual(response.status_code, 422)
