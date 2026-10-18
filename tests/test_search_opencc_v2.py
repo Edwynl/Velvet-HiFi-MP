@@ -132,6 +132,11 @@ class ReverseMatchParityTests(unittest.TestCase):
         # Track 1 is credited to artist 2, who is not the primary artist.
         self.db.execute("INSERT INTO track_artists(track_id,artist_id) VALUES(1,1),(1,2)")
         self.db.execute("INSERT INTO artist_aliases(artist_id,name) VALUES(2,'AB')")
+        # Reverse matching only runs for queries with script variants, so the
+        # parity probes need a Chinese credited name and alias as well.
+        self.db.execute("INSERT INTO artists(id,name,sort_name) VALUES(3,'張學友','張學友')")
+        self.db.execute("INSERT INTO track_artists(track_id,artist_id) VALUES(1,3)")
+        self.db.execute("INSERT INTO artist_aliases(artist_id,name) VALUES(3,'歌神')")
         self.db.commit()
         refresh_track_search_index(self.db)
         self.db.commit()
@@ -171,20 +176,29 @@ class ReverseMatchParityTests(unittest.TestCase):
         self.assertIn("ab", terms)
 
     def test_reverse_match_on_alias_matches_indexed_and_exact(self):
-        # Each query contains the alias "ab" or the credited name "guest", so
-        # only the reverse direction can match.
-        for query in ("zabz", "xxabyy", "zz ab zz", "a guest b"):
+        # Each query contains the alias 歌神 in either script, so only the
+        # reverse direction can match.
+        for query in ("聽歌神的歌", "听歌神的歌"):
             with self.subTest(query=query):
                 indexed, exact = self._both_paths(query)
                 self.assertEqual(indexed, exact)
                 self.assertIn(1, exact)
 
     def test_reverse_match_on_credited_artist_name(self):
-        for query in ("the guest", "xguestx"):
+        for query in ("我聽張學友", "我听张学友"):
             with self.subTest(query=query):
                 indexed, exact = self._both_paths(query)
                 self.assertEqual(indexed, exact)
                 self.assertIn(1, exact)
+
+    def test_latin_query_never_matches_in_reverse(self):
+        # "ab" and "guest" sit inside these queries; with no script variant
+        # that must not pull the track in, on either path.
+        for query in ("zabz", "xxabyy", "a guest b", "the guest"):
+            with self.subTest(query=query):
+                indexed, exact = self._both_paths(query)
+                self.assertEqual(indexed, exact)
+                self.assertEqual(exact, set())
 
 
 class FoldIdempotenceTests(unittest.TestCase):

@@ -15,7 +15,7 @@ import json
 import sqlite3
 from collections import defaultdict
 
-from chinese_variants import literal_fold, search_fold
+from chinese_variants import literal_fold, search_fold, to_traditional
 
 SEP = "\x1f"
 _BATCH = 400
@@ -197,11 +197,23 @@ def dirty_album_ids_matching(db: sqlite3.Connection, folded: str) -> set[int]:
     return {int(row[0]) for row in rows if folded in search_fold(str(row[1]))}
 
 
+def _has_script_variants(raw: str, folded: str) -> bool:
+    """True when the query reads differently in Simplified vs Traditional.
+
+    Reverse matching (a stored field contained in the query) exists for Chinese
+    script variants, as the pre-OpenCC search did. Applied to Latin text it
+    lets an artist "Low" match the query "Yellow" or a one-letter title match
+    nearly every query, so plain queries only match forward.
+    """
+    return folded != raw or literal_fold(to_traditional(raw)) != raw
+
+
 def match_track_ids(db: sqlite3.Connection, query: str, *, reverse: bool = True) -> set[int]:
     """Complete candidate set; no page-limit shortcut may hide Chinese matches."""
     raw, folded = normalize_query(query)
     if not raw and not folded:
         return set()
+    reverse = reverse and _has_script_variants(raw, folded)
     if not _ready(db) or not _existing(db, "track_search_index"):
         all_ids = [int(row[0]) for row in db.execute("SELECT id FROM tracks ORDER BY id")]
         fields = _track_fields(db, all_ids)

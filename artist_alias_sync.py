@@ -124,6 +124,8 @@ def _store_verified_aliases(
             conflicts.append(name)
     if not known_mbid:
         db.execute("UPDATE artists SET mbid=? WHERE id=?", (mbid, artist_id))
+    # After the MBID write: its trigger clears the flag whenever the ID changes.
+    db.execute("UPDATE artists SET mbid_verified=1 WHERE id=?", (artist_id,))
     return {
         "status": "ok", "artist_id": artist_id, "mbid": mbid,
         "aliases": fetch_aliases(db, artist_id),
@@ -141,13 +143,16 @@ async def sync_artist_aliases(
 ) -> dict:
     """Import aliases if identity is trusted or explicitly confirmed.
 
-    Without a local MBID, the *first* call returns a human-review candidate
-    shortlist; it never persists a search-result-only identity. A subsequent
-    explicit-confirmation call with that MBID fetches the detailed record again
-    and validates its name. Callers own the transaction.
+    Without a user-confirmed local MBID, the *first* call returns a
+    human-review candidate shortlist; it never persists a search-result-only
+    identity. An unconfirmed stored MBID (bio enrichment saves the first
+    name-search hit) is not evidence either: a namesake's record matches the
+    local name too. A subsequent explicit-confirmation call with an MBID
+    fetches the detailed record again and validates its name. Callers own the
+    transaction.
     """
     row = db.execute(
-        "SELECT id, name, mbid FROM artists WHERE id=?", (artist_id,),
+        "SELECT id, name, mbid, mbid_verified FROM artists WHERE id=?", (artist_id,),
     ).fetchone()
     if row is None:
         raise ValueError("Artist not found")
@@ -155,13 +160,14 @@ async def sync_artist_aliases(
     local_mbid = _mbid(local_raw) if local_raw else None
     if local_raw and not local_mbid:
         return {"status": "invalid_mbid", "added": [], "aliases": fetch_aliases(db, artist_id)}
+    trusted_mbid = local_mbid if row[3] else None
     confirmed = _mbid(confirmed_mbid) if confirmed_mbid else None
     if confirmed_mbid and not confirmed:
         return {"status": "invalid_mbid", "added": [], "aliases": fetch_aliases(db, artist_id)}
-    if confirmed and local_mbid and confirmed != local_mbid:
+    if confirmed and trusted_mbid and confirmed != trusted_mbid:
         return {"status": "identity_mismatch", "added": [],
                 "aliases": fetch_aliases(db, artist_id)}
-    mbid = local_mbid or confirmed
+    mbid = trusted_mbid or confirmed
 
     own_client = client is None
     if own_client:
@@ -211,7 +217,7 @@ async def sync_artist_aliases(
                     "aliases": fetch_aliases(db, artist_id)}
         return _store_verified_aliases(
             db, artist_id, artist_name, mbid, record,
-            known_mbid=bool(local_mbid), query_alias=query_alias,
+            known_mbid=(mbid == local_mbid), query_alias=query_alias,
         )
     finally:
         if own_client:
@@ -260,7 +266,11 @@ async def resolve_search_alias(
         if not candidates:
             return {"status": "not_found"}
 
-        locals_ = db.execute("SELECT id,name,mbid FROM artists").fetchall()
+        # Only a user-confirmed MBID can rule a local artist in or out; an
+        # unconfirmed one may be a namesake's ID from name-only enrichment.
+        locals_ = db.execute(
+            "SELECT id,name,CASE WHEN mbid_verified THEN mbid END FROM artists"
+        ).fetchall()
         pairs: dict[tuple[int, str], tuple[str, dict]] = {}
         for position, (mbid, hit) in enumerate(candidates):
             await _pace(client, first=False)
@@ -281,7 +291,9 @@ async def resolve_search_alias(
         if len(pairs) != 1:
             return {"status": "ambiguous"}
         (artist_id, mbid), (local_name, record) = next(iter(pairs.items()))
-        local = db.execute("SELECT mbid FROM artists WHERE id=?", (artist_id,)).fetchone()
+        local = db.execute(
+            "SELECT mbid FROM artists WHERE id=? AND mbid_verified", (artist_id,),
+        ).fetchone()
         if local is not None and _mbid(local[0]) == mbid:
             return _store_verified_aliases(
                 db, artist_id, local_name, mbid, record,

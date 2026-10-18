@@ -203,18 +203,65 @@ class UnifiedLibrarySearchTests(unittest.TestCase):
         self.assertEqual(result["status"], "ambiguous")
         self.assertEqual(self.db.execute("SELECT COUNT(*) FROM artist_aliases").fetchone()[0], 0)
 
-    def test_musicbrainz_existing_mbid_needs_only_lookup(self):
-        self.db.execute("UPDATE artists SET mbid=? WHERE id=1", (MBID,))
+    def _confirm_local_mbid(self, mbid=MBID):
+        self.db.execute("UPDATE artists SET mbid=? WHERE id=1", (mbid,))
+        self.db.execute("UPDATE artists SET mbid_verified=1 WHERE id=1")
+
+    def test_musicbrainz_confirmed_mbid_needs_only_lookup(self):
+        self._confirm_local_mbid()
         fake = MockMusicBrainzClient()
         with patch("artist_alias_sync.asyncio.sleep", _instant_sleep):
             status = asyncio.run(sync_artist_aliases(self.db, 1, client=fake))
         self.assertEqual(status["status"], "ok")
         self.assertEqual(len(fake.requests), 1)
 
+    def test_unconfirmed_mbid_is_not_identity_evidence(self):
+        # Bio enrichment stores the first name-search hit, which may be a
+        # namesake whose record also carries the local name. It must not be
+        # enough to import that record's aliases unattended.
+        self.db.execute("UPDATE artists SET mbid=? WHERE id=1", (MBID,))
+        fake = MockMusicBrainzClient()
+        result = asyncio.run(sync_artist_aliases(self.db, 1, client=fake))
+        self.assertEqual(result["status"], "needs_review")
+        self.assertEqual(self.db.execute(
+            "SELECT COUNT(*) FROM artist_aliases WHERE artist_id=1"
+        ).fetchone()[0], 0)
+
+    def test_confirmation_may_replace_an_unconfirmed_guess(self):
+        guessed = "11111111-2222-3333-4444-555555555555"
+        self.db.execute("UPDATE artists SET mbid=? WHERE id=1", (guessed,))
+        fake = MockMusicBrainzClient()
+        confirmed = asyncio.run(sync_artist_aliases(
+            self.db, 1, client=fake, confirmed_mbid=MBID,
+        ))
+        self.assertEqual(confirmed["status"], "ok")
+        row = self.db.execute("SELECT mbid, mbid_verified FROM artists WHERE id=1").fetchone()
+        self.assertEqual((row[0], row[1]), (MBID, 1))
+
+    def test_mbid_change_clears_confirmation(self):
+        self._confirm_local_mbid()
+        self.db.execute("UPDATE artists SET mbid=? WHERE id=1",
+                        ("11111111-2222-3333-4444-555555555555",))
+        self.assertEqual(self.db.execute(
+            "SELECT mbid_verified FROM artists WHERE id=1").fetchone()[0], 0)
+
+    def test_resolve_ignores_an_unconfirmed_namesake_mbid(self):
+        # An unconfirmed guess must neither bind silently nor exclude the
+        # local artist from a verified match; the user confirms instead.
+        self.db.execute("UPDATE artists SET mbid=? WHERE id=1",
+                        ("11111111-2222-3333-4444-555555555555",))
+        fake = MockMusicBrainzClient()
+        with patch("artist_alias_sync.asyncio.sleep", _instant_sleep):
+            result = asyncio.run(resolve_search_alias(self.db, "Lala Hsu", client=fake))
+        self.assertEqual(result["status"], "needs_review")
+        self.assertEqual(result["artist_id"], 1)
+        self.assertEqual(self.db.execute(
+            "SELECT COUNT(*) FROM artist_aliases").fetchone()[0], 0)
+
     def test_preexisting_mbid_must_still_match_local_artist_identity(self):
         # Imported file tags can contain an incorrect MBID. Never import an
         # unrelated performer's aliases merely because an MBID was present.
-        self.db.execute("UPDATE artists SET mbid=? WHERE id=1", (MBID,))
+        self._confirm_local_mbid()
         fake = MockMusicBrainzClient(record={
             "id": MBID, "name": "Different Artist",
             "sort-name": "Different Artist",

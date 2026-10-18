@@ -4,7 +4,7 @@ import sqlite3
 from dsp_engine import FACTORY_DSP_PRESETS, legacy_eq_bands_to_filters
 
 
-LATEST_SCHEMA_VERSION = 14
+LATEST_SCHEMA_VERSION = 15
 
 
 def _table_columns(conn: sqlite3.Connection, table_name: str) -> set[str]:
@@ -600,6 +600,31 @@ def migration_014_artist_alias_enrichment(conn: sqlite3.Connection) -> None:
     )
 
 
+def migration_015_artist_mbid_verified(conn: sqlite3.Connection) -> None:
+    """Record whether an artist's MusicBrainz ID was confirmed by the user.
+
+    Bio enrichment stores the first name-search hit as `artists.mbid`, so an
+    MBID alone is not identity evidence: a namesake's record also matches the
+    local name. Only an explicit confirmation sets this flag, and any later
+    change of the MBID clears it. Existing MBIDs start unverified because
+    their origin is unknown.
+    """
+    if "mbid_verified" not in _table_columns(conn, "artists"):
+        conn.execute(
+            "ALTER TABLE artists ADD COLUMN mbid_verified INTEGER NOT NULL DEFAULT 0"
+        )
+    conn.executescript(
+        """
+        CREATE TRIGGER IF NOT EXISTS trg_artist_mbid_unverify
+        AFTER UPDATE OF mbid ON artists
+        WHEN NEW.mbid IS NOT OLD.mbid
+        BEGIN
+            UPDATE artists SET mbid_verified=0 WHERE id=NEW.id;
+        END;
+        """
+    )
+
+
 MIGRATIONS = (
     (1, "create_base_schema", migration_001_create_base_schema),
     (2, "align_album_columns", migration_002_add_album_favorites),
@@ -615,6 +640,7 @@ MIGRATIONS = (
     (12, "opencc_catalog_search", migration_012_opencc_catalog_search),
     (13, "track_title_key", migration_013_track_title_key),
     (14, "artist_alias_enrichment", migration_014_artist_alias_enrichment),
+    (15, "artist_mbid_verified", migration_015_artist_mbid_verified),
 )
 
 

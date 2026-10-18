@@ -38,7 +38,7 @@ class ArtistAliasBatchTests(unittest.TestCase):
         self.db_path = Path(self.tempdir.name) / "library.db"
         with self.connection() as db:
             self.assertEqual(apply_migrations(db), LATEST_SCHEMA_VERSION)
-            self.assertEqual(LATEST_SCHEMA_VERSION, 14)
+            self.assertEqual(LATEST_SCHEMA_VERSION, 15)
             db.executemany(
                 "INSERT INTO artists(id,name,sort_name,mbid) VALUES(?,?,?,?)",
                 [(1, "徐佳瑩", "徐佳瑩", ""),
@@ -120,7 +120,7 @@ class ArtistAliasBatchTests(unittest.TestCase):
             db.execute("DROP TABLE artist_alias_enrichment_state")
             db.execute("DELETE FROM schema_migrations WHERE version=14")
             db.commit()
-            self.assertEqual(apply_migrations(db), 14)
+            self.assertEqual(apply_migrations(db), LATEST_SCHEMA_VERSION)
             after = db.execute("SELECT id,name,mbid FROM artists ORDER BY id").fetchall()
             self.assertEqual([tuple(row) for row in before],
                              [tuple(row) for row in after])

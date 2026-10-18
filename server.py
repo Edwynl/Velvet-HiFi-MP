@@ -2257,7 +2257,8 @@ def delete_album(album_id: int, delete_files: bool = Query(False)):
     global _album_mutation_active
     # Hold the task reservation throughout filesystem staging and DB commit.
     with _library_task_lock:
-        if _album_mutation_active or _scan_job.is_running() or _duplicate_job.is_running():
+        if (_album_mutation_active or _scan_job.is_running() or _duplicate_job.is_running()
+                or _alias_enrichment_job.state.is_running()):
             raise HTTPException(409, "Library maintenance is busy; try again when scans finish")
         _album_mutation_active = True
     db = None
@@ -2351,7 +2352,8 @@ def restore_library_trash(token: str):
     """Restore archived audio safely while library scanning is paused."""
     global _album_mutation_active
     with _library_task_lock:
-        if _album_mutation_active or _scan_job.is_running() or _duplicate_job.is_running():
+        if (_album_mutation_active or _scan_job.is_running() or _duplicate_job.is_running()
+                or _alias_enrichment_job.state.is_running()):
             raise HTTPException(409, "Library maintenance is busy; retry when scans finish")
         _album_mutation_active = True
     try:

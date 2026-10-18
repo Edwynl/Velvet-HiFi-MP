@@ -2097,6 +2097,24 @@ class ServerApiTests(unittest.TestCase):
         with self._connect() as db:
             self.assertIsNotNone(db.execute("SELECT id FROM albums WHERE id=1").fetchone())
 
+    def test_album_mutations_refuse_while_alias_enrichment_runs(self):
+        # The alias worker commits checkpoints and index refreshes between
+        # MusicBrainz requests; an album transaction must not interleave.
+        audio = self.root / "music" / "one.flac"
+        # setUp leaves a scan marked running; only the alias job may be busy here.
+        with patch.object(server._scan_job, "is_running", return_value=False), \
+             patch.object(server._alias_enrichment_job.state, "is_running", return_value=True):
+            delete =self.client.delete("/api/albums/1?delete_files=true")
+            restore = self.client.post("/api/library/trash/anytoken/restore")
+        # Both endpoints also answer 409 for unrelated reasons; require the
+        # maintenance guard itself to be the one that refused.
+        for response in (delete, restore):
+            self.assertEqual(response.status_code, 409)
+            self.assertIn("Library maintenance is busy", response.json()["detail"])
+        self.assertTrue(audio.exists())
+        with self._connect() as db:
+            self.assertIsNotNone(db.execute("SELECT id FROM albums WHERE id=1").fetchone())
+
 
 class CastDispatcherTests(unittest.TestCase):
     """The per-renderer dispatcher: one SOAP job at a time, whatever the callers do."""
