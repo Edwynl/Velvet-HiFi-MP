@@ -4,6 +4,7 @@ import math
 import random
 import shutil
 import subprocess
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -488,6 +489,276 @@ class FFmpegResponseMatchTests(unittest.TestCase):
             for freq, got, want in zip(freqs, measured, modeled):
                 with self.subTest(rate=rate, freq=freq):
                     self.assertAlmostEqual(got, want, delta=0.5)
+
+    def test_imported_autoeq_profile_matches_autoeq_intended_response(self):
+        # AutoEq designs its filters as plain RBJ biquads (autoeq/peq.py); the
+        # import must make FFmpeg render exactly that curve, shelves included.
+        imported = dsp_engine.parse_autoeq_parametric_eq(AUTOEQ_SAMPLE)
+        profile = {"preamp_db": imported["preamp_db"], "filter_chain_json": json.dumps(imported["filters"])}
+        for rate in (44100, 48000, 96000):
+            spectrum, bins = self._ffmpeg_spectrum(build_dsp_filter_chain(profile, rate), rate)
+            preamp = resolve_dsp_plan(profile, rate)["effective_preamp_db"]
+            for freq in (20, 50, 105, 156, 400, 1340, 2840, 4980, 7650, 10000, 16000, 20000):
+                index = int(numpy.argmin(abs(bins - freq)))  # compare at the FFT bin itself
+                got = 20 * math.log10(spectrum[index])
+                want = _autoeq_reference_db(AUTOEQ_SAMPLE_FILTERS, rate, float(bins[index])) + preamp
+                with self.subTest(rate=rate, freq=freq):
+                    self.assertAlmostEqual(got, want, delta=0.01)
+
+    def test_replaygain_tags_are_read_from_a_real_flac_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "tagged.flac"
+            subprocess.run(
+                ["ffmpeg", "-v", "error", "-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo", "-t", "0.1",
+                 "-metadata", "REPLAYGAIN_TRACK_GAIN=-6.53 dB", "-metadata", "REPLAYGAIN_TRACK_PEAK=0.988",
+                 "-metadata", "REPLAYGAIN_ALBUM_GAIN=+1.20 dB", "-metadata", "REPLAYGAIN_ALBUM_PEAK=0.5",
+                 str(path)], check=True)
+            tags = dsp_engine.read_replaygain_tags(path)
+        self.assertEqual(tags, {"track_gain": -6.53, "track_peak": 0.988,
+                                "album_gain": 1.2, "album_peak": 0.5})
+
+
+# A synthetic profile in AutoEq's ParametricEQ.txt layout (both shelf types,
+# a disabled filter, CRLF line ends and the Q precision AutoEq writes).
+AUTOEQ_SAMPLE = (
+    "Preamp: -6.4 dB\r\n"
+    "Filter 1: ON LSC Fc 105 Hz Gain 6.3 dB Q 0.70\r\n"
+    "Filter 2: ON PK Fc 156 Hz Gain -2.1 dB Q 0.53\r\n"
+    "Filter 3: ON PK Fc 2840 Hz Gain 3.5 dB Q 2.43\r\n"
+    "Filter 4: ON PK Fc 4980 Hz Gain -2.2 dB Q 3.89\r\n"
+    "Filter 5: ON PK Fc 7650 Hz Gain -3.2 dB Q 2.66\r\n"
+    "Filter 6: ON HSC Fc 10000 Hz Gain -2.4 dB Q 0.70\r\n"
+    "Filter 7: ON PK Fc 1340 Hz Gain -0.9 dB Q 1.66\r\n"
+    "Filter 8: OFF PK Fc 3720 Hz Gain 1.1 dB Q 4.67\r\n"
+)
+AUTOEQ_SAMPLE_FILTERS = [  # (enabled, type, Fc, gain, AutoEq Q)
+    (True, "LSC", 105, 6.3, 0.70), (True, "PK", 156, -2.1, 0.53), (True, "PK", 2840, 3.5, 2.43),
+    (True, "PK", 4980, -2.2, 3.89), (True, "PK", 7650, -3.2, 2.66), (True, "HSC", 10000, -2.4, 0.70),
+    (True, "PK", 1340, -0.9, 1.66), (False, "PK", 3720, 1.1, 4.67),
+]
+
+
+def _autoeq_reference_db(filters, rate, freq):
+    """AutoEq's own response: RBJ cookbook biquads with alpha = sin(w0)/(2Q)."""
+    total = 1 + 0j
+    z1 = complex(math.cos(2 * math.pi * freq / rate), -math.sin(2 * math.pi * freq / rate))
+    for enabled, kind, fc, gain, q in filters:
+        if not enabled:
+            continue
+        a = 10 ** (gain / 40)
+        w0 = 2 * math.pi * fc / rate
+        cos_w0, alpha = math.cos(w0), math.sin(w0) / (2 * q)
+        root = 2 * math.sqrt(a) * alpha
+        if kind == "LSC":
+            b = (a * ((a + 1) - (a - 1) * cos_w0 + root), 2 * a * ((a - 1) - (a + 1) * cos_w0),
+                 a * ((a + 1) - (a - 1) * cos_w0 - root))
+            den = ((a + 1) + (a - 1) * cos_w0 + root, -2 * ((a - 1) + (a + 1) * cos_w0),
+                   (a + 1) + (a - 1) * cos_w0 - root)
+        elif kind == "HSC":
+            b = (a * ((a + 1) + (a - 1) * cos_w0 + root), -2 * a * ((a - 1) + (a + 1) * cos_w0),
+                 a * ((a + 1) + (a - 1) * cos_w0 - root))
+            den = ((a + 1) - (a - 1) * cos_w0 + root, 2 * ((a - 1) - (a + 1) * cos_w0),
+                   (a + 1) - (a - 1) * cos_w0 - root)
+        else:
+            b = (1 + alpha * a, -2 * cos_w0, 1 - alpha * a)
+            den = (1 + alpha / a, -2 * cos_w0, 1 - alpha / a)
+        total *= (b[0] + b[1] * z1 + b[2] * z1 * z1) / (den[0] + den[1] * z1 + den[2] * z1 * z1)
+    return 20 * math.log10(abs(total))
+
+
+class AutoEqImportTests(unittest.TestCase):
+    parse = staticmethod(lambda text: dsp_engine.parse_autoeq_parametric_eq(text))
+    export = staticmethod(lambda preamp, filters: dsp_engine.format_autoeq_parametric_eq(preamp, filters))
+
+    def test_maps_filter_types_and_shelf_q_exactly_in_file_order(self):
+        imported = self.parse(AUTOEQ_SAMPLE)
+        self.assertEqual(imported["preamp_db"], -6.4)
+        types = {"PK": "peaking", "LSC": "low_shelf", "HSC": "high_shelf"}
+        expected = [{"type": types[kind], "freq": float(fc), "gain": gain,
+                     "q": q / math.sqrt(2) if kind != "PK" else q, "enabled": enabled}
+                    for enabled, kind, fc, gain, q in AUTOEQ_SAMPLE_FILTERS]
+        self.assertEqual(imported["filters"], expected)
+        # The stored filters pass strict validation unchanged.
+        self.assertEqual(validate_dsp_filters(imported["filters"]), imported["filters"])
+
+    def test_model_curve_is_autoeq_curve(self):
+        filters = self.parse(AUTOEQ_SAMPLE)["filters"]
+        for rate in (44100, 48000, 192000):
+            freqs = [20, 60, 105, 300, 1000, 2840, 7650, 10000, 15000, 20000]
+            for freq, got in zip(freqs, filters_response_db(filters, rate, freqs)):
+                with self.subTest(rate=rate, freq=freq):
+                    self.assertAlmostEqual(got, _autoeq_reference_db(AUTOEQ_SAMPLE_FILTERS, rate, freq),
+                                           delta=1e-9)
+
+    def test_export_then_import_is_exact(self):
+        imported = self.parse(AUTOEQ_SAMPLE)
+        text = self.export(imported["preamp_db"], imported["filters"])
+        self.assertIn("Filter 1: ON LSC Fc 105 Hz Gain 6.3 dB Q 0.7\n", text)
+        self.assertIn("Filter 8: OFF PK Fc 3720 Hz Gain 1.1 dB Q 4.67\n", text)
+        self.assertTrue(text.startswith("Preamp: -6.4 dB\n"))
+        self.assertEqual(self.parse(text), imported)
+        # And through JSON storage, as the server keeps it.
+        stored = json.loads(json.dumps(imported["filters"]))
+        self.assertEqual(self.parse(self.export(imported["preamp_db"], stored))["filters"], stored)
+
+    def test_export_round_trip_for_arbitrary_stored_values(self):
+        # Exact except a shelf q typed into VELVET that no AutoEq Q maps to
+        # (AutoEq's Q is the coarser double): that one is off by <= 1 ulp, and
+        # from then on the round trip is exact.
+        rng = random.Random(42)
+        for _ in range(20):
+            filters = [{"type": rng.choice(["peaking", "low_shelf", "high_shelf"]),
+                        "freq": rng.uniform(20, 20000), "gain": rng.uniform(-3, 3),
+                        "q": rng.uniform(0.1, 10), "enabled": rng.random() > 0.2}
+                       for _ in range(rng.randint(1, 6))]
+            preamp = rng.uniform(-30, 6)
+            with self.subTest(filters=filters):
+                once = self.parse(self.export(preamp, filters))
+                self.assertEqual(once["preamp_db"], preamp)
+                for got, want in zip(once["filters"], filters, strict=True):
+                    self.assertEqual({**got, "q": None}, {**want, "q": None})
+                    if want["type"] == "peaking":
+                        self.assertEqual(got["q"], want["q"])
+                    else:
+                        self.assertLessEqual(abs(got["q"] - want["q"]), math.ulp(want["q"]))
+                self.assertEqual(self.parse(self.export(preamp, once["filters"])), once)
+        # Every shelf q that came from AutoEq text is reproduced exactly.
+        for _ in range(150):
+            q = float(f"{rng.uniform(0.15, 14.1):.{rng.randint(1, 17)}g}") / math.sqrt(2)
+            flt = [{"type": "low_shelf", "freq": 100.0, "gain": 1.0, "q": q, "enabled": True}]
+            self.assertEqual(self.parse(self.export(0.0, flt))["filters"], flt)
+
+    def test_accepts_autoeq_layout_variants(self):
+        text = ("﻿# AutoEq: Example headphone\n\n  Preamp:-3.0 dB  \n"
+                "Filter 1: ON PK Fc 1000 Hz Gain 2 dB Q 1\nFilter 2: on lsc Fc 1e2 Hz Gain -1.5 dB Q .7\n")
+        imported = self.parse(text)
+        self.assertEqual(imported["preamp_db"], -3.0)
+        self.assertEqual([f["type"] for f in imported["filters"]], ["peaking", "low_shelf"])
+        self.assertEqual(imported["filters"][1]["freq"], 100.0)
+        # No Preamp line: 0 dB, the playback headroom guard still applies.
+        self.assertEqual(self.parse("Filter 1: ON PK Fc 1000 Hz Gain -2 dB Q 1")["preamp_db"], 0.0)
+
+    def test_rejects_anything_it_cannot_map_exactly(self):
+        pk = "Filter 1: ON PK Fc 1000 Hz Gain 2 dB Q 1"
+        cases = {
+            "": "no filters",
+            "Preamp: -3 dB": "no filters",
+            f"{pk}\nFilter 2: ON LS Fc 100 Hz Gain 2 dB": "line 2",
+            f"{pk}\nFilter 2: ON LP Fc 100 Hz Q 0.7": "line 2",
+            f"{pk}\nFilter 2: ON PK Fc 1000 Hz Gain 3 dB": "line 2",
+            f"{pk}\nChannel: L": "line 2",
+            f"{pk}\nhello": "line 2",
+            f"{pk}\n{pk}": "line 2",  # duplicate filter number
+            f"Preamp: -1 dB\nPreamp: -2 dB\n{pk}": "line 2",
+            "Filter 1: ON PK Fc 1000 Hz Gain nan dB Q 1": "line 1",
+            "Filter 1: ON PK Fc 10 Hz Gain 2 dB Q 1": "line 1",
+            "Filter 1: ON PK Fc 1000 Hz Gain 19 dB Q 1": "line 1",
+            "Filter 1: ON PK Fc 1000 Hz Gain 2 dB Q 0.05": "line 1",
+            "Filter 1: ON HSC Fc 8000 Hz Gain 2 dB Q 0.1": "line 1",  # AutoEq Q 0.1 = q 0.0707
+            "Filter 1: ON HSC Fc 8000 Hz Gain 2 dB Q 15": "line 1",
+            f"Preamp: -31 dB\n{pk}": "line 1",
+            f"Preamp: inf dB\n{pk}": "line 1",
+            "\n".join(f"Filter {i}: ON PK Fc 1000 Hz Gain 1 dB Q 1" for i in range(1, 22)): "at most 20",
+        }
+        for text, message in cases.items():
+            with self.subTest(text=text):
+                with self.assertRaises(DspValidationError) as ctx:
+                    self.parse(text)
+                self.assertIn(message, str(ctx.exception))
+
+    def test_rejects_profiles_whose_boost_cannot_be_offset(self):
+        text = "\n".join(f"Filter {i}: ON PK Fc 1000 Hz Gain 18 dB Q 1" for i in range(1, 4))
+        with self.assertRaises(DspValidationError) as ctx:
+            self.parse(text)
+        self.assertIn("preamp", str(ctx.exception))
+
+    def test_shelf_q_limits_follow_the_velvet_q_range(self):
+        # VELVET q 0.1-10 is AutoEq shelf Q 0.141-14.14.
+        self.assertEqual(self.parse("Filter 1: ON LSC Fc 100 Hz Gain 2 dB Q 0.15")["filters"][0]["q"],
+                         0.15 / math.sqrt(2))
+        self.parse("Filter 1: ON HSC Fc 8000 Hz Gain 2 dB Q 14.1")
+
+
+class ReplayGainTests(unittest.TestCase):
+    def test_tag_parsing_across_containers_and_r128(self):
+        items = [
+            ("TXXX:REPLAYGAIN_TRACK_GAIN", "-6.53 dB"),            # ID3
+            ("replaygain_track_peak", "0.988235"),                  # Vorbis comment
+            ("----:com.apple.iTunes:replaygain_album_gain", b"+2.10 dB"),  # MP4 freeform
+            ("REPLAYGAIN_ALBUM_PEAK", ["0.5", "0.9"]),             # first value wins
+            ("TITLE", "Song"),
+        ]
+        self.assertEqual(dsp_engine.replaygain_from_tags(items),
+                         {"track_gain": -6.53, "track_peak": 0.988235, "album_gain": 2.1, "album_peak": 0.5})
+        # Opus R128 gains are Q7.8 relative to -23 LUFS; ReplayGain 2.0 is 5 dB louder.
+        self.assertEqual(dsp_engine.replaygain_from_tags([("R128_TRACK_GAIN", "-1024"), ("R128_ALBUM_GAIN", "256")]),
+                         {"track_gain": 1.0, "album_gain": 6.0})
+        # ReplayGain tags take precedence over R128.
+        self.assertEqual(dsp_engine.replaygain_from_tags([("R128_TRACK_GAIN", "0"), ("REPLAYGAIN_TRACK_GAIN", "-3 dB")]),
+                         {"track_gain": -3.0})
+        # Unparseable, non-finite or absurd values are ignored, never guessed.
+        for value in ("loud", "nan dB", "inf", "-99 dB", ""):
+            with self.subTest(value=value):
+                self.assertEqual(dsp_engine.replaygain_from_tags([("REPLAYGAIN_TRACK_GAIN", value)]), {})
+        self.assertEqual(dsp_engine.replaygain_from_tags([("REPLAYGAIN_TRACK_PEAK", "0")]), {})
+
+    def test_mode_selection_and_album_fallback(self):
+        tags = {"track_gain": -6.5, "track_peak": 0.9, "album_gain": -7.25, "album_peak": 0.99}
+        resolve = dsp_engine.resolve_replaygain
+        self.assertEqual(resolve(tags, "off")["applied_db"], 0.0)
+        self.assertEqual(resolve(tags, "track")["applied_db"], -6.5)
+        album = resolve(tags, "album")
+        self.assertEqual((album["source"], album["applied_db"]), ("album", -7.25))
+        fallback = resolve({"track_gain": -4.0}, "album")
+        self.assertEqual((fallback["source"], fallback["applied_db"]), ("track", -4.0))
+        self.assertIn("no album gain", fallback["reason"])
+        none = resolve({}, "album")
+        self.assertEqual((none["source"], none["applied_db"]), (None, 0.0))
+        self.assertIn("No ReplayGain", none["reason"])
+        with self.assertRaises(DspValidationError):
+            resolve(tags, "loud")
+
+    def test_positive_gain_is_limited_by_the_tag_peak(self):
+        # The source must stay at or below full scale after ReplayGain: the EQ
+        # headroom guard assumes full-scale input.
+        limited = dsp_engine.resolve_replaygain({"track_gain": 6.0, "track_peak": 0.6}, "track")
+        self.assertAlmostEqual(limited["applied_db"], -20 * math.log10(0.6))
+        self.assertTrue(limited["limited_by_peak"])
+        self.assertEqual(dsp_engine.resolve_replaygain({"track_gain": 2.0, "track_peak": 0.5}, "track")["applied_db"],
+                         2.0)
+        # No peak tag: a positive gain cannot be proven safe, so none is applied.
+        unknown = dsp_engine.resolve_replaygain({"track_gain": 3.0}, "track")
+        self.assertEqual(unknown["applied_db"], 0.0)
+        self.assertTrue(unknown["limited_by_peak"])
+        # A peak above full scale (lossy overshoot) lowers even a negative gain.
+        hot = dsp_engine.resolve_replaygain({"track_gain": -1.0, "track_peak": 1.25}, "track")
+        self.assertAlmostEqual(hot["applied_db"], -20 * math.log10(1.25))
+
+    def test_chain_applies_replaygain_before_the_preamp_and_eq(self):
+        self.assertEqual(build_dsp_filter_chain(None, 44100, replaygain_db=-6.53),
+                         "volume=-6.53dB:precision=double")
+        self.assertEqual(build_dsp_filter_chain(None, 44100), "")
+        profile = {"preamp_db": -3.0,
+                   "filter_chain_json": json.dumps([{"type": "peaking", "freq": 1000, "gain": 1.5, "q": 1,
+                                                     "enabled": True}])}
+        self.assertEqual(build_dsp_filter_chain(profile, 44100, replaygain_db=-6.53),
+                         "volume=-6.53dB:precision=double,volume=-3.0dB:precision=double,"
+                         "equalizer=f=1000.0:t=q:w=1.0:g=1.5")
+
+
+class LoudnormRetiredTests(unittest.TestCase):
+    """volume_normalize used single-pass loudnorm: a dynamic AGC outside the
+    headroom estimate that also resampled the stream to 192 kHz."""
+
+    def test_volume_normalize_no_longer_adds_loudnorm(self):
+        profile = {"volume_normalize": 1, "preamp_db": -2.0,
+                   "filter_chain_json": json.dumps([{"type": "peaking", "freq": 1000, "gain": 1, "q": 1}])}
+        chain = build_dsp_filter_chain(profile, 44100)
+        self.assertNotIn("loudnorm", chain)
+        plan = resolve_dsp_plan(profile, 44100)
+        self.assertNotIn("loudnorm", plan["level_changing_effects"])
+        self.assertEqual(plan["ignored_settings"], ["volume_normalize"])
+        self.assertFalse(resolve_dsp_plan({"volume_normalize": 1, "filter_chain_json": "[]"})["active"])
 
 
 if __name__ == "__main__":

@@ -1,6 +1,8 @@
 import cmath
 import json
 import math
+import re
+from decimal import Decimal
 from typing import Any
 
 
@@ -545,8 +547,13 @@ def _guarded_processing(profile: dict[str, Any], rate: float | None) -> dict[str
             "effective_preamp_db": effective, "needed_preamp_db": needed, "peak": peak}
 
 
-def _filter_chain(profile: dict[str, Any], applied: list[dict[str, Any]], preamp_db: float) -> str:
+def _filter_chain(profile: dict[str, Any], applied: list[dict[str, Any]], preamp_db: float,
+                  replaygain_db: float = 0.0) -> str:
     filters: list[str] = []
+    if replaygain_db:
+        # Before the preamp and EQ: resolve_replaygain keeps the source at or
+        # below full scale, which the EQ headroom guard assumes.
+        filters.append(f"volume={replaygain_db}dB:precision=double")
     if preamp_db:
         # Default float precision would push the EQ below into float32, which
         # skews resonant low-frequency filters (~0.1 dB) away from the model.
@@ -561,8 +568,9 @@ def _filter_chain(profile: dict[str, Any], applied: list[dict[str, Any]], preamp
         elif flt["type"] == "high_shelf":
             filters.append(f"treble=g={gain}:f={freq}:w={q}")
 
-    if profile.get("volume_normalize"):
-        filters.append("loudnorm=I=-16:TP=-1.5:LRA=11")
+    # volume_normalize (single-pass loudnorm) is retired: it was a dynamic AGC
+    # outside the headroom estimate and resampled the stream to 192 kHz.
+    # Loudness is ReplayGain, a static gain per track or album (above).
 
     stereo_width = _finite_float(profile.get("stereo_width", 0) or 0)
     if stereo_width:
@@ -601,18 +609,21 @@ def resolve_dsp_plan(dsp_profile: dict[str, Any] | None, sample_rate: Any = None
         "active": bool(_filter_chain(profile, processing["applied"], effective)),
         # The headroom estimate covers the EQ stage; these stages change level too.
         "level_changing_effects": [name for name, on in (
-            ("loudnorm", profile.get("volume_normalize")),
             ("stereo_width", _finite_float(profile.get("stereo_width", 0) or 0)),
             ("reverb", _finite_float(profile.get("reverb_wet_dry", 0) or 0)),
         ) if on],
+        # Stored but no longer applied (loudnorm retired; use ReplayGain).
+        "ignored_settings": ["volume_normalize"] if profile.get("volume_normalize") else [],
     }
 
 
-def build_dsp_filter_chain(dsp_profile: dict[str, Any] | None, sample_rate: Any = None) -> str:
-    if not dsp_profile:
+def build_dsp_filter_chain(dsp_profile: dict[str, Any] | None, sample_rate: Any = None,
+                           replaygain_db: float = 0.0) -> str:
+    profile = dsp_profile or {}
+    if not profile and not replaygain_db:
         return ""
-    processing = _guarded_processing(dsp_profile, _source_rate(sample_rate))
-    return _filter_chain(dsp_profile, processing["applied"], processing["effective_preamp_db"])
+    processing = _guarded_processing(profile, _source_rate(sample_rate))
+    return _filter_chain(profile, processing["applied"], processing["effective_preamp_db"], replaygain_db)
 
 
 def dsp_effective_status(requested_profile_id: Any, dsp_profile: dict[str, Any] | None,
@@ -634,3 +645,213 @@ def dsp_effective_status(requested_profile_id: Any, dsp_profile: dict[str, Any] 
             "disabled_filters": plan["disabled_filters"],
             "headroom_guard_db": plan["headroom_guard_db"],
             "net_peak_db": plan["net_peak_db"], "eq_clipping_risk": plan["eq_clipping_risk"]}
+
+
+# ─── AutoEq ParametricEQ.txt ─────────────────────────────────────────────────
+# AutoEq (autoeq/peq.py) designs PK, LSC and HSC as plain RBJ cookbook biquads,
+# alpha = sin(w0)/(2Q). FFmpeg's bass/treble shelves render an RBJ shelf with
+# Q*sqrt(2) (see _biquad_coefficients), so an AutoEq shelf Q maps to q = Q/sqrt(2)
+# and a peaking Q maps unchanged. Verified against FFmpeg in tests/test_dsp_engine.py.
+AUTOEQ_FILTER_TYPES = {"PK": "peaking", "LSC": "low_shelf", "HSC": "high_shelf"}
+_AUTOEQ_TYPE_CODES = {v: k for k, v in AUTOEQ_FILTER_TYPES.items()}
+_AUTOEQ_SHELF_Q_SCALE = math.sqrt(2)
+_NUMBER = r"[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?|[-+]?(?:nan|inf(?:inity)?)"
+_AUTOEQ_PREAMP_RE = re.compile(rf"^preamp\s*:\s*({_NUMBER})\s*db$", re.IGNORECASE)
+_AUTOEQ_FILTER_RE = re.compile(
+    rf"^filter\s+(\d+)\s*:\s*(on|off)\s+([a-z]+)\s+fc\s+({_NUMBER})\s*hz\s+gain\s+({_NUMBER})\s*db"
+    rf"\s+q\s+({_NUMBER})$", re.IGNORECASE)
+
+
+def parse_autoeq_parametric_eq(text: str) -> dict[str, Any]:
+    """Strictly parse AutoEq's ParametricEQ.txt into {preamp_db, filters}.
+
+    Only "Preamp: X dB" and "Filter N: ON|OFF PK|LSC|HSC Fc X Hz Gain Y dB Q Z"
+    lines are accepted (blank lines and '#' comments are skipped). Anything
+    else, a value out of range or a set without headroom is rejected with its
+    line number: nothing is rounded, reordered, dropped or clamped.
+    """
+    if not isinstance(text, str):
+        raise DspValidationError("AutoEq profile must be text")
+    preamp_db: float | None = None
+    filters: list[dict[str, Any]] = []
+    numbers: set[int] = set()
+    for line_no, raw in enumerate(text.lstrip("﻿").splitlines(), start=1):
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        label = f"line {line_no}"
+        preamp = _AUTOEQ_PREAMP_RE.match(line)
+        if preamp:
+            if preamp_db is not None:
+                raise DspValidationError(f"{label}: more than one Preamp line")
+            preamp_db = validate_dsp_number(preamp.group(1), f"{label}: preamp", MIN_PREAMP_DB, MAX_PREAMP_DB)
+            continue
+        match = _AUTOEQ_FILTER_RE.match(line)
+        if not match:
+            raise DspValidationError(
+                f"{label}: expected 'Preamp: X dB' or 'Filter N: ON PK|LSC|HSC Fc X Hz Gain Y dB Q Z', "
+                f"got {line[:80]!r}")
+        number, state, code, freq, gain, q = match.groups()
+        filter_type = AUTOEQ_FILTER_TYPES.get(code.upper())
+        if not filter_type:
+            raise DspValidationError(f"{label}: filter type {code} is not supported (PK, LSC or HSC)")
+        if int(number) in numbers:
+            raise DspValidationError(f"{label}: duplicate Filter {number}")
+        numbers.add(int(number))
+        if len(filters) == MAX_FILTERS:
+            raise DspValidationError(f"at most {MAX_FILTERS} filters are allowed")
+        autoeq_q = _finite_float(q)
+        if autoeq_q is not None and filter_type != "peaking":
+            autoeq_q /= _AUTOEQ_SHELF_Q_SCALE
+        flt = {"type": filter_type, "freq": freq, "gain": gain,
+               "q": q if autoeq_q is None else autoeq_q, "enabled": state.upper() == "ON"}
+        try:
+            filters.extend(validate_dsp_filters([flt]))
+        except DspValidationError as exc:
+            detail = str(exc).removeprefix("filter 1: ")
+            if filter_type != "peaking" and detail.startswith("q must be between"):
+                detail = (f"shelf Q must be between {MIN_FILTER_Q * _AUTOEQ_SHELF_Q_SCALE:.3g} and "
+                          f"{MAX_FILTER_Q * _AUTOEQ_SHELF_Q_SCALE:.3g}")
+            raise DspValidationError(f"{label} (Filter {number}): {detail}") from exc
+    if not filters:
+        raise DspValidationError("no filters found in the AutoEq profile")
+    validate_dsp_headroom(filters)
+    return {"preamp_db": 0.0 if preamp_db is None else preamp_db, "filters": filters}
+
+
+def _number_text(value: float, decode=float) -> str:
+    """Shortest plain decimal (no exponent) t with decode(t) == decode(repr(value)):
+    with the default decode, text that reads back as exactly value."""
+    target = decode(repr(value))
+    for digits in range(1, 18):
+        text = format(Decimal(f"{value:.{digits}g}"), "f")
+        if decode(text) == target:
+            return text
+    return format(Decimal(repr(value)), "f")
+
+
+def _shelf_q_text(q: float) -> str:
+    """AutoEq shelf Q text whose Q/sqrt(2) is exactly q when such a double exists.
+
+    Every q imported from AutoEq has one. A q typed into VELVET may fall
+    between the reachable values (AutoEq Q is the coarser double); the nearest
+    is then written, at most one unit in the last place away.
+    """
+    autoeq_q = q * _AUTOEQ_SHELF_Q_SCALE
+    candidates = [autoeq_q]
+    for direction in (math.inf, -math.inf):
+        neighbour = autoeq_q
+        for _ in range(2):
+            neighbour = math.nextafter(neighbour, direction)
+            candidates.append(neighbour)
+    for candidate in candidates:
+        if candidate / _AUTOEQ_SHELF_Q_SCALE == q:
+            return _number_text(candidate, lambda text: float(text) / _AUTOEQ_SHELF_Q_SCALE)
+    return _number_text(autoeq_q)
+
+
+def format_autoeq_parametric_eq(preamp_db: float, filters: list[dict[str, Any]]) -> str:
+    """ParametricEQ.txt for a filter chain, read back exactly by parse_autoeq_parametric_eq."""
+    lines = [f"Preamp: {_number_text(float(preamp_db))} dB"]
+    for index, flt in enumerate(filters, start=1):
+        q = float(flt["q"])
+        lines.append(
+            f"Filter {index}: {'ON' if flt.get('enabled', True) else 'OFF'} {_AUTOEQ_TYPE_CODES[flt['type']]} "
+            f"Fc {_number_text(float(flt['freq']))} Hz Gain {_number_text(float(flt['gain']))} dB "
+            f"Q {_number_text(q) if flt['type'] == 'peaking' else _shelf_q_text(q)}")
+    return "\n".join(lines) + "\n"
+
+
+# ─── ReplayGain ──────────────────────────────────────────────────────────────
+REPLAYGAIN_MODES = ("off", "track", "album")
+# Opus R128_*_GAIN is Q7.8 dB relative to -23 LUFS; ReplayGain 2.0 targets -18 LUFS.
+R128_TO_REPLAYGAIN_DB = 5.0
+# Tags outside this range are corrupt, not loudness corrections.
+MAX_REPLAYGAIN_ABS_DB = 60.0
+_REPLAYGAIN_KEYS = {"replaygain_track_gain": "track_gain", "replaygain_track_peak": "track_peak",
+                    "replaygain_album_gain": "album_gain", "replaygain_album_peak": "album_peak"}
+_R128_KEYS = {"r128_track_gain": "track_gain", "r128_album_gain": "album_gain"}
+_GAIN_RE = re.compile(rf"^({_NUMBER})\s*(?:db)?$", re.IGNORECASE)
+
+
+def _tag_text(value: Any) -> str:
+    if isinstance(value, (list, tuple)):
+        value = value[0] if value else ""
+    if hasattr(value, "text"):  # ID3 frames
+        return _tag_text(value.text)
+    if isinstance(value, bytes):
+        return value.decode("utf-8", "replace")
+    return str(value)
+
+
+def replaygain_from_tags(items: Any) -> dict[str, float]:
+    """ReplayGain values from (key, value) tag pairs of any container.
+
+    Keys match case-insensitively after the last ':' (ID3 TXXX, MP4 freeform).
+    REPLAYGAIN_* wins over Opus R128_*. Unparseable, non-finite or out-of-range
+    values are left out, never guessed.
+    """
+    found: dict[str, float] = {}
+    r128: dict[str, float] = {}
+    for key, value in items:
+        name = str(key).rsplit(":", 1)[-1].strip().lower()
+        text = _tag_text(value).strip()
+        if name in _REPLAYGAIN_KEYS:
+            field = _REPLAYGAIN_KEYS[name]
+            if field.endswith("_peak"):
+                number = _finite_float(text)
+                valid = number is not None and number > 0
+            else:
+                match = _GAIN_RE.match(text)
+                number = _finite_float(match.group(1)) if match else None
+                valid = number is not None and abs(number) <= MAX_REPLAYGAIN_ABS_DB
+            if valid:
+                found.setdefault(field, number)
+        elif name in _R128_KEYS and re.fullmatch(r"[-+]?\d+", text):
+            gain = int(text) / 256 + R128_TO_REPLAYGAIN_DB
+            if abs(gain) <= MAX_REPLAYGAIN_ABS_DB:
+                r128.setdefault(_R128_KEYS[name], gain)
+    for field, gain in r128.items():
+        found.setdefault(field, gain)
+    return found
+
+
+def read_replaygain_tags(path: Any) -> dict[str, float]:
+    """ReplayGain values stored in an audio file's tags ({} when there are none)."""
+    from mutagen import File as MutagenFile
+
+    try:
+        tags = getattr(MutagenFile(str(path)), "tags", None)
+    except Exception:
+        return {}
+    return replaygain_from_tags(tags.items()) if tags else {}
+
+
+def resolve_replaygain(tags: dict[str, float], mode: str) -> dict[str, Any]:
+    """The static gain a track gets in a ReplayGain mode.
+
+    Album mode falls back to the track gain. The gain is limited so the tag
+    peak stays at or below full scale, which the EQ headroom guard assumes;
+    without a peak tag a positive gain is not applied.
+    """
+    if mode not in REPLAYGAIN_MODES:
+        raise DspValidationError(f"replaygain must be one of {list(REPLAYGAIN_MODES)}")
+    result = {"mode": mode, "source": None, "tag_gain_db": None, "peak": None,
+              "applied_db": 0.0, "limited_by_peak": False, "reason": None}
+    if mode == "off":
+        return {**result, "reason": "ReplayGain off"}
+    source = "album" if mode == "album" and "album_gain" in tags else "track"
+    if f"{source}_gain" not in tags:
+        return {**result, "reason": "No ReplayGain tags"}
+    gain, peak = tags[f"{source}_gain"], tags.get(f"{source}_peak")
+    ceiling = -20 * math.log10(peak) if peak is not None else 0.0
+    limited = gain > ceiling if peak is not None else gain > 0
+    applied = ceiling if limited else gain
+    notes = []
+    if mode == "album" and source == "track":
+        notes.append("no album gain; track gain used")
+    if limited:
+        notes.append("limited by the peak tag to avoid clipping" if peak is not None
+                     else "positive gain not applied: no peak tag")
+    return {**result, "source": source, "tag_gain_db": gain, "peak": peak, "applied_db": applied,
+            "limited_by_peak": limited, "reason": "; ".join(notes) or None}

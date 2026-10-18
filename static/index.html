@@ -5014,6 +5014,62 @@ input[type=range]::-webkit-slider-thumb:hover { background: var(--gold); }
     .eq-tool-btn:hover:not(:disabled) { background: rgba(255,255,255,0.08); color: var(--text-color); }
     .eq-tool-btn[aria-pressed="true"] { color: var(--gold); border-color: var(--gold); }
     .eq-tool-btn:disabled { opacity: 0.4; cursor: default; }
+    .eq-tool-btn.eq-tool-primary { color: var(--gold); border-color: var(--gold); }
+    .eq-import-panel {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      padding: 16px;
+      border: 1px solid rgba(255,255,255,0.1);
+      border-radius: 14px;
+      background: rgba(255,255,255,0.03);
+    }
+    .eq-import-panel[hidden] { display: none; }
+    .eq-import-help { margin: 0; color: var(--muted); font-size: 0.8125rem; line-height: 1.45; }
+    .eq-import-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+    .eq-import-input, .eq-import-text {
+      min-width: 0;
+      padding: 8px 10px;
+      border-radius: 8px;
+      border: 1px solid rgba(255,255,255,0.12);
+      background: rgba(0,0,0,0.35);
+      color: var(--text-color, #f3efe6);
+      font: inherit;
+    }
+    .eq-import-input { flex: 1 1 220px; }
+    .eq-import-file { flex: 1 1 200px; min-width: 0; max-width: 100%; color: var(--muted); font-size: 0.75rem; }
+    .eq-import-text {
+      width: 100%;
+      box-sizing: border-box;
+      resize: vertical;
+      font-family: 'DM Mono', monospace;
+      font-size: 0.75rem;
+      line-height: 1.5;
+      white-space: pre;
+    }
+    .eq-import-error { margin: 0; color: #ff8a80; font-size: 0.8125rem; line-height: 1.45; }
+    .eq-import-error[hidden] { display: none; }
+    .eq-import-actions { display: flex; justify-content: flex-end; gap: 8px; }
+    .eq-replaygain {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      margin-top: 8px;
+      color: var(--muted);
+      font-family: 'DM Mono', monospace;
+      font-size: 10px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+    .eq-replaygain select {
+      padding: 4px 8px;
+      border-radius: 8px;
+      border: 1px solid rgba(255,255,255,0.12);
+      background: rgba(0,0,0,0.35);
+      color: var(--text-color, #f3efe6);
+      font: inherit;
+      text-transform: none;
+    }
     .eq-status-block { min-width: 0; }
     .eq-status-kicker {
       font-family: 'DM Mono', monospace;
@@ -6426,7 +6482,23 @@ input[type=range]::-webkit-slider-thumb:hover { background: var(--gold); }
         <button class="eq-tool-btn" id="eq-btn-reset" title="Discard unsaved edits to this slot">Reset</button>
         <button class="eq-tool-btn" id="eq-btn-duplicate" title="Save a copy of this slot as a new custom preset">Duplicate</button>
         <button class="eq-tool-btn" id="eq-btn-save-as" title="Save this slot as a new preset with a name">Save as…</button>
+        <button class="eq-tool-btn" id="eq-btn-import" aria-expanded="false" aria-controls="eq-import-panel" title="Import a headphone correction in AutoEq ParametricEQ.txt format">Import AutoEq</button>
+        <button class="eq-tool-btn" id="eq-btn-export" title="Download the saved preset as AutoEq ParametricEQ.txt">Export AutoEq</button>
       </div>
+
+      <section id="eq-import-panel" class="eq-import-panel" hidden aria-label="Import AutoEq profile">
+        <p class="eq-import-help">Paste or choose an AutoEq <strong>ParametricEQ.txt</strong> (Preamp plus PK, LSC and HSC filters). It is saved exactly as a new correction preset and opened here; it plays only after you press Apply.</p>
+        <div class="eq-import-row">
+          <input id="eq-import-name" class="eq-import-input" type="text" maxlength="120" placeholder="Preset name, e.g. HD 600 (AutoEq)" aria-label="Preset name">
+          <input id="eq-import-file" class="eq-import-file" type="file" accept=".txt,text/plain" aria-label="AutoEq ParametricEQ.txt file">
+        </div>
+        <textarea id="eq-import-text" class="eq-import-text" rows="7" spellcheck="false" aria-label="ParametricEQ.txt contents" placeholder="Preamp: -6.4 dB&#10;Filter 1: ON LSC Fc 105 Hz Gain 6.3 dB Q 0.70&#10;Filter 2: ON PK Fc 2840 Hz Gain 3.5 dB Q 2.43"></textarea>
+        <p id="eq-import-error" class="eq-import-error" role="alert" hidden></p>
+        <div class="eq-import-actions">
+          <button class="eq-tool-btn" id="eq-import-cancel">Cancel</button>
+          <button class="eq-tool-btn eq-tool-primary" id="eq-import-submit">Import</button>
+        </div>
+      </section>
 
       <!-- Graphic EQ Sliders -->
       <section class="eq-sliders-panel">
@@ -6441,6 +6513,13 @@ input[type=range]::-webkit-slider-thumb:hover { background: var(--gold); }
           <p class="eq-status-kicker">Preset · <span id="eq-apply-state" class="eq-apply-state" data-state="preview" aria-live="polite">Preview (not yet applied)</span></p>
           <p id="eq-current-name" class="eq-current-name">Custom EQ</p>
           <p id="eq-headroom-note" class="eq-headroom-note">Headroom: 0.0 dB</p>
+          <label class="eq-replaygain" title="Static loudness gain from each file's ReplayGain tags, for all playback in this browser (with or without an EQ preset). Not bit-perfect while a gain is applied; positive gain never pushes the tagged peak above full scale.">ReplayGain
+            <select id="eq-replaygain" aria-label="ReplayGain mode">
+              <option value="off">Off</option>
+              <option value="track">Track</option>
+              <option value="album">Album</option>
+            </select>
+          </label>
         </div>
         <button class="eq-btn-save" id="eq-btn-save">Save & Apply</button>
       </div>
@@ -6761,7 +6840,10 @@ function castDspMatches(castDsp, dspProfile) {
 // reaches a renderer.
 // `plan` is the server's resolved plan (/dsp/profiles/{id}/resolved): a
 // selected preset whose processing graph is empty is reported as bypassed.
-function describeSignalProcessing(zoneType, dspProfile, upsample, plan = null, castDsp = null) {
+// `replaygain` is { mode } or the server's /tracks/{id}/replaygain result:
+// only browser streams apply it.
+function describeSignalProcessing(zoneType, dspProfile, upsample, plan = null, castDsp = null, replaygain = null) {
+  const replaygainOn = replaygain && replaygain.mode && replaygain.mode !== 'off';
   if (zoneType === 'cast') {
     const transcoded = castDsp?.stream === 'dsp_transcode';
     const lines = [transcoded
@@ -6779,11 +6861,21 @@ function describeSignalProcessing(zoneType, dspProfile, upsample, plan = null, c
       lines.push(`DSP ${dspProfile.name}`, ...dspPlanLines(plan));
     }
     if (upsample && upsample !== 'none') lines.push('PCM upsampling not applied on this renderer');
+    if (replaygainOn) lines.push('ReplayGain not applied on this renderer');
     return lines;
   }
   const lines = [
     !upsample || upsample === 'none' ? 'No PCM upsampling' : `${upsample.toUpperCase()} PCM upsampling enabled`,
   ];
+  if (replaygainOn && zoneType === 'native') {
+    lines.push('ReplayGain not applied on this output');
+  } else if (replaygainOn && typeof replaygain.applied_db === 'number') {
+    const db = replaygain.applied_db;
+    lines.push(`ReplayGain ${replaygain.mode}: ${db > 0 ? '+' : ''}${db.toFixed(2)} dB`
+      + (replaygain.reason ? ` (${replaygain.reason})` : ''));
+  } else if (replaygainOn) {
+    lines.push(`ReplayGain ${replaygain.mode} (status unavailable)`);
+  }
   if (!dspProfile) {
     lines.push('VELVET DSP off (source direct)');
   } else if (plan && !plan.active) {
@@ -6834,7 +6926,11 @@ async function showSignalPath() {
     const rate = Number(track.sample_rate) >= 8000 ? `?sample_rate=${Math.round(Number(track.sample_rate))}` : '';
     plan = await api(`/dsp/profiles/${dspProfile.id}/resolved${rate}`).catch(() => null);
   }
-  const processing = describeSignalProcessing(activeZone.type, dspProfile, state.upsample, plan, castDsp).map(escHtml).join('<br>');
+  let replaygain = { mode: state.replaygain || 'off' };
+  if (replaygain.mode !== 'off' && activeZone.type !== 'cast' && activeZone.type !== 'native') {
+    replaygain = { ...replaygain, ...(await api(`/tracks/${track.id}/replaygain?mode=${replaygain.mode}`).catch(() => null)) };
+  }
+  const processing = describeSignalProcessing(activeZone.type, dspProfile, state.upsample, plan, castDsp, replaygain).map(escHtml).join('<br>');
   const zoneDsp = describeZoneDsp(activeZone.type, dspProfile, plan, castDsp);
   const output = activeZone.type === 'cast'
     ? `Streaming to ${escHtml(activeZone.name)}`
@@ -7446,6 +7542,25 @@ function isDspExplicitlyOff() {
   return zoneDspProfileId(zone) === '';
 }
 
+// ReplayGain is a player setting (off|track|album), independent of the EQ preset.
+const REPLAYGAIN_STORAGE_KEY = 'velvet:replaygain';
+const REPLAYGAIN_MODES = ['off', 'track', 'album'];
+
+function readPersistedReplayGainMode() {
+  try {
+    const mode = String(localStorage.getItem(REPLAYGAIN_STORAGE_KEY) || 'off');
+    return REPLAYGAIN_MODES.includes(mode) ? mode : 'off';
+  } catch {
+    return 'off';
+  }
+}
+
+function persistReplayGainMode(mode) {
+  try {
+    localStorage.setItem(REPLAYGAIN_STORAGE_KEY, mode);
+  } catch {}
+}
+
 // Playback starts in the browser zone.
 const browserDspOff = readPersistedDspProfileId() === DSP_OFF_STORAGE_VALUE;
 const persistedDspProfileId = browserDspOff ? '' : readPersistedDspProfileId();
@@ -7467,6 +7582,7 @@ const state = {
   upsample: 'none',
   dspProfile: initialDspProfileId,
   lastEqProfile: persistedLastDspProfileId || persistedDspProfileId,
+  replaygain: readPersistedReplayGainMode(),
   dspProfiles: [],
   outputMode: 'browser',
   nativeDevice: null,
@@ -7950,9 +8066,10 @@ function getAudioLevel() {
 function streamUrl(trackId, upsample, ticket = '') {
   const u = upsample || state.upsample;
   const dsp = state.dspProfile ? `&dsp=${encodeURIComponent(state.dspProfile)}` : '';
+  const replaygain = state.replaygain && state.replaygain !== 'off' ? `&replaygain=${state.replaygain}` : '';
   // Never put the long-lived API key in a media URL; use a stream-only ticket.
   const ticketParam = ticket ? `&ticket=${encodeURIComponent(ticket)}` : '';
-  return `/api/stream/${trackId}?upsample=${u}${dsp}${ticketParam}`;
+  return `/api/stream/${trackId}?upsample=${u}${dsp}${replaygain}${ticketParam}`;
 }
 
 // <audio> cannot send X-API-Key. When protection is on, stream URLs carry a
@@ -9109,6 +9226,27 @@ UI['upsample-select'].addEventListener('change', e => {
   syncMobileLandscapeControls();
 });
 
+// ReplayGain is applied by the server in browser streams only; a running
+// browser stream restarts at the same position to pick it up.
+function setReplayGainMode(mode) {
+  if (!REPLAYGAIN_MODES.includes(mode)) return;
+  state.replaygain = mode;
+  persistReplayGainMode(mode);
+  const select = $('eq-replaygain');
+  if (select) select.value = mode;
+  if (state.currentTrack && (isCastZone() || isNativeZone())) {
+    showToast(mode === 'off' ? 'ReplayGain off' : 'ReplayGain not applied on this output');
+    return;
+  }
+  if (state.currentTrack) {
+    const t = audio.currentTime;
+    startBrowserPlayback(state.currentTrack, { resumeTime: t }).then((ok) => {
+      if (!ok) showToast('Tap play to resume output');
+    });
+  }
+  showToast(mode === 'off' ? 'ReplayGain off' : `ReplayGain: ${mode} gain`);
+}
+
 UI['dsp-select'].addEventListener('change', e => {
   if (e.target.value === '__open_eq__') {
     e.target.value = state.dspProfile || '';
@@ -10157,6 +10295,15 @@ window.addEventListener('DOMContentLoaded', async () => {
   UI['eq-btn-bypass']?.addEventListener('click', () => window.toggleEQBypass());
   UI['eq-btn-duplicate']?.addEventListener('click', () => window.duplicateEQDraft());
   UI['eq-btn-save-as']?.addEventListener('click', () => window.saveEQDraftAs());
+  UI['eq-btn-import']?.addEventListener('click', () => window.toggleAutoEqImport());
+  UI['eq-btn-export']?.addEventListener('click', () => window.exportAutoEq());
+  UI['eq-import-cancel']?.addEventListener('click', () => window.toggleAutoEqImport(false));
+  UI['eq-import-submit']?.addEventListener('click', () => window.submitAutoEqImport());
+  UI['eq-import-file']?.addEventListener('change', e => window.loadAutoEqFile(e.target.files?.[0]));
+  if (UI['eq-replaygain']) {
+    UI['eq-replaygain'].value = state.replaygain;
+    UI['eq-replaygain'].addEventListener('change', e => setReplayGainMode(e.target.value));
+  }
 
   // Initialization sequence MUST await first navigation
   const hash = location.hash.replace('#', '');
