@@ -827,11 +827,14 @@ async def cast_to_device(device_udn: str, request: Request):
     gain also selects the transcode. `start_seconds` resumes the track there:
     the transcode starts at that offset, a direct stream is seeked by the
     renderer after Play. `recast` marks a settings change for the track the
-    renderer already has: a paused renderer stays paused.
+    renderer already has: a paused renderer (or one the user just paused)
+    gets the new stream loaded without Play.
 
-    Casts to one renderer run one at a time in arrival order, and a request
-    superseded while it waited is skipped ({"superseded": true}), so a stale
-    request can never replace newer playback.
+    Casts and controls for one renderer run one at a time in arrival order;
+    a cast superseded by a newer cast or Stop while it waited is skipped
+    ({"superseded": true}), so a stale request never replaces newer playback.
+    A client-chosen `request_id` lets the client fetch the outcome later
+    (GET /api/cast/result/{udn}/{request_id}) if its request timed out.
     """
     data = await request.json()
     track_id = data.get("track_id")
@@ -851,8 +854,26 @@ async def cast_to_device(device_udn: str, request: Request):
     recast = data.get("recast", False)
     if not isinstance(recast, bool):
         raise HTTPException(422, "recast must be a boolean")
-    generation = _next_cast_generation(device_udn)
+    request_id = data.get("request_id")
+    if request_id is not None and (not isinstance(request_id, str) or not 1 <= len(request_id) <= 64):
+        raise HTTPException(422, "request_id must be a string of 1-64 characters")
 
+    queue, ticket, generation = _enqueue_cast(device_udn, request_id)
+    try:
+        response = await _cast_in_turn(device_udn, queue, ticket, generation, track_id, requested_dsp,
+                                       start, replaygain_mode, recast)
+    except BaseException as exc:
+        queue.abandon(ticket)
+        detail = exc.detail if isinstance(exc, HTTPException) else "Cast failed"
+        _record_cast_result(device_udn, request_id, {"success": False, "error": detail})
+        raise
+    _record_cast_result(device_udn, request_id, response)
+    return response
+
+
+async def _cast_in_turn(device_udn, queue, ticket, generation, track_id, requested_dsp,
+                        start, replaygain_mode, recast):
+    """Resolve the renderer's stream, then cast it when this request's turn comes."""
     db = get_db()
     track = db.execute(
         "SELECT t.*, ar.name as artist_name, al.title as album_title "
@@ -893,7 +914,13 @@ async def cast_to_device(device_udn: str, request: Request):
         track, "0", stream_query=stream_query, start_seconds=start if transcoded else 0))
 
     def cast():
-        paused = recast and upnp_server.get_transport_info(device_udn) == "PAUSED_PLAYBACK"
+        with _cast_state_lock:
+            if _cast_generations.get(device_udn) != generation:
+                return None  # a newer cast or Stop arrived while this one waited
+            # A Play/Pause the user sent since the last cast says what they want now.
+            user_paused = _cast_user_paused.pop(device_udn, None)
+        paused = recast and (user_paused if user_paused is not None
+                             else upnp_server.get_transport_info(device_udn) == "PAUSED_PLAYBACK")
         transport = upnp_server.cast_track(device_udn, stream_url, meta, play=not paused)
         position_restored = None
         if transport and start and not transcoded:
@@ -904,14 +931,15 @@ async def cast_to_device(device_udn: str, request: Request):
         return transport or "failed", position_restored
 
     # cast_track performs blocking SOAP calls and sleeps; keep the event loop free.
-    outcome = await asyncio.to_thread(_run_latest_cast, device_udn, generation, cast)
+    outcome = await asyncio.to_thread(queue.run, ticket, cast)
     if outcome is None:
         return {"success": False, "superseded": True}
     transport, position_restored = outcome
     # Renderer positions are relative to the stream: the UI adds start_offset.
     return {
-        # "loaded": the new stream is set and paused (a paused renderer stays
-        # paused); "play_failed": set, but the renderer refused Play.
+        # "loaded": the new stream is set but Play was not sent (the renderer
+        # was paused), so playback has not started; "play_failed": the stream
+        # is set but the renderer refused Play.
         "success": transport in ("playing", "loaded"),
         "transport": transport,
         "position_restored": position_restored,
@@ -921,43 +949,121 @@ async def cast_to_device(device_udn: str, request: Request):
     }
 
 
-# Per-renderer cast ordering. Requests run on worker threads (and the test
-# client uses a loop per request), so these are thread locks.
+class _RendererQueue:
+    """Arrival-order turns for one renderer's SOAP sequences.
+
+    Requests run on worker threads (and the test client uses an event loop
+    per request), so this uses a thread condition. A turn taken by a request
+    that fails before running is abandoned so later turns are not blocked.
+    """
+
+    def __init__(self):
+        self._cond = threading.Condition()
+        self._next = 0
+        self._serving = 0
+        self._abandoned: set[int] = set()
+
+    def take(self) -> int:
+        with self._cond:
+            ticket = self._next
+            self._next += 1
+            return ticket
+
+    def run(self, ticket: int, operation):
+        with self._cond:
+            self._cond.wait_for(lambda: self._serving == ticket)
+        try:
+            return operation()
+        finally:
+            with self._cond:
+                self._advance()
+
+    def abandon(self, ticket: int) -> None:
+        with self._cond:
+            if ticket == self._serving:
+                self._advance()
+            elif ticket > self._serving:
+                self._abandoned.add(ticket)
+
+    def _advance(self) -> None:
+        self._serving += 1
+        while self._serving in self._abandoned:
+            self._abandoned.discard(self._serving)
+            self._serving += 1
+        self._cond.notify_all()
+
+
 _cast_state_lock = threading.Lock()
-_cast_renderer_locks: dict[str, threading.Lock] = {}
-_cast_generations: dict[str, int] = {}
+_cast_queues: dict[str, _RendererQueue] = {}
+_cast_generations: dict[str, int] = {}  # bumped by each cast and Stop
+_cast_user_paused: dict[str, bool] = {}  # last Play/Pause since the last cast
+_cast_results: dict[str, dict[str, dict | None]] = {}  # request_id -> response (None: pending)
+_CAST_RESULTS_KEPT = 16
 
 
-def _next_cast_generation(device_udn: str) -> int:
-    """Mark a newer request for this renderer; older queued ones are skipped."""
+def _renderer_queue(device_udn: str) -> _RendererQueue:
     with _cast_state_lock:
-        _cast_generations[device_udn] = _cast_generations.get(device_udn, 0) + 1
-        return _cast_generations[device_udn]
+        return _cast_queues.setdefault(device_udn, _RendererQueue())
 
 
-def _run_latest_cast(device_udn: str, generation: int, operation):
-    """Run one renderer's SOAP sequences one at a time; None if superseded while waiting."""
+def _enqueue_cast(device_udn: str, request_id: str | None):
+    """Take a turn for a cast; it supersedes every cast queued before it."""
+    queue = _renderer_queue(device_udn)
     with _cast_state_lock:
-        renderer_lock = _cast_renderer_locks.setdefault(device_udn, threading.Lock())
-    with renderer_lock:
-        with _cast_state_lock:
-            if _cast_generations.get(device_udn) != generation:
-                return None
-        return operation()
+        generation = _cast_generations[device_udn] = _cast_generations.get(device_udn, 0) + 1
+        if request_id:
+            results = _cast_results.setdefault(device_udn, {})
+            results[request_id] = None
+            while len(results) > _CAST_RESULTS_KEPT:
+                results.pop(next(iter(results)))
+    return queue, queue.take(), generation
+
+
+def _record_cast_result(device_udn: str, request_id: str | None, response: dict) -> None:
+    if not request_id:
+        return
+    with _cast_state_lock:
+        results = _cast_results.get(device_udn, {})
+        if request_id in results:
+            results[request_id] = response
+
+
+@app.get("/api/cast/result/{device_udn}/{request_id}")
+def get_cast_result(device_udn: str, request_id: str):
+    """The outcome of an earlier cast request, for a client whose request timed out."""
+    with _cast_state_lock:
+        results = _cast_results.get(device_udn, {})
+        if request_id not in results:
+            raise HTTPException(404, "Unknown cast request")
+        response = results[request_id]
+    return {"done": False} if response is None else {"done": True, **response}
 
 
 @app.post("/api/cast/control/{device_udn}/{action}")
 async def cast_control(device_udn: str, action: str):
     """Pause, Play, or Stop the cast device.
 
-    Ordered after any cast in progress for the renderer; Stop also cancels
-    casts still waiting, so leaving a renderer cannot be undone by a late one.
+    Controls are never dropped: they run in arrival order with the
+    renderer's casts, and a Play/Pause decides whether the next re-cast
+    plays. Stop also cancels casts still waiting, so leaving a renderer
+    cannot be undone by a late one.
     """
-    generation = (_next_cast_generation(device_udn) if action == "Stop"
-                  else _cast_generations.get(device_udn, 0))
-    success = await asyncio.to_thread(
-        _run_latest_cast, device_udn, generation,
-        lambda: upnp_server.cast_control(device_udn, action))
+    queue = _renderer_queue(device_udn)
+    if action == "Stop":
+        with _cast_state_lock:
+            _cast_generations[device_udn] = _cast_generations.get(device_udn, 0) + 1
+    ticket = queue.take()
+
+    def control():
+        success = upnp_server.cast_control(device_udn, action)
+        with _cast_state_lock:
+            if action == "Stop":
+                _cast_user_paused.pop(device_udn, None)
+            elif success and action in ("Play", "Pause"):
+                _cast_user_paused[device_udn] = action == "Pause"
+        return success
+
+    success = await asyncio.to_thread(queue.run, ticket, control)
     return {"success": bool(success)}
 
 @app.get("/api/cast/status/{device_udn}")

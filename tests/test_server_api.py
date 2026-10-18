@@ -835,6 +835,137 @@ class ServerApiTests(unittest.TestCase):
         self.assertTrue(results["d"]["superseded"])
         self.assertTrue(results["stop"]["success"])
 
+    class _FakeRenderer:
+        """A renderer whose first cast blocks until released. It always reports
+        a stale transport state, so only VELVET's own ordering decides."""
+
+        def __init__(self, test, reported_state="PLAYING"):
+            self.test, self.reported_state = test, reported_state
+            self.log, self.results, self.threads = [], {}, []
+            self.first_started, self.release = threading.Event(), threading.Event()
+
+        def cast_track(self, udn, url, meta, play=True):
+            self.log.append(("cast", "replaygain=" in url, play))
+            if len(self.log) == 1:
+                self.first_started.set()
+                self.test.assertTrue(self.release.wait(10))
+            return "playing" if play else "loaded"
+
+        def cast_control(self, udn, action):
+            self.log.append(("control", action))
+            return True
+
+        def patches(self):
+            return (patch.object(upnp_server, "cast_track", side_effect=self.cast_track),
+                    patch.object(upnp_server, "cast_control", side_effect=self.cast_control),
+                    patch.object(upnp_server, "get_transport_info", return_value=self.reported_state),
+                    patch.object(upnp_server, "seek", return_value=True),
+                    patch.object(server, "read_replaygain_tags", return_value={"track_gain": -3.0}))
+
+        def send(self, name, path, body=None, udn="renderer-1"):
+            """Post on a thread and wait until the request holds its turn."""
+            queue = server._renderer_queue(udn)
+            before = queue._next
+            thread = threading.Thread(target=lambda: self.results.__setitem__(
+                name, self.test.client.post(path, json=body).json()))
+            thread.start()
+            self.threads.append(thread)
+            deadline = time.monotonic() + 10
+            while queue._next == before and time.monotonic() < deadline:
+                time.sleep(0.01)
+            self.test.assertGreater(queue._next, before, f"{name} never queued")
+
+        def finish(self):
+            self.release.set()
+            for thread in self.threads:
+                thread.join(10)
+
+    def _run_renderer_script(self, steps, reported_state="PLAYING"):
+        self._allow_music_root()
+        renderer = self._FakeRenderer(self, reported_state)
+        patches = renderer.patches()
+        for p in patches:
+            p.start()
+        try:
+            for i, (name, path, body) in enumerate(steps):
+                renderer.send(name, path, body)
+                if i == 0:
+                    self.assertTrue(renderer.first_started.wait(10))
+            renderer.finish()
+        finally:
+            for p in patches:
+                p.stop()
+        return renderer
+
+    def test_pause_queued_behind_a_cast_is_kept_and_wins_over_a_later_recast(self):
+        # Cast A in progress -> Pause queued -> re-cast B: B must not resume playback.
+        renderer = self._run_renderer_script([
+            ("a", "/api/cast/renderer-1", {"track_id": 1}),
+            ("pause", "/api/cast/control/renderer-1/Pause", None),
+            ("b", "/api/cast/renderer-1", {"track_id": 1, "replaygain": "track", "recast": True}),
+        ], reported_state="PLAYING")
+        self.assertEqual(renderer.log, [("cast", False, True), ("control", "Pause"), ("cast", True, False)])
+        self.assertTrue(renderer.results["pause"]["success"])
+        self.assertEqual(renderer.results["b"]["transport"], "loaded")
+
+    def test_play_queued_behind_a_cast_is_kept_and_wins_over_a_later_recast(self):
+        renderer = self._run_renderer_script([
+            ("a", "/api/cast/renderer-1", {"track_id": 1, "recast": True}),
+            ("play", "/api/cast/control/renderer-1/Play", None),
+            ("b", "/api/cast/renderer-1", {"track_id": 1, "replaygain": "track", "recast": True}),
+        ], reported_state="PAUSED_PLAYBACK")
+        self.assertEqual(renderer.log, [("cast", False, False), ("control", "Play"), ("cast", True, True)])
+        self.assertTrue(renderer.results["play"]["success"])
+        self.assertEqual(renderer.results["b"]["transport"], "playing")
+
+    def test_stop_cancels_waiting_casts_but_not_queued_controls(self):
+        renderer = self._run_renderer_script([
+            ("a", "/api/cast/renderer-1", {"track_id": 1}),
+            ("pause", "/api/cast/control/renderer-1/Pause", None),
+            ("b", "/api/cast/renderer-1", {"track_id": 1, "replaygain": "track", "recast": True}),
+            ("stop", "/api/cast/control/renderer-1/Stop", None),
+        ])
+        self.assertEqual(renderer.log, [("cast", False, True), ("control", "Pause"), ("control", "Stop")])
+        self.assertEqual(renderer.results["b"], {"success": False, "superseded": True})
+        self.assertTrue(renderer.results["stop"]["success"])
+        self.assertNotIn("renderer-1", server._cast_user_paused)
+
+    def test_play_and_pause_work_before_any_cast_to_the_renderer(self):
+        calls = []
+        with patch.object(upnp_server, "cast_control", side_effect=lambda udn, action: calls.append(action) or True):
+            for action in ("Pause", "Play"):
+                with self.subTest(action=action):
+                    response = self.client.post(f"/api/cast/control/never-cast-{action}/{action}")
+                    self.assertEqual(response.json(), {"success": True})
+        self.assertEqual(calls, ["Pause", "Play"])
+
+    def test_cast_outcome_can_be_fetched_after_a_client_timeout(self):
+        self._allow_music_root()
+        renderer = self._FakeRenderer(self)
+        patches = renderer.patches()
+        for p in patches:
+            p.start()
+        try:
+            renderer.send("a", "/api/cast/renderer-1", {"track_id": 1, "request_id": "req-a"})
+            self.assertTrue(renderer.first_started.wait(10))
+            self.assertEqual(self.client.get("/api/cast/result/renderer-1/req-a").json(), {"done": False})
+            renderer.finish()
+            # A request that fails before its turn gives the turn up: later casts still run.
+            missing = self.client.post("/api/cast/renderer-1", json={"track_id": 999, "request_id": "req-x"})
+            self.assertEqual(missing.status_code, 404)
+            after = self.client.post("/api/cast/renderer-1", json={"track_id": 1})
+            self.assertTrue(after.json()["success"])
+        finally:
+            for p in patches:
+                p.stop()
+        result = self.client.get("/api/cast/result/renderer-1/req-a").json()
+        self.assertEqual((result["done"], result["success"], result["transport"]), (True, True, "playing"))
+        self.assertEqual(self.client.get("/api/cast/result/renderer-1/req-x").json(),
+                         {"done": True, "success": False, "error": "Track not found"})
+        self.assertEqual(self.client.get("/api/cast/result/renderer-1/unknown").status_code, 404)
+        self.assertEqual(self.client.post("/api/cast/renderer-1",
+                                          json={"track_id": 1, "request_id": 5}).status_code, 422)
+
     def test_cast_with_unknown_or_invalid_dsp_fails_closed(self):
         self._allow_music_root()
         with patch.object(upnp_server, "cast_track",
