@@ -4,7 +4,7 @@ import sqlite3
 from dsp_engine import FACTORY_DSP_PRESETS, legacy_eq_bands_to_filters
 
 
-LATEST_SCHEMA_VERSION = 13
+LATEST_SCHEMA_VERSION = 16
 
 
 def _table_columns(conn: sqlite3.Connection, table_name: str) -> set[str]:
@@ -572,6 +572,86 @@ def migration_013_track_title_key(conn: sqlite3.Connection) -> None:
     )
 
 
+
+def migration_014_artist_alias_enrichment(conn: sqlite3.Connection) -> None:
+    """Durable, per-artist MusicBrainz alias-enrichment checkpoints.
+
+    No audio metadata or artist names are rewritten. Unfinished requests have
+    no checkpoint, so the next user-initiated batch resumes automatically.
+    """
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS artist_alias_enrichment_state (
+            artist_id       INTEGER PRIMARY KEY
+                            REFERENCES artists(id) ON DELETE CASCADE,
+            status          TEXT NOT NULL,
+            aliases_added   INTEGER NOT NULL DEFAULT 0,
+            attempted_at    REAL NOT NULL DEFAULT (strftime('%s','now')),
+            error           TEXT NOT NULL DEFAULT ''
+        );
+        CREATE INDEX IF NOT EXISTS idx_artist_alias_enrichment_status
+            ON artist_alias_enrichment_state(status, attempted_at);
+        CREATE TRIGGER IF NOT EXISTS trg_alias_enrichment_artist_rename
+        AFTER UPDATE OF name, mbid ON artists
+        BEGIN
+            DELETE FROM artist_alias_enrichment_state WHERE artist_id=NEW.id;
+        END;
+        """
+    )
+
+
+def migration_015_artist_mbid_verified(conn: sqlite3.Connection) -> None:
+    """Record whether an artist's MusicBrainz ID was confirmed by the user.
+
+    Bio enrichment stores the first name-search hit as `artists.mbid`, so an
+    MBID alone is not identity evidence: a namesake's record also matches the
+    local name. An explicit confirmation or unique multi-album corroboration sets this flag, and any later
+    change of the MBID clears it. Existing MBIDs start unverified because
+    their origin is unknown.
+    """
+    if "mbid_verified" not in _table_columns(conn, "artists"):
+        conn.execute(
+            "ALTER TABLE artists ADD COLUMN mbid_verified INTEGER NOT NULL DEFAULT 0"
+        )
+    conn.executescript(
+        """
+        CREATE TRIGGER IF NOT EXISTS trg_artist_mbid_unverify
+        AFTER UPDATE OF mbid ON artists
+        WHEN NEW.mbid IS NOT OLD.mbid
+        BEGIN
+            UPDATE artists SET mbid_verified=0 WHERE id=NEW.id;
+        END;
+        """
+    )
+
+
+
+def migration_016_artist_alias_provenance(conn: sqlite3.Connection) -> None:
+    """Track origin of new aliases while retaining older unknown-origin names.
+
+    Historical manually entered and automatically imported aliases have
+    indistinguishable metadata. Do not silently delete or assert trust on
+    upgrade: a missing provenance record is legacy_unknown pending review.
+    """
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS artist_alias_provenance (
+            alias_id INTEGER PRIMARY KEY
+                     REFERENCES artist_aliases(id) ON DELETE CASCADE,
+            source TEXT NOT NULL CHECK (source IN (
+                'manual', 'user_confirmed', 'trusted_mbid',
+                'release_corroborated', 'reviewed_legacy'
+            )),
+            mbid TEXT NOT NULL DEFAULT '',
+            evidence TEXT NOT NULL DEFAULT '',
+            created_at REAL NOT NULL DEFAULT (strftime('%s','now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_artist_alias_provenance_source
+            ON artist_alias_provenance(source);
+        """
+    )
+
+
 MIGRATIONS = (
     (1, "create_base_schema", migration_001_create_base_schema),
     (2, "align_album_columns", migration_002_add_album_favorites),
@@ -586,6 +666,9 @@ MIGRATIONS = (
     (11, "artist_aliases", migration_011_artist_aliases),
     (12, "opencc_catalog_search", migration_012_opencc_catalog_search),
     (13, "track_title_key", migration_013_track_title_key),
+    (14, "artist_alias_enrichment", migration_014_artist_alias_enrichment),
+    (15, "artist_mbid_verified", migration_015_artist_mbid_verified),
+    (16, "artist_alias_provenance", migration_016_artist_alias_provenance),
 )
 
 

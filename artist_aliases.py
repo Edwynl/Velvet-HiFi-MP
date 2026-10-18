@@ -52,6 +52,34 @@ def add_alias(db: sqlite3.Connection, artist_id: int, name: str) -> bool:
     return True
 
 
+def _has_provenance_table(db: sqlite3.Connection) -> bool:
+    return db.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='artist_alias_provenance'"
+    ).fetchone() is not None
+
+
+def _provenance_of(db: sqlite3.Connection, artist_id: int) -> dict[str, tuple]:
+    """Recorded origins of an artist's aliases, keyed by casefolded name."""
+    if not _has_provenance_table(db):
+        return {}
+    return {
+        name.casefold(): (source, mbid, evidence)
+        for name, source, mbid, evidence in db.execute(
+            """SELECT aa.name, p.source, p.mbid, p.evidence
+               FROM artist_aliases aa JOIN artist_alias_provenance p ON p.alias_id = aa.id
+               WHERE aa.artist_id = ?""",
+            (artist_id,),
+        )
+    }
+
+
+def _record_provenance(db: sqlite3.Connection, artist_id: int, name: str,
+                       source: str, mbid: str = "", evidence: str = "") -> None:
+    if _has_provenance_table(db):
+        from artist_alias_provenance import mark_alias_source
+        mark_alias_source(db, artist_id, name, source, mbid=mbid, evidence=evidence)
+
+
 def _merge_duplicate_albums(db: sqlite3.Connection, artist_id: int) -> int:
     """Fold albums of artist_id that share a title into the oldest one."""
     merged = 0
@@ -99,6 +127,11 @@ def merge_artists(db: sqlite3.Connection, target_id: int, source_ids: Iterable[i
     if db.execute("SELECT 1 FROM artists WHERE id = ?", (target_id,)).fetchone() is None:
         raise ValueError(f"artist {target_id} does not exist")
     names = []
+    # Moved aliases keep the origin recorded for them; one with no record
+    # stays unknown (listed by the legacy audit). A merged artist's own name
+    # becomes an alias by this deliberate merge.
+    provenance: dict[str, tuple] = {}
+    merged_names: list[str] = []
     for source_id in sources:
         row = db.execute(
             "SELECT name, sort_name, mbid, bio, image_path FROM artists WHERE id = ?", (source_id,)
@@ -106,6 +139,7 @@ def merge_artists(db: sqlite3.Connection, target_id: int, source_ids: Iterable[i
         if row is None:
             raise ValueError(f"artist {source_id} does not exist")
         names.append(row[0])
+        merged_names.append(row[0])
         db.execute(
             """
             UPDATE artists SET
@@ -123,13 +157,19 @@ def merge_artists(db: sqlite3.Connection, target_id: int, source_ids: Iterable[i
         db.execute("DELETE FROM track_artists WHERE artist_id = ?", (source_id,))
         db.execute("UPDATE albums SET artist_id = ? WHERE artist_id = ?", (target_id, source_id))
         if _has_alias_table(db):
+            provenance.update(_provenance_of(db, source_id))
             names.extend(row[0] for row in db.execute(
                 "SELECT name FROM artist_aliases WHERE artist_id = ?", (source_id,)
             ))
             db.execute("DELETE FROM artist_aliases WHERE artist_id = ?", (source_id,))
         db.execute("DELETE FROM artists WHERE id = ?", (source_id,))
     for name in names:
-        add_alias(db, target_id, name)
+        if add_alias(db, target_id, name):
+            recorded = provenance.get(name.casefold())
+            if recorded:
+                _record_provenance(db, target_id, name, *recorded)
+            elif name in merged_names:
+                _record_provenance(db, target_id, name, "manual")
     albums_merged = _merge_duplicate_albums(db, target_id)
     return {"artist_id": target_id, "merged": sources, "aliases": names, "albums_merged": albums_merged}
 
@@ -163,4 +203,7 @@ def rename_artist(db: sqlite3.Connection, artist_id: int, new_name: str, *, keep
         (new_name, sort_name(new_name), artist_id),
     )
     aliases = [old_name] if keep_old_name and add_alias(db, artist_id, old_name) else []
+    for alias in aliases:
+        # A deliberate rename keeps the old display name as a known alias.
+        _record_provenance(db, artist_id, alias, "manual")
     return {"artist_id": artist_id, "aliases": aliases}
