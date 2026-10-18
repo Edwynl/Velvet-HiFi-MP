@@ -49,7 +49,7 @@ function createHarness() {
   const castControl = { paused: false, seekOk: true, replaygainDb: -7.1, hold: false, held: [],
     fail: false, controlFail: false, payloads: {}, serverResults: {},
     holdControls: false, heldControls: [], transportState: 'PLAYING',
-    statusPosition: 5, statusTrackId: null, holdStatus: false, heldStatus: [] };
+    statusPosition: 5, statusDuration: 120, statusTrackId: null, holdStatus: false, heldStatus: [] };
   const dspProfiles = [
     {
       id: 2,
@@ -255,7 +255,7 @@ function createHarness() {
 
     if (parsedUrl.pathname.startsWith('/api/cast/status/') && method === 'GET') {
       const status = makeJsonResponse({ state: castControl.transportState, position: castControl.statusPosition,
-        duration: 120, track_id: castControl.statusTrackId,
+        duration: castControl.statusDuration, track_id: castControl.statusTrackId,
         is_playing: castControl.transportState === 'PLAYING' });
       if (!castControl.holdStatus) return status;
       return new Promise(resolve => castControl.heldStatus.push(() => resolve(status)));
@@ -783,7 +783,21 @@ async function main() {
     await waitFor(() => harness.requests.at(-1).path === '/api/cast/uuid:renderer');
     await waitFor(() => dom.window.eval('state.castPending') === false);
     assert.equal(JSON.stringify(dom.window.eval('state.castDsp')), confirmedBefore);
+    assert.equal(dom.window.eval('state.castDspUnverified'), true,
+      'last confirmed DSP is not proof the failed change was not applied');
+    const signalUnverified = { ...dom.window.eval('state.castDsp'), pending: true };
+    assert.ok(dom.window.describeSignalProcessing('cast', null, 'none', null, signalUnverified)
+      .some(line => /DSP and ReplayGain processing are unverified/.test(line)));
+    assert.match(dom.window.describeZoneDsp('cast', null, null, signalUnverified).effective, /Unverified/);
     castControl.fail = false;
+    // Gain matches the old confirmed value (album = track here), but the failed
+    // cast means a no-op would lie; a fresh Cast must verify the renderer.
+    requestsBefore = harness.requests.length;
+    dom.window.setReplayGainMode('track');
+    await waitFor(() => dom.window.eval('state.castDsp?.replaygain?.mode') === 'track'
+      && dom.window.eval('state.castDspUnverified') === false);
+    assert.equal(castsSince(requestsBefore).length, 1,
+      'unverified DSP must not skip a re-cast just because the gain is unchanged');
     // A failed Pause/Play keeps the player state instead of throwing.
     castControl.controlFail = true;
     dom.window.eval('state.playing = true;');
@@ -1084,7 +1098,10 @@ async function main() {
     castControl.fail = true;
     dom.window.eval('castTo(state.currentTrack, state.castDevice, { recast: true });');
     await waitFor(() => dom.window.eval('state.castPending') === false);
-    assert.equal(dom.window.eval('state.castPlaybackUnverified'), true);
+    assert.equal(dom.window.eval('state.castPlaybackUnverified'), false,
+      'same-song recasts tolerate renderers that omit TrackURI');
+    assert.equal(dom.window.eval('state.castDspUnverified'), true,
+      'transport identity cannot prove a new EQ or ReplayGain stream was applied');
     assert.equal(dom.window.eval('state.castAutoNextArmed'), false);
     assert.equal(dom.window.eval('state.playing'), false);
     castControl.fail = false;
@@ -1095,19 +1112,44 @@ async function main() {
     await waitFor(() => dom.window.eval('state.castPlaybackUnverified') === false);
     dom.window.eval('stopCastPolling();');
 
-    // A confirmed cast keeps trusting statuses: a lagging or renderer-chosen
-    // TrackURI must not disarm auto-next or raise the resync toast.
+    // A newly confirmed B must never use old A's explicitly mismatched URI.
+    // Neither A's PLAYING progress nor its STOPPED 119/120 may drive B.
+    const onePoll = async () => {
+      const before = statusPolls();
+      dom.window.eval('startCastPolling();');
+      await waitFor(() => statusPolls() > before);
+      await tick();
+      dom.window.eval('stopCastPolling();');
+    };
+    dom.window.eval("state.castAutoNextArmed = true; state.playing = true; state.castPosition = 7; showToast('');");
     castControl.statusTrackId = 4;
-    dom.window.eval("showToast('');");
-    dom.window.eval('startCastPolling();');
-    const pollsBeforeMismatch = statusPolls();
-    await waitFor(() => statusPolls() > pollsBeforeMismatch);
-    await tick();
-    dom.window.eval('stopCastPolling();');
-    assert.equal(dom.window.eval('state.castPlaybackUnverified'), false);
-    assert.equal(dom.window.eval('state.castAutoNextArmed'), true);
-    assert.equal(dom.window.eval('state.playing'), true);
-    assert.doesNotMatch(toastText(), /another track/);
+    castControl.transportState = 'PLAYING';
+    castControl.statusPosition = 118;
+    await onePoll();
+    assert.equal(dom.window.eval('state.castPosition'), 7,
+      'old A PLAYING must not advance B progress to 118');
+    castControl.transportState = 'STOPPED';
+    castControl.statusPosition = 119;
+    await onePoll();
+    assert.equal(dom.window.eval('window.__playNextCalls'), 0, 'old A STOPPED must not skip B');
+    assert.equal(dom.window.eval('state.castPosition'), 7);
+    assert.equal(dom.window.eval('state.castPlaybackUnverified'), false,
+      'a single lagging sample does not permanently disarm a confirmed cast');
+    assert.doesNotMatch(toastText(), /another track/, 'lagging URI does not spam an error');
+    castControl.statusTrackId = 3;
+    castControl.transportState = 'PLAYING';
+    castControl.statusPosition = 8;
+    await onePoll();
+    assert.equal(dom.window.eval('state.castPosition'), 8, 'matching B updates normally');
+    // Duration 0 is not a known natural completion (including FLAC transcodes).
+    castControl.transportState = 'STOPPED';
+    castControl.statusPosition = 5;
+    castControl.statusDuration = 0;
+    await onePoll();
+    assert.equal(dom.window.eval('window.__playNextCalls'), 0,
+      'STOPPED with unknown duration must not auto-next');
+    castControl.statusDuration = 120;
+    castControl.statusPosition = 5;
 
     // A renderer without TrackURI: a failed same-song re-cast disarms
     // auto-next, but a PLAYING status re-arms it instead of freezing forever.
@@ -1116,11 +1158,14 @@ async function main() {
     dom.window.eval('castTo(state.currentTrack, state.castDevice, { recast: true });');
     await waitFor(() => dom.window.eval('state.castPending') === false);
     assert.equal(dom.window.eval('state.castPlaybackUnverified'), false);
+    assert.equal(dom.window.eval('state.castDspUnverified'), true);
     assert.equal(dom.window.eval('state.castAutoNextArmed'), false);
     assert.equal(dom.window.eval('state.playing'), false);
     castControl.fail = false;
     dom.window.eval('startCastPolling();');
     await waitFor(() => dom.window.eval('state.castAutoNextArmed && state.playing') === true);
+    assert.equal(dom.window.eval('state.castDspUnverified'), true,
+      'same-track PLAYING cannot verify which DSP/ReplayGain stream was applied');
     dom.window.eval('stopCastPolling();');
 
     // A status snapshot taken before a Play/Pause must not undo it when it
