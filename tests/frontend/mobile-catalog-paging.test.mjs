@@ -98,12 +98,6 @@ assert.equal(requests.filter(u => u.pathname === '/api/artists/page').at(-1).sea
 dom.window.document.querySelector('#next-page-btn').click();
 await wait(() => dom.window.document.querySelectorAll('#artists-grid .card').length === 15);
 assert.equal(requests.filter(u => u.pathname === '/api/artists/page').at(-1).searchParams.get('sort'), 'popular');
-const artistSort = dom.window.document.querySelector('#artist-sort-select');
-artistSort.value = 'name';
-artistSort.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
-await wait(() => dom.window.document.querySelectorAll('#artists-grid .card').length === 60);
-const lastArtists = requests.filter(u => u.pathname === '/api/artists/page').at(-1);
-assert.equal(lastArtists.searchParams.get('sort'), 'name');
-assert.equal(lastArtists.searchParams.get('offset'), '0');
+assert.equal(dom.window.document.querySelector('#artist-sort-select'), null, 'Hide the redundant Popular selector');
 console.log('frontend_mobile_catalog_paging_check=OK');
 dom.window.close();

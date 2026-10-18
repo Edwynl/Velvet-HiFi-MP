@@ -978,10 +978,6 @@ async function renderArtists(vc) {
         </svg>
         <input id="search-input" type="text" placeholder="Search artists…" value="${escHtml(searchQuery)}">
       </div>
-      <select id="artist-sort-select" class="btn btn-ghost" aria-label="Sort artists">
-        <option value="popular">Popular</option>
-        <option value="name">A–Z</option>
-      </select>
     </div>
     <div class="section-header" id="artists-header" title="Click to scroll to top">
       <div class="section-title">Artists</div>
@@ -1071,12 +1067,6 @@ async function renderArtists(vc) {
       }
     }
   }
-
-  vc.querySelector('#artist-sort-select').addEventListener('change', event => {
-    currentSort = event.target.value;
-    mainEl.scrollTo({ top: 0, behavior: 'smooth' });
-    loadPage({ reset: true });
-  });
 
   let searchTimer;
   let isComposing = false;
@@ -2215,7 +2205,7 @@ async function renderArtist(vc, { id }) {
     </div>
     <div class="artist-hero">
       <div class="artist-hero-art">
-        <img src="/api/artists/${artist.id}/image" id="artist-hero-img"
+        <img src="/api/artists/${artist.id}/image?v=2" id="artist-hero-img"
              onerror="this.style.display='none'">
         <div class="artist-art-placeholder" id="artist-art-placeholder">${artist.name.charAt(0).toUpperCase()}</div>
       </div>
