@@ -476,9 +476,11 @@ class EnrichmentYieldAcceptanceTests(unittest.TestCase):
         self.assertEqual(overview["needs_review_artists"], 13)
         self.assertEqual(overview["remaining_artists"], 0)
         self.assertEqual([tuple(row) for row in provenance], [("release_corroborated", 12)])
-        # One broad search + one exhaustive primary-name field search per
-        # artist, then 22 release-group browses and 12 alias lookups.
-        self.assertEqual(mb.requests, 25 + 25 + (12 + 10) + 12)
+        # All 25 artists need the initial fuzzy search; only the 17 with
+        # 2+ distinctive local albums need a constrained identity search.
+        # Of these, 12 qualify and 5 have namesakes (22 browse calls);
+        # the 12 winners then require a detailed alias lookup.
+        self.assertEqual(mb.requests, 25 + 17 + (12 + 10) + 12)
 
 
 class BoundedIndexRefreshTests(unittest.TestCase):
