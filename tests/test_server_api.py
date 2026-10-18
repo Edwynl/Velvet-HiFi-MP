@@ -276,6 +276,78 @@ class ServerApiTests(unittest.TestCase):
         self.assertEqual([a["id"] for a in data["albums"]], [1])
         self.assertEqual([t["id"] for t in data["tracks"]], [1])
 
+    def test_manual_alias_records_source_and_stays_out_of_legacy_audit(self):
+        response = self.client.post(
+            "/api/artists/1/aliases", json={"name": "Stage One"},
+        )
+        self.assertEqual(response.status_code, 200)
+        with closing(self._open_connection()) as db:
+            row = db.execute(
+                """SELECT p.source FROM artist_aliases aa
+                   JOIN artist_alias_provenance p ON p.alias_id=aa.id
+                   WHERE aa.artist_id=1 AND aa.name='Stage One'"""
+            ).fetchone()
+        self.assertEqual(row[0], "manual")
+        self.assertEqual(self.client.get(
+            "/api/library/artist-aliases/audit"
+        ).json()["total"], 0)
+
+    def test_legacy_alias_audit_approve_or_remove_without_touching_music(self):
+        from artist_aliases import add_alias
+        with closing(self._open_connection()) as db:
+            add_alias(db, 1, "Legacy Alias")
+            add_alias(db, 1, "Bad Guess")
+            db.commit()
+        audit = self.client.get("/api/library/artist-aliases/audit").json()
+        self.assertEqual(audit["total"], 2)
+        kept = self.client.post(
+            "/api/artists/1/aliases/audit",
+            json={"name": "Legacy Alias", "action": "keep"},
+        )
+        self.assertEqual(kept.status_code, 200)
+        removed = self.client.post(
+            "/api/artists/1/aliases/audit",
+            json={"name": "Bad Guess", "action": "remove"},
+        )
+        self.assertEqual(removed.status_code, 200)
+        self.assertEqual(self.client.get(
+            "/api/library/artist-aliases/audit"
+        ).json()["total"], 0)
+        self.assertEqual(self.client.get(
+            "/api/search?q=Legacy%20Alias"
+        ).json()["total_artists"], 1)
+        self.assertEqual(self.client.get(
+            "/api/search?q=Bad%20Guess"
+        ).json()["total_artists"], 0)
+
+    def test_single_artist_alias_refresh_is_bounded(self):
+        original = server.refresh_track_search_index
+        with patch.object(server._scan_job, "is_running", return_value=False), \
+             patch.object(server, "refresh_track_search_index", wraps=original) as index:
+            response = self.client.post(
+                "/api/artists/1/aliases", json={"name": "Stage One"},
+            )
+        self.assertEqual(response.status_code, 200)
+        self.assertGreater(index.call_count, 0)
+        self.assertTrue(all(
+            call.kwargs.get("max_rows") == 800
+            and call.kwargs.get("batch_size") == 200
+            for call in index.call_args_list
+        ))
+
+    def test_english_alias_resolver_accepts_continuation_offset(self):
+        async def fake_resolver(db, query, *, detail_offset=0):
+            return {"status": "more_candidates", "next_offset": detail_offset + 5}
+        with patch.object(server, "resolve_search_alias", side_effect=fake_resolver):
+            response = self.client.post(
+                "/api/search/resolve-artist-alias?q=Late%20Alias&detail_offset=5",
+            )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["next_offset"], 10)
+        self.assertEqual(self.client.post(
+            "/api/search/resolve-artist-alias?q=Late&detail_offset=10"
+        ).status_code, 422)
+
     def test_alias_post_refuses_other_artist_primary_name(self):
         response = self.client.post("/api/artists/1/aliases", json={"name": "Artist Two"})
         self.assertEqual(response.status_code, 409)

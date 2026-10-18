@@ -277,6 +277,29 @@ class UnifiedLibrarySearchTests(unittest.TestCase):
         details = [url for url, _ in fake.requests if not url.endswith("/artist/")]
         self.assertEqual(len(details), 5)
 
+    def test_english_alias_found_in_candidate_six_with_user_continuation(self):
+        # The first click remains fast. A second explicit click searches
+        # candidates 6-10 without silently reporting not_in_library.
+        other = [
+            {"id": f"00000000-0000-0000-0000-{i:012x}", "name": "Other"}
+            for i in range(1, 6)
+        ]
+        fake = MockMusicBrainzClient(
+            artists=[*other, {"id": MBID, "name": "徐佳瑩"}],
+        )
+        with patch("artist_alias_sync.asyncio.sleep", _instant_sleep):
+            first = asyncio.run(resolve_search_alias(
+                self.db, "Lala Hsu", client=fake, detail_offset=0,
+            ))
+            second = asyncio.run(resolve_search_alias(
+                self.db, "Lala Hsu", client=fake, detail_offset=5,
+            ))
+        self.assertEqual(first["status"], "more_candidates")
+        self.assertEqual(first["next_offset"], 5)
+        self.assertEqual(second["status"], "needs_review")
+        self.assertEqual(second["artist_id"], 1)
+        self.assertEqual(second["candidate"]["mbid"], MBID)
+
     def test_unconfirmed_mbid_is_not_identity_evidence(self):
         # Bio enrichment stores the first name-search hit, which may be a
         # namesake whose record also carries the local name. It must not be

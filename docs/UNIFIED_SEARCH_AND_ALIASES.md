@@ -30,15 +30,20 @@ filter of displayed cards; full OpenCC conversion is done by the global search.
   Its triggers dirty track, artist and album index rows immediately.
 - Artist detail now offers **Sync Names** (opt-in MusicBrainz) and **+ Alias**.
 - The global search empty state offers **Find artist by another name**.
-  This checks up to ten candidate MusicBrainz details to avoid missing an
-  English name whose search summary omits aliases. A candidate without a
-  *previously stored trusted MBID* requires **explicit user confirmation**
-  before it is linked; no silent name-based artist matching.
-- If an artist has a matching trusted MBID, the detailed record is verified
-  against the local artist's original name and imported into offline search.
-  If the local artist has **no MBID**, `Sync Names` shows candidate name,
-  disambiguation, country, type and MBID and waits for the user to select the
-  correct artist. Two different singers can share a name.
+  Each click examines at most five detailed MusicBrainz candidates; if the
+  correct alias is in candidates 6–10, **Check more MusicBrainz candidates**
+  offers an explicit second lookup. No network request occurs while typing.
+  Without a previously verified MBID, this name-based fallback still
+  requires **explicit user confirmation** before linking.
+- If an artist has an independently verified MBID, its detailed record
+  is checked against the local name and imported into offline search.
+  **Without one**, Velvet attempts release corroboration: at least **two
+  distinct, non-generic local album titles** must match release groups
+  credited solely to **one unique** name-matched MusicBrainz artist. A
+  truncated candidate page, a generic title or multiple qualifying artists
+  must **not** be auto-linked. This is cautious evidence, not infallible proof.
+  Everyone else enters **Review identities** for explicit confirmation.
+  The UI shows candidate name, country, type, disambiguation and MBID.
 - **Review identities** on the Artists page lists unconfirmed artists from
   the batch, opens their artist page, and guides the user to the same manual
   confirmation flow. A `needs_review` checkpoint is not automatically retried
@@ -67,11 +72,18 @@ The Artists page now has a user-controlled MusicBrainz enrichment panel:
   non-review outcomes. Artists marked `needs_review` are not blindly retried.
 - **Review identities** — browse name-only candidates and explicitly verify
   their MusicBrainz identity on the artist detail page.
+- **Audit old aliases** — inspect aliases of unknown origin from previous
+  versions, explicitly KEEP or REMOVE one entry at a time. This avoids
+  incorrectly deleting a legitimate alias that the user previously entered.
 - **Stop** — cooperative, after the currently active remote artist lookup.
   No audio file is changed.
 
-Schema migration 14 records per-artist checkpoints with status, timestamp,
-last error and imported aliases count. Every artist is committed separately;
+Schema migration 14 records per-artist checkpoints; migration 15 marks
+existing MBIDs unverified, and migration **16** adds alias provenance
+(`manual`, `user_confirmed`, `trusted_mbid`, `release_corroborated`,
+`reviewed_legacy`). Historical aliases without provenance are retained
+and explicitly listed for audit, never silently declared correct or deleted.
+Import status, timestamps, last error and imported aliases are tracked. Every artist is committed separately;
 the next batch resumes the unprocessed set even after server restart. Job
 progress survives *navigation*; a process restart resets in-memory current-job
 progress but retains durable per-artist coverage.
@@ -92,6 +104,11 @@ API:
   followed by a fresh MusicBrainz detail verification.
 - `GET /api/search/category?kind=albums&q=name&limit=40&offset=24` —
   continue one search group without loading all categories.
+- `GET /api/library/artist-aliases/audit` — paged aliases with unknown legacy origin.
+- `POST /api/artists/{id}/aliases/audit` body `{"name":"...","action":"keep"}`
+  or `{"name":"...","action":"remove"}` — user-reviewed legacy alias.
+- `POST /api/search/resolve-artist-alias?q=...&detail_offset=5` — check the
+  second group of candidate identities on request.
 - `POST /api/library/artist-aliases/enrichment/stop` — stop.
 - Retry with `{"mode":"retry","limit":25}`.
 
@@ -101,7 +118,7 @@ Run locally; do **not** trigger GitHub Actions. Keep PR #17 Draft until
 Codex reviews the new commits and local verification is complete.
 
 ```powershell
-.\venv\Scripts\python.exe -m pytest tests/test_artist_alias_batch.py tests/test_unified_search.py tests/test_search_opencc_v2.py tests/test_server_api.py -q
+.\venv\Scripts\python.exe -m pytest tests/test_artist_alias_corroboration.py tests/test_artist_alias_batch.py tests/test_unified_search.py tests/test_search_opencc_v2.py tests/test_server_api.py -q
 .\venv\Scripts\python.exe -m pytest tests -q
 npm run test:frontend
 ```
@@ -127,6 +144,14 @@ Acceptance cases:
 - Transient 503/Tailscale failures recover Artists-page progress polling.
 - Rate pacing is tested at 0.0, 1.25 and 2.50 seconds with a virtual clock,
   plus real-shaped HTTP 429 pause and resumable checkpoints.
+- For artists with two distinctive, separately corroborated MusicBrainz
+  albums, verified English aliases are imported automatically. A single
+  album or ambiguous names must remain `needs_review`. Audit the yield of
+  a real 25-/100-artist batch: imported aliases vs review queue size.
+- Legacy unproven aliases can be retained/removed explicitly without any
+  file tag edits. Single-artist background refresh is also bounded.
+- English alias first present in MusicBrainz candidate #6 is found using the
+  second, explicitly requested lookup.
 - Batch import performs small committed index refreshes **between artists**,
   drains remaining dirty rows without a long SQLite writer transaction, and
   does not modify cover-art quality.

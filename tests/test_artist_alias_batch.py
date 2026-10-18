@@ -38,7 +38,7 @@ class ArtistAliasBatchTests(unittest.TestCase):
         self.db_path = Path(self.tempdir.name) / "library.db"
         with self.connection() as db:
             self.assertEqual(apply_migrations(db), LATEST_SCHEMA_VERSION)
-            self.assertEqual(LATEST_SCHEMA_VERSION, 15)
+            self.assertEqual(LATEST_SCHEMA_VERSION, 16)
             db.executemany(
                 "INSERT INTO artists(id,name,sort_name,mbid) VALUES(?,?,?,?)",
                 [(1, "徐佳瑩", "徐佳瑩", ""),

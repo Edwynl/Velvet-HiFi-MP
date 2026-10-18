@@ -870,6 +870,7 @@ async function renderArtists(vc) {
         <button class="btn btn-ghost" id="artist-alias-all-batch" disabled>Sync all remaining</button>
         <button class="btn btn-ghost" id="artist-alias-retry-batch" disabled>Retry unresolved</button>
         <button class="btn btn-ghost" id="artist-alias-review-batch" disabled>Review identities</button>
+        <button class="btn btn-ghost" id="artist-alias-audit-legacy">Audit old aliases</button>
         <button class="btn btn-ghost" id="artist-alias-stop-batch" disabled>Stop</button>
       </div>
       <div class="artist-enrichment-note">
@@ -1012,6 +1013,7 @@ async function renderArtists(vc) {
   const allAliasBtn = UI['artist-alias-all-batch'];
   const retryAliasBtn = UI['artist-alias-retry-batch'];
   const reviewAliasBtn = UI['artist-alias-review-batch'];
+  const auditAliasBtn = UI['artist-alias-audit-legacy'];
   const stopAliasBtn = UI['artist-alias-stop-batch'];
   let aliasTimer = null;
   let aliasPollInFlight = false;
@@ -1120,6 +1122,41 @@ async function renderArtists(vc) {
     if (!answer || !Number.isInteger(choice) || choice < 1 || choice > artists.length) return;
     await navigate('artist', { id: artists[choice - 1].id });
     showToast('Press Sync Names, inspect the candidates, then confirm a matching identity');
+  });
+  auditAliasBtn?.addEventListener('click', async () => {
+    const response = await api('/library/artist-aliases/audit?limit=25');
+    const entries = response?.aliases || [];
+    if (!entries.length) {
+      showToast('No unknown-origin artist aliases need review');
+      return;
+    }
+    const indexText = prompt(
+      `${response.total} legacy aliases have unknown origins.\\n` +
+      'Some may have been entered manually; none are removed automatically.\\n' +
+      'Choose a number to inspect:\\n' +
+      entries.map((item, i) => `${i + 1}. ${item.artist_name} ← ${item.alias}`).join('\\n'),
+      ''
+    );
+    const index = Number(indexText);
+    if (!indexText || !Number.isInteger(index) || index < 1 || index > entries.length) return;
+    const entry = entries[index - 1];
+    const actionText = prompt(
+      `Check: "${entry.alias}" really belongs to "${entry.artist_name}".\\n` +
+      'Type KEEP to trust this alias, or REMOVE if incorrect. Cancel makes no changes.',
+      ''
+    );
+    const action = String(actionText || '').trim().toUpperCase();
+    if (action !== 'KEEP' && action !== 'REMOVE') return;
+    if (action === 'REMOVE' && !confirm(
+      `Remove alias "${entry.alias}" from "${entry.artist_name}"? This does not modify audio files.`
+    )) return;
+    const result = await api(`/artists/${entry.artist_id}/aliases/audit`, {
+      method: 'POST',
+      body: JSON.stringify({ name: entry.alias, action: action.toLowerCase() }),
+    });
+    if (result?.status === 'ok') {
+      showToast(action === 'KEEP' ? 'Alias reviewed and retained' : 'Incorrect alias removed');
+    }
   });
   stopAliasBtn?.addEventListener('click', async () => {
     stopAliasBtn.disabled = true;
@@ -2925,14 +2962,21 @@ async function renderSearch(vc, { q } = {}) {
         MusicBrainz is contacted only if you click. You must confirm uncertain identities.
       </div>`;
     const lookupButton = UI['search-resolve-alias-btn'];
+    let detailOffset = 0;
     lookupButton?.addEventListener('click', async () => {
       lookupButton.disabled = true;
       lookupButton.textContent = 'Checking MusicBrainz…';
       try {
         let result = await api(
-          `/search/resolve-artist-alias?q=${encodeURIComponent(query)}`,
+          `/search/resolve-artist-alias?q=${encodeURIComponent(query)}&detail_offset=${detailOffset}`,
           { method: 'POST', timeoutMs: 35000 },
         );
+        if (result?.status === 'more_candidates') {
+          detailOffset = result.next_offset;
+          lookupButton.textContent = `Check ${result.remaining} more MusicBrainz candidates`;
+          showToast('No match in the first group. Click again to check the remaining candidates.');
+          return;
+        }
         if (result?.status === 'needs_review') {
           const selected = chooseMusicBrainzIdentity(
             result.candidate ? [result.candidate] : [], query
@@ -2955,7 +2999,9 @@ async function renderSearch(vc, { q } = {}) {
       } finally {
         if (lookupButton.isConnected) {
           lookupButton.disabled = false;
-          lookupButton.textContent = 'Find artist by another name';
+          lookupButton.textContent = detailOffset
+            ? 'Check more MusicBrainz candidates'
+            : 'Find artist by another name';
         }
       }
     });

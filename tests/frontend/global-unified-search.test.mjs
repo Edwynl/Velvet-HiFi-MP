@@ -13,6 +13,9 @@ const track = { id: 30, title: '失落沙洲', album_id: 7,
                 album_title: '理想人生', artist_name: '徐佳瑩', format: 'FLAC' };
 const requests = [];
 let resolvedUnknownAlias = false;
+let resolvedLateAlias = false;
+let promptAnswers = [];
+let legacyAliases = [{ artist_id: 3, artist_name: '徐佳瑩', alias: 'Legacy English' }];
 let failNextAliasPoll = false;
 let failedAliasPolls = 0;
 let aliasJob = {
@@ -38,6 +41,14 @@ const request = async (url, opts = {}) => {
     }
     return response(aliasJob);
   }
+  if (u.pathname === '/api/library/artist-aliases/audit') {
+    return response({ aliases: legacyAliases, total: legacyAliases.length, limit: 25, offset: 0 });
+  }
+  if (u.pathname === '/api/artists/3/aliases/audit') {
+    const body = JSON.parse(opts.body);
+    legacyAliases = legacyAliases.filter(item => item.alias !== body.name);
+    return response({ status: 'ok', action: body.action, alias: body.name });
+  }
   if (u.pathname === '/api/library/artist-aliases/enrichment/review') {
     return response({ artists: [{ id: 3, name: '徐佳瑩' }] });
   }
@@ -54,12 +65,19 @@ const request = async (url, opts = {}) => {
     return response(aliasJob);
   }
   if (u.pathname === '/api/search/resolve-artist-alias') {
+    if (q === 'Late Alias' && u.searchParams.get('detail_offset') !== '5') {
+      return response({ status: 'more_candidates', next_offset: 5, remaining: 1 });
+    }
     return response({ status: 'needs_review', artist_id: 3,
       candidate: { mbid: 'a47ac8f5-6774-4540-842f-f1eb0a19845c',
                    name: '徐佳瑩', country: 'TW' } });
   }
   if (u.pathname === '/api/artists/3/aliases/confirm') {
-    resolvedUnknownAlias = true;
+    if (q === 'Late Alias' || JSON.parse(opts.body).query_alias === 'Late Alias') {
+      resolvedLateAlias = true;
+    } else {
+      resolvedUnknownAlias = true;
+    }
     return response({ status: 'ok', artist_id: 3,
                       aliases: ['LaLa Hsu', 'Lala Alias'], added: ['Lala Alias'] });
   }
@@ -78,7 +96,7 @@ const request = async (url, opts = {}) => {
       return response({ artists: [artist], albums: [album], tracks: [track],
                         total_artists: 2, total_albums: 2, total_tracks: 2 });
     }
-    if (/lala hsu|徐佳莹|徐佳瑩/i.test(q) || (q === 'Lala Alias' && resolvedUnknownAlias)) {
+    if (/lala hsu|徐佳莹|徐佳瑩/i.test(q) || (q === 'Lala Alias' && resolvedUnknownAlias) || (q === 'Late Alias' && resolvedLateAlias)) {
       return response({ artists: [artist], albums: [album], tracks: [track],
                         total_artists: 1, total_albums: 1, total_tracks: 1 });
     }
@@ -113,7 +131,7 @@ const dom = new JSDOM(html, {
     window.fetch = request;
     window.alert = () => {};
     window.confirm = () => true;
-    window.prompt = () => '1';
+    window.prompt = () => promptAnswers.length ? promptAnswers.shift() : '1';
     window.scrollTo = () => {};
     window.matchMedia = q => ({
       media:q, matches:false, addListener(){}, removeListener(){},
@@ -179,6 +197,10 @@ await wait(() => dom.window.document.querySelector('#artist-alias-stop-batch').d
 dom.window.document.querySelector('#artist-alias-stop-batch').click();
 await wait(() => aliasJob.running === false);
 await wait(() => dom.window.document.querySelector('#artist-alias-all-batch').disabled === false);
+promptAnswers.push('1', 'KEEP');
+dom.window.document.querySelector('#artist-alias-audit-legacy').click();
+await wait(() => requests.some(item => item.url.pathname === '/api/artists/3/aliases/audit'));
+assert.equal(legacyAliases.length, 0, 'User-approved legacy alias is no longer pending audit');
 dom.window.document.querySelector('#artist-alias-all-batch').click();
 await wait(() => requests.some(r => r.url.pathname === '/api/library/artist-aliases/enrichment/start'
   && r.method === 'POST' && aliasJob.all_remaining === true));
@@ -376,6 +398,26 @@ const racePayload = title => ({
       'Clearing the query exits the search view');
   } finally { h.dom.window.close(); }
 }
+
+// A matching English alias at candidate #6 is available on a second,
+// explicitly requested MusicBrainz lookup rather than silently omitted.
+await dom.window.navigate('home');
+await wait(() => dom.window.document.querySelector('#search-input'));
+const late = dom.window.document.querySelector('#search-input');
+late.value = 'Late Alias';
+late.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
+await wait(() => dom.window.document.querySelector('#search-resolve-alias-btn'));
+dom.window.document.querySelector('#search-resolve-alias-btn').click();
+await wait(() => requests.some(item => item.url.pathname === '/api/search/resolve-artist-alias'
+  && item.url.searchParams.get('q') === 'Late Alias'
+  && item.url.searchParams.get('detail_offset') === '0'));
+await wait(() => dom.window.document.querySelector('#search-resolve-alias-btn')
+  ?.textContent.includes('Check'));
+dom.window.document.querySelector('#search-resolve-alias-btn').click();
+await wait(() => requests.some(item => item.url.pathname === '/api/search/resolve-artist-alias'
+  && item.url.searchParams.get('detail_offset') === '5'));
+await wait(() => resolvedLateAlias);
+await wait(() => dom.window.document.querySelector('.search-artist-grid .artist-card'));
 
 console.log('frontend_global_unified_search=OK');
 dom.window.close();

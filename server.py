@@ -78,6 +78,7 @@ from library_paging import album_catalog_filters, fetch_album_page, fetch_artist
 from home_recommendations import fetch_home_shelves, parse_home_ids
 from artist_aliases import add_alias, fetch_aliases
 from artist_alias_sync import AliasSyncUnavailable, sync_artist_aliases, resolve_search_alias
+from artist_alias_provenance import mark_alias_source, audit_legacy_aliases, resolve_legacy_alias
 from artist_alias_batch import ArtistAliasEnrichmentJob, DEFAULT_BATCH_SIZE, MAX_BATCH_SIZE
 from library_safety import AlbumFileArchive, ArchiveError, list_album_archives, restore_album_files
 from library_discovery import (
@@ -1363,26 +1364,34 @@ def get_artist(artist_id: int):
     return result
 
 def _refresh_alias_search_keys() -> None:
-    """Index the tracks an alias change just queued, after the response.
+    """Refresh alias keys in bounded, committed SQLite transactions.
 
-    Every alias write re-queues all of that artist's tracks, and queued rows
-    are re-folded in Python on every search until something refreshes them.
-    A running scan, duplicate check, album mutation or alias batch refreshes
-    on its own, and committing between their per-file reads and writes would
-    fail them, so this stays out of their way; the queue stays correct.
+    One popular artist can dirty thousands of tracks. A single unbounded
+    refresh would hold SQLite's write lock throughout that rebuild and delay
+    player/library mutations. Indexing is performed on Starlette's background
+    worker after the API response; dirty records stay searchable meanwhile.
     """
-    if (_album_mutation_active or _scan_job.is_running() or _duplicate_job.is_running()
-            or _alias_enrichment_job.state.is_running()):
-        return
-    db = get_db()
-    try:
-        refresh_track_search_index(db)
-        db.commit()
-    except sqlite3.Error:
-        db.rollback()
-        log.exception("Alias search index refresh deferred; queued rows stay searchable")
-    finally:
-        db.close()
+    for _ in range(160):  # covers >100k dirty tracks on a 66k-song library
+        if (_album_mutation_active or _scan_job.is_running()
+                or _duplicate_job.is_running()
+                or _alias_enrichment_job.state.is_running()):
+            return
+        db = get_db()
+        try:
+            remaining = db.execute(
+                "SELECT (SELECT COUNT(*) FROM track_search_dirty) + "
+                "(SELECT COUNT(*) FROM catalog_search_dirty)"
+            ).fetchone()[0]
+            if not remaining:
+                return
+            refresh_track_search_index(db, batch_size=200, max_rows=800)
+            db.commit()
+        except sqlite3.Error:
+            db.rollback()
+            log.exception("Alias search index refresh deferred; dirty rows remain searchable")
+            return
+        finally:
+            db.close()
 
 
 @app.post("/api/artists/{artist_id}/aliases")
@@ -1410,6 +1419,8 @@ def create_artist_alias(artist_id: int, body: dict, background_tasks: Background
             raise HTTPException(409, "This name already belongs to another artist")
         try:
             added = add_alias(db, artist_id, name)
+            if added:
+                mark_alias_source(db, artist_id, name, "manual")
             db.commit()
         except sqlite3.IntegrityError:
             db.rollback()
@@ -1418,6 +1429,47 @@ def create_artist_alias(artist_id: int, body: dict, background_tasks: Background
             background_tasks.add_task(_refresh_alias_search_keys)
         return {"status": "ok", "added": bool(added),
                 "aliases": fetch_aliases(db, artist_id)}
+    finally:
+        db.close()
+
+
+@app.get("/api/library/artist-aliases/audit")
+def list_legacy_artist_aliases(
+    limit: int = Query(25, ge=1, le=100),
+    offset: int = Query(0, ge=0),
+):
+    """Audit aliases of unknown origin from previous application versions."""
+    db = get_db()
+    try:
+        return audit_legacy_aliases(db, limit=limit, offset=offset)
+    finally:
+        db.close()
+
+
+@app.post("/api/artists/{artist_id}/aliases/audit")
+def review_legacy_artist_alias(
+    artist_id: int, body: dict, background_tasks: BackgroundTasks,
+):
+    """Explicitly keep or remove a single previously unclassified alias."""
+    name = body.get("name")
+    action = body.get("action")
+    if not isinstance(name, str) or not 1 <= len(name.strip()) <= 128:
+        raise HTTPException(422, "Alias name must be 1..128 characters")
+    if action not in ("keep", "remove"):
+        raise HTTPException(422, "Action must be keep or remove")
+    db = get_db()
+    try:
+        try:
+            result = resolve_legacy_alias(
+                db, artist_id, name.strip(), action=action,
+            )
+            db.commit()
+        except LookupError as exc:
+            db.rollback()
+            raise HTTPException(404, str(exc))
+        if action == "remove":
+            background_tasks.add_task(_refresh_alias_search_keys)
+        return result
     finally:
         db.close()
 
@@ -1692,6 +1744,7 @@ async def get_artist_details(artist_id: int):
 def resolve_unrecognized_artist_alias(
     background_tasks: BackgroundTasks,
     q: str = Query(..., min_length=1, max_length=MAX_SEARCH_QUERY_LENGTH),
+    detail_offset: int = Query(0, ge=0, le=9),
 ):
     """Opt-in lookup only, never called as part of typing into search."""
     if _alias_enrichment_job.state.is_running():
@@ -1699,7 +1752,9 @@ def resolve_unrecognized_artist_alias(
     db = get_db()
     try:
         try:
-            result = asyncio.run(resolve_search_alias(db, q))
+            result = asyncio.run(
+                resolve_search_alias(db, q, detail_offset=detail_offset)
+            )
         except AliasSyncUnavailable as exc:
             db.rollback()
             raise HTTPException(502, str(exc))

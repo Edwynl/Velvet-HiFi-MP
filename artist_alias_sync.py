@@ -15,6 +15,7 @@ import uuid
 import httpx
 
 from artist_aliases import add_alias, fetch_aliases
+from artist_alias_provenance import mark_alias_source
 from chinese_variants import search_fold
 
 _MUSICBRAINZ = "https://musicbrainz.org/ws/2/artist"
@@ -24,6 +25,14 @@ _MAX_CANDIDATES = 10
 # while the user waits. Search results arrive best-scored first, so a few
 # lookups keep the click well inside the client's timeout.
 _MAX_RESOLVE_LOOKUPS = 5
+_RELEASE_GROUPS = "https://musicbrainz.org/ws/2/release-group"
+_MAX_AUTO_CANDIDATES = 4
+_GENERIC_ALBUMS = frozenset({
+    "greatesthits", "bestof", "thebestof", "essential", "live",
+    "compilation", "singles", "single", "various", "collection",
+    "精选", "精選", "精选集", "专辑", "專輯", "演唱会", "演唱會",
+    "thecollection", "anthology", "vol1", "volume1",
+})
 
 
 def _romanized_sort_name(name: str) -> str:
@@ -96,6 +105,99 @@ async def _detailed(client, mbid: str) -> dict:
     )
 
 
+
+def _album_key(title: str) -> str:
+    """Conservative exact-title comparison, tolerant of script/punctuation."""
+    key = "".join(c for c in search_fold(title).casefold() if c.isalnum())
+    if len(key) < 3 or key in _GENERIC_ALBUMS:
+        return ""
+    if key.startswith(("greatesthits", "bestof", "thebestof")):
+        return ""
+    return key
+
+
+def _distinctive_local_albums(db: sqlite3.Connection, artist_id: int) -> dict[str, str]:
+    """At most 200 local original album titles: never use track-name guesses."""
+    found = {}
+    for (title,) in db.execute(
+        "SELECT title FROM albums WHERE artist_id=? ORDER BY id LIMIT 200",
+        (artist_id,),
+    ):
+        key = _album_key(str(title or ""))
+        if key:
+            found.setdefault(key, str(title))
+    return found
+
+
+def _release_matches(data: dict, mbid: str, local: dict[str, str]) -> list[str]:
+    """Count only full-length/EP release groups credited to this exact artist."""
+    matched = set()
+    for item in data.get("release-groups") or []:
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("primary-type") or "").lower() not in ("album", "ep"):
+            continue
+        # Request inc=artist-credits. Shared/compilation release groups are not
+        # independent identity evidence for a primary local singer.
+        credit = [
+            _mbid(part.get("artist", {}).get("id"))
+            for part in (item.get("artist-credit") or [])
+            if isinstance(part, dict) and isinstance(part.get("artist"), dict)
+        ]
+        if credit != [mbid]:
+            continue
+        key = _album_key(str(item.get("title") or ""))
+        if key in local:
+            matched.add(key)
+    return sorted(matched)
+
+
+async def _corroborate_release_groups(
+    db: sqlite3.Connection, artist_id: int, artist_name: str,
+    response: dict, client,
+) -> tuple[str, list[str]] | None:
+    """Identify a *unique* artist from multiple independent release titles.
+
+    No user-confirmed MBID is assumed. A MusicBrainz artist *name* alone, or
+    a single generic/popular album, cannot authorize importing aliases.
+    """
+    local = _distinctive_local_albums(db, artist_id)
+    if len(local) < 2:
+        return None
+    raw_candidates = [c for c in (response.get("artists") or [])
+                      if isinstance(c, dict)]
+    # A truncated search page cannot prove the uniqueness of same-name hits.
+    try:
+        total = int(response.get("count", len(raw_candidates)))
+    except (TypeError, ValueError):
+        return None
+    if total > len(raw_candidates):
+        return None
+    eligible = []
+    seen = set()
+    for item in raw_candidates:
+        mbid = _mbid(item.get("id"))
+        if mbid and mbid not in seen and _is_verified(item, artist_name):
+            eligible.append(mbid)
+            seen.add(mbid)
+    if not eligible or len(eligible) > _MAX_AUTO_CANDIDATES:
+        return None
+
+    qualified = []
+    for mbid in eligible:
+        await _pace(client, first=False)
+        data = await _json(
+            client, _RELEASE_GROUPS + "/",
+            {"artist": mbid, "type": "album|ep", "limit": 100,
+             "inc": "artist-credits", "fmt": "json"},
+        )
+        matched = _release_matches(data, mbid, local)
+        if len(matched) >= 2:
+            qualified.append((mbid, matched))
+    # If two different artists share >=2 titles, we do not guess identity.
+    return qualified[0] if len(qualified) == 1 else None
+
+
 def _store_verified_aliases(
     db: sqlite3.Connection,
     artist_id: int,
@@ -105,8 +207,10 @@ def _store_verified_aliases(
     *,
     known_mbid: bool,
     query_alias: str = "",
+    evidence_method: str = "trusted_mbid",
+    evidence_albums: tuple[str, ...] = (),
 ) -> dict:
-    """Save only names from the verified record; never change display names."""
+    """Save only names from a verified identity; never change display names."""
     current = {value.casefold() for value in fetch_aliases(db, artist_id)}
     added = []
     conflicts = []
@@ -126,6 +230,10 @@ def _store_verified_aliases(
             conflicts.append(name)
             continue
         if add_alias(db, artist_id, name):
+            mark_alias_source(
+                db, artist_id, name, evidence_method, mbid=mbid,
+                evidence="; ".join(evidence_albums),
+            )
             current.add(name.casefold())
             added.append(name)
         else:
@@ -138,6 +246,8 @@ def _store_verified_aliases(
         "status": "ok", "artist_id": artist_id, "mbid": mbid,
         "aliases": fetch_aliases(db, artist_id),
         "added": added, "conflicts": conflicts,
+        "verification": evidence_method,
+        "evidence_albums": list(evidence_albums),
     }
 
 
@@ -176,6 +286,8 @@ async def sync_artist_aliases(
         return {"status": "identity_mismatch", "added": [],
                 "aliases": fetch_aliases(db, artist_id)}
     mbid = trusted_mbid or confirmed
+    evidence_albums: tuple[str, ...] = ()
+    evidence_method = "user_confirmed" if confirmed else "trusted_mbid"
 
     own_client = client is None
     if own_client:
@@ -198,13 +310,29 @@ async def sync_artist_aliases(
                 # Even one exact-name candidate requires human confirmation.
                 seen.add(proposed["mbid"])
                 candidates.append(proposed)
-            return {
-                "status": "needs_review" if candidates else "not_found",
-                "artist_id": artist_id,
-                "candidates": candidates,
-                "added": [], "aliases": fetch_aliases(db, artist_id),
-            }
+            # Independent album evidence can confirm an artist without
+            # asking the user to approve thousands of name-only suggestions.
+            # No aliases/MBID are stored until a unique candidate is proven
+            # by two distinct, non-generic local release-group titles.
+            confirmed_release = await _corroborate_release_groups(
+                db, artist_id, artist_name, result, client,
+            )
+            if not confirmed_release:
+                return {
+                    "status": "needs_review" if candidates else "not_found",
+                    "artist_id": artist_id,
+                    "candidates": candidates,
+                    "added": [], "aliases": fetch_aliases(db, artist_id),
+                }
+            mbid, matched_keys = confirmed_release
+            local_titles = _distinctive_local_albums(db, artist_id)
+            evidence_albums = tuple(local_titles[k] for k in matched_keys)
+            evidence_method = "release_corroborated"
 
+        # Deliberately pace lookup after search/browse, unless the caller
+        # already uses the batch-wide rate limiter.
+        if evidence_albums:
+            await _pace(client, first=False)
         record = await _detailed(client, mbid)
         if _mbid(record.get("id")) != mbid:
             return {"status": "identity_mismatch", "added": [],
@@ -226,6 +354,7 @@ async def sync_artist_aliases(
         return _store_verified_aliases(
             db, artist_id, artist_name, mbid, record,
             known_mbid=(mbid == local_mbid), query_alias=query_alias,
+            evidence_method=evidence_method, evidence_albums=evidence_albums,
         )
     finally:
         if own_client:
@@ -244,6 +373,7 @@ async def resolve_search_alias(
     query: str,
     *,
     client: httpx.AsyncClient | None = None,
+    detail_offset: int = 0,
 ) -> dict:
     """Explicit opt-in lookup for a Latin name absent from local search.
 
@@ -252,7 +382,7 @@ async def resolve_search_alias(
     a candidate based on a shared primary artist name alone.
     """
     query = (query or "").strip()
-    if not 1 <= len(query) <= 128:
+    if not 1 <= len(query) <= 128 or not 0 <= detail_offset < _MAX_CANDIDATES:
         return {"status": "invalid_query"}
     own_client = client is None
     if own_client:
@@ -287,7 +417,10 @@ async def resolve_search_alias(
                 locals_.append((int(artist_id), str(local_name), local_mbid, local_key))
         query_key = search_fold(query)
         pairs: dict[tuple[int, str], tuple[str, dict]] = {}
-        for mbid, hit in candidates[:_MAX_RESOLVE_LOOKUPS]:
+        # A phone should wait for no more than five detailed lookups per
+        # click. A user can explicitly request the remaining candidates.
+        page_end = detail_offset + _MAX_RESOLVE_LOOKUPS
+        for mbid, hit in candidates[detail_offset:page_end]:
             await _pace(client, first=False)
             record = await _detailed(client, mbid)
             identity = _identity_keys(record)
@@ -300,6 +433,11 @@ async def resolve_search_alias(
                     pairs[(artist_id, mbid)] = (local_name, record)
 
         if not pairs:
+            if page_end < len(candidates):
+                return {
+                    "status": "more_candidates", "next_offset": page_end,
+                    "remaining": len(candidates) - page_end,
+                }
             return {"status": "not_in_library"}
         if len(pairs) != 1:
             return {"status": "ambiguous"}
@@ -311,6 +449,7 @@ async def resolve_search_alias(
             return _store_verified_aliases(
                 db, artist_id, local_name, mbid, record,
                 known_mbid=True, query_alias=query,
+                evidence_method="trusted_mbid",
             )
         # No trustworthy MBID: return proposal, let the UI explicitly confirm.
         return {
