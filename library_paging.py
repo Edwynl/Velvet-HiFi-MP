@@ -11,6 +11,7 @@ import re
 import unicodedata
 from typing import Callable
 from artist_ranking import artist_familiarity
+from artist_regions import REGION_LABELS, artist_region_map
 
 ALBUM_GENRE_GROUPS = (
     'Asian Pop', 'Pop & Rock', 'Jazz', 'Classical', 'Hip-Hop & R&B',
@@ -126,11 +127,14 @@ def fetch_artist_page(
     limit: int = 60,
     offset: int = 0,
     sort: str = 'name',
+    region: str = '',
     get_all_variants: Callable[[str], list[str]] | None = None,
 ) -> dict:
     """Count before slicing; only aggregate credits for the requested artists."""
     if not 1 <= limit <= 200 or offset < 0:
         raise ValueError("Page size must be 1..200 and offset nonnegative")
+    if region and region not in REGION_LABELS:
+        raise ValueError('Invalid artist region')
     q = search.strip()
     params: list[str] = []
     where = ""
@@ -138,14 +142,25 @@ def fetch_artist_page(
         from library_search_match import ids_json, match_catalog_ids
         params = [ids_json(match_catalog_ids(db, "artist", q))]
         where = "WHERE ar.id IN (SELECT value FROM json_each(?))"
-    total = db.execute(f"SELECT COUNT(*) FROM artists ar {where}", params).fetchone()[0]
+    regions = artist_region_map(db)
+    db.create_function('velvet_artist_region', 1, lambda id: regions.get(id, 'unknown'), deterministic=True)
+    counts = dict(db.execute(
+        f'SELECT velvet_artist_region(ar.id), COUNT(*) FROM artists ar {where} GROUP BY 1', params
+    ).fetchall())
+    facets = [{'region': key, 'label': label, 'count': counts.get(key, 0)}
+              for key, label in REGION_LABELS.items()]
+    total = counts.get(region, 0) if region else sum(counts.values())
+    if region:
+        where = f'WHERE ({where[6:]}) AND ' if where else 'WHERE '
+        where += 'velvet_artist_region(ar.id) = ?'
+        params.append(region)
     db.create_function('velvet_artist_familiarity', 1, artist_familiarity, deterministic=True)
     order = ('velvet_artist_familiarity(ar.name) DESC, play_count DESC, favorite_count DESC, library_album_count DESC, '
              'ar.sort_name COLLATE NOCASE ASC, ar.id ASC' if sort == 'popular' else
              'ar.sort_name COLLATE NOCASE ASC, ar.id ASC')
     rows = db.execute(
         f"""
-        SELECT ar.*,
+        SELECT ar.*, velvet_artist_region(ar.id) AS region,
                (SELECT COUNT(*) FROM play_history ph JOIN tracks pt ON pt.id=ph.track_id
                 WHERE pt.artist_id=ar.id) AS play_count,
                (SELECT COUNT(*) FROM albums fa WHERE fa.artist_id=ar.id AND fa.is_favorite=1) AS favorite_count,
@@ -163,4 +178,5 @@ def fetch_artist_page(
     return {
         "artists": [dict(row) for row in rows],
         "total": total, "limit": limit, "offset": offset,
+        "regions": facets, "all_total": sum(counts.values()),
     }

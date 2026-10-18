@@ -127,6 +127,26 @@ class AlbumPagingTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.page(decade="1990s OR 1=1")
 
+    def test_artist_region_filter_counts_search_aliases_and_page_boundaries(self):
+        for i in range(2, 67):
+            name = f'Korean Artist {i:03d}'
+            self.db.execute('INSERT INTO artists(id,name,sort_name) VALUES(?,?,?)', (i, name, name))
+            self.db.execute('INSERT INTO albums(artist_id,title,genre) VALUES(?,?,?)', (i, name, 'K-pop'))
+        self.db.execute("INSERT INTO artist_aliases(artist_id,name) VALUES(2,'Big Alias')")
+        pages = [fetch_artist_page(self.db, region='korea', limit=60, offset=i) for i in (0, 60)]
+        self.assertEqual([len(p['artists']) for p in pages], [60, 5])
+        self.assertEqual(pages[0]['total'], 65)
+        self.assertEqual(pages[0]['all_total'], 66)
+        self.assertEqual(len({a['id'] for p in pages for a in p['artists']}), 65)
+        result = fetch_artist_page(self.db, search='Big Alias', region='korea')
+        self.assertEqual([a['id'] for a in result['artists']], [2])
+        empty = fetch_artist_page(self.db, search='Big Alias', region='japan')
+        self.assertEqual(empty['total'], 0)
+        self.assertEqual(empty['all_total'], 1)
+        self.assertEqual(sum(f['count'] for f in empty['regions']), 1)
+        with self.assertRaises(ValueError):
+            fetch_artist_page(self.db, region='invalid')
+
 
 if __name__=="__main__":
     unittest.main()

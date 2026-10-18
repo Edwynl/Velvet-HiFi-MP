@@ -820,9 +820,14 @@ async function renderAlbums(vc) {
 
 async function renderArtists(vc) {
   let currentSort = 'popular';
+  let currentRegion = '';
   const first = await api('/artists/page?sort=popular&limit=' + ARTISTS_PER_PAGE + '&offset=0');
   let allArtists = first.artists || [];
   let totalArtists = Number(first.total || 0);
+  // main's region facets (a353624); searchQuery stays for loadPage's rollback.
+  let regionFacets = first.regions || [];
+  let allTotal = Number(first.all_total ?? first.total ?? 0);
+  let searchQuery = '';
   let currentPage = 1;
   let renderedPage = 1;
   let serial = 0;
@@ -836,15 +841,12 @@ async function renderArtists(vc) {
         </svg>
         <input id="search-input" type="text" maxlength="128" placeholder="Search artists, albums, tracks…">
       </div>
-      <select id="artist-sort-select" class="btn btn-ghost" aria-label="Sort artists">
-        <option value="popular">Popular</option>
-        <option value="name">A–Z</option>
-      </select>
     </div>
     <div class="section-header" id="artists-header" title="Click to scroll to top">
       <div class="section-title">Artists</div>
       <div class="section-sub" id="artists-count">${totalArtists} artists</div>
     </div>
+    <div class="artist-region-filters" id="artist-region-filters" role="group" aria-label="Filter artists by region"></div>
     <section class="artist-enrichment-panel" id="artist-enrichment-panel"
              aria-label="Artist name enrichment">
       <div class="artist-enrichment-copy">
@@ -863,10 +865,10 @@ async function renderArtists(vc) {
         <button class="btn btn-ghost" id="artist-alias-stop-batch" disabled>Stop</button>
       </div>
       <div class="artist-enrichment-note">
-        Opt-in · 25 at a time, or all remaining at MusicBrainz’s slow request rate · stop/resume anytime · your files stay local
+        Opt-in · 25 at a time, or all remaining at MusicBrainz's slow request rate · stop/resume anytime · your files stay local
       </div>
     </section>
-    <div class="grid artist-grid" id="artists-grid"></div>
+    <div class="grid artist-grid" id="artists-grid" aria-live="polite"></div>
     <div class="back-to-top" id="back-to-top-btn" style="display:none">↑</div>
     <div class="pagination" id="artists-pagination">
       <button class="btn btn-ghost" id="prev-page-btn" disabled>← Prev</button>
@@ -885,6 +887,32 @@ async function renderArtists(vc) {
   const prevBtn = UI['prev-page-btn'];
   const nextBtn = UI['next-page-btn'];
   const pageInfo = UI['page-info'];
+  const filters = UI['artist-region-filters'];
+
+  function renderFilters() {
+    const focusedRegion = filters.contains(document.activeElement)
+      ? document.activeElement.dataset.region : null;
+    const items = [{ region: '', label: 'All', count: allTotal }, ...regionFacets];
+    filters.innerHTML = items.map(item => `
+      <button type="button" class="artist-region-filter" data-region="${escHtml(item.region)}"
+              aria-pressed="${item.region === currentRegion}">
+        ${escHtml(item.label)} <span>${item.count}</span>
+      </button>`).join('');
+    if (focusedRegion != null) {
+      [...filters.querySelectorAll('button')].find(button => button.dataset.region === focusedRegion)
+        ?.focus({ preventScroll: true });
+    }
+  }
+  filters.addEventListener('click', event => {
+    const button = event.target.closest('button[data-region]');
+    if (!button || currentRegion === button.dataset.region) return;
+    clearTimeout(searchTimer);
+    currentRegion = button.dataset.region;
+    // Preserve the focused button while indicating the new selection.
+    filters.querySelectorAll('button').forEach(item =>
+      item.setAttribute('aria-pressed', String(item.dataset.region === currentRegion)));
+    loadPage({ reset: true });
+  });
 
   // Scroll to top on header click
   headerEl.addEventListener('click', (e) => {
@@ -929,31 +957,42 @@ async function renderArtists(vc) {
       limit: String(ARTISTS_PER_PAGE),
       offset: String((currentPage - 1) * ARTISTS_PER_PAGE),
       sort: currentSort,
+      region: currentRegion,
     });
     prevBtn.disabled = true;
     nextBtn.disabled = true;
+    grid.setAttribute('aria-busy', 'true');
     try {
       const page = await api('/artists/page?' + params.toString());
       if (thisRequest !== serial || state.view !== 'artists') return;
       allArtists = page.artists || [];
       totalArtists = Number(page.total || 0);
+      regionFacets = page.regions || [];
+      allTotal = Number(page.all_total ?? page.total ?? 0);
       renderedPage = currentPage;
+      renderedRegion = currentRegion;
+      renderedQuery = searchQuery;
+      renderFilters();
       renderGrid();
     } catch {
       if (thisRequest === serial) {
         currentPage = renderedPage;
+        currentRegion = renderedRegion;
+        searchQuery = renderedQuery;
+        input.value = searchQuery;
+        renderFilters();
         renderGrid();
         showToast('Unable to load artists. Try again.');
       }
+    } finally {
+      if (thisRequest === serial) grid.setAttribute('aria-busy', 'false');
     }
   }
 
-  vc.querySelector('#artist-sort-select').addEventListener('change', event => {
-    currentSort = event.target.value;
-    mainEl.scrollTo({ top: 0, behavior: 'smooth' });
-    loadPage({ reset: true });
-  });
-
+  // main's region/query rollback state (a353624). The sort select was
+  // removed from this page by 37ab8e6, so only its sort param remains.
+  let renderedRegion = '';
+  let renderedQuery = '';
   // Global catalog search from any tab; local page controls remain available.
   // setupSearch owns #search-input, so this view must not also bind it.
   setupSearch({ autoFocus: false });
@@ -1094,6 +1133,7 @@ async function renderArtists(vc) {
     loadPage();
   });
 
+  renderFilters();
   renderGrid();
 }
 
@@ -2176,6 +2216,12 @@ async function renderArtist(vc, { id }) {
   }
   recordHomeVisit('artist', artist);
 
+  const isCollaboration = album => album.artist_role === 'collaboration' || (
+    album.artist_id != null && String(album.artist_id) !== String(id)
+  );
+  const primaryAlbums = albums.filter(album => !isCollaboration(album));
+  const collaborations = albums.filter(isCollaboration);
+
   vc.innerHTML = `
     <div class="topbar">
       <button class="back-btn" onclick="handleHistoryBack('artists')">
@@ -2187,7 +2233,7 @@ async function renderArtist(vc, { id }) {
     </div>
     <div class="artist-hero">
       <div class="artist-hero-art">
-        <img src="/api/artists/${artist.id}/image" id="artist-hero-img"
+        <img src="/api/artists/${artist.id}/image?v=2" id="artist-hero-img"
              onerror="this.style.display='none'">
         <div class="artist-art-placeholder" id="artist-art-placeholder">${artist.name.charAt(0).toUpperCase()}</div>
       </div>
@@ -2197,7 +2243,7 @@ async function renderArtist(vc, { id }) {
              style="${(artist.aliases || []).length ? '' : 'display:none;'}">
           Also known as ${escHtml((artist.aliases || []).join(' · '))}
         </div>
-        <div class="section-sub">${albums.length} albums · ${albums.reduce((s, a) => s + (a.track_count || 0), 0)} tracks</div>
+        <div class="section-sub">${primaryAlbums.length} albums · ${primaryAlbums.reduce((s, a) => s + (a.track_count || 0), 0)} tracks${collaborations.length ? ` · ${collaborations.length} collaborations` : ''}</div>
       </div>
     </div>
     <div class="artist-bio" id="artist-bio"><div class="bio-loading">Loading artist bio…</div></div>
@@ -2207,14 +2253,27 @@ async function renderArtist(vc, { id }) {
       <button class="btn btn-ghost" id="artist-add-alias-btn" title="Add a stage name, translated name, or romanized alias">+ Alias</button>
       <button class="btn btn-ghost" id="refresh-artist-btn" title="Re-read artist name and all album metadata from files">🔄 Re-read Tags</button>
     </div>
-    <div class="grid" id="artist-albums-grid"></div>
+    <section aria-label="Albums">
+      <div class="section-header"><div class="section-title">Albums</div></div>
+      <div class="grid" id="artist-albums-grid"></div>
+    </section>
+    ${collaborations.length ? `
+      <section aria-label="Collaborations and appearances">
+        <div class="section-header"><div class="section-title">Collaborations &amp; Appearances</div></div>
+        <div class="grid" id="artist-collaborations-grid"></div>
+      </section>` : ''}
   `;
 
   const grid = UI['artist-albums-grid'];
   // Use DocumentFragment for better performance
   const fragment = document.createDocumentFragment();
-  albums.forEach(a => fragment.appendChild(makeAlbumCard({ ...a, artist_name: artist.name })));
+  primaryAlbums.forEach(a => fragment.appendChild(makeAlbumCard({ ...a, artist_name: a.artist_name || artist.name })));
   grid.appendChild(fragment);
+  if (!primaryAlbums.length) {
+    grid.innerHTML = '<div style="grid-column:1/-1;color:var(--muted)">No albums as the primary artist.</div>';
+  }
+  const collaborationGrid = UI['artist-collaborations-grid'];
+  if (collaborationGrid) renderCardsOnDemand(collaborationGrid, collaborations, makeAlbumCard);
 
   UI['artist-radio-btn']?.addEventListener('click', () => startRadio('artist', id));
 

@@ -80,7 +80,7 @@ function makeArtistCard(artist) {
   const initial = artist.name.charAt(0).toUpperCase();
   div.innerHTML = `
     <div class="card-art">
-      <img src="/api/artists/${artist.id}/image" alt="" onerror="handleImgError(this)" onload="handleImgLoad(this)" loading="lazy">
+      <img src="/api/artists/${artist.id}/image?v=2" alt="" onerror="handleImgError(this)" onload="handleImgLoad(this)" loading="lazy">
       <div class="card-art-placeholder artist-placeholder">
         <span class="artist-initial">${initial}</span>
       </div>

@@ -360,6 +360,39 @@ html, body {
   font-weight: 600;
 }
 
+.artist-region-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 0 32px 24px;
+}
+.artist-region-filter {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 44px;
+  padding: 8px 14px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  transition: background-color .16s ease, color .16s ease, border-color .16s ease;
+}
+.artist-region-filter span { font-size: 10px; opacity: .7; font-variant-numeric: tabular-nums; }
+.artist-region-filter[aria-pressed="true"] {
+  color: var(--gold);
+  border-color: var(--gold);
+  background: rgba(184,134,11,.12);
+}
+.artist-region-filter:focus-visible { outline: 2px solid var(--gold); outline-offset: 3px; }
+@media (max-width: 640px) {
+  .artist-region-filters { padding: 0 16px 20px; gap: 6px; }
+  .artist-region-filter { padding: 8px 11px; }
+}
+
 .focus-bar {
   display: flex;
   align-items: center;

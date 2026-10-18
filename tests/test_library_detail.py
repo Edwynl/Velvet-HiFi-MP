@@ -6,6 +6,7 @@ from pathlib import Path
 
 from db_schema import apply_migrations
 from library_detail import (
+    fetch_artist_albums,
     fetch_album_credits,
     fetch_composer_detail,
     fetch_credit_entity_detail,
@@ -64,6 +65,20 @@ class LibraryDetailTests(unittest.TestCase):
         self.assertEqual(result["composers"][0]["composer"], "Composer Alpha")
         self.assertEqual(result["performers"][0]["name"], "Performer Beta")
         self.assertEqual(result["conductors"][0]["name"], "Conductor Gamma")
+
+    def test_artist_discography_separates_ownership_and_counts_entire_release(self):
+        with self._connect() as conn:
+            conn.execute("INSERT INTO albums(id,artist_id,title) VALUES(2,3,'Owned without track credit')")
+            primary = fetch_artist_albums(conn, 2)
+            guest = fetch_artist_albums(conn, 3)
+        self.assertEqual(primary[0]['artist_role'], 'primary')
+        releases = {album['id']: album for album in guest}
+        self.assertEqual(releases[2]['artist_role'], 'primary')
+        self.assertEqual(releases[2]['track_count'], 0)
+        self.assertEqual(releases[1]['artist_role'], 'collaboration')
+        self.assertEqual(releases[1]['artist_name'], 'Performer Beta')
+        self.assertEqual(releases[1]['track_count'], 2)
+        self.assertEqual(releases[1]['total_duration'], 620)
 
     def test_fetch_work_detail_builds_versions(self):
         with self._connect() as conn:

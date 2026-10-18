@@ -19,8 +19,14 @@ const request = async (url, options = {}) => {
   const q = u.searchParams.get('q') || '';
   if (u.pathname === '/api/artists/page') {
     const offset = Number(u.searchParams.get('offset') || 0);
-    const items = Array.from({ length: 75 }, (_, i) => ({ id: i + 1, name: 'Artist ' + (i + 1), album_count: 2 }));
-    return response({ artists: items.slice(offset, offset + 60), total: items.length });
+    const region = u.searchParams.get('region') || '';
+    const search = u.searchParams.get('search') || '';
+    const all = Array.from({ length: 75 }, (_, i) => ({ id: i + 1, name: 'Artist ' + (i + 1), album_count: 2, region: i < 65 ? 'korea' : 'unknown' }))
+      .filter(item => item.name.includes(search));
+    const items = all.filter(item => !region || item.region === region);
+    return response({ artists: items.slice(offset, offset + 60), total: items.length, all_total: all.length,
+      regions: [{ region: 'korea', label: 'Korea', count: all.filter(a=>a.region==='korea').length },
+                { region: 'unknown', label: 'Other', count: all.filter(a=>a.region==='unknown').length }] });
   }
   if (u.pathname === '/api/albums/page') {
     if (u.searchParams.get('search')) {
@@ -100,12 +106,40 @@ assert.equal(requests.filter(u => u.pathname === '/api/artists/page').at(-1).sea
 dom.window.document.querySelector('#next-page-btn').click();
 await wait(() => dom.window.document.querySelectorAll('#artists-grid .card').length === 15);
 assert.equal(requests.filter(u => u.pathname === '/api/artists/page').at(-1).searchParams.get('sort'), 'popular');
-const artistSort = dom.window.document.querySelector('#artist-sort-select');
-artistSort.value = 'name';
-artistSort.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
-await wait(() => dom.window.document.querySelectorAll('#artists-grid .card').length === 60);
-const lastArtists = requests.filter(u => u.pathname === '/api/artists/page').at(-1);
-assert.equal(lastArtists.searchParams.get('sort'), 'name');
-assert.equal(lastArtists.searchParams.get('offset'), '0');
+assert.equal(dom.window.document.querySelector('#artist-sort-select'), null, 'Hide the redundant Popular selector');
+const document = dom.window.document;
+assert.equal(document.querySelector('[data-region=""]').getAttribute('aria-pressed'), 'true');
+document.querySelector('[data-region="korea"]').click();
+await wait(() => document.querySelectorAll('#artists-grid .card').length === 60 && document.querySelector('#page-info').textContent === 'Page 1 / 2');
+assert.equal(requests.filter(u=>u.pathname==='/api/artists/page').at(-1).searchParams.get('region'), 'korea');
+document.querySelector('#next-page-btn').click();
+await wait(() => document.querySelectorAll('#artists-grid .card').length === 5);
+const artistSearch=document.querySelector('#search-input');
+artistSearch.value='Artist 75';
+artistSearch.dispatchEvent(new dom.window.Event('input', { bubbles:true }));
+// The Artists topbar is the unified global search, so typing leaves this page
+// instead of filtering it locally, and the region filter must not swallow the
+// keystroke. Local artist filtering stays reachable through the global
+// search's Artists category, which uses the same search parameter.
+await wait(()=>requests.some(u=>u.pathname==='/api/search' && u.searchParams.get('q')==='Artist 75'));
+await wait(()=>document.querySelector('#global-search-groups'));
+assert.equal(document.querySelector('#artists-grid'), null,
+             'The Artists topbar routes to global search rather than filtering locally');
+assert.equal(requests.filter(u=>u.pathname==='/api/artists/page').at(-1).searchParams.get('search'), null,
+             'Global search must not send a local Artists filter');
+// Region filtering is unaffected by that round trip.
+await dom.window.navigate('artists');
+await wait(()=>document.querySelector('#artists-grid'));
+document.querySelector('[data-region="korea"]').click();
+await wait(()=>document.querySelectorAll('#artists-grid .card').length === 60);
+assert.equal(document.querySelector('#page-info').textContent, 'Page 1 / 2');
+document.querySelector('[data-region=""]').click();
+await wait(()=>requests.filter(u=>u.pathname==='/api/artists/page').at(-1).searchParams.get('region')==='');
+await wait(()=>document.querySelectorAll('#artists-grid .card').length === 60);
+assert.equal(document.querySelector('#page-info').textContent, 'Page 1 / 2');
+assert.ok(document.querySelector('#artists-grid').textContent.includes('Artist 1'));
+// Let the in-flight page render finish before the window closes, otherwise its
+// response lands after teardown and throws on the detached document.
+await new Promise(r=>setTimeout(r,80));
 console.log('frontend_mobile_catalog_paging_check=OK');
 dom.window.close();

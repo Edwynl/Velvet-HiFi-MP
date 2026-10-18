@@ -92,6 +92,7 @@ from library_discovery import (
     search_library_category,
 )
 from library_detail import (
+    fetch_artist_albums,
     fetch_album_credits,
     fetch_album_detail,
     fetch_composer_detail,
@@ -1298,14 +1299,17 @@ async def set_album_cover(album_id: int, request: Request):
 @app.get("/api/artists/page")
 def get_artist_page(
     limit: int = Query(60, ge=1, le=200), offset: int = Query(0, ge=0),
-    search: str = "", sort: str = "name",
+    search: str = "", sort: str = "name", region: str = '',
 ):
     """Serve one artist page instead of all 5000 artist records to a phone."""
     started = time.perf_counter()
+    from artist_regions import REGION_LABELS
+    if region and region not in REGION_LABELS:
+        raise HTTPException(400, 'Invalid artist region')
     db = get_db()
     try:
         result = fetch_artist_page(
-            db, search=search, limit=limit, offset=offset, sort=sort,
+            db, search=search, limit=limit, offset=offset, sort=sort, region=region,
             get_all_variants=get_all_variants,
         )
         _log_baseline_metric("artist_page", started, limit=limit, offset=offset,
@@ -1524,20 +1528,7 @@ def confirm_musicbrainz_artist_identity(artist_id: int, body: dict):
 @app.get("/api/artists/{artist_id}/albums")
 def get_artist_albums(artist_id: int):
     db = get_db()
-    # Optimized JOIN-based query to avoid N+1 subqueries
-    rows = db.execute(
-        """SELECT al.*,
-                  COUNT(DISTINCT ta.track_id) as track_count,
-                  SUM(t.duration) as total_duration,
-                  MAX(CASE WHEN t.sample_rate > 44100 OR t.bit_depth > 16 THEN 1 ELSE 0 END) as is_hires
-           FROM albums al
-           JOIN tracks t ON t.album_id = al.id
-           JOIN track_artists ta ON t.id = ta.track_id
-           WHERE ta.artist_id = ?
-           GROUP BY al.id
-           ORDER BY al.year DESC, al.title""",
-        (artist_id,)
-    ).fetchall()
+    rows = fetch_artist_albums(db, artist_id)
 
     _prime_cover_cache(rows)
 
