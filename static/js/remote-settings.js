@@ -151,7 +151,7 @@ async function renderRemote(vc) {
             <div class="settings-desc" style="margin-top:4px">
               ${securityEnabled
                 ? 'Password protection is enabled. Remote access requires authentication.'
-                : 'No password set. Anyone on Tailscale can access your library.'}
+                : 'No password set. Other devices are blocked until you set one on this PC.'}
             </div>
           </div>
           <div class="remote-status-badge ${securityEnabled ? 'connected' : 'disconnected'}">
@@ -210,9 +210,9 @@ async function renderRemote(vc) {
         <div style="border-top:1px solid var(--border);padding-top:20px;margin-top:20px">
           <div class="settings-title" style="font-size:12px;color:var(--muted);margin-bottom:8px">Security Info</div>
           <div class="settings-desc" style="line-height:1.8">
-            <span style="color:#4caf50">&#10003;</span> Password uses SHA-256 hashing<br>
+            <span style="color:#4caf50">&#10003;</span> Password hashed with bcrypt (salted PBKDF2 fallback)<br>
             <span style="color:#4caf50">&#10003;</span> 5 failed attempts = 5 min lockout<br>
-            <span style="color:#4caf50">&#10003;</span> Local network access still works<br>
+            <span style="color:#4caf50">&#10003;</span> Login required on every network, including this PC<br>
             <span style="color:#4caf50">&#10003;</span> Tailscale encrypts all traffic
           </div>
         </div>

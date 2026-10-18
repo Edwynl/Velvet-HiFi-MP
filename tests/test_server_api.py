@@ -264,6 +264,34 @@ class ServerApiTests(unittest.TestCase):
         missing_artist_resp = self.client.get("/api/artists/999/image")
         self.assertEqual(missing_artist_resp.status_code, 404)
 
+    def test_image_cookie_reads_artist_images_but_no_other_artist_routes(self):
+        # <img> cannot send X-API-Key, so login also scopes the image-only
+        # cookie to /api/artists. It must authorize the image GET alone.
+        self.assertTrue(server.security.setup_password("long-test-password")["success"])
+        with patch.object(server.security, "is_auth_enabled", return_value=True):
+            self.assertEqual(self.client.get("/api/artists/1/image").status_code, 401)
+
+            login = self.client.post("/api/security/login",
+                                     headers={"X-Password": "long-test-password"})
+            self.assertEqual(login.status_code, 200)
+            artist_cookie = next(c for c in login.headers.get_list("set-cookie")
+                                 if "Path=/api/artists" in c)
+            self.assertIn("HttpOnly", artist_cookie)
+            self.assertIn("SameSite=strict", artist_cookie)
+
+            # The client now holds only the cookie: no X-API-Key header.
+            self.assertEqual(self.client.get("/api/artists/1/image").status_code, 204)
+            for method, path in [
+                ("GET", "/api/artists/1"),
+                ("GET", "/api/artists/1/details"),
+                ("GET", "/api/artists/1/image/extra"),
+                ("POST", "/api/artists/1/image"),
+                ("POST", "/api/artists/1/refresh"),
+                ("POST", "/api/artists/1/enrich-bio"),
+            ]:
+                with self.subTest(method=method, path=path):
+                    self.assertEqual(self.client.request(method, path).status_code, 401)
+
     def test_create_custom_dsp_profile_persists_ordered_filters(self):
         resp = self.client.post(
             "/api/dsp/profiles",
