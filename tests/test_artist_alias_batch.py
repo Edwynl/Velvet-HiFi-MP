@@ -317,6 +317,147 @@ class ArtistAliasBatchTests(unittest.TestCase):
         self.assertEqual(finished["total"], 0)
 
 
+class _Response:
+    def __init__(self, payload):
+        self.payload = payload
+
+    def raise_for_status(self):
+        pass
+
+    def json(self):
+        return self.payload
+
+
+class _MusicBrainzLibrary:
+    """Offline MusicBrainz serving search, release-group browse and lookup.
+
+    Search responses carry a realistic `count`: the live service counts every
+    fuzzy hit (2,997,690 for a CJK name), never just the returned page.
+    """
+
+    LIVE_COUNT = 2_997_690
+
+    def __init__(self):
+        self.search = {}          # local name -> search hits
+        self.discography = {}     # mbid -> release-group titles
+        self.records = {}         # mbid -> detailed record
+        self.requests = 0
+
+    def factory(self, **kwargs):
+        library = self
+
+        class Session:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args):
+                return False
+
+            async def get(self, url, params=None, **kwargs):
+                library.requests += 1
+                path = url.rstrip("/")
+                if path.endswith("/artist"):
+                    # A lower-scored, differently named hit ends every page.
+                    hits = [*library.search.get(params["query"], []),
+                            {"id": "ffffffff-0000-0000-0000-000000000000",
+                             "name": "Unrelated Performer"}]
+                    return _Response({"artists": hits, "count": library.LIVE_COUNT})
+                if path.endswith("/release-group"):
+                    mbid = params["artist"]
+                    return _Response({"release-groups": [
+                        {"title": title, "primary-type": "Album",
+                         "artist-credit": [{"artist": {"id": mbid}}]}
+                        for title in library.discography.get(mbid, [])
+                    ]})
+                return _Response(library.records[path.rsplit("/", 1)[1]])
+
+        return Session()
+
+
+class EnrichmentYieldAcceptanceTests(unittest.TestCase):
+    """A freshly migrated library: every stored MBID is unverified.
+
+    The bulk job must still import aliases where the library's own albums
+    corroborate one identity, and leave weak or ambiguous artists for review.
+    """
+
+    def setUp(self):
+        self.tempdir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        self.db_path = Path(self.tempdir.name) / "library.db"
+
+    def tearDown(self):
+        self.tempdir.cleanup()
+
+    def connect(self):
+        db = sqlite3.connect(str(self.db_path), timeout=5)
+        db.row_factory = sqlite3.Row
+        db.execute("PRAGMA foreign_keys=ON")
+        return db
+
+    def test_unverified_library_yields_aliases_and_a_bounded_review_queue(self):
+        mb = _MusicBrainzLibrary()
+        db = self.connect()
+        try:
+            apply_migrations(db)
+            album_id = 0
+            for i in range(1, 26):
+                name, mbid = f"歌手{i}", f"00000000-0000-0000-0000-{i:012d}"
+                # A guessed MBID from name-only bio enrichment: unverified.
+                db.execute("INSERT INTO artists(id,name,sort_name,mbid) VALUES(?,?,?,?)",
+                           (i, name, name, mbid))
+                albums = ([f"第{i}號作品", f"第{i}張專輯 (Deluxe)"] if i <= 12 or i > 20
+                          else [f"第{i}號作品"])
+                for title in albums:
+                    album_id += 1
+                    db.execute("INSERT INTO albums(id,artist_id,title) VALUES(?,?,?)",
+                               (album_id, i, title))
+                hits = [{"id": mbid, "name": name}]
+                mb.discography[mbid] = [f"第{i}號作品", f"第{i}張專輯"]
+                if i > 20:
+                    # A namesake credited with the same two albums: ambiguous.
+                    twin = f"99999999-0000-0000-0000-{i:012d}"
+                    hits.append({"id": twin, "name": name})
+                    mb.discography[twin] = [f"第{i}號作品", f"第{i}張專輯"]
+                mb.search[name] = hits
+                mb.records[mbid] = {"id": mbid, "name": name, "sort-name": name,
+                                    "aliases": [{"name": f"English Name {i}"}]}
+            db.commit()
+        finally:
+            db.close()
+
+        job = ArtistAliasEnrichmentJob(self.connect, client_factory=mb.factory)
+        fast = lambda session: RateLimitedMusicBrainzClient(session, interval=0)
+        with patch("artist_alias_batch.RateLimitedMusicBrainzClient", side_effect=fast):
+            db = self.connect()
+            try:
+                job.start(db, mode="pending", limit=25)
+            finally:
+                db.close()
+            job._thread.join(timeout=30)
+        self.assertFalse(job._thread.is_alive())
+
+        db = self.connect()
+        try:
+            overview = job.overview(db)
+            provenance = db.execute(
+                "SELECT source, COUNT(*) FROM artist_alias_provenance GROUP BY source"
+            ).fetchall()
+        finally:
+            db.close()
+        self.assertEqual(overview["status"], "complete")
+        self.assertEqual(overview["processed"], 25)
+        # 12 corroborated by two albums; 8 with one album and 5 ambiguous
+        # namesakes wait for a person instead of guessing.
+        self.assertEqual(overview["synced_artists"], 12)
+        self.assertEqual(overview["aliases_imported"], 12)
+        self.assertEqual(overview["needs_review_artists"], 13)
+        self.assertEqual(overview["remaining_artists"], 0)
+        self.assertEqual([tuple(row) for row in provenance], [("release_corroborated", 12)])
+        # Each artist costs one search, one release-group browse per checked
+        # same-named candidate, and one lookup when corroborated.
+        self.assertEqual(mb.requests, 25 + (12 + 10) + 12)
+
+
 class BoundedIndexRefreshTests(unittest.TestCase):
     """A bulk run must not end in one write transaction over the whole queue.
 

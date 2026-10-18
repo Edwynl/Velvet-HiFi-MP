@@ -411,8 +411,12 @@ dom.window.document.querySelector('#search-resolve-alias-btn').click();
 await wait(() => requests.some(item => item.url.pathname === '/api/search/resolve-artist-alias'
   && item.url.searchParams.get('q') === 'Late Alias'
   && item.url.searchParams.get('detail_offset') === '0'));
-await wait(() => dom.window.document.querySelector('#search-resolve-alias-btn')
-  ?.textContent.includes('Check'));
+// "Checking MusicBrainz…" also contains "Check": wait until the first lookup
+// has finished and re-enabled the button, or the second click is dropped.
+await wait(() => {
+  const button = dom.window.document.querySelector('#search-resolve-alias-btn');
+  return button && !button.disabled && button.textContent.includes('more MusicBrainz candidates');
+});
 dom.window.document.querySelector('#search-resolve-alias-btn').click();
 await wait(() => requests.some(item => item.url.pathname === '/api/search/resolve-artist-alias'
   && item.url.searchParams.get('detail_offset') === '5'));

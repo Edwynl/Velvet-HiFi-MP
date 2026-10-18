@@ -107,7 +107,9 @@ class ArtistAliasCorroborationTests(unittest.TestCase):
         self.assertEqual(result["verification"], "release_corroborated")
         self.assertEqual(result["mbid"], A)
         self.assertEqual(set(result["evidence_albums"]), {"理想人生", "心里学"})
-        self.assertIn("Lala Hsu", fetch_aliases(self.db, 1))
+        # Alias names are unique case-insensitively: "Lala Hsu" is stored once,
+        # whichever spelling of the sort-name reversal arrived first.
+        self.assertIn("lala hsu", {name.casefold() for name in fetch_aliases(self.db, 1)})
         row = self.db.execute(
             """SELECT p.source,p.mbid,p.evidence FROM artist_alias_provenance p
                JOIN artist_aliases aa ON aa.id=p.alias_id
@@ -140,8 +142,34 @@ class ArtistAliasCorroborationTests(unittest.TestCase):
         self.assertEqual(self.run_sync(fake)["status"], "needs_review")
         self.assertIsNone(self.db.execute("SELECT mbid FROM artists WHERE id=1").fetchone()[0])
 
-    def test_truncated_artist_candidates_must_not_autolink(self):
-        fake = MusicBrainzFake(count=100)
+    def test_real_search_counts_do_not_block_corroboration(self):
+        # The live search reports every fuzzy hit: count=2,997,690 for 陳奕迅
+        # and 徐佳瑩 (CJK names tokenize per character). A score-ordered page
+        # whose tail is no longer same-named already holds every exact match.
+        fake = MusicBrainzFake(count=2_997_690, candidates=[
+            {"id": A, "name": "徐佳瑩", "sort-name": "Hsu, LaLa"},
+            {"id": "00000000-0000-0000-0000-000000000009", "name": "徐佳"},
+        ])
+        result = self.run_sync(fake)
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["verification"], "release_corroborated")
+
+    def test_edition_notes_in_local_tags_still_match(self):
+        # Tags often carry "(Deluxe Edition)" or "（豪華版）"; MusicBrainz lists
+        # the release group under the plain album title.
+        self.db.execute("UPDATE albums SET title='理想人生 (Deluxe Edition)' WHERE id=1")
+        self.db.execute("UPDATE albums SET title='心里学（豪華版）' WHERE id=2")
+        result = self.run_sync(MusicBrainzFake())
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["verification"], "release_corroborated")
+
+    def test_page_still_full_of_namesakes_must_not_autolink(self):
+        # Every hit on a truncated page is same-named: more may follow it.
+        namesakes = [{"id": f"00000000-0000-0000-0000-00000000000{i}", "name": "徐佳瑩"}
+                     for i in range(1, 4)]
+        fake = MusicBrainzFake(count=100, candidates=[
+            {"id": A, "name": "徐佳瑩", "sort-name": "Hsu, LaLa"}, *namesakes,
+        ])
         self.assertEqual(self.run_sync(fake)["status"], "needs_review")
         self.assertFalse(any("release-group" in url for url, _ in fake.calls))
 
@@ -202,6 +230,38 @@ class ArtistAliasCorroborationTests(unittest.TestCase):
         self.assertTrue(mark_alias_source(self.db, 1, "Stage Name", "manual"))
         self.assertEqual(audit_legacy_aliases(self.db)["total"], 0)
         self.assertEqual(fetch_aliases(self.db, 1), ["Stage Name"])
+
+    def test_merge_and_rename_keep_alias_provenance(self):
+        # merge_artists deletes and re-adds the source's aliases; without
+        # carrying their records, every merged alias became "unknown origin".
+        from artist_aliases import merge_artists, rename_artist
+
+        self.db.execute("INSERT INTO artists(id,name,sort_name) VALUES"
+                        "(2,'Gone','Gone'),(3,'Old','Old')")
+        add_alias(self.db, 2, "Imported")
+        mark_alias_source(self.db, 2, "Imported", "release_corroborated",
+                          mbid=A, evidence="理想人生; 心里学")
+        add_alias(self.db, 2, "Old Unknown")  # pre-schema-16 row: no record
+        merge_artists(self.db, 1, [2])
+        rename_artist(self.db, 3, "New")
+
+        sources = dict(self.db.execute(
+            """SELECT aa.name, p.source FROM artist_aliases aa
+               LEFT JOIN artist_alias_provenance p ON p.alias_id = aa.id"""
+        ).fetchall())
+        self.assertEqual(sources, {
+            "Imported": "release_corroborated",
+            "Old Unknown": None,
+            "Gone": "manual",
+            "Old": "manual",
+        })
+        evidence = self.db.execute(
+            """SELECT p.mbid, p.evidence FROM artist_alias_provenance p
+               JOIN artist_aliases aa ON aa.id = p.alias_id WHERE aa.name='Imported'"""
+        ).fetchone()
+        self.assertEqual(tuple(evidence), (A, "理想人生; 心里学"))
+        audit = audit_legacy_aliases(self.db)
+        self.assertEqual([a["alias"] for a in audit["aliases"]], ["Old Unknown"])
 
 
 if __name__ == "__main__":

@@ -9,6 +9,7 @@ Such candidates always require an explicit human confirmation of their MBID.
 from __future__ import annotations
 
 import asyncio
+import re
 import sqlite3
 import uuid
 
@@ -106,8 +107,14 @@ async def _detailed(client, mbid: str) -> dict:
 
 
 
+# Edition notes ("(Deluxe Edition)", "[Remastered]", "（豪華版）") differ between
+# a file tag and the MusicBrainz release-group title of the same album.
+_EDITION_NOTE = re.compile(r"[(\[（【][^)\]）】]*[)\]）】]")
+
+
 def _album_key(title: str) -> str:
     """Conservative exact-title comparison, tolerant of script/punctuation."""
+    title = _EDITION_NOTE.sub(" ", title)
     key = "".join(c for c in search_fold(title).casefold() if c.isalnum())
     if len(key) < 3 or key in _GENERIC_ALBUMS:
         return ""
@@ -166,13 +173,6 @@ async def _corroborate_release_groups(
         return None
     raw_candidates = [c for c in (response.get("artists") or [])
                       if isinstance(c, dict)]
-    # A truncated search page cannot prove the uniqueness of same-name hits.
-    try:
-        total = int(response.get("count", len(raw_candidates)))
-    except (TypeError, ValueError):
-        return None
-    if total > len(raw_candidates):
-        return None
     eligible = []
     seen = set()
     for item in raw_candidates:
@@ -181,6 +181,18 @@ async def _corroborate_release_groups(
             eligible.append(mbid)
             seen.add(mbid)
     if not eligible or len(eligible) > _MAX_AUTO_CANDIDATES:
+        return None
+    # Uniqueness needs every same-named artist on this page. The search
+    # `count` cannot tell: it counts every fuzzy hit (2,997,690 for 陳奕迅,
+    # 7,834 for "Jay Chou"), so it always exceeds the page. Results are
+    # score-ordered and exact-name matches score highest, so the page holds
+    # all of them unless it is truncated while still listing same-named hits.
+    try:
+        total = int(response.get("count", len(raw_candidates)))
+    except (TypeError, ValueError):
+        return None
+    last = raw_candidates[-1] if raw_candidates else {}
+    if total > len(raw_candidates) and _is_verified(last, artist_name):
         return None
 
     qualified = []
