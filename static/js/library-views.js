@@ -2,90 +2,415 @@
  * Loaded before inline bootstrap; global function declarations preserve existing handlers.
  * Keep the module classic (not type=module) until the application state is migrated.
  */
-async function renderHome(vc) {
-  log('[VELVET] renderHome started');
-  
-  // Load stats first
-  let stats = { artists: 0, albums: 0, tracks: 0, total_duration_hours: 0 };
+// Home history is device-local and bounded; the server resolves IDs against the
+// current library so deleted albums never linger on the shelf.
+const HOME_ACTIVITY_KEY = 'velvet:home-activity:v1';
+function readHomeActivity() {
   try {
-    const rawStats = await api('/stats');
-    if (rawStats) stats = { ...stats, ...rawStats };
-    log('[VELVET] Stats loaded:', stats);
-  } catch (e) {
-    console.warn('[VELVET] Failed to load stats for home:', e);
+    const saved = JSON.parse(localStorage.getItem(HOME_ACTIVITY_KEY) || '{}');
+    const valid = item => Number.isSafeInteger(item?.id) && item.id > 0;
+    return {
+      albums: Array.isArray(saved.albums) ? saved.albums.filter(valid).slice(0, 12) : [],
+      artists: Array.isArray(saved.artists) ? saved.artists.filter(valid).slice(0, 64) : [],
+    };
+  } catch { return { albums: [], artists: [] }; }
+}
+
+function recordHomeVisit(type, item) {
+  const id = Number(item?.id);
+  if (!Number.isSafeInteger(id) || id <= 0) return;
+  const activity = readHomeActivity();
+  const at = Date.now();
+  if (type === 'album') {
+    activity.albums = [{ id, at }, ...activity.albums.filter(a => a.id !== id)].slice(0, 12);
   }
-
-  // Update sidebar stats (safe to do even if api fails as we have defaults)
-  if (UI['stat-artists']) UI['stat-artists'].textContent  = (stats.artists || 0).toLocaleString();
-  if (UI['stat-albums']) UI['stat-albums'].textContent   = (stats.albums || 0).toLocaleString();
-  if (UI['stat-tracks']) UI['stat-tracks'].textContent   = (stats.tracks || 0).toLocaleString();
-  if (UI['stat-duration']) UI['stat-duration'].textContent = (stats.total_duration_hours || 0) + 'h';
-
-  const hour = new Date().getHours();
-  const greeting = hour < 12 ? 'Good morning' : hour < 18 ? 'Good afternoon' : 'Good evening';
-
-  let scanBanner = '';
-  if (stats.tracks === 0) {
-    scanBanner = `
-    <div class="scan-banner" id="scan-banner">
-      <div class="scan-banner-title">📂 Library not scanned yet</div>
-      <div class="scan-banner-sub">Set your music folder in Settings, then scan your library to get started.</div>
-      <button class="btn btn-gold" onclick="navigate('settings')">Go to Settings</button>
-    </div>`;
+  const artistId = Number(type === 'artist' ? id : item.artist_id);
+  if (Number.isSafeInteger(artistId) && artistId > 0) {
+    const previous = activity.artists.find(a => a.id === artistId);
+    activity.artists = [{ id: artistId, count: Math.min(1000000, (Number(previous?.count) || 0) + 1), at },
+      ...activity.artists.filter(a => a.id !== artistId)]
+      .sort((a, b) => b.count - a.count || b.at - a.at).slice(0, 64);
   }
+  try { localStorage.setItem(HOME_ACTIVITY_KEY, JSON.stringify(activity)); } catch { /* Private/full storage still allows browsing. */ }
+}
 
-  log('[VELVET] Setting home innerHTML');
+function homeGreeting(date = new Date()) {
+  const hour = date.getHours();
+  const period = hour >= 5 && hour < 12 ? 'Morning' : hour >= 12 && hour < 18 ? 'Afternoon' : 'Evening';
+  return `Good ${period}, Edwyn`;
+}
+
+function refreshHomeGreeting() {
+  const heading = document.getElementById('home-greeting');
+  if (heading && state.view === 'home') heading.textContent = homeGreeting();
+}
+
+// Register once, rather than adding a timer or lifecycle listeners per visit.
+window.addEventListener('pageshow', refreshHomeGreeting);
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden) refreshHomeGreeting();
+});
+setInterval(() => { if (!document.hidden) refreshHomeGreeting(); }, 60000);
+
+function makeHomeAlbumCard(album) {
+  const card = makeAlbumCard(album);
+  card.classList.add('home-album-card');
+  // Keep the cover unobstructed; playback is available in the album detail.
+  const title = card.querySelector('.card-title');
+  const link = document.createElement('a');
+  link.href = '#album/' + encodeURIComponent(album.id);
+  link.textContent = title.textContent;
+  link.title = album.title;
+  link.addEventListener('click', event => { event.preventDefault(); });
+  title.replaceChildren(link);
+  card.querySelector('.card-play-btn')?.remove();
+  // Reflect an already loaded cover through a background layer. This avoids
+  // WebKit's box-reflect/3D clipping and never initiates a second cover fetch.
+  const image = card.querySelector('.card-art img');
+  const reflection = document.createElement('div');
+  reflection.className = 'home-cover-reflection';
+  reflection.setAttribute('aria-hidden', 'true');
+  const syncReflection = () => {
+    reflection.style.setProperty('--reflection-image', `url(${JSON.stringify(image.currentSrc || image.src)})`);
+  };
+  image.addEventListener('load', syncReflection);
+  if (image.complete && image.naturalWidth) syncReflection();
+  card.appendChild(reflection);
+  if (album.recommendation_reason) {
+    const reason = document.createElement('div');
+    reason.className = 'home-card-reason';
+    reason.textContent = album.recommendation_reason;
+    reason.title = album.recommendation_reason;
+    card.appendChild(reason);
+  }
+  return card;
+}
+
+function attachHomeCoverflow(rail) {
+  const original = [...rail.querySelectorAll('.home-album-card')];
+  if (!original.length) return () => {};
+  // Put two records to the left of the newest one, without duplicate images.
+  const lead = Math.min(2, original.length - 1);
+  const cards = lead ? [...original.slice(-lead), ...original.slice(0, -lead)] : original;
+  // Snap to stationary slots, not transformed covers. Otherwise the changing
+  // 3D bounding boxes can make native scroll-snap settle off center.
+  const slots = cards.map(card => {
+    const slot = document.createElement('div');
+    slot.className = 'home-flow-slot';
+    slot.appendChild(card);
+    return slot;
+  });
+  rail.replaceChildren(...slots);
+  rail.classList.add('home-coverflow');
+  rail.tabIndex = 0;
+  rail.setAttribute('role', 'region');
+  rail.setAttribute('aria-roledescription', 'carousel');
+  rail.setAttribute('aria-labelledby', rail.id + '-title');
+  const controls = document.createElement('div');
+  controls.className = 'home-flow-controls';
+  const status = document.createElement('span');
+  status.className = 'home-flow-position';
+  status.setAttribute('aria-live', 'polite');
+  status.setAttribute('aria-atomic', 'true');
+  controls.append(status);
+  rail.after(controls);
+  let selected = cards.indexOf(original[0]);
+  let requested = null;
+  let centers = [];
+  let viewportWidth = 0;
+  let spacing = 0;
+  let frame = 0;
+  let coverTimer = 0;
+  let disposed = false;
+  const cinematic = rail.id === 'recent-grid';
+  let drag = null;
+  let suppressClickUntil = 0;
+  const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const sharpenCenter = () => {
+    const image = cards[selected].querySelector('.card-art img');
+    if (disposed || !image || image.dataset.homeCoverSharp) return;
+    const url = new URL(image.src, location.href);
+    if (!url.pathname.endsWith('/thumb')) return;
+    url.searchParams.set('size', 'large');
+    image.dataset.homeCoverSharp = 'true';
+    image.src = url.pathname + url.search;
+  };
+  const paint = (position) => {
+    if (Math.abs(position - Math.round(position)) < .001) position = Math.round(position);
+    const closest = Math.max(0, Math.min(cards.length - 1, Math.round(position)));
+    cards.forEach((card, index) => {
+      const distance = index - position;
+      const depth = Math.min(Math.abs(distance), 4);
+      const turn = Math.min(depth, 1);
+      const easedTurn = turn * turn * (3 - 2 * turn);
+      const spotlight = Math.exp(-1.4 * distance * distance);
+      const caption = Math.max(0, 1 - Math.abs(distance));
+      card.style.setProperty('--flow-angle', `${-Math.sign(distance) * easedTurn * (cinematic ? 32 : 56)}deg`);
+      card.style.setProperty('--flow-depth', `${cinematic ? -42 * (1 - spotlight) - depth * 12 : -depth * 68}px`);
+      card.style.setProperty('--flow-lift', `${cinematic ? -6 * spotlight : 0}px`);
+      card.style.setProperty('--flow-scale', String(cinematic ? .88 + .12 * spotlight : 1 - depth * .065));
+      card.style.setProperty('--flow-alpha', String(cinematic ? Math.max(0, 1 - Math.pow(depth / 4, 2)) : Math.max(0, 1 - depth / 4)));
+      card.style.setProperty('--flow-caption', String(cinematic ? caption * caption * (3 - 2 * caption) : Math.max(0, 1 - Math.abs(distance) * 2)));
+      card.style.zIndex = String(50 - Math.round(depth * 10));
+      slots[index].style.zIndex = card.style.zIndex;
+      card.classList.toggle('is-current', index === closest);
+      if (index === closest) card.setAttribute('aria-current', 'true');
+      else card.removeAttribute('aria-current');
+    });
+    if (selected !== closest) {
+      clearTimeout(coverTimer);
+      coverTimer = setTimeout(sharpenCenter, 150);
+    }
+    selected = closest;
+    const logical = original.indexOf(cards[closest]) + 1;
+    const label = `${String(logical).padStart(2, '0')} / ${String(cards.length).padStart(2, '0')}`;
+    if (status.textContent !== label) status.textContent = label;
+  };
+  const measure = () => {
+    // Read geometry once on resize, never interleave layout reads and writes
+    // in the scroll loop (especially important with 24 covers on a phone).
+    viewportWidth = rail.clientWidth;
+    centers = slots.map(slot => slot.offsetLeft + slot.offsetWidth / 2);
+    spacing = cards.length > 1 ? (centers.at(-1) - centers[0]) / (cards.length - 1) : 0;
+  };
+  const syncScroll = () => {
+    frame = 0;
+    if (disposed || !rail.isConnected) return;
+    if (spacing > 0) {
+      const position = (rail.scrollLeft + viewportWidth / 2 - centers[0]) / spacing;
+      paint(position);
+      if (requested !== null && Math.abs(position - requested) < .02) requested = null;
+    }
+  };
+  const onScroll = () => {
+    if (!frame) frame = requestAnimationFrame(syncScroll);
+  };
+  const select = (index, smooth = true) => {
+    if (disposed) return;
+    const wrapped = (index + cards.length) % cards.length;
+    const left = centers[wrapped] - viewportWidth / 2;
+    const behavior = smooth && !reducedMotion && index === wrapped ? 'smooth' : 'auto';
+    requested = behavior === 'smooth' && spacing > 0 ? wrapped : null;
+    if (typeof rail.scrollTo === 'function') rail.scrollTo({ left, behavior });
+    else rail.scrollLeft = left;
+    // During smooth scrolling the scroll position is the only animation clock.
+    // Painting the target here used to jump forward, then snap back a frame.
+    if (requested === null) paint(wrapped);
+  };
+  const intendedIndex = () => requested ?? selected;
+  const onKey = event => {
+    const target = { ArrowLeft: intendedIndex() - 1, ArrowRight: intendedIndex() + 1,
+      Home: cards.indexOf(original[0]), End: cards.indexOf(original.at(-1)) }[event.key];
+    if (target === undefined) return;
+    event.preventDefault();
+    select(target);
+  };
+  const onClick = event => {
+    if (performance.now() < suppressClickUntil) {
+      event.preventDefault();
+      event.stopPropagation();
+      return;
+    }
+    const card = event.target.closest('.home-album-card');
+    const index = cards.indexOf(card);
+    if (index < 0 || index === selected) return;
+    // A side-cover tap brings it into the spotlight; the next opens the album.
+    event.preventDefault();
+    event.stopPropagation();
+    select(index);
+  };
+  const onGesture = () => { requested = null; };
+  // Keep native touch/trackpad momentum. Mouse dragging needs its own velocity
+  // projection, and a drag must never fall through to the album click handler.
+  const onPointerDown = event => {
+    onGesture();
+    if (event.pointerType !== 'mouse' || event.button !== 0) return;
+    drag = { id: event.pointerId, x: event.clientX, left: rail.scrollLeft,
+      lastX: event.clientX, time: event.timeStamp, velocity: 0, moved: false };
+  };
+  const onPointerMove = event => {
+    if (!drag || event.pointerId !== drag.id) return;
+    const delta = event.clientX - drag.x;
+    if (!drag.moved && Math.abs(delta) < 6) return;
+    if (!drag.moved) {
+      drag.moved = true;
+      rail.classList.add('is-dragging');
+      rail.setPointerCapture?.(event.pointerId);
+    }
+    event.preventDefault();
+    const elapsed = Math.max(1, event.timeStamp - drag.time);
+    drag.velocity = .35 * drag.velocity + .65 * (drag.lastX - event.clientX) / elapsed;
+    drag.lastX = event.clientX;
+    drag.time = event.timeStamp;
+    rail.scrollLeft = drag.left - delta;
+    onScroll();
+  };
+  const onPointerUp = event => {
+    if (!drag || event.pointerId !== drag.id) return;
+    const ended = drag;
+    drag = null;
+    rail.classList.remove('is-dragging');
+    if (rail.hasPointerCapture?.(event.pointerId)) rail.releasePointerCapture(event.pointerId);
+    if (!ended.moved) return;
+    suppressClickUntil = performance.now() + 400;
+    const velocity = event.type === 'pointercancel' || event.timeStamp - ended.time > 100 ? 0 : ended.velocity;
+    const coast = reducedMotion ? 0 : Math.max(-spacing * 6, Math.min(spacing * 6, velocity * 380));
+    if (spacing > 0) {
+      const target = Math.round((rail.scrollLeft + coast + viewportWidth / 2 - centers[0]) / spacing);
+      select(Math.max(0, Math.min(cards.length - 1, target)));
+    }
+  };
+  const preventImageDrag = event => event.preventDefault();
+  rail.addEventListener('scroll', onScroll, { passive: true });
+  rail.addEventListener('keydown', onKey);
+  rail.addEventListener('click', onClick, true);
+  rail.addEventListener('pointerdown', onPointerDown);
+  rail.addEventListener('pointermove', onPointerMove);
+  rail.addEventListener('pointerup', onPointerUp);
+  rail.addEventListener('pointercancel', onPointerUp);
+  rail.addEventListener('lostpointercapture', onPointerUp);
+  rail.addEventListener('dragstart', preventImageDrag);
+  rail.addEventListener('wheel', onGesture, { passive: true });
+  const resize = typeof ResizeObserver === 'function' ? new ResizeObserver(() => {
+    const target = intendedIndex();
+    measure();
+    select(target, false);
+  }) : null;
+  resize?.observe(rail);
+  measure();
+  select(selected, false);
+  sharpenCenter();
+  return () => {
+    disposed = true;
+    if (frame) cancelAnimationFrame(frame);
+    clearTimeout(coverTimer);
+    resize?.disconnect();
+    rail.removeEventListener('scroll', onScroll);
+    rail.removeEventListener('keydown', onKey);
+    rail.removeEventListener('click', onClick, true);
+    rail.removeEventListener('pointerdown', onPointerDown);
+    rail.removeEventListener('pointermove', onPointerMove);
+    rail.removeEventListener('pointerup', onPointerUp);
+    rail.removeEventListener('pointercancel', onPointerUp);
+    rail.removeEventListener('lostpointercapture', onPointerUp);
+    rail.removeEventListener('dragstart', preventImageDrag);
+    rail.removeEventListener('wheel', onGesture);
+  };
+}
+
+async function renderHome(vc) {
+  const cleanups = [];
+  vc._disposeHome = () => cleanups.splice(0).forEach(dispose => dispose());
+  const activity = readHomeActivity();
+  const shelves = [
+    ['recent-grid', '01', 'New Release', '', 'albums'],
+    ['home-opened-grid', '02', 'Recently opened', 'Pick up where your browsing left off.', 'albums'],
+    ['home-artists-grid', '03', 'Your Artists', 'The voices you keep coming back to.', 'artists'],
+    ['home-recommendations-grid', '04', 'Made for you', 'Mostly Chinese & Asian records, with a little global pop. All in your library.', 'discover'],
+  ];
   vc.innerHTML = `
     <div class="topbar">
       ${getTopNavHtml('home')}
       <div class="search-wrap">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
-          <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
-        </svg>
-        <input id="search-input" type="text" maxlength="128" placeholder="Search artists, albums, tracks…">
+<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+        <input id="search-input" type="text" aria-label="Search your library" maxlength="128" placeholder="Search artists, albums, tracks…">
       </div>
     </div>
-
-    <div class="home-hero">
-      <div class="home-greeting">${greeting}.</div>
-      <div class="home-sub">${(stats.tracks || 0).toLocaleString()} tracks · ${(stats.albums || 0).toLocaleString()} albums · ${stats.total_duration_hours || 0}h of music</div>
-    </div>
-
-    ${scanBanner}
-
-    <div class="home-section">
-      <div class="home-section-title">Recently Added</div>
-      <div class="grid" id="recent-grid">
-        <div class="loading-spinner" style="padding: 32px">Loading recent music...</div>
+    <div class="home-hero home-listening-room">
+      <div class="home-hero-copy">
+        <div class="discover-kicker">Your listening room</div>
+        <h1 class="home-greeting" id="home-greeting">${homeGreeting()}</h1>
+        <div class="home-sub" id="home-library-summary">A record for this moment.</div>
       </div>
     </div>
+    <div id="home-scan-banner"></div>
+    ${shelves.map(([id, number, title, subtitle, action]) => `
+      <section class="home-shelf" aria-labelledby="${id}-title">
+        <div class="discover-section-head home-shelf-head">
+          <div class="home-shelf-heading">
+            <span class="home-shelf-number" aria-hidden="true">${number}</span>
+            <div class="discover-section-copy"><h2 class="discover-section-title" id="${id}-title">${title}</h2>${subtitle ? `<p class="discover-section-sub">${subtitle}</p>` : ''}</div>
+          </div>
+          <a class="home-shelf-link" href="#${action}" data-home-nav="${action}" aria-label="Open ${action}">Explore</a>
+        </div>
+        <div class="grid home-shelf-grid ${id === 'home-artists-grid' ? 'home-artist-shelf' : ''}" id="${id}" aria-busy="true">
+          <div class="home-shelf-placeholder">Finding your next record…</div>
+        </div>
+      </section>`).join('')}
   `;
-
   setupSearch();
-  
-  // Now load recently added separately
-  log('[VELVET] Loading recent albums');
-  try {
-    const recent = await api('/recently-added?limit=20');
-    const grid = UI['recent-grid'];
-    if (!grid) return;
-
-    if (!recent || !recent.length) {
-      grid.innerHTML = '<div style="padding:0;color:var(--muted);font-size:13px">No albums yet. Scan your library to get started.</div>';
-      log('[VELVET] No recent albums found');
-      return;
+  vc.querySelectorAll('[data-home-nav]').forEach(link => link.addEventListener('click', event => {
+    event.preventDefault();
+    navigate(link.dataset.homeNav);
+  }));
+  const root = vc.querySelector('.home-listening-room');
+  const active = () => root.isConnected && state.view === 'home';
+  const fill = (id, items, factory, empty) => {
+    if (!active()) return;
+    const grid = vc.querySelector('#' + id);
+    grid.replaceChildren();
+    const list = Array.isArray(items) ? items : [];
+    if (list.length) {
+      const fragment = document.createDocumentFragment();
+      list.forEach(item => fragment.appendChild(factory(item)));
+      grid.appendChild(fragment);
+      if (id !== 'home-artists-grid') cleanups.push(attachHomeCoverflow(grid));
+    } else {
+      const message = document.createElement('p');
+      message.className = 'home-shelf-empty';
+      message.textContent = empty;
+      grid.appendChild(message);
     }
-
-    grid.innerHTML = '';
-    const fragment = document.createDocumentFragment();
-    recent.forEach(album => fragment.appendChild(makeAlbumCard(album)));
-    grid.appendChild(fragment);
-    log('[VELVET] Recent albums rendered:', recent.length);
-  } catch (e) {
-    console.warn('[VELVET] Failed to load recent albums:', e);
-    const grid = UI['recent-grid'];
-    if (grid) grid.innerHTML = '<div style="color:var(--muted)">Failed to load recent music</div>';
-  }
+    grid.setAttribute('aria-busy', 'false');
+  };
+  const params = new URLSearchParams({
+    album_ids: activity.albums.map(a => a.id).join(','),
+    artist_ids: activity.artists.slice(0, 24).map(a => a.id).join(','),
+  });
+  // Independent shelves: recent albums paint without waiting for personalization.
+  await Promise.allSettled([
+    (async () => {
+      const stats = await api('/stats');
+      if (!stats || !active()) return;
+      const values = { artists: stats.artists || 0, albums: stats.albums || 0, tracks: stats.tracks || 0 };
+      for (const [name, value] of Object.entries(values)) {
+        if (UI['stat-' + name]) UI['stat-' + name].textContent = value.toLocaleString();
+      }
+      if (UI['stat-duration']) UI['stat-duration'].textContent = (stats.total_duration_hours || 0) + 'h';
+      vc.querySelector('#home-library-summary').textContent = `${values.albums.toLocaleString()} albums · ${values.artists.toLocaleString()} artists · yours to rediscover`;
+      if (!values.tracks) {
+        vc.querySelector('#home-scan-banner').innerHTML = `<div class="scan-banner"><div class="scan-banner-title">Your listening room starts here.</div><div class="scan-banner-sub">Add a music folder in Settings, then scan your library.</div><button class="btn btn-gold" onclick="navigate('settings')">Go to Settings</button></div>`;
+      }
+    })(),
+    (async () => {
+      let recent;
+      try { recent = await api('/recently-added?limit=24'); } catch { /* Keep the other shelves available. */ }
+      fill('recent-grid', Array.isArray(recent) ? recent.slice(0, 24) : [], makeHomeAlbumCard,
+        recent ? 'No albums yet. Add your first music folder in Settings.' : 'Recent albums are unavailable. Open Albums to try again.');
+    })(),
+    (async () => {
+      let data;
+      try { data = await api('/home?' + params); } catch { /* An older server can still show recent albums. */ }
+      data = data || {};
+      fill('home-opened-grid', (data.recently_opened || []).slice(0, 12), makeHomeAlbumCard,
+        'Open an album and it will appear here. Recent visits are remembered on this device.');
+      fill('home-artists-grid', (data.frequent_artists || []).slice(0, 8), artist => {
+        const card = makeArtistCard(artist);
+        const title = card.querySelector('.card-title');
+        const link = document.createElement('a');
+        link.href = '#artist/' + encodeURIComponent(artist.id);
+        link.textContent = artist.name;
+        link.addEventListener('click', event => event.preventDefault());
+        title.replaceChildren(link);
+        return card;
+      }, 'Visit an artist or play a few albums to build your regular rotation.');
+      const seen = new Set();
+      const recommendations = [...(data.for_you || []).slice(0, 10), ...(data.global_picks || []).slice(0, 2)]
+        .filter(album => !seen.has(album.id) && seen.add(album.id));
+      fill('home-recommendations-grid', recommendations, makeHomeAlbumCard,
+        'Keep exploring your library. Recommendations grow with your listening and visits.');
+    })(),
+  ]);
 }
 
 async function renderDiscover(vc) {
@@ -494,7 +819,8 @@ async function renderAlbums(vc) {
 // ── Artists ───────────────────────────────────────────────────────────────────
 
 async function renderArtists(vc) {
-  const first = await api('/artists/page?limit=' + ARTISTS_PER_PAGE + '&offset=0');
+  let currentSort = 'popular';
+  const first = await api('/artists/page?sort=popular&limit=' + ARTISTS_PER_PAGE + '&offset=0');
   let allArtists = first.artists || [];
   let totalArtists = Number(first.total || 0);
   let currentPage = 1;
@@ -510,6 +836,10 @@ async function renderArtists(vc) {
         </svg>
         <input id="search-input" type="text" maxlength="128" placeholder="Search artists, albums, tracks…">
       </div>
+      <select id="artist-sort-select" class="btn btn-ghost" aria-label="Sort artists">
+        <option value="popular">Popular</option>
+        <option value="name">A–Z</option>
+      </select>
     </div>
     <div class="section-header" id="artists-header" title="Click to scroll to top">
       <div class="section-title">Artists</div>
@@ -597,6 +927,7 @@ async function renderArtists(vc) {
     const params = new URLSearchParams({
       limit: String(ARTISTS_PER_PAGE),
       offset: String((currentPage - 1) * ARTISTS_PER_PAGE),
+      sort: currentSort,
     });
     prevBtn.disabled = true;
     nextBtn.disabled = true;
@@ -616,7 +947,14 @@ async function renderArtists(vc) {
     }
   }
 
+  vc.querySelector('#artist-sort-select').addEventListener('change', event => {
+    currentSort = event.target.value;
+    mainEl.scrollTo({ top: 0, behavior: 'smooth' });
+    loadPage({ reset: true });
+  });
+
   // Global catalog search from any tab; local page controls remain available.
+  // setupSearch owns #search-input, so this view must not also bind it.
   setupSearch({ autoFocus: false });
 
   // The worker survives navigation. Only this lightweight progress poll is
@@ -684,7 +1022,12 @@ async function renderArtists(vc) {
       if (result?.running) showToast('Artist name enrichment started');
       await updateAliasProgress();
     } catch (error) {
-      showToast('Unable to start name enrichment');
+      // A refused start (a scan or duplicate check is running, the job is
+      // already active, the request failed) must not leave the panel stuck:
+      // updateAliasProgress only re-enables these buttons on the success path,
+      // and it schedules no follow-up poll because nothing started.
+      showToast(error?.message || 'Unable to start name enrichment');
+      await updateAliasProgress();
     }
   }
   nextAliasBtn?.addEventListener('click', () => startAliasBatch('pending'));
@@ -1309,6 +1652,8 @@ async function renderCreditEntity(vc, { id }) {
 async function renderTracks(vc) {
   let currentPage = 1;
   let currentSort = 'title';
+  let pageRequestSerial = 0;
+  let searchTimer;
   const PAGE_SIZE = 200;
 
   vc.innerHTML = `
@@ -1350,8 +1695,15 @@ async function renderTracks(vc) {
   const input = UI['search-input'];
 
   async function renderPage() {
-    const offset = (currentPage - 1) * PAGE_SIZE;
+    clearTimeout(searchTimer);
+    if (state.view !== 'tracks' || !list.isConnected) return;
+    const serial = ++pageRequestSerial;
+    const page = currentPage;
+    const offset = (page - 1) * PAGE_SIZE;
     const data = await api(`/tracks?limit=${PAGE_SIZE}&offset=${offset}&sort=${encodeURIComponent(currentSort)}`);
+    // Sorting and paging share one latest-request boundary. A response from a
+    // previous view instance must not update even its detached DOM.
+    if (serial !== pageRequestSerial || state.view !== 'tracks' || !list.isConnected) return;
     const tracks = data?.tracks || [];
     const total = data?.total || 0;
     const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
@@ -1370,11 +1722,14 @@ async function renderTracks(vc) {
     }
 
     countEl.textContent = `${total.toLocaleString()} tracks`;
-    pageInfo.textContent = `Page ${currentPage} / ${totalPages}`;
-    prevBtn.disabled = currentPage <= 1;
-    nextBtn.disabled = currentPage >= totalPages;
+    pageInfo.textContent = `Page ${page} / ${totalPages}`;
+    prevBtn.disabled = page <= 1;
+    nextBtn.disabled = page >= totalPages;
   }
 
+  // Typing in the shared topbar navigates to the unified Artists -> Albums ->
+  // Tracks search view, so this view must not bind its own listener to the
+  // same #search-input element.
   setupSearch({ autoFocus: false });
 
   sortSelect.addEventListener('change', e => {
@@ -1782,6 +2137,7 @@ async function renderArtist(vc, { id }) {
     ]);
     _cacheData(cacheKey, { artist, albums });
   }
+  recordHomeVisit('artist', artist);
 
   vc.innerHTML = `
     <div class="topbar">
@@ -1921,6 +2277,7 @@ async function renderAlbum(vc, { id }) {
     ]);
     _cacheData(cacheKey, { album, credits });
   }
+  recordHomeVisit('album', album);
   const tracks = album.tracks || [];
 
   const totalDur = tracks.reduce((s, t) => s + (t.duration || 0), 0);

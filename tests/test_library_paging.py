@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 
 from db_schema import apply_migrations
-from library_paging import album_catalog_filters, fetch_album_page, fetch_artist_page
+from library_paging import album_catalog_filters, fetch_album_page, fetch_artist_page, album_genre_group
 
 
 class AlbumPagingTests(unittest.TestCase):
@@ -56,9 +56,34 @@ class AlbumPagingTests(unittest.TestCase):
     def test_genre_filter_matches_the_trimmed_label_it_offers(self):
         self.db.execute("UPDATE albums SET genre=' Soundtrack ' WHERE id=5")
         self.db.commit()
-        self.assertIn("Soundtrack", album_catalog_filters(self.db)["genres"])
+        self.assertIn("Soundtracks", album_catalog_filters(self.db)["genres"])
         result = self.page(genre="Soundtrack")
         self.assertEqual([a["id"] for a in result["albums"]], [5])
+
+    def test_genre_groups_cover_subgenres_and_missing_tags_before_paging(self):
+        labels = ['Musiques du monde, Asie', 'Musiques du monde, Asie, Japon, J-pop',
+                  '国语流行', 'Pop, Rock', 'Alternatif et Indé', 'Jazz, Jazz vocal',
+                  'Classique', 'Soul, Funk, R&B', 'Électronique, Dance',
+                  'Film, Anime, Jeux vidéo', 'Blues, Country, Folk', None, 'Divers']
+        self.db.execute('DELETE FROM tracks')
+        self.db.execute('DELETE FROM albums')
+        for index, label in enumerate(labels, 1):
+            self.db.execute('INSERT INTO albums(id,artist_id,title,genre) VALUES(?,1,?,?)',
+                            (index, f'Album {index:03}', label))
+        offered = album_catalog_filters(self.db)['genres']
+        self.assertEqual(len(offered), 9)
+        all_ids = []
+        for group in offered:
+            page = self.page(genre=group, limit=1)
+            ids = [self.page(genre=group, limit=1, offset=i)['albums'][0]['id']
+                   for i in range(page['total'])]
+            all_ids.extend(ids)
+        self.assertCountEqual(all_ids, range(1, len(labels) + 1))
+        self.assertEqual(self.page(genre='Asian Pop')['total'], 3)
+        self.assertEqual(self.page(genre='Other')['total'], 2)
+        self.assertEqual(self.db.execute('SELECT genre FROM albums WHERE id=1').fetchone()[0], labels[0])
+        self.assertEqual(album_genre_group('Musiques du monde, Asie, Corée, K-pop'), 'Asian Pop')
+        self.assertEqual(album_genre_group('Jazz, Jazz fusion & Jazz rock'), 'Jazz')
 
     def test_search_escapes_like_metacharacters(self):
         self.db.execute("UPDATE albums SET title='100% FLAC' WHERE id=3")
@@ -83,6 +108,16 @@ class AlbumPagingTests(unittest.TestCase):
         self.assertEqual(result["artists"][0]["id"],152)
         first = fetch_artist_page(self.db,limit=1)
         self.assertEqual(first["artists"][0]["track_count"],1)
+
+    def test_familiar_artist_ranking_precedes_local_popularity_and_pages_stably(self):
+        for artist_id, name in [(2, '周杰倫'), (3, '陳奕迅'), (4, 'Various Artists')]:
+            self.db.execute('INSERT INTO artists(id,name,sort_name) VALUES(?,?,?)', (artist_id, name, name))
+        self.db.executemany('INSERT INTO play_history(track_id) VALUES(1)', [()] * 10)
+        pages = [fetch_artist_page(self.db, sort='popular', limit=1, offset=i)['artists'][0]['id'] for i in range(4)]
+        self.assertEqual(set(pages[:2]), {2, 3}, 'Known artists precede unfamiliar artists even with plays')
+        self.assertEqual(pages[2:], [1, 4], 'Compilations come last')
+        self.assertEqual(fetch_artist_page(self.db, sort='name')['artists'][0]['id'], 1)
+        self.assertEqual(fetch_artist_page(self.db, search='周杰', sort='popular')['artists'][0]['id'], 2)
 
     def test_input_bounds(self):
         with self.assertRaises(ValueError):

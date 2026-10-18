@@ -202,11 +202,11 @@ def fetch_recently_added(db: sqlite3.Connection, limit: int) -> list[dict]:
         """
         SELECT al.*, ar.name as artist_name,
                MAX(CASE WHEN t.sample_rate > 44100 OR t.bit_depth > 16 THEN 1 ELSE 0 END) as is_hires
-        FROM albums al 
+        FROM (SELECT * FROM albums ORDER BY created_at DESC, id DESC LIMIT ?) al
         JOIN artists ar ON al.artist_id=ar.id
         LEFT JOIN tracks t ON t.album_id = al.id
         GROUP BY al.id
-        ORDER BY al.created_at DESC LIMIT ?
+        ORDER BY al.created_at DESC, al.id DESC
         """,
         (limit,),
     ).fetchall()

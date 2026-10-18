@@ -100,18 +100,23 @@ def _catalog_has_genre_key(db: sqlite3.Connection) -> bool:
     return "genre_key" in _catalog_columns_cache
 
 
-def _refresh_catalog_indexes(db: sqlite3.Connection, batch_size: int) -> None:
+def _refresh_catalog_indexes(db: sqlite3.Connection, batch_size: int,
+                            max_rows: int | None = None) -> None:
     if not db.execute(
         "SELECT 1 FROM sqlite_master WHERE type='table' AND name='catalog_search_dirty'"
     ).fetchone():
         return
+    done = 0
     while True:
+        if max_rows is not None and done >= max_rows:
+            return
         dirty = db.execute(
             "SELECT kind, entity_id FROM catalog_search_dirty "
             "ORDER BY kind, entity_id LIMIT ?", (batch_size,),
         ).fetchall()
         if not dirty:
             return
+        done += len(dirty)
         for kind in ("artist", "album"):
             ids = [row[1] for row in dirty if row[0] == kind]
             if not ids:
@@ -146,15 +151,28 @@ def _refresh_catalog_indexes(db: sqlite3.Connection, batch_size: int) -> None:
             )
 
 
-def refresh_track_search_index(db: sqlite3.Connection, batch_size: int = 2000) -> int:
+def refresh_track_search_index(db: sqlite3.Connection, batch_size: int = 2000,
+                               *, max_rows: int | None = None) -> int:
     """Refresh index rows, including catalog keys. Caller owns the transaction.
 
     Return value remains the number of track rows (backward compatibility).
+
+    `max_rows` bounds how much one call indexes. It is a batch-granularity
+    budget: the check runs before starting the next batch, because the SQL
+    rebuilds a whole batch at a time, so a call indexes at most
+    `max_rows + batch_size - 1` rows. Both loops drain their queue completely
+    when it is omitted, which is what a full rebuild wants. A caller that must
+    not hold one long write transaction -- the bulk alias importer -- passes a
+    budget instead: whatever stays dirty remains correct, because dirty rows
+    are still matched through the live data path, and the server picks the rest
+    up on its next refresh.
     A missing OpenCC installation fails at import rather than silently
     degrading Chinese search to a 115-character map.
     """
     if batch_size < 1:
         raise ValueError("batch_size must be positive")
+    if max_rows is not None and max_rows < 1:
+        raise ValueError("max_rows must be positive when given")
     meta = read_index_meta(db)
     if meta is None:
         return 0
@@ -180,6 +198,8 @@ def refresh_track_search_index(db: sqlite3.Connection, batch_size: int = 2000) -
 
     count = 0
     while True:
+        if max_rows is not None and count >= max_rows:
+            break
         track_ids = [row[0] for row in db.execute(
             "SELECT track_id FROM track_search_dirty ORDER BY track_id LIMIT ?",
             (batch_size,),
@@ -204,5 +224,5 @@ def refresh_track_search_index(db: sqlite3.Connection, batch_size: int = 2000) -
             "VALUES('max_term_length',?)", (str(max_term_length),),
         )
         count += len(track_ids)
-    _refresh_catalog_indexes(db, batch_size)
+    _refresh_catalog_indexes(db, batch_size, max_rows)
     return count

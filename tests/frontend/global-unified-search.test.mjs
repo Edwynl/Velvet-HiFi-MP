@@ -180,5 +180,118 @@ await wait(() => resolvedUnknownAlias);
 await wait(() => dom.window.document.querySelector('.search-artist-grid .artist-card'));
 assert.equal(dom.window.document.querySelectorAll('.search-albums-grid .card').length, 1);
 
+// ── Request ordering on the unified search view ──────────────────────────────
+// The unified search view is now the ONLY place a query is issued, so its
+// render serial guard is the single thing standing between a slow response and
+// a stale result set. These cases keep the invariants main's per-page Tracks
+// search used to guard, now applied to /api/search.
+const raceWait = async predicate => {
+  for (let i = 0; i < 200; i++) {
+    if (predicate()) return;
+    await new Promise(resolve => setTimeout(resolve, 10));
+  }
+  throw new Error('Timed out waiting for search request ordering');
+};
+
+async function createRaceHarness() {
+  const pending = [];
+  const raceDom = new JSDOM(html, {
+    url: 'http://localhost/#home', runScripts: 'dangerously', pretendToBeVisual: true,
+    beforeParse(window) {
+      window.fetch = async url => {
+        const parsed = new URL(url, 'http://localhost');
+        if (parsed.pathname === '/api/search') {
+          return new Promise(resolve => pending.push({
+            query: parsed.searchParams.get('q'),
+            resolve(data) { resolve(response(data)); },
+          }));
+        }
+        if (['/api/dsp/profiles', '/api/recently-added', '/api/stats'].includes(parsed.pathname)) {
+          return response([]);
+        }
+        if (parsed.pathname === '/api/search/resolve-artist-alias') return response({ status: 'not_found' });
+        return response({});
+      };
+      window.alert = () => {};
+      window.scrollTo = () => {};
+      window.matchMedia = q => ({
+        media: q, matches: false, addListener() {}, removeListener() {},
+        addEventListener() {}, removeEventListener() {}, dispatchEvent() { return false; },
+      });
+      window.HTMLMediaElement.prototype.play = () => Promise.resolve();
+      window.HTMLMediaElement.prototype.pause = () => {};
+      window.HTMLMediaElement.prototype.load = () => {};
+      window.MediaMetadata = class {};
+      window.navigator.mediaSession = { setActionHandler() {}, metadata: null };
+    },
+  });
+  await raceWait(() => raceDom.window.document.querySelector('.home-hero'));
+  const type = value => {
+    const input = raceDom.window.document.querySelector('#search-input');
+    input.value = value;
+    input.dispatchEvent(new raceDom.window.Event('input', { bubbles: true }));
+  };
+  return { dom: raceDom, pending, type };
+}
+
+const racePayload = title => ({
+  artists: [{ id: 1, name: title, sort_name: title, album_count: 1, aliases: [] }],
+  albums: [], tracks: [], total_artists: 1, total_albums: 0,
+});
+
+// A slow older query must never overwrite a newer one.
+{
+  const h = await createRaceHarness();
+  try {
+    h.type('slow');
+    await raceWait(() => h.pending.length === 1);
+    h.type('latest');
+    await raceWait(() => h.pending.length === 2);
+    assert.equal(h.pending[1].query, 'latest');
+    h.pending[1].resolve(racePayload('LatestArtist'));
+    await raceWait(() => h.dom.window.document.querySelector('#global-search-groups')
+      ?.textContent.includes('LatestArtist'));
+    h.pending[0].resolve(racePayload('StaleArtist'));
+    await new Promise(resolve => setTimeout(resolve, 20));
+    assert.ok(!h.dom.window.document.querySelector('#global-search-groups')
+      .textContent.includes('StaleArtist'), 'A stale search response must not replace newer results');
+  } finally { h.dom.window.close(); }
+}
+
+// Leaving the search view discards its in-flight response entirely.
+{
+  const h = await createRaceHarness();
+  try {
+    h.type('first');
+    await raceWait(() => h.pending.length === 1);
+    h.pending[0].resolve(racePayload('FirstArtist'));
+    await raceWait(() => h.dom.window.document.querySelector('#global-search-groups')
+      ?.textContent.includes('FirstArtist'));
+    const groups = h.dom.window.document.querySelector('#global-search-groups');
+    h.type('pending');
+    await raceWait(() => h.pending.length === 2);
+    await h.dom.window.navigate('home');
+    h.pending[1].resolve(racePayload('DetachedArtist'));
+    await new Promise(resolve => setTimeout(resolve, 20));
+    assert.ok(groups.textContent.includes('FirstArtist')
+      && !groups.textContent.includes('DetachedArtist'),
+      'Discard search responses for a detached view instance');
+  } finally { h.dom.window.close(); }
+}
+
+// Clearing the query must not fetch the whole catalog.
+{
+  const h = await createRaceHarness();
+  try {
+    h.type('something');
+    await raceWait(() => h.pending.length === 1);
+    h.type('');
+    await new Promise(resolve => setTimeout(resolve, 450));
+    assert.equal(h.pending.length, 1, 'An empty query must not issue a catalog request');
+    assert.ok(!h.dom.window.document.querySelector('#global-search-results'),
+      'Clearing the query exits the search view');
+  } finally { h.dom.window.close(); }
+}
+
 console.log('frontend_global_unified_search=OK');
 dom.window.close();

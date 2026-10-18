@@ -17,6 +17,11 @@ const request = async (url, options = {}) => {
   const u = new URL(url, 'http://localhost');
   requests.push(u);
   const q = u.searchParams.get('q') || '';
+  if (u.pathname === '/api/artists/page') {
+    const offset = Number(u.searchParams.get('offset') || 0);
+    const items = Array.from({ length: 75 }, (_, i) => ({ id: i + 1, name: 'Artist ' + (i + 1), album_count: 2 }));
+    return response({ artists: items.slice(offset, offset + 60), total: items.length });
+  }
   if (u.pathname === '/api/albums/page') {
     if (u.searchParams.get('search')) {
       return response({ albums: albums.filter(x => x.title.includes('137')),
@@ -49,6 +54,7 @@ const dom = new JSDOM(html, {
     window.alert = () => {};
     window.confirm = () => true;
     window.scrollTo = () => {};
+    window.HTMLElement.prototype.scrollTo = () => {};
     window.matchMedia = q => ({
       media: q, matches: false, addListener() {}, removeListener() {},
       addEventListener() {}, removeEventListener() {}, dispatchEvent() { return false; },
@@ -88,5 +94,18 @@ assert.equal(dom.window.document.querySelector('.search-results .result-section-
              'Global search shows the track section when no artist/album matches');
 assert.equal(requests.some(u=>u.pathname==='/api/search' && !u.searchParams.get('q')), false,
              'Never ask server to search with an empty query');
+await dom.window.navigate('artists');
+await wait(() => dom.window.document.querySelectorAll('#artists-grid .card').length === 60);
+assert.equal(requests.filter(u => u.pathname === '/api/artists/page').at(-1).searchParams.get('sort'), 'popular');
+dom.window.document.querySelector('#next-page-btn').click();
+await wait(() => dom.window.document.querySelectorAll('#artists-grid .card').length === 15);
+assert.equal(requests.filter(u => u.pathname === '/api/artists/page').at(-1).searchParams.get('sort'), 'popular');
+const artistSort = dom.window.document.querySelector('#artist-sort-select');
+artistSort.value = 'name';
+artistSort.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
+await wait(() => dom.window.document.querySelectorAll('#artists-grid .card').length === 60);
+const lastArtists = requests.filter(u => u.pathname === '/api/artists/page').at(-1);
+assert.equal(lastArtists.searchParams.get('sort'), 'name');
+assert.equal(lastArtists.searchParams.get('offset'), '0');
 console.log('frontend_mobile_catalog_paging_check=OK');
 dom.window.close();

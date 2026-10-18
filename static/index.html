@@ -143,6 +143,8 @@ html, body {
 #main {
   grid-row: 1;
   grid-column: 2;
+  min-width: 0;
+  min-height: 0;
   overflow-y: auto;
   padding: 0;
   position: relative;
@@ -2300,9 +2302,12 @@ input[type=range]::-webkit-slider-thumb:hover { background: var(--gold); }
     }
 
     /* App layout */
+    /* Reserve the status bar once on the app, outside its scrolling content.
+       The fixed menu and sticky search bar then share the same safe top edge. */
     #app {
       grid-template-columns: 1fr;
       grid-template-rows: 1fr auto;
+      padding: env(safe-area-inset-top, 0px) env(safe-area-inset-right, 0px) 0 env(safe-area-inset-left, 0px);
     }
 
     /* Sidebar - slide out */
@@ -2313,6 +2318,8 @@ input[type=range]::-webkit-slider-thumb:hover { background: var(--gold); }
       width: var(--sidebar-w);
       height: 100vh;
       height: 100dvh;
+      padding-top: env(safe-area-inset-top, 0px);
+      padding-bottom: env(safe-area-inset-bottom, 0px);
       z-index: 50;
       transition: left 0.3s cubic-bezier(.4,0,.2,1);
       box-shadow: 20px 0 60px rgba(0,0,0,0.5);
@@ -2326,6 +2333,14 @@ input[type=range]::-webkit-slider-thumb:hover { background: var(--gold); }
       display: flex;
       align-items: center;
       justify-content: center;
+      position: fixed;
+      top: calc(env(safe-area-inset-top, 0px) + 10px);
+      left: calc(env(safe-area-inset-left, 0px) + 12px);
+      z-index: 30;
+      width: 44px;
+      height: 44px;
+      margin: 0;
+      touch-action: manipulation;
     }
 
     /* Main content */
@@ -2336,14 +2351,18 @@ input[type=range]::-webkit-slider-thumb:hover { background: var(--gold); }
 
     /* Top bar */
     .topbar {
-      padding: 10px 12px 8px;
+      padding: 10px 12px 8px 64px;
+      min-height: 62px;
+      background: var(--bg);
       gap: 8px;
-      flex-wrap: nowrap;
+      flex-wrap: wrap;
     }
+
+    #search-input { min-height: 44px; }
 
     .search-wrap {
       order: 0;
-      flex: 1;
+      flex: 1 0 100%;
       min-width: 0;
       max-width: none;
       width: auto;
@@ -2907,11 +2926,17 @@ input[type=range]::-webkit-slider-thumb:hover { background: var(--gold); }
   @media (orientation: landscape) and (max-height: 500px) {
     :root { --player-h: 48px; --header-h: 42px; }
 
-    #app { grid-template-columns: 1fr !important; grid-template-rows: 1fr auto !important; }
+    #app {
+      grid-template-columns: 1fr !important;
+      grid-template-rows: 1fr auto !important;
+      padding: env(safe-area-inset-top, 0px) env(safe-area-inset-right, 0px) 0 env(safe-area-inset-left, 0px);
+    }
     #sidebar { 
       position: fixed !important; top: 0 !important; left: -280px !important; 
       width: 280px !important; height: 100vh !important; 
       z-index: 200 !important; transition: left 0.3s !important;
+      padding-top: env(safe-area-inset-top, 0px);
+      padding-bottom: env(safe-area-inset-bottom, 0px);
       display: flex !important; /* Always display flex but hide off-screen */
     }
     #sidebar.open { left: 0 !important; }
@@ -2922,13 +2947,15 @@ input[type=range]::-webkit-slider-thumb:hover { background: var(--gold); }
 
     /* Draw the header background as a pseudo-element on body / use a real bar */
     .topbar {
-      position: fixed !important; top: 0 !important; 
-      left: 0 !important; right: 0 !important;
+      position: fixed !important; top: env(safe-area-inset-top, 0px) !important;
+      left: env(safe-area-inset-left, 0px) !important; right: env(safe-area-inset-right, 0px) !important;
       height: var(--header-h) !important;
+      min-height: var(--header-h) !important;
       background: var(--bg) !important;
       border-bottom: 1px solid var(--border) !important;
       z-index: 100 !important;
       display: flex !important; align-items: center !important;
+      flex-wrap: nowrap !important;
       padding: 0 10px !important;
       margin: 0 !important;
       gap: 10px !important;
@@ -2939,11 +2966,15 @@ input[type=range]::-webkit-slider-thumb:hover { background: var(--gold); }
       display: flex !important;
       align-items: center !important;
       gap: 14px !important;
-      flex-shrink: 0 !important;
+      flex-shrink: 1 !important;
+      min-width: 0;
+      overflow-x: auto;
+      scrollbar-width: none;
       margin-right: 4px !important;
     }
     .top-nav-btn {
       color: var(--muted) !important;
+      flex-shrink: 0;
       cursor: pointer !important;
       display: flex !important;
       align-items: center !important;
@@ -2957,7 +2988,7 @@ input[type=range]::-webkit-slider-thumb:hover { background: var(--gold); }
     .search-wrap {
       flex: 1 !important;
       width: auto !important;      /* 重置竖屏 width:100% */
-      min-width: 0 !important;
+      min-width: 120px !important;
       max-width: none !important;
       margin-left: 0 !important;
       order: 0 !important;
@@ -2965,6 +2996,7 @@ input[type=range]::-webkit-slider-thumb:hover { background: var(--gold); }
     }
     #search-input {
       padding: 4px 10px 4px 28px !important; font-size: 15px !important;
+      min-height: 32px !important;
       background: var(--s3) !important;
       border: 1px solid var(--border) !important; border-radius: 20px !important;
       width: 100% !important;
@@ -2982,9 +3014,9 @@ input[type=range]::-webkit-slider-thumb:hover { background: var(--gold); }
 
     /* 3. Player Bar */
     #player {
-      min-height: var(--player-h) !important;
-      height: var(--player-h) !important;
-      padding: 0 12px !important;
+      min-height: calc(var(--player-h) + env(safe-area-inset-bottom, 0px)) !important;
+      height: calc(var(--player-h) + env(safe-area-inset-bottom, 0px)) !important;
+      padding: 0 12px env(safe-area-inset-bottom, 0px) !important;
       background: var(--s1) !important;
       backdrop-filter: blur(15px) !important;
       position: relative !important;
@@ -3819,7 +3851,7 @@ input[type=range]::-webkit-slider-thumb:hover { background: var(--gold); }
     display: flex;
     justify-content: space-between;
     align-items: center;
-    padding: 24px 24px 16px;
+    padding: calc(env(safe-area-inset-top, 0px) + 24px) 24px 16px;
     flex-shrink: 0;
   }
   .mobile-player-header-left {
@@ -5483,10 +5515,11 @@ input[type=range]::-webkit-slider-thumb:hover { background: var(--gold); }
       }
 
       .topbar {
-        padding: calc(env(safe-area-inset-top, 0px) + 14px) 20px 12px;
+        padding: 14px 20px 12px;
         padding-left: 80px;
         gap: 12px;
-        min-height: calc(env(safe-area-inset-top, 0px) + 72px);
+        flex-wrap: nowrap;
+        min-height: 72px;
         background: rgba(7, 7, 9, 0.92);
         backdrop-filter: blur(18px);
       }
@@ -5509,6 +5542,8 @@ input[type=range]::-webkit-slider-thumb:hover { background: var(--gold); }
         width: 24px;
         height: 24px;
       }
+
+      .search-wrap { flex: 1; }
 
       #search-input {
         min-height: 46px;
@@ -5870,6 +5905,206 @@ input[type=range]::-webkit-slider-thumb:hover { background: var(--gold); }
   .mobile-vu-meter-options { gap: 7px 9px; }
   .mobile-vu-mode-btn, .mobile-vu-alignment select { padding: 5px 6px; }
 }
+/* iOS Home Screen PWA: some WebKit versions measure 100dvh without the
+   bottom ~59pt occupied by the browser's standalone viewport. Use 100vh
+   only for installed iOS web apps. Normal Safari, Android and desktop keep
+   the existing 100dvh layout. Do not double-count the Home Indicator inset:
+   the compact #player already includes env(safe-area-inset-bottom). */
+@media (display-mode: standalone) {
+  @supports (-webkit-touch-callout: none) {
+    html,
+    body {
+      height: 100vh;
+    }
+
+    #app {
+      height: 100vh;
+      grid-template-rows: minmax(0, 1fr) auto;
+    }
+
+    #main {
+      min-height: 0;
+    }
+
+    #sidebar,
+    .mobile-player-overlay {
+      height: 100vh;
+    }
+  }
+}
+
+/* Home album shelves: static reflections reuse the decoded cover, with no
+   extra image nodes, image requests, WebGL or animation loop. */
+.view-home .home-listening-room {
+  display: flex; align-items: flex-end; justify-content: space-between;
+  gap: 24px; padding-bottom: 22px;
+}
+.view-home .home-hero-copy { min-width: 0; }
+.view-home .home-greeting { font-weight: 400; margin: 0; }
+.view-home .home-sub { color: #a49b8c; }
+.home-shelf { margin-bottom: 30px; }
+.home-shelf-heading { display: flex; align-items: baseline; gap: 14px; min-width: 0; }
+.home-shelf-number { color: var(--gold); font: 10px 'DM Mono', monospace; }
+.home-shelf-head { align-items: baseline; }
+.home-shelf-head .discover-section-sub { color: #a49b8c; max-width: 620px; }
+.home-shelf-head h2 { font-weight: 400; }
+.home-shelf-link { color: var(--gold); font-size: 11px; text-decoration: none; white-space: nowrap; }
+.view-home .home-shelf-grid { grid-template-columns: repeat(6, minmax(0, 1fr)); row-gap: 26px; }
+.view-home .home-artist-shelf { grid-template-columns: repeat(8, minmax(0, 1fr)); }
+.home-album-card .card-art {
+  margin-bottom: 26px; overflow: hidden; border: 1px solid rgba(255,255,255,.09);
+  box-shadow: 0 8px 16px rgba(0,0,0,.28);
+  transform: perspective(900px) rotateX(2deg);
+}
+.home-album-card .card-title-row { position: relative; }
+.home-shelf .card a { color: inherit; text-decoration: none; }
+.home-shelf .card a:focus-visible, .home-shelf button:focus-visible,
+.home-shelf-link:focus-visible {
+  outline: 2px solid var(--gold); outline-offset: 4px; border-radius: 3px;
+}
+.home-album-card .card-sub { color: #a49b8c; }
+.home-card-reason { color: #9b9387; font-size: 10px; margin-top: 4px; line-height: 1.4; }
+.home-shelf-empty, .home-shelf-placeholder {
+  grid-column: 1 / -1; padding: 20px 0; color: #a49b8c; font-size: 12px;
+  line-height: 1.7; max-width: 560px;
+}
+.home-artist-shelf .card-art { border-radius: 50%; border: 1px solid var(--border); }
+.home-artist-shelf .card-title { margin-top: 12px; }
+.home-artist-shelf .card-sub { color: #a49b8c; }
+@media (hover: hover) and (pointer: fine) {
+  .home-album-card:hover .card-art { transform: perspective(900px) rotateY(-3deg) rotateX(2deg); }
+}
+@media (max-width: 1120px) {
+  .view-home .home-listening-room { flex-direction: column; align-items: flex-start; gap: 18px; }
+  .view-home .home-shelf-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  .view-home .home-artist-shelf { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+}
+@media (max-width: 768px) {
+  .view-home .home-listening-room { padding-bottom: 18px; }
+  .home-shelf { margin-bottom: 24px; }
+  .home-shelf-head { gap: 10px; padding-bottom: 16px; }
+  .home-shelf-heading { gap: 9px; }
+  .home-shelf-head .discover-section-title { font-size: 22px; }
+  .home-shelf-head .discover-section-sub { font-size: 11px; line-height: 1.6; }
+  .home-shelf-link { font-size: 10px; }
+  .view-home .home-shelf-grid { gap: 20px 9px; }
+  .home-album-card .card-art { margin-bottom: 20px; }
+  .home-card-reason { font-size: 9px; }
+}
+@media (orientation: landscape) and (max-height: 500px) {
+  .view-home .home-shelf-grid { grid-template-columns: repeat(6, minmax(0, 1fr)) !important; }
+  .view-home .home-artist-shelf { grid-template-columns: repeat(8, minmax(0, 1fr)) !important; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .view-home .home-album-card, .view-home .home-album-card .card-art { transform: none; transition: none; }
+}
+/* Centered cover flow. Native scrolling owns touch and momentum; JavaScript
+   updates cover transforms only while the rail is moving. */
+.view-home .home-coverflow.home-shelf-grid {
+  --flow-cover: clamp(220px, 24vw, 280px);
+  --flow-step: calc(var(--flow-cover) * .5);
+  display: flex; align-items: flex-start; gap: 0;
+  position: relative; width: 100%;
+  height: calc(var(--flow-cover) * 1.34 + 102px);
+  padding: 22px calc((100% - var(--flow-cover)) / 2) 0;
+  overflow-x: auto; overflow-y: hidden;
+  perspective: 1000px; perspective-origin: 50% 38%;
+  scroll-snap-type: x mandatory; overscroll-behavior-x: contain;
+  scrollbar-width: none; touch-action: pan-x pan-y;
+}
+.home-coverflow::-webkit-scrollbar { display: none; }
+.view-home .home-coverflow .home-flow-slot {
+  flex: 0 0 var(--flow-cover); width: var(--flow-cover); min-width: 0;
+  margin-inline-end: calc(var(--flow-step) - var(--flow-cover));
+  position: relative; transform-style: preserve-3d;
+  scroll-snap-align: center; scroll-snap-stop: normal;
+  pointer-events: none;
+}
+.view-home .home-coverflow .home-flow-slot:last-child { margin-inline-end: 0; }
+.view-home .home-coverflow .home-album-card {
+  width: 100%; margin: 0;
+  position: relative; transform-origin: 50% 40%;
+  transform: translateY(var(--flow-lift, 0px)) translateZ(var(--flow-depth, 0px)) rotateY(var(--flow-angle, 0deg)) scale(var(--flow-scale, 1));
+  pointer-events: auto;
+  opacity: var(--flow-alpha, 1); transition: none;
+}
+.view-home .home-coverflow .home-album-card .card-art {
+  transform: none; border-radius: 7px;
+  margin-bottom: calc(var(--flow-cover) * .34 + 12px);
+  box-shadow: 0 14px 24px rgba(0,0,0,.4);
+}
+.home-coverflow .home-cover-reflection {
+  position: absolute; top: calc(var(--flow-cover) + 7px); left: 0;
+  width: 100%; height: calc(var(--flow-cover) * .34);
+  overflow: hidden; pointer-events: none; opacity: .58;
+  -webkit-mask-image: linear-gradient(to bottom, #000 0%, rgba(0,0,0,.65) 35%, transparent 100%);
+  mask-image: linear-gradient(to bottom, #000 0%, rgba(0,0,0,.65) 35%, transparent 100%);
+}
+.home-cover-reflection::before {
+  content: ''; position: absolute; left: 0; top: 0;
+  width: 100%; height: var(--flow-cover);
+  background-image: var(--reflection-image); background-size: 100% 100%;
+  background-repeat: no-repeat; transform: scaleY(-1);
+}
+.view-home .home-coverflow .card-art img { transform: none; transition: none; }
+.home-coverflow .card-title-row, .home-coverflow .card-sub, .home-coverflow .home-card-reason {
+  opacity: var(--flow-caption, 1);
+}
+.home-coverflow .home-album-card:not(.is-current) .card-title-row,
+.home-coverflow .home-album-card:not(.is-current) .card-sub,
+.home-coverflow .home-album-card:not(.is-current) .home-card-reason { visibility: hidden; }
+#recent-grid.home-coverflow { --flow-step: calc(var(--flow-cover) * .62); }
+#recent-grid.home-coverflow .home-album-card:not(.is-current) .card-title-row,
+#recent-grid.home-coverflow .home-album-card:not(.is-current) .card-sub,
+#recent-grid.home-coverflow .home-album-card:not(.is-current) .home-card-reason { visibility: visible; pointer-events: none; }
+.view-home .home-coverflow.is-dragging { scroll-snap-type: none; cursor: grabbing; }
+@media (hover: hover) and (pointer: fine) {
+  .home-coverflow { cursor: grab; user-select: none; -webkit-user-select: none; }
+  .home-coverflow .card { cursor: inherit; }
+}
+.view-home .home-coverflow .card-title-row { justify-content: center !important; gap: 8px !important; }
+.view-home .home-coverflow .card-title { flex: 0 1 auto !important; font-size: 15px; text-align: center; }
+.view-home .home-coverflow .card-sub { text-align: center; font-size: 12px; }
+.view-home .home-coverflow .home-card-reason { text-align: center; font-size: 10px; }
+.home-coverflow:focus-visible { outline: 1px solid var(--gold); outline-offset: -5px; }
+.home-flow-controls { display: flex; justify-content: center; align-items: center; gap: 18px; padding: 0 16px 20px; }
+.home-flow-position { min-width: 62px; color: #a49b8c; text-align: center; font: 10px 'DM Mono', monospace; }
+.playing-library-link { color: inherit; text-decoration: none; cursor: pointer; }
+.playing-library-link:hover { color: var(--gold); text-decoration: underline; }
+.playing-library-link:focus-visible, #mobile-player-cover[role="link"]:focus-visible {
+  outline: 2px solid var(--gold); outline-offset: 4px;
+}
+#mobile-player-cover[role="link"] { cursor: pointer; -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; }
+@media (min-width: 769px) {
+  #albums-grid .card-title-row { position: relative; }
+  #albums-grid .card-title-row:has(.hires-badge) { padding-right: 34px; }
+  #albums-grid .card-title { margin-bottom: 0; line-height: 1.25; }
+  #albums-grid .card-title-row .hires-badge { position: absolute; top: 0; right: 0; }
+  #albums-grid .card-sub { margin-top: 0; line-height: 1.25; }
+  #albums-grid .card-title-row:has(.hires-badge) + .card-sub { padding-right: 34px; }
+}
+@media (max-width: 768px) {
+  /* Keep the badge from stretching the title row and opening a metadata gap. */
+  :is(#artist-albums-grid, #albums-grid) { row-gap: 16px; }
+  :is(#artist-albums-grid, #albums-grid) .card-title-row { position: relative; }
+  :is(#artist-albums-grid, #albums-grid) .card-title-row:has(.hires-badge) { padding-right: 34px; }
+  :is(#artist-albums-grid, #albums-grid) .card-title { margin-bottom: 0; line-height: 1.25; }
+  :is(#artist-albums-grid, #albums-grid) .card-title-row .hires-badge {
+    position: absolute; top: 0; right: 0; height: 28px !important; width: auto;
+  }
+  :is(#artist-albums-grid, #albums-grid) .card-sub { margin-top: 0; line-height: 1.25; }
+  :is(#artist-albums-grid, #albums-grid) .card-title-row:has(.hires-badge) + .card-sub { padding-right: 34px; }
+}
+@media (max-width: 768px) {
+  .view-home .home-coverflow.home-shelf-grid {
+    --flow-cover: min(52vw, 226px); --flow-step: calc(var(--flow-cover) * .48);
+    padding-top: 16px; height: calc(var(--flow-cover) * 1.34 + 97px);
+  }
+  .home-flow-controls { padding-bottom: 12px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .view-home .home-coverflow .home-album-card { transform: scale(var(--flow-scale, 1)); }
+}
 </style>
 </head>
 <body>
@@ -6068,7 +6303,7 @@ input[type=range]::-webkit-slider-thumb:hover { background: var(--gold); }
   <!-- ─── Main Content ─── -->
   <main id="main">
     <!-- Mobile Menu Button -->
-    <button class="mobile-menu-btn" id="mobile-menu-btn">
+    <button class="mobile-menu-btn" id="mobile-menu-btn" type="button" aria-label="Open menu" aria-controls="sidebar" aria-expanded="false">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
         <line x1="3" y1="12" x2="21" y2="12"/>
         <line x1="3" y1="6" x2="21" y2="6"/>
@@ -6785,13 +7020,37 @@ function isNativeZone() {
 
 async function stopCurrentOutput() {
   if (isCastZone()) {
-    await api(`/cast/control/${state.castDevice.udn}/Stop`, { method: 'POST' });
+    // Not awaited: the server runs Stop after any cast in progress (and
+    // cancels waiting ones), so a slow renderer never holds up switching
+    // outputs. Its answer only reports a renderer that may still play.
+    // Requests to this renderer made after leaving wait for that answer
+    // (castStopSettled), so a quick return can never be overtaken by it.
+    const device = state.castDevice;
     stopCastPolling();
+    const stop = api(`/cast/control/${device.udn}/Stop`,
+      { method: 'POST', timeoutMs: CAST_TIMING.requestTimeoutMs, timeoutResult: null })
+      .then(res => {
+        if (!res?.success) showToast(`${device.name} did not confirm Stop; it may still be playing`);
+      })
+      .finally(() => {
+        const pending = state.castStopPending[device.udn];
+        pending?.delete(stop);
+        if (pending && !pending.size) delete state.castStopPending[device.udn];
+      });
+    (state.castStopPending[device.udn] ||= new Set()).add(stop);
   } else if (isNativeZone()) {
     await api('/playback/stop', { method: 'POST' });
   } else {
     markExpectedBrowserPause();
     audio.pause();
+  }
+}
+
+// Resolves once every Stop sent to this renderer so far has been answered.
+async function castStopSettled(device) {
+  let pending;
+  while ((pending = state.castStopPending[device.udn]) && pending.size) {
+    await Promise.allSettled([...pending]);
   }
 }
 
@@ -6833,6 +7092,14 @@ async function activateZone(zone, transferPlayback = true) {
   state.castDsp = null;
   state.castStartOffset = 0;
   state.castPosition = 0;
+  // A late Play/Pause answer from the previous zone must not touch this one.
+  state.castControlSeq = (state.castControlSeq || 0) + 1;
+  state.castControlPending = null;
+  // A new zone session, even on the renderer just left: older cast and
+  // status answers belong to the previous session.
+  state.zoneEpoch = (state.zoneEpoch || 0) + 1;
+  state.castConfirmedTrackId = null;
+  state.castPending = false;
   restoreZoneDspSelection();
   updatePlayerUI(state.currentTrack || {});
   updatePlayBtnUI();
@@ -6905,17 +7172,23 @@ function castDspMatches(castDsp, dspProfile) {
 // `plan` is the server's resolved plan (/dsp/profiles/{id}/resolved): a
 // selected preset whose processing graph is empty is reported as bypassed.
 // `replaygain` is { mode } or the server's /tracks/{id}/replaygain result:
-// only browser streams apply it.
+// browser streams apply it, and a renderer when its cast reported the gain
+// (`castDsp.replaygain`, the same resolution); native outputs never do.
 function describeSignalProcessing(zoneType, dspProfile, upsample, plan = null, castDsp = null, replaygain = null) {
   const replaygainOn = replaygain && replaygain.mode && replaygain.mode !== 'off';
+  const replaygainLine = rg => `ReplayGain ${rg.mode}: ${rg.applied_db > 0 ? '+' : ''}${rg.applied_db.toFixed(2)} dB`
+    + (rg.reason ? ` (${rg.reason})` : '');
   if (zoneType === 'cast') {
     const transcoded = castDsp?.stream === 'dsp_transcode';
+    const castReplaygain = castDsp?.replaygain;
     const lines = [transcoded
       ? 'VELVET DSP stream to renderer (24-bit FLAC, source sample rate)'
       : 'Direct source stream to renderer'];
+    if (castDsp?.pending) lines.push('Latest change not confirmed by the renderer yet');
+    if (castDsp?.transport === 'play_failed') lines.push('Renderer refused Play: stream loaded, not playing');
     if (dspProfile && !castDspMatches(castDsp, dspProfile)) {
       lines.push(`DSP ${dspProfile.name} not applied on this renderer yet`);
-    } else if (!dspProfile && transcoded) {
+    } else if (!dspProfile && castDsp?.status === 'applied') {
       lines.push('VELVET DSP off; renderer still plays the previous DSP stream');
     } else if (!dspProfile) {
       lines.push('VELVET DSP off');
@@ -6925,7 +7198,13 @@ function describeSignalProcessing(zoneType, dspProfile, upsample, plan = null, c
       lines.push(`DSP ${dspProfile.name}`, ...dspPlanLines(plan));
     }
     if (upsample && upsample !== 'none') lines.push('PCM upsampling not applied on this renderer');
-    if (replaygainOn) lines.push('ReplayGain not applied on this renderer');
+    if (replaygainOn && castReplaygain?.mode === replaygain.mode) {
+      lines.push(replaygainLine(castReplaygain));
+    } else if (replaygainOn) {
+      lines.push(`ReplayGain ${replaygain.mode} not applied on this renderer yet`);
+    } else if (castReplaygain?.applied_db) {
+      lines.push('ReplayGain off; renderer still plays the previous ReplayGain stream');
+    }
     return lines;
   }
   const lines = [
@@ -6934,9 +7213,7 @@ function describeSignalProcessing(zoneType, dspProfile, upsample, plan = null, c
   if (replaygainOn && zoneType === 'native') {
     lines.push('ReplayGain not applied on this output');
   } else if (replaygainOn && typeof replaygain.applied_db === 'number') {
-    const db = replaygain.applied_db;
-    lines.push(`ReplayGain ${replaygain.mode}: ${db > 0 ? '+' : ''}${db.toFixed(2)} dB`
-      + (replaygain.reason ? ` (${replaygain.reason})` : ''));
+    lines.push(replaygainLine(replaygain));
   } else if (replaygainOn) {
     lines.push(`ReplayGain ${replaygain.mode} (status unavailable)`);
   }
@@ -6982,7 +7259,9 @@ async function showSignalPath() {
   ].filter(Boolean).join(' · ');
 
   const activeZone = getActiveZone();
-  const castDsp = activeZone.type === 'cast' ? state.castDsp : null;
+  // While a re-cast is unanswered, what the renderer plays is not confirmed.
+  const castDsp = activeZone.type !== 'cast' ? null
+    : state.castPending && state.castDsp ? { ...state.castDsp, pending: true } : state.castDsp;
   let plan = null;
   // A renderer's transcode was resolved at the source rate, as this plan is.
   if (dspProfile && (activeZone.type !== 'cast'
@@ -7147,6 +7426,7 @@ function initMobileMenu() {
     blurActiveEditor();
     sidebar.classList.add('open');
     overlay.classList.add('open');
+    menuBtn.setAttribute('aria-expanded', 'true');
     document.body.style.overflow = 'hidden';
   }
 
@@ -7154,6 +7434,7 @@ function initMobileMenu() {
     blurActiveEditor();
     sidebar.classList.remove('open');
     overlay.classList.remove('open');
+    menuBtn.setAttribute('aria-expanded', 'false');
     document.body.style.overflow = '';
   }
 
@@ -7263,7 +7544,11 @@ let authState = {
 const KEEP_ALIVE_VIEWS = new Set(['albums']);
 const _keptViews = new Map();  // view -> { nodes, scrollTop, savedAt }
 
+// `opts.timeoutMs` overrides the 8 s limit; with `opts.timeoutResult` a
+// timeout returns that value (no toast) so the caller can tell it apart.
 async function api(path, opts = {}) {
+  const { timeoutMs = 8000, timeoutResult, ...fetchOpts } = opts;
+  opts = fetchOpts;
   if ((opts.method || 'GET').toUpperCase() !== 'GET') _keptViews.clear();
   const headers = opts.headers || {};
   if (opts.body && !headers['Content-Type']) {
@@ -7277,7 +7562,7 @@ async function api(path, opts = {}) {
 
   // 8-second timeout to prevent infinite hangs on server startup
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), opts.timeoutMs || 8000);
+const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
   try {
     log(`[VELVET] API Call: ${path}`);
@@ -7328,6 +7613,7 @@ async function api(path, opts = {}) {
     clearTimeout(timeoutId);
     if (e.name === 'AbortError') {
       console.warn(`API ${path} timed out`);
+      if (timeoutResult !== undefined) return timeoutResult;
       showToast('Connection timed out');
     } else {
       console.warn('API error:', path, e.message);
@@ -7611,6 +7897,13 @@ const state = {
   castDsp: null, // the server's DSP status for what the renderer is playing
   castStartOffset: 0, // seconds into the track where the renderer's stream starts
   castPosition: 0, // track position on the renderer (offset included)
+  castSeq: 0, // the newest castTo request; older answers are dropped
+  castPending: false, // the newest castTo request has not answered yet
+  castControlSeq: 0, // the newest Play/Pause request; older answers are ignored
+  castControlPending: null, // 'Play' | 'Pause' while that request is unanswered
+  zoneEpoch: 0, // bumped on every output-zone change
+  castStopPending: {}, // udn -> Set of the unanswered Stops sent when leaving it
+  castConfirmedTrackId: null, // the track whose cast the renderer last acknowledged
   isComposing: false,
   mobilePlayerDismissed: false,
 };
@@ -8371,12 +8664,43 @@ async function playTrack(track, queue, idx) {
   // Mobile player auto-open is handled above for first-touch playback only.
 }
 
+// Take the play/pause state from the renderer itself (after a failed or
+// overtaken control or cast), unless a newer Play/Pause is still unanswered.
+async function refreshCastTransport(device) {
+  const isCurrent = castStatusGuard();
+  const status = await api(`/cast/status/${device.udn}`);
+  if (!status || !isCurrent() || !isCastZone() || state.castDevice?.udn !== device.udn) return;
+  if (status.state === 'PLAYING') state.playing = true;
+  else if (['PAUSED_PLAYBACK', 'STOPPED', 'NO_MEDIA_PRESENT'].includes(status.state)) state.playing = false;
+  updatePlayBtnUI();
+}
+
+// A renderer status snapshot may update the player only if, from request to
+// answer, nothing newer happened: same zone session, same confirmed cast and
+// track, and no Play/Pause sent or still unanswered. Returns that check.
+function castStatusGuard() {
+  const epoch = state.zoneEpoch;
+  const castSeq = state.castSeq;
+  const trackId = state.currentTrack?.id;
+  const controlSeq = state.castControlSeq;
+  return () => epoch === state.zoneEpoch && castSeq === state.castSeq
+    && trackId === state.currentTrack?.id && controlSeq === state.castControlSeq
+    && !state.castPending && !state.castControlPending
+    && state.castConfirmedTrackId === trackId;
+}
+
 function startCastPolling() {
   stopCastPolling();
   state.castPollId = setInterval(async () => {
     if (!state.castDevice) return stopCastPolling();
+    // While a cast is unanswered the renderer may still report the previous
+    // stream (e.g. track A ending after B was chosen): never let that drive
+    // position, play state or auto-next. Poll again once the cast is confirmed.
+    const isCurrent = castStatusGuard();
+    if (!isCurrent()) return;
     try {
       const status = await api(`/cast/status/${state.castDevice.udn}`);
+      if (!status || !isCurrent()) return;
       if (status.state === 'PLAYING') {
         state.playing = true;
       } else if (status.state === 'PAUSED_PLAYBACK') {
@@ -8415,38 +8739,117 @@ function stopCastPolling() {
   }
 }
 
-// `startSeconds` resumes the track there (a DSP change mid-track).
-async function castTo(track, device, { startSeconds = 0 } = {}) {
+// `startSeconds` resumes the track there (a DSP change mid-track); `recast`
+// marks a settings change for the track the renderer already has, so the
+// server keeps a paused renderer paused.
+async function castTo(track, device, { startSeconds = 0, recast = false } = {}) {
+  // Only the newest cast may update the player: a late answer for an older
+  // request, another track or another zone is dropped. (The server also
+  // runs one renderer's casts in order and skips superseded ones.)
+  const castSeq = (state.castSeq || 0) + 1;
+  state.castSeq = castSeq;
+  state.castPending = true;
+  const epoch = state.zoneEpoch;
+  const isStale = () => castSeq !== state.castSeq || epoch !== state.zoneEpoch || !isCastZone()
+    || state.castDevice?.udn !== device.udn || state.currentTrack?.id !== track.id;
+  const requestId = `${Date.now().toString(36)}-${castSeq}`;
+  const controlSeqAtSend = state.castControlSeq || 0;
   showToast(`Casting to ${device.name}...`);
   try {
     // The server hands the renderer its own ticketed URL for this track:
-    // the direct source, or its DSP transcode when this zone's preset is active.
+    // the direct source, or its DSP transcode when this zone's preset or a
+    // ReplayGain gain is active.
     const dspProfile = state.dspProfiles.find(profile => String(profile.id) === String(state.dspProfile));
-    const res = await api(`/cast/${device.udn}`, {
+    await castStopSettled(device);
+    if (isStale()) return;
+    // A cast waits for the renderer's earlier casts and its own SOAP calls,
+    // so it gets a longer limit than other requests.
+    let res = await api(`/cast/${device.udn}`, {
       method: 'POST',
+      timeoutMs: CAST_TIMING.requestTimeoutMs,
+      timeoutResult: { timedOut: true },
       body: JSON.stringify({
         track_id: track.id,
         dsp_profile_id: Number(state.dspProfile) || null,
+        ...(state.replaygain && state.replaygain !== 'off' ? { replaygain: state.replaygain } : {}),
         ...(startSeconds > 0 ? { start_seconds: Math.round(startSeconds * 10) / 10 } : {}),
+        ...(recast ? { recast: true } : {}),
+        request_id: requestId,
       })
     });
-    if (res.success) {
-      markExpectedBrowserPause(1200);
-      audio.pause();
-      state.castDsp = res.dsp ? { ...res.dsp, effective_name: res.dsp.effective_profile_id ? dspProfile?.name : null } : null;
-      state.castStartOffset = Number(res.start_offset) || 0;
-      state.castPosition = startSeconds > 0 ? startSeconds : 0;
-      let dspNote = '';
-      if (res.dsp?.status === 'applied') dspNote = ` · DSP ${dspProfile?.name || ''}`.trimEnd();
-      if (res.dsp?.status === 'bypassed') dspNote = ' · DSP bypassed (no active processing)';
-      showToast(`Playing on ${device.name}${dspNote}`);
-      startCastPolling();
-    } else {
-      showToast(`Failed to cast to ${device.name}`);
+    if (res?.timedOut && !isStale()) {
+      // The server may still be talking to the renderer: never assume either
+      // outcome, ask for it (Signal Path says the change is unconfirmed).
+      showToast(`${device.name} is slow to respond; waiting for it`);
+      res = await awaitCastResult(device, requestId, isStale);
     }
+    if (isStale() || res?.superseded) return;
+    applyCastResult(res, { track, device, dspProfile, startSeconds, controlSeqAtSend });
   } catch (e) {
-    showToast(`Error: ${e.message}`);
+    if (!isStale()) showToast(`Error: ${e.message}`);
+  } finally {
+    if (castSeq === state.castSeq) state.castPending = false;
   }
+}
+
+const CAST_TIMING = { requestTimeoutMs: 90000, resultPollMs: 2000, reconcileMs: 180000 };
+
+// Poll the server for a timed-out cast's outcome; null if it never settles.
+async function awaitCastResult(device, requestId, isStale) {
+  const deadline = Date.now() + CAST_TIMING.reconcileMs;
+  while (Date.now() < deadline && !isStale()) {
+    await new Promise(resolve => setTimeout(resolve, CAST_TIMING.resultPollMs));
+    const result = await api(`/cast/result/${device.udn}/${requestId}`);
+    if (result?.done) return result;
+    if (!result) return null; // unknown to the server (e.g. it restarted)
+  }
+  return null;
+}
+
+function applyCastResult(res, { track, device, dspProfile, startSeconds, controlSeqAtSend = 0 }) {
+  // "play_failed": the renderer holds the new stream but refused Play.
+  if (!res || !(res.success || res.transport === 'play_failed')) {
+    // Nothing confirmed: keep the last confirmed state (Signal Path unchanged).
+    showToast(res?.error ? `Failed to cast to ${device.name}: ${res.error}` : `Failed to cast to ${device.name}`);
+    return;
+  }
+  markExpectedBrowserPause(1200);
+  audio.pause();
+  state.castDsp = res.dsp ? {
+    ...res.dsp,
+    effective_name: res.dsp.effective_profile_id ? dspProfile?.name : null,
+    replaygain: res.replaygain || null,
+    transport: res.transport || null,
+  } : null;
+  // The renderer has acknowledged this track's stream: status answers may
+  // describe it from now on.
+  state.castConfirmedTrackId = track?.id ?? null;
+  state.castStartOffset = Number(res.start_offset) || 0;
+  // A direct stream that could not seek restarts from the beginning.
+  const resumed = startSeconds > 0 && (state.castStartOffset > 0 || res.position_restored !== false);
+  state.castPosition = resumed ? startSeconds : 0;
+  if ((state.castControlSeq || 0) === controlSeqAtSend) {
+    state.playing = res.transport === 'playing';
+    updatePlayBtnUI();
+  } else {
+    // A Play/Pause sent after this cast ran after it on the renderer.
+    refreshCastTransport(device);
+  }
+  let dspNote = '';
+  if (res.dsp?.status === 'applied') dspNote = ` · DSP ${dspProfile?.name || ''}`.trimEnd();
+  if (res.dsp?.status === 'bypassed') dspNote = ' · DSP bypassed (no active processing)';
+  const rgDb = Number(res.replaygain?.applied_db) || 0;
+  if (rgDb) dspNote += ` · ReplayGain ${rgDb > 0 ? '+' : ''}${rgDb.toFixed(2)} dB`;
+  if (res.transport === 'play_failed') {
+    showToast(`${device.name} loaded the stream but did not start playing`);
+  } else if (res.transport === 'loaded') {
+    showToast(`${device.name}: stream loaded; playback not started (was paused)${dspNote}`);
+  } else if (startSeconds > 0 && !resumed) {
+    showToast(`${device.name} could not seek: playing from the start${dspNote}`);
+  } else {
+    showToast(`Playing on ${device.name}${dspNote}`);
+  }
+  startCastPolling();
 }
 
 async function toggleCastMenu() {
@@ -8711,12 +9114,41 @@ const togglePlayAction = async () => {
   if (!state.currentTrack) return;
 
   if (isCastZone()) {
-    const action = state.playing ? 'Pause' : 'Play';
-    const res = await api(`/cast/control/${state.castDevice.udn}/${action}`, { method: 'POST' });
-    if (res.success) {
-      state.playing = !state.playing;
-      updatePlayBtnUI();
+    const device = state.castDevice;
+    // Toggle what the user last asked for: a second click while a Pause is
+    // unanswered asks for Play, never a second Pause.
+    const wantsPlaying = state.castControlPending ? state.castControlPending === 'Play' : state.playing;
+    const action = wantsPlaying ? 'Pause' : 'Play';
+    const controlSeq = (state.castControlSeq || 0) + 1;
+    state.castControlSeq = controlSeq;
+    state.castControlPending = action;
+    const castSeqAtSend = state.castSeq;
+    const epoch = state.zoneEpoch;
+    const overtaken = () => controlSeq !== state.castControlSeq || epoch !== state.zoneEpoch
+      || !isCastZone() || state.castDevice?.udn !== device.udn;
+    await castStopSettled(device);
+    if (overtaken()) {
+      // Never send a Play/Pause the user can no longer mean.
+      if (controlSeq === state.castControlSeq) state.castControlPending = null;
+      return;
     }
+    // Ordered after any cast still running for this renderer.
+    const res = await api(`/cast/control/${device.udn}/${action}`,
+      { method: 'POST', timeoutMs: CAST_TIMING.requestTimeoutMs });
+    if (overtaken()) {
+      return; // a newer control or another zone owns the player state now
+    }
+    state.castControlPending = null;
+    if (res?.success && state.castSeq === castSeqAtSend) {
+      // Apply the acknowledged action itself, not a flip of whatever is current.
+      state.playing = action === 'Play';
+      updatePlayBtnUI();
+      return;
+    }
+    // Failed, or a cast was sent meanwhile and its answer may say otherwise:
+    // ask the renderer what it is doing.
+    if (!res?.success) showToast(`${device.name} did not accept ${action}`);
+    refreshCastTransport(device);
     return;
   }
 
@@ -8991,7 +9423,7 @@ function updateVUMetersInfo() {
   const vuCodec = UI['mobile-vu-codec'];
 
   if (vuTitle) vuTitle.textContent = track.title || '—';
-  if (vuArtist) vuArtist.textContent = track.artist_name || track.artist || '—';
+  updatePlayingArtistLink(vuArtist, track);
   if (vuFormat) vuFormat.textContent = track.bit_depth ? `${track.bit_depth}-BIT` : (track.format || '—');
   if (vuSr) vuSr.textContent = track.sample_rate ? fmtCompactSR(track.sample_rate) : '—';
   if (vuCodec) vuCodec.textContent = track.format || '—';
@@ -9191,6 +9623,14 @@ function openFullscreenPlayer(e) {
 // Bind close button
 UI['mobile-player-back'].addEventListener('click', () => toggleMobilePlayer(false, { source: 'dismiss' }));
 UI['player-art'].addEventListener('click', openFullscreenPlayer);
+UI['mobile-player-cover'].addEventListener('click', () => {
+  openPlayingLibraryItem('album', state.currentTrack?.album_id);
+});
+UI['mobile-player-cover'].addEventListener('keydown', event => {
+  if (event.key !== 'Enter') return;
+  event.preventDefault();
+  openPlayingLibraryItem('album', state.currentTrack?.album_id);
+});
 
 // Provide a way to manually open only from the now-playing info block on mobile.
 UI['player'].addEventListener('click', e => {
@@ -9245,15 +9685,41 @@ UI['upsample-select'].addEventListener('change', e => {
   syncMobileLandscapeControls();
 });
 
-// ReplayGain is applied by the server in browser streams only; a running
-// browser stream restarts at the same position to pick it up.
+// A renderer is re-cast for a ReplayGain change only when the gain it gets
+// changes: the same gain (no tags, or track and album alike) keeps its
+// stream playing untouched.
+async function recastForReplayGain(mode) {
+  const track = state.currentTrack;
+  const device = state.castDevice;
+  const current = state.castDsp?.replaygain;
+  if (current && !state.castPending) {
+    const next = await api(`/tracks/${track.id}/replaygain?mode=${mode}`).catch(() => null);
+    if (state.replaygain !== mode || state.currentTrack !== track || state.castDevice !== device) return;
+    if (next && !state.castPending && state.castDsp?.replaygain === current
+        && Number(next.applied_db) === Number(current.applied_db)) {
+      state.castDsp = { ...state.castDsp, replaygain: next };
+      showToast(`ReplayGain ${mode}: gain unchanged on ${device.name}`);
+      return;
+    }
+  }
+  castTo(track, device, { startSeconds: state.castPosition || 0, recast: true });
+}
+
+// ReplayGain is applied by the server in browser and renderer streams (not
+// on native outputs); a running stream restarts at the same position to
+// pick it up.
 function setReplayGainMode(mode) {
   if (!REPLAYGAIN_MODES.includes(mode)) return;
   state.replaygain = mode;
   persistReplayGainMode(mode);
   const select = $('eq-replaygain');
   if (select) select.value = mode;
-  if (state.currentTrack && (isCastZone() || isNativeZone())) {
+  if (state.currentTrack && isCastZone()) {
+    // castTo reports the result.
+    recastForReplayGain(mode);
+    return;
+  }
+  if (state.currentTrack && isNativeZone()) {
     showToast(mode === 'off' ? 'ReplayGain off' : 'ReplayGain not applied on this output');
     return;
   }
@@ -9289,7 +9755,7 @@ UI['dsp-select'].addEventListener('change', e => {
     if (isCastZone()) {
       // Re-cast the renderer's stream (DSP transcode or direct source) from
       // where it is now.
-      castTo(state.currentTrack, state.castDevice, { startSeconds: state.castPosition || 0 });
+      castTo(state.currentTrack, state.castDevice, { startSeconds: state.castPosition || 0, recast: true });
     } else if (isNativeZone()) {
       playTrack(state.currentTrack, state.queue, state.queueIdx);
     } else {
@@ -9321,7 +9787,16 @@ document.addEventListener('click', e => {
 // ─── Media Session Controls ───────────────────────────────────────────────────
 
 if ('mediaSession' in navigator) {
-  navigator.mediaSession.setActionHandler('play', async () => {
+  const setMediaAction = (action, handler) => {
+    try {
+      navigator.mediaSession.setActionHandler(action, handler);
+    } catch (error) {
+      // Older mobile browsers support only a subset of Media Session actions.
+      // One unsupported action must not prevent the remaining player setup.
+      console.warn(`[VELVET] MediaSession ${action} unavailable:`, error?.message || error);
+    }
+  };
+  setMediaAction('play', async () => {
     cleanupSuspendedAudioContextIfNeeded();
     audio.playbackRate = 1.0;
     try {
@@ -9341,7 +9816,7 @@ if ('mediaSession' in navigator) {
       }
     }
   });
-  navigator.mediaSession.setActionHandler('pause', async () => {
+  setMediaAction('pause', async () => {
     // Clean up suspended AudioContext on pause to prevent broken graph causing
     // pitch/speed issues when resuming later on mobile.
     cleanupSuspendedAudioContextIfNeeded();
@@ -9351,12 +9826,16 @@ if ('mediaSession' in navigator) {
     state.playing = false;
     updatePlayBtnUI();
   });
-  navigator.mediaSession.setActionHandler('previoustrack', () => {
+  setMediaAction('previoustrack', () => {
     UI['btn-prev'].click();
   });
-  navigator.mediaSession.setActionHandler('nexttrack', () => {
+  setMediaAction('nexttrack', () => {
     UI['btn-next'].click();
   });
+  // Music uses previous/next track controls rather than podcast-style skips.
+  // Explicitly clear seeking actions so the platform can prefer track buttons.
+  setMediaAction('seekbackward', null);
+  setMediaAction('seekforward', null);
 }
 
 startBrowserPlaybackWatchdog();
@@ -9431,6 +9910,7 @@ async function navigate(view, params = {}, push = true) {
   // Close overlays
   UI['sidebar-overlay']?.classList.remove('open', 'active');
   UI['sidebar']?.classList.remove('open');
+  UI['mobile-menu-btn']?.setAttribute('aria-expanded', 'false');
 
   // Back/forward restores a kept view; menu clicks and links render fresh.
   await render({ restore: !push });
@@ -9542,6 +10022,8 @@ async function render({ restore = false } = {}) {
     console.error('[VELVET] Critical Error: #view-container not found in DOM');
     return;
   }
+  vc._disposeHome?.();
+  vc._disposeHome = null;
   
   scrollToTop();
 

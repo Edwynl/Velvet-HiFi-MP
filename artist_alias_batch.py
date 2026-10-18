@@ -25,6 +25,9 @@ MAX_BATCH_SIZE = 50
 MAX_ALL_ARTISTS = 20000
 DEFAULT_BATCH_SIZE = 25
 REQUEST_INTERVAL_SECONDS = 1.25
+# Rows indexed in the post-batch refresh. Chosen to stay well inside a single
+# short write transaction even after a whole-library run.
+REFRESH_ROW_BUDGET = 5000
 
 # New artists are never skipped. Completed artists are excluded from next
 # batches, including those with no verified aliases; retry is explicit.
@@ -247,12 +250,18 @@ class ArtistAliasEnrichmentJob:
                 if self._stop.is_set():
                     break
 
-        # Best-effort bounded dirty-index refresh. Without this, a large alias
-        # import leaves huge dirty match candidate sets until server restart.
+        # Bounded follow-up index refresh. Without it, a large alias import
+        # leaves huge dirty match candidate sets until the server restarts.
+        # The budget matters: refresh_track_search_index drains its whole queue
+        # when called without one, so "Sync all remaining" would otherwise end
+        # in a single write transaction over tens of thousands of tracks and
+        # block every other writer. Rows left dirty stay searchable -- the live
+        # data path already answers from unindexed values -- and the server
+        # finishes them on its next refresh.
         if self.state.snapshot().get("aliases_added"):
             db = self.db_factory()
             try:
-                refresh_track_search_index(db, batch_size=500)
+                refresh_track_search_index(db, batch_size=500, max_rows=REFRESH_ROW_BUDGET)
                 db.commit()
             except sqlite3.Error:
                 db.rollback()

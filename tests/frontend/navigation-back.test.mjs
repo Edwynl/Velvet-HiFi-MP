@@ -210,6 +210,10 @@ function createHarness({ initialHash = '#home' } = {}) {
       return Promise.resolve(makeJsonResponse(searchResults[query] || { tracks: [] }));
     }
 
+    if (parsedUrl.pathname === '/api/home' && method === 'GET') {
+      return Promise.resolve(makeJsonResponse({ recently_opened: [], frequent_artists: [], for_you: [], global_picks: [] }));
+    }
+
     throw new Error(`Unhandled fetch: ${method} ${parsedUrl.pathname}`);
   };
 
@@ -441,15 +445,25 @@ async function testNavigateClosesMobileSidebarOverlay() {
   try {
     const overlay = dom.window.document.querySelector('#sidebar-overlay');
     const sidebar = dom.window.document.querySelector('#sidebar');
+    const menu = dom.window.document.querySelector('#mobile-menu-btn');
 
-    overlay.classList.add('open', 'active');
-    sidebar.classList.add('open');
+    assert.equal(menu.getAttribute('aria-expanded'), 'false');
+    menu.click();
+    assert.equal(menu.getAttribute('aria-expanded'), 'true');
+    assert.equal(sidebar.classList.contains('open'), true);
+    overlay.click();
+    assert.equal(menu.getAttribute('aria-expanded'), 'false');
+    assert.equal(sidebar.classList.contains('open'), false);
+
+    menu.click();
+    overlay.classList.add('active');
 
     await dom.window.navigate('albums');
 
     assert.equal(overlay.classList.contains('open'), false);
     assert.equal(overlay.classList.contains('active'), false);
     assert.equal(sidebar.classList.contains('open'), false);
+    assert.equal(menu.getAttribute('aria-expanded'), 'false');
   } finally {
     await new Promise(resolve => dom.window.setTimeout(resolve, 10));
   }

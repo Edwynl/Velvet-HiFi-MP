@@ -5,6 +5,8 @@ A Roon-like music management system for Windows
 """
 
 import asyncio
+import collections
+import concurrent.futures
 import gzip
 from functools import lru_cache
 import io
@@ -44,6 +46,7 @@ from cover_art import find_folder_cover as find_folder_cover_bytes, save_cover_b
 from dsp_engine import (
     MAX_PREAMP_DB,
     MIN_PREAMP_DB,
+    REPLAYGAIN_MODES,
     DspValidationError,
     build_dsp_filter_chain,
     dsp_effective_status,
@@ -72,6 +75,7 @@ from db_schema import init_db
 from library_search_index import refresh_track_search_index
 from library_browse import fetch_albums, fetch_artists, fetch_tracks
 from library_paging import album_catalog_filters, fetch_album_page, fetch_artist_page
+from home_recommendations import fetch_home_shelves, parse_home_ids
 from artist_aliases import add_alias, fetch_aliases
 from artist_alias_sync import AliasSyncUnavailable, sync_artist_aliases, resolve_search_alias
 from artist_alias_batch import ArtistAliasEnrichmentJob, DEFAULT_BATCH_SIZE, MAX_BATCH_SIZE
@@ -833,9 +837,19 @@ async def cast_to_device(device_udn: str, request: Request):
 
     With an active DSP preset the renderer gets the same server-side DSP
     transcode as the browser (24-bit FLAC at the source rate, EQ-1 headroom
-    guard at that rate); otherwise the direct source file. `start_seconds`
-    resumes the track there: the transcode starts at that offset, a direct
-    stream is seeked by the renderer after Play.
+    guard at that rate); otherwise the direct source file. `replaygain`
+    (off|track|album) adds the file's tagged gain the same way: a non-zero
+    gain also selects the transcode. `start_seconds` resumes the track there:
+    the transcode starts at that offset, a direct stream is seeked by the
+    renderer after Play. `recast` marks a settings change for the track the
+    renderer already has: a paused renderer (or one the user just paused)
+    gets the new stream loaded without Play.
+
+    Casts and controls for one renderer run one at a time in arrival order;
+    a cast superseded by a newer cast or Stop while it waited is skipped
+    ({"superseded": true}), so a stale request never replaces newer playback.
+    A client-chosen `request_id` lets the client fetch the outcome later
+    (GET /api/cast/result/{udn}/{request_id}) if its request timed out.
     """
     data = await request.json()
     track_id = data.get("track_id")
@@ -849,7 +863,87 @@ async def cast_to_device(device_udn: str, request: Request):
             or not 0 <= start <= TRANSCODE_MAX_SECONDS):
         raise HTTPException(422, f"start_seconds must be 0-{TRANSCODE_MAX_SECONDS}")
     start = round(float(start), 3)
+    replaygain_mode = data.get("replaygain", "off")
+    if not isinstance(replaygain_mode, str) or replaygain_mode not in REPLAYGAIN_MODES:
+        raise HTTPException(422, f"replaygain must be one of {list(REPLAYGAIN_MODES)}")
+    recast = data.get("recast", False)
+    if not isinstance(recast, bool):
+        raise HTTPException(422, "recast must be a boolean")
+    request_id = data.get("request_id")
+    if request_id is not None and (not isinstance(request_id, str) or not 1 <= len(request_id) <= 64):
+        raise HTTPException(422, "request_id must be a string of 1-64 characters")
 
+    generation = _supersede_casts(device_udn)
+    _register_cast_request(device_udn, request_id)
+    # The resolved stream, set below. A newer cast or Stop cancels it, which
+    # wakes this cast's job at once if it is already waiting for it, so a
+    # superseded lookup never holds the renderer's queue.
+    prepared = concurrent.futures.Future()
+    with _cast_state_lock:
+        _cast_preparing.setdefault(device_udn, {})[generation] = prepared
+
+    def superseded():
+        with _cast_state_lock:
+            return _cast_generations.get(device_udn) != generation
+
+    def job():
+        try:
+            if superseded():
+                return {"success": False, "superseded": True}  # a newer cast or Stop arrived
+            try:
+                stream = prepared.result(timeout=CAST_PREPARE_TIMEOUT_SECONDS)
+            except concurrent.futures.CancelledError:
+                if superseded():
+                    return {"success": False, "superseded": True}
+                return {"success": False, "cancelled": True}
+            except concurrent.futures.TimeoutError:
+                return {"success": False, "error": "Timed out resolving the stream"}
+            if superseded():
+                return {"success": False, "superseded": True}
+            return _cast_now(device_udn, stream, start, recast)
+        finally:
+            with _cast_state_lock:
+                pending = _cast_preparing.get(device_udn, {})
+                if pending.get(generation) is prepared:
+                    del pending[generation]
+
+    # Queued on arrival, before the stream is resolved: a Play/Pause sent
+    # after this cast always runs after it, so a slow lookup cannot let an
+    # older new-track cast undo a later Pause. Its outcome is recorded for
+    # /api/cast/result on every path, including cancellation.
+    future = _renderer_dispatcher(device_udn).submit(
+        job, on_done=lambda outcome: _record_cast_result(device_udn, request_id, outcome))
+    try:
+        stream = await asyncio.to_thread(_resolve_cast_stream, track_id, requested_dsp, start, replaygain_mode)
+    except HTTPException as exc:
+        _settle(prepared, exception=exc)
+        _record_cast_result(device_udn, request_id, {"success": False, "error": exc.detail})
+        raise
+    except Exception as exc:
+        _settle(prepared, exception=exc)
+        _record_cast_result(device_udn, request_id, {"success": False, "error": "Cast failed"})
+        raise
+    except BaseException:  # cancelled while resolving
+        prepared.cancel()
+        _record_cast_result(device_udn, request_id, {"success": False, "cancelled": True})
+        raise
+    _settle(prepared, result=stream)
+    return await asyncio.wrap_future(future)
+
+
+def _settle(future: concurrent.futures.Future, result=None, exception=None) -> None:
+    """Complete a cast's `prepared` future unless a newer cast or Stop cancelled it."""
+    try:
+        if exception is not None:
+            future.set_exception(exception)
+        else:
+            future.set_result(result)
+    except concurrent.futures.InvalidStateError:
+        pass  # superseded: the job has already returned
+
+
+def _resolve_cast_stream(track_id, requested_dsp, start, replaygain_mode) -> dict:
+    """The URL, DIDL and processing status of the stream a renderer gets."""
     db = get_db()
     track = db.execute(
         "SELECT t.*, ar.name as artist_name, al.title as album_title "
@@ -870,32 +964,197 @@ async def cast_to_device(device_udn: str, request: Request):
     track = dict(track)
     dsp_status = dsp_effective_status(requested_dsp, dict(dsp_profile) if dsp_profile else None,
                                       track["sample_rate"])
-    transcoded = dsp_status["status"] == "applied"
+    tags = {}
+    if replaygain_mode != "off":
+        tags = read_replaygain_tags(filesystem_path(track["file_path"]))
+    # The same resolution /api/stream applies to the URL handed to the renderer.
+    replaygain = resolve_replaygain(tags, replaygain_mode)
+    dsp_applied = dsp_status["status"] == "applied"
+    replaygain_applied = replaygain["applied_db"] != 0
+    transcoded = dsp_applied or replaygain_applied
     stream_query = ""
     if transcoded:
-        stream_query = f"&dsp={requested_dsp}" + (f"&start={start:g}" if start else "")
+        stream_query = ((f"&dsp={requested_dsp}" if dsp_applied else "")
+                        + (f"&replaygain={replaygain_mode}" if replaygain_applied else "")
+                        + (f"&start={start:g}" if start else ""))
     dsp_status["stream"] = "dsp_transcode" if transcoded else "direct"
     stream_url, _ = upnp_server.media_urls(track, stream_query=stream_query)
     # Use upnp_server's DIDL-Lite builder for rich metadata (important for some hi-fi players)
     meta = upnp_server._didl_wrap(upnp_server.track_xml(
         track, "0", stream_query=stream_query, start_seconds=start if transcoded else 0))
+    return {"url": stream_url, "meta": meta, "transcoded": transcoded,
+            "dsp": dsp_status, "replaygain": replaygain}
 
-    # cast_track performs blocking SOAP calls and sleeps; keep the event loop free.
-    success = await asyncio.to_thread(upnp_server.cast_track, device_udn, stream_url, meta)
-    start_offset = start if transcoded else 0
-    if success and start and not transcoded:
-        # Renderer positions on a direct stream are absolute once it seeks;
-        # if it cannot seek, the track plays from the start.
-        if not await asyncio.to_thread(upnp_server.seek, device_udn, start):
-            log.warning("[CAST] Renderer did not seek to %.1fs; playing from the start", start)
+
+def _cast_now(device_udn, stream, start, recast):
+    """Cast a resolved stream (on the renderer's dispatcher thread)."""
+    transcoded = stream["transcoded"]
+    with _cast_state_lock:
+        # The user's last Play/Pause is kept until a cast has honoured it.
+        user_paused = _cast_user_paused.get(device_udn)
+    paused = recast and (user_paused if user_paused is not None
+                         else upnp_server.get_transport_info(device_udn) == "PAUSED_PLAYBACK")
+    transport = upnp_server.cast_track(device_udn, stream["url"], stream["meta"], play=not paused) or "failed"
+    if transport in ("playing", "loaded"):
+        with _cast_state_lock:
+            _cast_user_paused.pop(device_udn, None)
+    position_restored = None
+    if transport != "failed" and start and not transcoded:
+        # A direct stream resumes by seeking; positions then stay absolute.
+        position_restored = upnp_server.seek(device_udn, start)
+        if not position_restored:
+            log.warning("[CAST] Renderer did not seek to %.1fs; it plays from the start", start)
     # Renderer positions are relative to the stream: the UI adds start_offset.
-    return {"success": success, "dsp": dsp_status, "start_offset": start_offset}
+    return {
+        # "loaded": the new stream is set but Play was not sent (the renderer
+        # was paused), so playback has not started; "play_failed": the stream
+        # is set but the renderer refused Play.
+        "success": transport in ("playing", "loaded"),
+        "transport": transport,
+        "position_restored": position_restored,
+        "dsp": stream["dsp"],
+        "replaygain": stream["replaygain"],
+        "start_offset": start if transcoded else 0,
+    }
+
+
+class _RendererDispatcher:
+    """Runs one renderer's SOAP jobs one at a time, in submission order.
+
+    A worker thread exists only while jobs are queued, so waiting requests
+    hold no thread-pool slot; callers await the returned future. A job
+    cancelled while queued never runs. A running job cannot be cancelled
+    and keeps the renderer until it returns, so jobs never overlap.
+    """
+
+    def __init__(self, name: str):
+        self._name = name
+        self._lock = threading.Lock()
+        self._jobs: collections.deque = collections.deque()
+        self._worker: threading.Thread | None = None
+        self.submitted = 0  # jobs ever submitted (tests wait on it)
+
+    def submit(self, fn, on_done=None) -> concurrent.futures.Future:
+        future = concurrent.futures.Future()
+        with self._lock:
+            self._jobs.append((future, fn, on_done))
+            self.submitted += 1
+            if self._worker is None:
+                self._worker = threading.Thread(target=self._drain, daemon=True,
+                                                name=f"cast-{self._name}")
+                self._worker.start()
+        return future
+
+    def _drain(self) -> None:
+        while True:
+            with self._lock:
+                if not self._jobs:
+                    self._worker = None
+                    return
+                future, fn, on_done = self._jobs.popleft()
+            if not future.set_running_or_notify_cancel():
+                outcome = {"success": False, "cancelled": True}
+            else:
+                try:
+                    outcome = fn()
+                    future.set_result(outcome)
+                except BaseException as exc:  # reported to the caller; the worker carries on
+                    future.set_exception(exc)
+                    detail = exc.detail if isinstance(exc, HTTPException) else "Cast failed"
+                    outcome = {"success": False, "error": detail}
+            if on_done:
+                on_done(outcome)
+
+
+_cast_state_lock = threading.Lock()
+_cast_dispatchers: dict[str, _RendererDispatcher] = {}
+_cast_generations: dict[str, int] = {}  # bumped by each cast and Stop
+_cast_preparing: dict[str, dict[int, concurrent.futures.Future]] = {}  # generation -> unresolved stream
+_cast_user_paused: dict[str, bool] = {}  # last Play/Pause not yet honoured by a cast
+_cast_results: dict[str, dict[str, dict | None]] = {}  # request_id -> response (None: pending)
+_CAST_RESULTS_KEPT = 16
+CAST_PREPARE_TIMEOUT_SECONDS = 60
+
+
+def _renderer_dispatcher(device_udn: str) -> _RendererDispatcher:
+    with _cast_state_lock:
+        if device_udn not in _cast_dispatchers:
+            _cast_dispatchers[device_udn] = _RendererDispatcher(device_udn)
+        return _cast_dispatchers[device_udn]
+
+
+def _supersede_casts(device_udn: str) -> int:
+    """A new cast or Stop: every cast queued before it is skipped.
+
+    Casts still resolving their stream are woken (their `prepared` future
+    is cancelled) so they leave the queue at once; one already sending SOAP
+    keeps the renderer until it finishes.
+    """
+    with _cast_state_lock:
+        generation = _cast_generations[device_udn] = _cast_generations.get(device_udn, 0) + 1
+        for prepared in _cast_preparing.pop(device_udn, {}).values():
+            prepared.cancel()
+        return generation
+
+
+def _register_cast_request(device_udn: str, request_id: str | None) -> None:
+    if not request_id:
+        return
+    with _cast_state_lock:
+        results = _cast_results.setdefault(device_udn, {})
+        results[request_id] = None
+        while len(results) > _CAST_RESULTS_KEPT:
+            results.pop(next(iter(results)))
+
+
+def _record_cast_result(device_udn: str, request_id: str | None, response: dict) -> None:
+    """Publish a cast's terminal outcome; the first one stays (a superseded
+    cast whose lookup fails later is still reported as superseded)."""
+    if not request_id:
+        return
+    with _cast_state_lock:
+        results = _cast_results.get(device_udn, {})
+        if request_id in results and results[request_id] is None:
+            results[request_id] = response
+
+
+@app.get("/api/cast/result/{device_udn}/{request_id}")
+def get_cast_result(device_udn: str, request_id: str):
+    """The outcome of an earlier cast request, for a client whose request timed out."""
+    with _cast_state_lock:
+        results = _cast_results.get(device_udn, {})
+        if request_id not in results:
+            raise HTTPException(404, "Unknown cast request")
+        response = results[request_id]
+    return {"done": False} if response is None else {"done": True, **response}
+
 
 @app.post("/api/cast/control/{device_udn}/{action}")
 async def cast_control(device_udn: str, action: str):
-    """Pause, Play, or Stop the cast device."""
-    success = upnp_server.cast_control(device_udn, action)
-    return {"success": success}
+    """Pause, Play, or Stop the cast device.
+
+    Controls are never dropped: they run in arrival order with the
+    renderer's casts, and a Play/Pause decides whether later re-casts play
+    until one has honoured it. Stop also cancels casts still waiting, so
+    leaving a renderer cannot be undone by a late one. An accepted control
+    runs even if its HTTP request is cancelled while it waits (a client
+    leaving the page must still stop the renderer).
+    """
+    if action == "Stop":
+        _supersede_casts(device_udn)
+
+    def control():
+        success = upnp_server.cast_control(device_udn, action)
+        with _cast_state_lock:
+            if action == "Stop":
+                _cast_user_paused.pop(device_udn, None)
+            elif success and action in ("Play", "Pause"):
+                _cast_user_paused[device_udn] = action == "Pause"
+        return success
+
+    future = _renderer_dispatcher(device_udn).submit(control)
+    success = await asyncio.shield(asyncio.wrap_future(future))
+    return {"success": bool(success)}
 
 @app.get("/api/cast/status/{device_udn}")
 async def get_cast_status(device_udn: str):
@@ -1038,14 +1297,14 @@ async def set_album_cover(album_id: int, request: Request):
 @app.get("/api/artists/page")
 def get_artist_page(
     limit: int = Query(60, ge=1, le=200), offset: int = Query(0, ge=0),
-    search: str = "",
+    search: str = "", sort: str = "name",
 ):
     """Serve one artist page instead of all 5000 artist records to a phone."""
     started = time.perf_counter()
     db = get_db()
     try:
         result = fetch_artist_page(
-            db, search=search, limit=limit, offset=offset,
+            db, search=search, limit=limit, offset=offset, sort=sort,
             get_all_variants=get_all_variants,
         )
         _log_baseline_metric("artist_page", started, limit=limit, offset=offset,
@@ -1492,6 +1751,16 @@ def get_discover(limit: int = 12):
     db = get_db()
     try:
         return fetch_discover(db, limit)
+    finally:
+        db.close()
+
+
+@app.get("/api/home")
+def get_home_shelves(album_ids: str = Query("", max_length=512),
+                     artist_ids: str = Query("", max_length=512)):
+    db = get_db()
+    try:
+        return fetch_home_shelves(db, parse_home_ids(album_ids, 12), parse_home_ids(artist_ids))
     finally:
         db.close()
 
@@ -2239,6 +2508,8 @@ def _resolve_library_roots(db) -> list[Path]:
 TRANSCODE_SLOTS = StreamSlots(settings.max_concurrent_streams)
 TRANSCODE_DURATION_MARGIN_SECONDS = 30 * 60
 TRANSCODE_MAX_SECONDS = 12 * 3600
+# libFLAC's default block size; within the FLAC subset at every sample rate.
+FLAC_TRANSCODE_BLOCK_SIZE = 4096
 
 
 def _transcode_time_limit_seconds(duration_seconds, timeout_minutes: int | None = None) -> int:
@@ -2358,9 +2629,16 @@ async def _stream_with_dsp(file_path: str, dsp_filter: str, timeout_seconds: int
     lease = await _acquire_transcode_slot()
     cmd = [
         "ffmpeg", "-nostdin", *_ffmpeg_input_args(file_path, start_seconds),
+        # The gain is already in the samples: copying the source's
+        # REPLAYGAIN_*/R128_* tags would let a player apply it twice.
+        "-map_metadata", "-1",
         "-af", dsp_filter,
         "-c:a", "flac",
         "-compression_level", "0",
+        # Fixed blocks: by default the encoder takes its block size from the
+        # first decoded frame, which after -ss can be a few samples (FLAC's
+        # minimum is 16) and FFmpeg then exits without writing any audio.
+        "-frame_size", str(FLAC_TRANSCODE_BLOCK_SIZE),
         "-f", "flac",
         "pipe:1",
         "-loglevel", "error"
@@ -3450,7 +3728,11 @@ def update_dsp_profile(profile_id: int, body: dict):
 
     updates = []
     params = []
-    normalized = _normalize_dsp_payload(body)
+    try:
+        normalized = _normalize_dsp_payload(body)
+    except HTTPException:
+        db.close()
+        raise
 
     if "name" in normalized:
         updates.append("name=?")
