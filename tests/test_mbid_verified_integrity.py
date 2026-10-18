@@ -20,6 +20,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import enrichment
+import artist_alias_sync
 from artist_alias_batch import _select_candidates
 from artist_aliases import fetch_aliases
 from artist_alias_sync import sync_artist_aliases
@@ -275,6 +276,132 @@ class NeedsReviewRecheckTests(unittest.TestCase):
         ).fetchone()
         self.assertEqual(row["mbid"], A)
         self.assertEqual(row["mbid_verified"], 1)
+
+
+class TwoConnectionAtomicityTests(unittest.TestCase):
+    """P1 follow-up: the identity check and the writes are one transaction.
+
+    A plain SELECT takes no writer lock in SQLite, so comparing the snapshot
+    and then writing separately leaves a window *after* the comparison. This
+    reproduces the interleaving the review described with two real WAL
+    connections: an artist carrying a guessed, unverified MBID A, the user
+    confirming that same A (`known_mbid=True`, so the code would not restore
+    it), and a fingerprint writer on the second connection repointing the row
+    to B in the gap before the first alias insert. The outcome that must never
+    happen is B ending up verified while carrying A's aliases.
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        self.path = Path(self._tmp.name) / "library.db"
+        self.db = self._connect(5.0)
+        self.db.execute("PRAGMA journal_mode=WAL")
+        apply_migrations(self.db)
+        self.db.execute("INSERT INTO artists(id,name,sort_name,mbid,mbid_verified) "
+                        "VALUES(1,'徐佳瑩','徐佳瑩',?,0)", (A,))
+        self.db.execute("INSERT INTO albums(id,artist_id,title,year) "
+                        "VALUES(1,1,'理想人生',2012)")
+        self.db.execute("INSERT INTO albums(id,artist_id,title,year) "
+                        "VALUES(2,1,'心里學',2017)")
+        self.db.commit()
+        # No wait: a contended write must fail fast instead of hanging.
+        self.other = self._connect(0.0)
+        self.competitor = {"blocked": False, "wrote": False, "saw_transaction": None}
+
+    def _connect(self, timeout):
+        conn = sqlite3.connect(self.path, timeout=timeout)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA foreign_keys=ON")
+        return conn
+
+    def tearDown(self):
+        self.db.close()
+        self.other.close()
+        self._tmp.cleanup()
+
+    def _competing_write(self, db, artist_id):
+        if not (self.competitor["wrote"] or self.competitor["blocked"]):
+            self.competitor["saw_transaction"] = db.in_transaction
+            try:
+                self.other.execute(
+                    "UPDATE artists SET mbid=? WHERE id=?", (B, artist_id),
+                )
+                self.other.commit()
+                self.competitor["wrote"] = True
+            except sqlite3.OperationalError:
+                self.competitor["blocked"] = True
+
+    def test_competitor_cannot_land_between_check_and_first_alias_write(self):
+        real_add_alias = artist_alias_sync.add_alias
+
+        def instrumented(db, artist_id, name):
+            self._competing_write(db, artist_id)
+            return real_add_alias(db, artist_id, name)
+
+        fake = MusicBrainzFake()
+        with patch("artist_alias_sync.asyncio.sleep", no_wait), \
+                patch("artist_alias_sync.add_alias", instrumented):
+            result = asyncio.run(sync_artist_aliases(
+                self.db, 1, client=fake, confirmed_mbid=A,
+            ))
+        self.db.commit()
+
+        self.assertFalse(self.competitor["wrote"],
+                         "a competing writer must not be able to repoint the row")
+        self.assertTrue(self.competitor["blocked"], "the competing write was locked out")
+        self.assertTrue(
+            self.competitor["saw_transaction"],
+            "a write transaction must already be open at the first alias insert",
+        )
+        self.assertEqual(result["status"], "ok")
+        row = self.db.execute(
+            "SELECT mbid, mbid_verified FROM artists WHERE id=1"
+        ).fetchone()
+        self.assertEqual(row["mbid"], A)
+        self.assertEqual(row["mbid_verified"], 1)
+        self.assertIn("LaLa Hsu", fetch_aliases(self.db, 1))
+
+    def test_window_is_closed_not_merely_reordered(self):
+        """Sanity: without the lock the same interleaving does succeed."""
+        db = self._connect(5.0)
+        self.db.execute("INSERT INTO artists(id,name,sort_name,mbid,mbid_verified) "
+                        "VALUES(2,'另一位','另一位',?,0)", (A,))
+        self.db.commit()
+        self.other.execute("UPDATE artists SET mbid=? WHERE id=2", (B,))
+        self.other.commit()
+        row = db.execute(
+            "SELECT mbid, mbid_verified FROM artists WHERE id=2"
+        ).fetchone()
+        self.assertEqual(row["mbid"], B)
+        db.close()
+
+    def test_identity_changed_rolls_back_the_locked_transaction(self):
+        """A conflict must release the write lock, not hold it until commit."""
+
+        class MovingTarget(MusicBrainzFake):
+            async def get(self, url, *, params=None, headers=None):
+                if not getattr(self, "moved", False):
+                    self.moved = True
+                    self.db.execute(
+                        "UPDATE artists SET mbid=? WHERE id=?", (B, 1),
+                    )
+                    self.db.commit()
+                return await super().get(url, params=params, headers=headers)
+
+        fake = MovingTarget(release_groups={A: [group("理想人生", A), group("心里學", A)]})
+        fake.db = self.db
+        with patch("artist_alias_sync.asyncio.sleep", no_wait):
+            result = asyncio.run(sync_artist_aliases(self.db, 1, client=fake))
+        self.assertEqual(result["status"], "identity_changed")
+        self.assertFalse(self.db.in_transaction, "the lock must not stay held")
+        row = self.db.execute(
+            "SELECT mbid, mbid_verified FROM artists WHERE id=1"
+        ).fetchone()
+        self.assertEqual(row["mbid"], B)
+        self.assertEqual(row["mbid_verified"], 0)
+        # The competing connection can still write, so nothing is still locked.
+        self.other.execute("UPDATE artists SET mbid=? WHERE id=1", (A,))
+        self.other.commit()
 
 
 if __name__ == "__main__":

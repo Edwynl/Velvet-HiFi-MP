@@ -342,50 +342,82 @@ def _store_verified_aliases(
     fingerprint metadata claiming a different MBID — the evidence on hand was
     gathered for an identity that no longer exists, so nothing is written and
     the artist goes back to human review instead.
+
+    The comparison and every write below run inside one short write
+    transaction. A plain SELECT takes no writer lock in SQLite, so checking
+    and then writing separately still leaves a window: with a user-confirmed
+    ID the code would skip restoring it (`known_mbid`), and a competing writer
+    could land the new ID on the row and receive `mbid_verified=1` together
+    with aliases belonging to the old one. `BEGIN IMMEDIATE` takes the
+    reserved lock up front, so no second connection can commit in between.
+
+    Nothing here awaits, so the lock is held for local writes only. It is
+    deliberately opened *after* every MusicBrainz request has completed; a
+    write lock is never held across a network call.
     """
-    if expected_identity is not None and _identity_snapshot(db, artist_id) != expected_identity:
-        return {
-            "status": "identity_changed", "artist_id": artist_id, "added": [],
-            "aliases": fetch_aliases(db, artist_id),
-        }
-    current = {value.casefold() for value in fetch_aliases(db, artist_id)}
-    added = []
-    conflicts = []
-    choices = _identity_names(record)
-    if query_alias and _is_verified(record, query_alias):
-        choices.append(query_alias.strip())
-    for name in dict.fromkeys(choices):
-        if not 1 <= len(name) <= 128 or name.casefold() == artist_name.casefold():
-            continue
-        if name.casefold() in current:
-            continue
-        collision = db.execute(
-            "SELECT id FROM artists WHERE id != ? AND name = ? COLLATE NOCASE",
-            (artist_id, name),
+    owns_transaction = not db.in_transaction
+    if owns_transaction:
+        db.execute("BEGIN IMMEDIATE")
+    try:
+        if expected_identity is not None and _identity_snapshot(db, artist_id) != expected_identity:
+            if owns_transaction:
+                db.rollback()
+            return {
+                "status": "identity_changed", "artist_id": artist_id, "added": [],
+                "aliases": fetch_aliases(db, artist_id),
+            }
+        # Reject another local artist already carrying this MusicBrainz ID.
+        # Inside the transaction so the answer cannot go stale before commit.
+        duplicate = db.execute(
+            "SELECT id FROM artists WHERE id!=? AND mbid=?", (artist_id, mbid),
         ).fetchone()
-        if collision:
-            conflicts.append(name)
-            continue
-        if add_alias(db, artist_id, name):
-            mark_alias_source(
-                db, artist_id, name, evidence_method, mbid=mbid,
-                evidence="; ".join(evidence_albums),
-            )
-            current.add(name.casefold())
-            added.append(name)
-        else:
-            conflicts.append(name)
-    if not known_mbid:
-        db.execute("UPDATE artists SET mbid=? WHERE id=?", (mbid, artist_id))
-    # After the MBID write: its trigger clears the flag whenever the ID changes.
-    db.execute("UPDATE artists SET mbid_verified=1 WHERE id=?", (artist_id,))
-    return {
-        "status": "ok", "artist_id": artist_id, "mbid": mbid,
-        "aliases": fetch_aliases(db, artist_id),
-        "added": added, "conflicts": conflicts,
-        "verification": evidence_method,
-        "evidence_albums": list(evidence_albums),
-    }
+        if duplicate:
+            if owns_transaction:
+                db.rollback()
+            return {"status": "identity_mismatch", "added": [],
+                    "aliases": fetch_aliases(db, artist_id)}
+        current = {value.casefold() for value in fetch_aliases(db, artist_id)}
+        added = []
+        conflicts = []
+        choices = _identity_names(record)
+        if query_alias and _is_verified(record, query_alias):
+            choices.append(query_alias.strip())
+        for name in dict.fromkeys(choices):
+            if not 1 <= len(name) <= 128 or name.casefold() == artist_name.casefold():
+                continue
+            if name.casefold() in current:
+                continue
+            collision = db.execute(
+                "SELECT id FROM artists WHERE id != ? AND name = ? COLLATE NOCASE",
+                (artist_id, name),
+            ).fetchone()
+            if collision:
+                conflicts.append(name)
+                continue
+            if add_alias(db, artist_id, name):
+                mark_alias_source(
+                    db, artist_id, name, evidence_method, mbid=mbid,
+                    evidence="; ".join(evidence_albums),
+                )
+                current.add(name.casefold())
+                added.append(name)
+            else:
+                conflicts.append(name)
+        if not known_mbid:
+            db.execute("UPDATE artists SET mbid=? WHERE id=?", (mbid, artist_id))
+        # After the MBID write: its trigger clears the flag whenever the ID changes.
+        db.execute("UPDATE artists SET mbid_verified=1 WHERE id=?", (artist_id,))
+        return {
+            "status": "ok", "artist_id": artist_id, "mbid": mbid,
+            "aliases": fetch_aliases(db, artist_id),
+            "added": added, "conflicts": conflicts,
+            "verification": evidence_method,
+            "evidence_albums": list(evidence_albums),
+        }
+    except Exception:
+        if owns_transaction:
+            db.rollback()
+        raise
 
 
 async def sync_artist_aliases(
@@ -481,14 +513,6 @@ async def sync_artist_aliases(
             return {"status": "identity_mismatch", "added": [],
                     "aliases": fetch_aliases(db, artist_id)}
         if query_alias and not _is_verified(record, query_alias):
-            return {"status": "identity_mismatch", "added": [],
-                    "aliases": fetch_aliases(db, artist_id)}
-        # Reject another local artist already carrying this MusicBrainz ID.
-        duplicate = db.execute(
-            "SELECT id FROM artists WHERE id!=? AND mbid=?",
-            (artist_id, mbid),
-        ).fetchone()
-        if duplicate:
             return {"status": "identity_mismatch", "added": [],
                     "aliases": fetch_aliases(db, artist_id)}
         return _store_verified_aliases(
