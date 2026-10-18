@@ -95,6 +95,24 @@ class LibraryMutationTests(unittest.TestCase):
         self.assertEqual(detail["tracks"][0]["artist_name"], "Artist One")
         self.assertEqual(detail["tracks"][1]["album_title"], "Album Two")
 
+    def test_playlist_artwork_uses_first_four_tracks_in_order_and_refreshes_after_removal(self):
+        with self._connect() as conn:
+            for id, album_id in [(3, 2), (4, 1), (5, 2)]:
+                conn.execute('INSERT INTO tracks(id,album_id,artist_id,title,file_path) VALUES(?,?,1,?,?)',
+                             (id, album_id, f'Track {id}', f'C:/music/{id}.flac'))
+            conn.commit()
+            playlist = create_playlist(conn, 'Collage', '')
+            empty = create_playlist(conn, 'Empty', '')
+            for id in [2, 1, 3, 4, 5]:
+                add_track_to_playlist(conn, playlist['id'], id)
+            items = {item['id']: item for item in fetch_playlists(conn)}
+            self.assertEqual(items[playlist['id']]['cover_album_ids'], [2, 1, 2, 1])
+            self.assertEqual(items[playlist['id']]['track_count'], 5)
+            self.assertEqual(items[empty['id']]['cover_album_ids'], [])
+            remove_track_from_playlist(conn, playlist['id'], 2)
+            updated = {item['id']: item for item in fetch_playlists(conn)}
+            self.assertEqual(updated[playlist['id']]['cover_album_ids'], [1, 2, 1, 2])
+
     def test_add_and_remove_playlist_tracks_resequences_positions(self):
         with self._connect() as conn:
             playlist = create_playlist(conn, "Flow", "")

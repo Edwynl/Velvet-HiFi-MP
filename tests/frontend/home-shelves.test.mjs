@@ -68,11 +68,21 @@ const h = await harness({
   recently_opened: albums, frequent_artists: artists,
   for_you: albums.slice(0, 10).map(a => ({ ...a, id: a.id + 100 })),
   global_picks: albums.slice(0, 4).map(a => ({ ...a, id: a.id + 200 })),
-}, { playlists: Array.from({ length: 8 }, (_, i) => ({ id:i+1, name:'Playlist '+(i+1), track_count:10 })) });
+}, { playlists: Array.from({ length: 8 }, (_, i) => ({ id:i+1, name:'Playlist '+(i+1), track_count:10,
+  cover_album_ids: i === 0 ? [7,7,9,10,11] : i === 1 ? [8] : [] })) });
 try {
   await waitFor(() => h.doc.getElementById('home-recommendations-grid').getAttribute('aria-busy') === 'false');
   await waitFor(() => h.doc.getElementById('home-playlists-grid').getAttribute('aria-busy') === 'false');
   assert.equal(h.doc.querySelectorAll('#home-playlists-grid .card').length, 6);
+  const playlistArt = h.doc.querySelector('#home-playlists-grid .playlist-artwork');
+  assert.equal(playlistArt.querySelectorAll('.playlist-artwork-tile').length, 4);
+  assert.deepEqual([...playlistArt.querySelectorAll('img')].map(img => img.getAttribute('src')),
+    [7,7,9,10].map(id => `/api/covers/${id}/thumb?size=small`));
+  const failedCover = playlistArt.querySelector('img');
+  failedCover.dispatchEvent(new h.window.Event('error'));
+  assert.equal(playlistArt.querySelectorAll('img').length, 3, 'Missing art keeps the other covers');
+  assert.ok(playlistArt.querySelector('.playlist-artwork-tile svg'), 'Missing art has a placeholder');
+  assert.ok(h.doc.querySelectorAll('#home-playlists-grid .playlist-artwork')[1].classList.contains('is-single'));
   assert.equal(h.doc.querySelector('.nav-item[data-view="artists"]').nextElementSibling.dataset.view, 'playlists');
   assert.equal(h.doc.querySelectorAll('#recent-grid .card').length, 24);
   assert.equal(h.doc.querySelectorAll('#home-opened-grid .card').length, 12);

@@ -186,16 +186,37 @@ function makePlaylistCard(playlist) {
   const card = document.createElement('div');
   card.className = 'card';
   card.innerHTML = `
-    <div class="card-art" style="display:flex;align-items:center;justify-content:center;background:linear-gradient(145deg,var(--s2),var(--s4));color:var(--gold)">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" style="width:36px;height:36px">
-        <path d="M9 19V6l12-2v13"></path>
-        <circle cx="6" cy="18" r="3"></circle>
-        <circle cx="18" cy="16" r="3"></circle>
-      </svg>
-    </div>
     <div class="card-title">${escHtml(playlist.name)}</div>
     <div class="card-sub">${playlist.track_count || 0} tracks</div>
   `;
+  card.prepend(makePlaylistArtwork(playlist));
   card.addEventListener('click', () => navigate('playlist', { id: playlist.id }));
   return card;
+}
+
+function makePlaylistArtwork(playlist) {
+  const ids = (Array.isArray(playlist.cover_album_ids) ? playlist.cover_album_ids
+    : (playlist.tracks || []).slice(0, 4).map(track => track.album_id)).slice(0, 4);
+  const artwork = document.createElement('div');
+  artwork.className = 'card-art playlist-artwork' + (ids.length < 2 ? ' is-single' : '');
+  const slots = ids.length < 2 ? 1 : 4;
+  for (let index = 0; index < slots; index++) {
+    const tile = document.createElement('div');
+    tile.className = 'playlist-artwork-tile';
+    tile.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
+      <path d="M9 19V6l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/>
+    </svg>`;
+    const id = Number(ids[index]);
+    if (Number.isSafeInteger(id) && id > 0) {
+      const img = document.createElement('img');
+      img.src = `/api/covers/${id}/thumb?size=small`;
+      img.alt = '';
+      img.loading = 'lazy';
+      img.decoding = 'async';
+      img.onerror = () => img.remove();
+      tile.appendChild(img);
+    }
+    artwork.appendChild(tile);
+  }
+  return artwork;
 }
