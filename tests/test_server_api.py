@@ -293,97 +293,84 @@ class ServerApiTests(unittest.TestCase):
         missing_artist_resp = self.client.get("/api/artists/999/image")
         self.assertEqual(missing_artist_resp.status_code, 404)
 
-    def _login_for_image_cookie(self):
-        """Log in with a fixed key so the client carries the image cookie."""
-        security = server.security.get_security_manager()
-        original = security.get_or_create_api_key
-        security.get_or_create_api_key = lambda: "session-key"
-        try:
-            with patch.object(server.security, "is_auth_enabled", return_value=True):
-                resp = self.client.post("/api/security/login")
-        finally:
-            security.get_or_create_api_key = original
-        self.assertEqual(resp.status_code, 200)
-        return resp
-
-    def test_image_cookie_is_issued_for_cover_and_artist_paths(self):
-        """An <img> element cannot send X-API-Key, so the cookie must exist.
-
-        Before this, /api/artists/{id}/image had no cookie scope at all, so
-        every artist card returned 401 and the library rendered no avatars
-        even when image_path was populated.
-        """
-        set_cookie = self._login_for_image_cookie().headers.get_list("set-cookie")
-        joined = " ".join(set_cookie)
-        self.assertIn("velvet_cover_key=session-key", joined)
-        self.assertIn("Path=/api/covers", joined)
-        self.assertIn("Path=/api/artists", joined)
-        cookie = next(c for c in set_cookie if c.startswith("velvet_cover_key="))
-        self.assertIn("HttpOnly", cookie)
-        self.assertIn("SameSite=strict", cookie)
-
-    def test_artist_image_accepts_the_image_cookie_without_a_header(self):
-        """The regression: an <img> request carries only the cookie."""
-        seen = {}
-
-        def capture(**kwargs):
-            seen["api_key"] = kwargs.get("api_key")
-            seen["record_failure"] = kwargs.get("record_failure")
-            return {"allowed": kwargs.get("api_key") == "session-key",
-                    "error": None}
-
-        self._login_for_image_cookie()
-
+    def test_listening_needs_no_credentials_on_a_protected_server(self):
+        """Browsing, covers, artist images and playback are open to every device."""
+        self._allow_music_root()
         with patch.object(server.security, "is_auth_enabled", return_value=True), \
-                patch.object(server.security, "verify_auth", side_effect=capture), \
+                patch.object(server.security, "verify_auth",
+                             return_value={"allowed": False, "error": "denied"}) as verify_auth, \
                 patch.dict(os.environ, {"VELVET_AUTH_ENFORCE_ALL_NETWORKS": "true"}), \
-                patch.object(server, "get_client_ip", return_value="192.0.2.55"):
-            resp = self.client.get("/api/artists/1/image")
+                patch.object(server, "get_client_ip", return_value="192.0.2.55"), \
+                patch.object(upnp_server, "discover_renderers", return_value=[]), \
+                patch.object(upnp_server, "get_cached_renderers", return_value=[{"udn": "r1"}]), \
+                patch.object(upnp_server, "get_transport_info", return_value="STOPPED"), \
+                patch.object(upnp_server, "get_position_info", return_value=(0, 0, None)):
+            for path in ["/api/stats", "/api/albums", "/api/tracks", "/api/config",
+                         "/api/devices", "/api/zones", "/api/cast/status/r1",
+                         "/api/dlna/browse-access", "/api/security/status"]:
+                with self.subTest(path=path):
+                    self.assertEqual(self.client.get(path).status_code, 200)
+            self.assertEqual(self.client.get("/api/artists/1/image").status_code, 204)
+            self.assertNotEqual(self.client.get("/api/covers/1").status_code, 401)
+            self.assertIn(self.client.get("/api/stream/1", headers={"Range": "bytes=0-1"}).status_code,
+                          {200, 206})
+            self.assertEqual(self.client.post("/api/stream-ticket").status_code, 200)
+            self.assertEqual(self.client.post("/api/albums/1/favorite").status_code, 200)
+            verify_auth.assert_not_called()
 
-        self.assertEqual(seen.get("api_key"), "session-key")
-        self.assertFalse(seen.get("record_failure"))
-        self.assertEqual(resp.status_code, 204)
-
-    def test_image_cookie_does_not_unlock_other_api_routes(self):
-        """Scoping must not turn the image cookie into a general credential."""
-        self._login_for_image_cookie()
-        captured = []
-
-        def record(**kwargs):
-            captured.append(kwargs.get("api_key"))
-            return {"allowed": False, "error": "denied"}
-
+    def test_admin_routes_require_credentials_on_a_protected_server(self):
+        admin = [
+            ("POST", "/api/security/disable"), ("POST", "/api/security/login"),
+            ("POST", "/api/security/generate-api-key"), ("GET", "/api/security/reset-api-key"),
+            ("GET", "/api/cors/origins"), ("POST", "/api/cors/allow-all"),
+            ("POST", "/api/dlna/browse-access"), ("DELETE", "/api/dlna/browse-access"),
+            ("POST", "/api/cast/renderer-1"), ("POST", "/api/cast/control/renderer-1/Stop"),
+            ("POST", "/api/playback/play"), ("POST", "/api/playback/stop"),
+            ("POST", "/api/playback/volume"),
+            ("POST", "/api/config"), ("POST", "/api/config/libraries"),
+            ("DELETE", "/api/config/libraries/1"), ("POST", "/api/health/recycle-pool"),
+            ("POST", "/api/library/reset"), ("POST", "/api/library/trash/abc/restore"),
+            ("POST", "/api/library/duplicates/scan"), ("POST", "/api/scan"),
+            ("POST", "/api/scan/refresh-folder"), ("POST", "/api/scan/rescan-covers"),
+            ("POST", "/api/thumbs/generate"), ("POST", "/api/thumbs/clear"),
+            ("POST", "/api/enrich/bios"), ("POST", "/api/enrich/fingerprint/1"),
+            ("DELETE", "/api/albums/1"), ("POST", "/api/albums/1/cover"),
+            ("POST", "/api/albums/1/set-cover"), ("POST", "/api/albums/1/fetch-cover"),
+            ("POST", "/api/albums/1/refresh"), ("POST", "/api/albums/1/open-folder"),
+            ("POST", "/api/artists/1/refresh"),
+        ]
         with patch.object(server.security, "is_auth_enabled", return_value=True), \
-                patch.object(server.security, "verify_auth", side_effect=record), \
-                patch.dict(os.environ, {"VELVET_AUTH_ENFORCE_ALL_NETWORKS": "true"}), \
+                patch.object(server.security, "verify_auth", side_effect=self._key_only_auth), \
                 patch.object(server, "get_client_ip", return_value="192.0.2.55"):
-            self.assertEqual(self.client.get("/api/config").status_code, 401)
+            for method, path in admin:
+                with self.subTest(method=method, path=path):
+                    self.assertEqual(self.client.request(method, path, json={}).status_code, 401)
+            # The admin key unlocks them.
+            self.assertEqual(self.client.post("/api/config", json={},
+                                              headers={"X-API-Key": "session-key"}).status_code, 200)
 
-        self.assertTrue(all(k != "session-key" for k in captured))
-
-    def test_stale_image_cookie_does_not_count_toward_lockout(self):
-        """A grid of <img> tags replays one stale cookie dozens of times.
-
-        Those are not credential guesses; counting them would lock the owner
-        out before they can log in again.
-        """
-        recorded = []
-
-        def deny(**kwargs):
-            if kwargs.get("record_failure"):
-                recorded.append(kwargs.get("ip"))
-            return {"allowed": False, "error": "Invalid password or API key"}
-
-        with patch.object(server.security, "is_auth_enabled", return_value=True), \
-                patch.object(server.security, "verify_auth", side_effect=deny), \
-                patch.dict(os.environ, {"VELVET_AUTH_ENFORCE_ALL_NETWORKS": "true"}), \
-                patch.object(server, "get_client_ip", return_value="192.0.2.55"):
-            self.client.cookies.set("velvet_cover_key", "stale-key",
-                                    path="/api/artists", domain="testserver")
-            for artist_id in range(1, 12):
-                self.client.get(f"/api/artists/{artist_id}/image")
-
-        self.assertEqual(recorded, [])
+    def test_every_mutating_route_is_classified(self):
+        """A new write route must be added to _ADMIN_ROUTES or to this list on purpose."""
+        open_writes = {
+            ("POST", "/api/albums/{album_id}/favorite"), ("POST", "/api/tracks/{track_id}/played"),
+            ("POST", "/api/stream-ticket"), ("POST", "/api/remote/check"),
+            ("POST", "/api/artists/{artist_id}/enrich-bio"),
+            ("POST", "/api/playlists"), ("PUT", "/api/playlists/{playlist_id}"),
+            ("DELETE", "/api/playlists/{playlist_id}"), ("POST", "/api/playlists/{playlist_id}/tracks"),
+            ("DELETE", "/api/playlists/{playlist_id}/tracks/{track_id}"),
+            ("POST", "/api/dsp/profiles"), ("PUT", "/api/dsp/profiles/{profile_id}"),
+            ("DELETE", "/api/dsp/profiles/{profile_id}"), ("POST", "/api/dsp/profiles/{profile_id}/clone"),
+            ("POST", "/api/dsp/profiles/import/autoeq"),
+        }
+        unclassified = set()
+        for route in server.app.routes:
+            for method in getattr(route, "methods", None) or ():
+                if method in {"GET", "HEAD"}:
+                    continue
+                sample = re.sub(r"\{[^}]+\}", "1", route.path)
+                if not server._is_admin_route(method, sample):
+                    unclassified.add((method, route.path))
+        self.assertEqual(unclassified, open_writes)
 
     def test_create_custom_dsp_profile_persists_ordered_filters(self):
         resp = self.client.post(
@@ -1423,12 +1410,12 @@ class ServerApiTests(unittest.TestCase):
              patch.object(server.security, "is_auth_enabled", return_value=True), \
              patch.object(server.security, "verify_auth", return_value={"allowed": False, "error": "denied"}) as verify_auth, \
              patch.object(server, "get_client_ip", return_value="172.16.5.10") as client_ip:
-            private_resp = self.client.get("/api/config")
+            private_resp = self.client.post("/api/config", json={})
             self.assertEqual(private_resp.status_code, 200)
             verify_auth.assert_not_called()
 
             client_ip.return_value = "172.15.5.10"
-            non_private_resp = self.client.get("/api/config")
+            non_private_resp = self.client.post("/api/config", json={})
             self.assertEqual(non_private_resp.status_code, 401)
             verify_auth.assert_called_once()
 
@@ -1445,7 +1432,7 @@ class ServerApiTests(unittest.TestCase):
         with patch.object(server.security, "is_auth_enabled", return_value=True), \
              patch.object(server.security, "verify_auth",
                           return_value={"allowed": False, "error": "Authentication required"}) as verify_auth:
-            resp = self.client.get("/api/config?api_key=test-query-key&password=pw")
+            resp = self.client.post("/api/config?api_key=test-query-key&password=pw", json={})
             self.assertEqual(resp.status_code, 401)
             self.assertIsNone(verify_auth.call_args.kwargs["api_key"])
             self.assertIsNone(verify_auth.call_args.kwargs["password"])
@@ -1566,41 +1553,32 @@ class ServerApiTests(unittest.TestCase):
              patch.object(server, "get_client_ip", return_value="192.168.1.50"):
             self.assertIn(self.client.get(path, headers={"Range": "bytes=0-1"}).status_code, {200, 206})
             verify_auth.assert_not_called()
-            # The same ticket cannot read another track or a non-media route.
-            other = path.replace("/api/stream/1?", "/api/stream/2?")
-            self.assertEqual(self.client.get(other).status_code, 401)
+            # Casting and controlling the renderer needs the admin password;
+            # a media ticket never stands in for it.
+            self.assertEqual(self.client.post("/api/cast/renderer-1", json={"track_id": 1}).status_code, 401)
+            self.assertEqual(self.client.post("/api/cast/control/renderer-1/Stop").status_code, 401)
             ticket = path.split("ticket=", 1)[1]
-            self.assertEqual(self.client.get(f"/api/config?ticket={ticket}").status_code, 401)
+            self.assertEqual(self.client.post(f"/api/config?ticket={ticket}", json={}).status_code, 401)
 
-    def test_browser_stream_ticket_requires_auth_and_only_reads_audio(self):
+    def test_browser_stream_ticket_is_public_and_rotation_still_delivers_one(self):
         self._allow_music_root()
         key = {"X-API-Key": "session-key"}
         with patch.object(server.security, "is_auth_enabled", return_value=True), \
              patch.object(server.security, "verify_auth", side_effect=self._key_only_auth), \
              patch.object(server, "get_client_ip", return_value="203.0.113.9"):
-            self.assertEqual(self.client.post("/api/stream-ticket").status_code, 401)
-            issued = self.client.post("/api/stream-ticket", headers=key)
+            issued = self.client.post("/api/stream-ticket")
             self.assertEqual(issued.status_code, 200)
             self.assertEqual(issued.headers["cache-control"], "no-store")
             body = issued.json()
             self.assertAlmostEqual(body["expires_at"],
                                    time.time() + server.security.BROWSER_STREAM_TICKET_SECONDS, delta=5)
-            ticket = body["ticket"]
-            self.assertNotIn("session-key", ticket)
-            for track_id in (1, 2):  # any track, so tap-to-play needs no extra round trip
-                self.assertIn(self.client.get(f"/api/stream/{track_id}?ticket={ticket}",
+            # A stale ticket left in a queued URL must not block playback.
+            for query in (f"?ticket={body['ticket']}", "?ticket=1.forged", ""):
+                self.assertIn(self.client.get(f"/api/stream/1{query}",
                                               headers={"Range": "bytes=0-1"}).status_code, {200, 206})
-            # Stream-only: never covers, the API or credential management.
-            self.assertEqual(self.client.get(f"/api/covers/1/thumb?ticket={ticket}").status_code, 401)
-            self.assertEqual(self.client.get(f"/api/tracks?ticket={ticket}").status_code, 401)
-            self.assertEqual(self.client.post(f"/api/stream/1?ticket={ticket}").status_code, 401)
-            self.assertEqual(self.client.get("/api/stream/1?ticket=1.forged").status_code, 401)
-            # Rotating the API key revokes outstanding browser tickets, and the
-            # rotation response itself carries a ticket valid under the new secret.
+            self.assertEqual(self.client.post("/api/security/generate-api-key").status_code, 401)
             rotated = self.client.post("/api/security/generate-api-key", headers=key).json()
-            self.assertEqual(self.client.get(f"/api/stream/1?ticket={ticket}").status_code, 401)
-            self.assertIn(self.client.get(f"/api/stream/1?ticket={rotated['stream_ticket']}",
-                                          headers={"Range": "bytes=0-1"}).status_code, {200, 206})
+            self.assertTrue(rotated["stream_ticket"])
 
     def test_dlna_head_probes_are_answered_without_a_body_or_decoder(self):
         self._allow_music_root()
@@ -1636,23 +1614,15 @@ class ServerApiTests(unittest.TestCase):
         self.assertIn(":9123/api/stream/1?ticket=", stream_url)
         self.assertIn(":9123/api/covers/2/thumb?", cover_url)
 
-    def test_ticket_from_unconfigured_host_lets_lan_renderer_play_only_that_track(self):
+    def test_unconfigured_host_lets_lan_listen_but_not_administer(self):
         self._allow_music_root()
         with patch.object(server, "get_client_ip", return_value="192.168.1.50"):
-            self.assertEqual(self.client.get("/api/stream/1").status_code, 403)
-            self.assertIn(self.client.get(f"/api/stream/1?ticket={self._ticket()}",
-                                          headers={"Range": "bytes=0-1"}).status_code, {200, 206})
-            self.assertEqual(self.client.get(f"/api/stream/2?ticket={self._ticket()}").status_code, 401)
-            self.assertEqual(self.client.get("/api/tracks?ticket=" + self._ticket()).status_code, 403)
-
-    def test_cover_ticket_is_scoped_to_cover_reads(self):
-        cover = self._ticket("cover", 2)
-        with patch.object(server.security, "is_auth_enabled", return_value=True), \
-             patch.object(server.security, "verify_auth", return_value={"allowed": False, "error": "denied"}), \
-             patch.object(server, "get_client_ip", return_value="192.168.1.50"):
-            self.assertNotEqual(self.client.get(f"/api/covers/2/thumb?size=medium&ticket={cover}").status_code, 401)
-            self.assertEqual(self.client.get(f"/api/covers/1/thumb?ticket={cover}").status_code, 401)
-            self.assertEqual(self.client.get(f"/api/stream/2?ticket={cover}").status_code, 401)
+            self.assertIn(self.client.get("/api/stream/1", headers={"Range": "bytes=0-1"}).status_code,
+                          {200, 206})
+            self.assertEqual(self.client.get("/api/tracks").status_code, 200)
+            self.assertEqual(self.client.post("/api/scan", json={}).status_code, 403)
+            self.assertEqual(self.client.post("/api/cast/renderer-1", json={"track_id": 1}).status_code, 403)
+            self.assertEqual(self.client.delete("/api/albums/1").status_code, 403)
 
     def test_dlna_browse_window_requires_credentials_and_is_bounded(self):
         with patch.object(server.security, "is_auth_enabled", return_value=True), \
@@ -1729,7 +1699,8 @@ class ServerApiTests(unittest.TestCase):
                 response = self.client.get(f"/static/js/{name}")
                 self.assertEqual(response.status_code, 200, name)
                 self.assertIn("javascript", response.headers["content-type"])
-            self.assertEqual(self.client.get("/api/stats").status_code, 401)
+            self.assertEqual(self.client.get("/api/stats").status_code, 200)
+            self.assertEqual(self.client.post("/api/library/reset").status_code, 401)
             self.assertNotEqual(self.client.get("/static/js/server.py").status_code, 200)
 
     def test_every_shell_and_precached_module_is_served(self):

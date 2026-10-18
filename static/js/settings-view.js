@@ -770,6 +770,7 @@ function applyDspProfile(profileId) {
     showToast('Resetting library data...');
     try {
       const res = await api('/library/reset', { method: 'POST' });
+      if (!res) return;  // admin prompt cancelled
       if (res.success) {
         showToast('Library wiped. Redirecting to start...', 3000);
         setTimeout(() => navigate('home'), 1500);
@@ -787,7 +788,7 @@ function applyDspProfile(profileId) {
   const fpText = $('fp-text');
   if (fpFill && fpText) {
     $('btn-start-fp')?.addEventListener('click', async () => {
-      await api('/enrich/fingerprint', { method: 'POST' });
+      if (!await api('/enrich/fingerprint', { method: 'POST' })) return;
       showToast('Fingerprinting started…');
       $('fp-progress-section').style.display = 'block';
       startFpPolling();
@@ -795,6 +796,7 @@ function applyDspProfile(profileId) {
 
     $('btn-enrich-bios')?.addEventListener('click', async () => {
       const res = await api('/enrich/bios', { method: 'POST' });
+      if (!res) return;  // admin prompt cancelled
       if (res.message === 'Already running') {
         showToast('Bio enrichment already in progress…');
       } else {
@@ -808,7 +810,7 @@ function applyDspProfile(profileId) {
     $('rescan-covers-btn')?.addEventListener('click', async () => {
       showToast('Scanning for local covers…');
       const res = await api('/scan/rescan-covers', { method: 'POST' });
-      showToast(res.message || `Updated ${res.updated} covers`);
+      if (res) showToast(res.message || `Updated ${res.updated} covers`);
     });
 
     // Check if fingerprinting is currently running

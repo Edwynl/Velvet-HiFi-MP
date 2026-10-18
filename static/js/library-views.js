@@ -2370,6 +2370,7 @@ async function renderArtist(vc, { id }) {
     showToast('Re-reading metadata from files…');
     try {
       const res = await api(`/artists/${id}/refresh`, { method: 'POST' });
+      if (!res) return;  // admin prompt cancelled
       if (res.success) {
         showToast(res.message);
         // Reload page to show updated data
@@ -2686,8 +2687,9 @@ async function renderAlbum(vc, { id }) {
   UI['enrich-btn'].addEventListener('click', async () => {
     showToast('Searching all sources (Netease, QQ, Apple Music…)…');
     try {
-      const res = await fetch(`/api/albums/${album.id}/fetch-cover`, { method: 'POST' });
-      const data = await res.json();
+      // api() asks for the admin password when needed.
+      const data = await api(`/albums/${album.id}/fetch-cover`, { method: 'POST' });
+      if (!data) return;
       if (data.success) {
         showToast(`Cover found from ${data.source || 'web'}!`);
         // Force refresh by invalidating server cover cache
@@ -2707,7 +2709,7 @@ async function renderAlbum(vc, { id }) {
   UI['open-folder-btn'].addEventListener('click', async () => {
     try {
       const res = await api(`/albums/${album.id}/open-folder`, { method: 'POST' });
-      if (!res.success) showToast('Failed to open folder');
+      if (res && !res.success) showToast('Failed to open folder');
     } catch (e) {
       showToast('Error: ' + e.message);
     }
@@ -2718,6 +2720,7 @@ async function renderAlbum(vc, { id }) {
     showToast('Re-reading metadata from files…');
     try {
       const res = await api(`/albums/${album.id}/refresh`, { method: 'POST' });
+      if (!res) return;  // admin prompt cancelled
       if (res.success) {
         showToast(res.message);
         // Reload the album page to show updated metadata
@@ -2756,11 +2759,11 @@ async function renderAlbum(vc, { id }) {
       formData.append('file', input.files[0]);
       showToast('Uploading cover…');
       try {
-        const res = await fetch(`/api/albums/${album.id}/cover`, {
+        const res = await api(`/albums/${album.id}/cover`, {
           method: 'POST',
           body: formData
         });
-        if (res.ok) {
+        if (res) {
           showToast('Cover updated!');
           // Force refresh after upload with timestamp to bust CDN/browser cache
           img.src = `/api/covers/${album.id}?t=${Date.now()}`;

@@ -150,8 +150,8 @@ async function renderRemote(vc) {
             <div class="settings-title" style="font-size:16px">Security Protection</div>
             <div class="settings-desc" style="margin-top:4px">
               ${securityEnabled
-                ? 'Password protection is enabled. Remote access requires authentication.'
-                : 'No password set. Anyone on Tailscale can access your library.'}
+                ? 'Admin password is set. Listening is open to every device; settings changes, casting and library edits ask for the admin password.'
+                : 'No admin password set. Other devices can listen, but cannot change settings, cast or edit the library until you set one on this PC.'}
             </div>
           </div>
           <div class="remote-status-badge ${securityEnabled ? 'connected' : 'disconnected'}">
@@ -162,7 +162,7 @@ async function renderRemote(vc) {
         ${!securityEnabled ? `
         <div style="background:rgba(255,107,107,0.1);border:1px solid #ff6b6b;border-radius:var(--radius);padding:14px;margin-bottom:20px">
           <div style="color:#ff6b6b;font-weight:500;font-size:13px">
-            Warning: Your library is not protected! Set a password to secure remote access.
+            Set an admin password to manage settings, casting and library edits from other devices.
           </div>
         </div>
         ` : ''}

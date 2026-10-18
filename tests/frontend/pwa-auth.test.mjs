@@ -97,11 +97,12 @@ const loginContext = vm.createContext({ authState,
   },
 });
 vm.runInContext(loginSource, loginContext);
-await vm.runInContext('submitLogin()', loginContext);
+assert.equal(await vm.runInContext('submitLogin()', loginContext), true);
 assert.equal(authState.apiKey, 'shared-key');
-assert.equal(rendered, 1);
-assert.equal(requests[1].url, '/api/security/login', 'Login must not rotate other clients\' keys');
-assert.equal(requests[1].options.headers['X-Password'], 'password');
+assert.equal(rendered, 0, 'The admin prompt retries the action; it does not re-render the view');
+assert.equal(requests.length, 1, 'The password is verified by the key request itself');
+assert.equal(requests[0].url, '/api/security/login', 'Login must not rotate other clients\' keys');
+assert.equal(requests[0].options.headers['X-Password'], 'password');
 
 // Credential changes purge the authenticated cover caches the SW serves
 // before the network; the static app shell cache is kept.

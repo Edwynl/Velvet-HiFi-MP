@@ -4019,30 +4019,22 @@ def setup_password(request: Request, body: dict):
 @app.post("/api/security/generate-api-key")
 def generate_api_key(request: Request):
     """Generate a new API key for programmatic access."""
-    return _credential_response(request, security.generate_new_api_key()["api_key"])
+    return _credential_response(security.generate_new_api_key()["api_key"])
 
 
-def _credential_response(request: Request, api_key: str):
+def _credential_response(api_key: str):
     # Deliver the browser's stream ticket in the same response as the key, so
     # the UI never has to fetch one between a tap and audio.play().
     stream_ticket, stream_expires_at = security.issue_browser_stream_ticket()
-    response = JSONResponse({"success": True, "api_key": api_key,
-                             "stream_ticket": stream_ticket,
-                             "stream_ticket_expires_at": stream_expires_at},
-                            headers={"Cache-Control": "no-store"})
-    # Image elements cannot attach API headers. One cookie, scoped to every
-    # read-only image path; auth_middleware accepts it on _IMAGE_COOKIE_PATH
-    # only, so it never authorizes mutations or the rest of the API.
-    for cookie_path in ("/api/covers", "/api/artists"):
-        response.set_cookie("velvet_cover_key", api_key, path=cookie_path,
-                            httponly=True, samesite="strict",
-                            secure=request.url.scheme == "https")
-    return response
+    return JSONResponse({"success": True, "api_key": api_key,
+                         "stream_ticket": stream_ticket,
+                         "stream_ticket_expires_at": stream_expires_at},
+                        headers={"Cache-Control": "no-store"})
 
 
 @app.post("/api/security/login")
 def login(request: Request):
-    return _credential_response(request, security.get_security_manager().get_or_create_api_key())
+    return _credential_response(security.get_security_manager().get_or_create_api_key())
 
 
 @app.post("/api/security/disable")
@@ -4054,7 +4046,7 @@ def disable_security(request: Request):
 @app.get("/api/security/reset-api-key")
 def reset_api_key(request: Request):
     """Reset API key."""
-    return _credential_response(request, security.generate_new_api_key()["api_key"])
+    return _credential_response(security.generate_new_api_key()["api_key"])
 
 # ─── CORS Management ─────────────────────────────────────────────────────────────
 
@@ -4114,32 +4106,49 @@ PUBLIC_FRONTEND_JS_MODULES = frozenset({
     "remote-settings.js",
     "vu-meter-engine.js",
 })
-PUBLIC_FRONTEND_JS_PATHS = frozenset(
-    f"/static/js/{name}" for name in PUBLIC_FRONTEND_JS_MODULES
+
+# Listening is open to everyone who can reach the server: browsing, streaming,
+# covers, playlists, favorites and DSP presets need no credentials. Only these
+# routes need the admin password (or the API key it issues): credentials,
+# network exposure, library paths, jobs that rewrite or delete library data,
+# and output devices (DLNA cast, host speakers) that a guest must not take over.
+_ADMIN_ROUTES = tuple(
+    (frozenset(methods.split()), re.compile(pattern)) for methods, pattern in (
+        # Credentials and network exposure.
+        ("GET POST PUT DELETE", r"/api/security/(?!status$).*"),
+        ("GET POST PUT DELETE", r"/api/cors/.*"),
+        ("POST DELETE", r"/api/dlna/browse-access"),
+        # Cast and host playback: viewing devices and status stays public.
+        ("POST", r"/api/cast/.+"),
+        ("POST", r"/api/playback/(?:play|stop|pause|resume|volume)"),
+        # Library paths and server maintenance.
+        ("POST", r"/api/config"),
+        ("POST", r"/api/config/libraries"),
+        ("DELETE", r"/api/config/libraries/\d+"),
+        ("POST", r"/api/health/recycle-pool"),
+        # Jobs and edits that rewrite or delete library data.
+        ("POST", r"/api/library/reset"),
+        ("POST", r"/api/library/trash/[^/]+/restore"),
+        ("POST", r"/api/library/duplicates/scan"),
+        ("POST", r"/api/scan(?:/.*)?"),
+        ("POST", r"/api/thumbs/(?:generate|clear)"),
+        ("POST", r"/api/enrich/.+"),
+        ("DELETE", r"/api/albums/\d+"),
+        ("POST", r"/api/albums/\d+/(?:cover|set-cover|fetch-cover|refresh|open-folder)"),
+        # enrich-bio stays open: the artist page requests it on every view.
+        ("POST", r"/api/artists/\d+/refresh"),
+    )
 )
 
-_MEDIA_TICKET_ROUTES = (
-    (re.compile(r"/api/stream/(\d+)"), "stream"),
-    (re.compile(r"/api/covers/(\d+)(?:/thumb)?"), "cover"),
-)
 
-# The image-only cookie is sent for every /api/artists/... request, so the
-# middleware accepts it only on these exact read paths.
-_IMAGE_COOKIE_PATH = re.compile(r"/api/(?:covers/\d+(?:/thumb)?|artists/\d+/image)")
-
-
-def _media_ticket_target(path: str):
-    """Return (scope, resource_id) when a path may be read with a media ticket."""
-    for pattern, scope in _MEDIA_TICKET_ROUTES:
-        match = pattern.fullmatch(path)
-        if match:
-            return scope, int(match.group(1))
-    return None
+def _is_admin_route(method: str, path: str) -> bool:
+    return any(method in methods and pattern.fullmatch(path)
+               for methods, pattern in _ADMIN_ROUTES)
 
 
 @app.middleware("http")
 async def auth_middleware(request: Request, call_next):
-    """Middleware to check authentication for remote requests."""
+    """Require the admin password for sensitive routes; everything else is open."""
 
     client_ip = get_client_ip(request)
     path = request.url.path
@@ -4149,112 +4158,57 @@ async def auth_middleware(request: Request, call_next):
     if request.method == "OPTIONS" and request.headers.get("Access-Control-Request-Method"):
         return await call_next(request)
 
-    # Media elements and DLNA renderers cannot send headers. Their URLs carry
-    # a ticket minted by an authenticated client and scoped to exactly this
-    # track or cover; it authorizes this read and nothing else.
-    ticket = request.query_params.get("ticket")
-    media_target = _media_ticket_target(path) if request.method in ("GET", "HEAD") else None
-    if ticket and media_target:
-        scope, resource_id = media_target
-        allowed = security.verify_media_ticket(ticket, scope, resource_id) or (
-            scope == "stream" and security.verify_media_ticket(ticket, "stream-any", 0)
-        )
-        if not allowed:
-            return JSONResponse(status_code=401, content={"error": "Media ticket expired or invalid"})
-        return await call_next(request)
-
-    # Before protection is enabled, a network guest must not be able to claim
-    # ownership by setting the first password. Bootstrap locally on the host.
-    if not auth_enabled and path.startswith("/api/security/") and path != "/api/security/status":
-        if path != "/api/security/setup-password":
+    if _is_admin_route(request.method, path):
+        # Before protection is enabled, a network guest must not be able to
+        # claim ownership by setting the first password, nor use admin routes.
+        # Bootstrap locally on the host.
+        if not auth_enabled and path.startswith("/api/security/"):
+            if path != "/api/security/setup-password":
+                return JSONResponse(
+                    status_code=403,
+                    content={"error": "Set an initial password before managing credentials."},
+                )
+            if not _is_loopback_client_ip(client_ip):
+                return JSONResponse(
+                    status_code=403,
+                    content={"error": "Initial password setup must be done on the server itself."},
+                )
+            # A loopback reverse proxy or DNS rebinding must not turn a public
+            # hostname into permission to claim an unconfigured server.
+            if (not _is_loopback_client_ip(request.url.hostname or "") or
+                    (request.headers.get("origin") and
+                     request.headers["origin"] != str(request.base_url).rstrip("/"))):
+                return JSONResponse(status_code=403, content={"error": "Use the local server URL for initial setup."})
+        elif not auth_enabled and not _is_loopback_client_ip(client_ip):
             return JSONResponse(
                 status_code=403,
-                content={"error": "Set an initial password before managing credentials."},
+                content={"error": "Set an admin password on the host PC to use this from other devices."},
             )
-        if not _is_loopback_client_ip(client_ip):
-            return JSONResponse(
-                status_code=403,
-                content={"error": "Initial password setup must be done on the server itself."},
-            )
-        # A loopback reverse proxy or DNS rebinding must not turn a public
-        # hostname into permission to claim an unconfigured server.
-        if (not _is_loopback_client_ip(request.url.hostname or "") or
-                (request.headers.get("origin") and
-                 request.headers["origin"] != str(request.base_url).rstrip("/"))):
-            return JSONResponse(status_code=403, content={"error": "Use the local server URL for initial setup."})
 
-    # When no password has been configured, do not expose the music library,
-    # destructive APIs, or local playback control over LAN/Tailscale.
-    # Users can initialize security at http://localhost:8765 on the host PC.
-    if not auth_enabled and not _is_loopback_client_ip(client_ip):
-        setup_visible = request.method == "GET" and (
-            path in {
-                "/", "/api/security/status", "/api/health",
-                "/api/health/check-ffmpeg", "/sw.js",
-                "/static/manifest.json", "/static/icon.png",
-                "/static/logo-hires.png",
-                "/static/index.html",
-            } | PUBLIC_FRONTEND_JS_PATHS
+        sensitive_security_route = (
+            path.startswith("/api/security/") or path.startswith("/api/dlna/")
         )
-        if not setup_visible:
-            return JSONResponse(
-                status_code=403,
-                content={"error": "VELVET requires first-time password setup on the host PC."},
-            )
-
-    # Expose only read-only diagnostics and the security *status* without auth.
-    # Never exempt the entire /api/security/ or /api/health/ namespace:
-    # those namespaces include state-changing and credential-rotation endpoints.
-    public_get_paths = {
-        "/", "/api/security/status", "/api/health",
-        "/api/health/check-ffmpeg", "/docs", "/redoc", "/openapi.json",
-        "/sw.js", "/static/index.html", "/static/manifest.json",
-        "/static/icon.png", "/static/logo-hires.png",
-    }
-    should_skip = request.method == "GET" and (
-        path in public_get_paths or path in PUBLIC_FRONTEND_JS_PATHS
-        or path.startswith("/docs/")
-    )
-    sensitive_security_route = (
-        (path.startswith("/api/security/") and path != "/api/security/status")
-        or path.startswith("/api/dlna/")
-    )
-
-    # Explicitly opting out of LAN auth does not bypass credential management.
-    enforce_all_networks = os.getenv(
-        "VELVET_AUTH_ENFORCE_ALL_NETWORKS", "true"
-    ).lower() in ("true", "1", "yes")
-    local_bypass = (
-        not enforce_all_networks and _is_local_client_ip(client_ip)
-    )
-
-    if auth_enabled and not should_skip and (sensitive_security_route or not local_bypass):
-        # Credentials are accepted only in headers: query strings end up in
-        # logs, history and renderer metadata. Media URLs use tickets above.
-        password = request.headers.get("X-Password")
-        api_key = request.headers.get("X-API-Key")
-        if not api_key and not password and request.method == "GET" \
-                and _IMAGE_COOKIE_PATH.fullmatch(path):
-            api_key = request.cookies.get("velvet_cover_key")
-            # A page of <img> tags replays one stale cookie (e.g. after the key
-            # was rotated on another device) dozens of times. Those are not
-            # guesses: counting them would lock the owner out before they can
-            # log in again. A 256-bit key gains nothing from the exemption.
-            from_cookie = True
-        else:
-            from_cookie = False
-
-        auth_result = security.verify_auth(
-            password=password,
-            api_key=api_key,
-            ip=client_ip,
-            record_failure=not from_cookie,
+        # Explicitly opting out of LAN auth does not bypass credential management.
+        enforce_all_networks = os.getenv(
+            "VELVET_AUTH_ENFORCE_ALL_NETWORKS", "true"
+        ).lower() in ("true", "1", "yes")
+        local_bypass = (
+            not enforce_all_networks and _is_local_client_ip(client_ip)
         )
-        if not auth_result["allowed"]:
-            return JSONResponse(
-                status_code=401,
-                content={"error": auth_result["error"]},
+
+        if auth_enabled and (sensitive_security_route or not local_bypass):
+            # Credentials are accepted only in headers: query strings end up in
+            # logs, history and renderer metadata.
+            auth_result = security.verify_auth(
+                password=request.headers.get("X-Password"),
+                api_key=request.headers.get("X-API-Key"),
+                ip=client_ip,
             )
+            if not auth_result["allowed"]:
+                return JSONResponse(
+                    status_code=401,
+                    content={"error": auth_result["error"]},
+                )
 
     response = await call_next(request)
     if path.startswith("/api/security/"):
