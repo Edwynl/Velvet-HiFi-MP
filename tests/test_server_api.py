@@ -147,6 +147,26 @@ class ServerApiTests(unittest.TestCase):
         conn.execute("INSERT INTO libraries (id, path) VALUES (1, 'C:/ExistingLibrary')")
         conn.commit()
 
+    def test_artist_alias_enrichment_overview_and_input_bounds(self):
+        status = self.client.get("/api/library/artist-aliases/enrichment")
+        self.assertEqual(status.status_code, 200)
+        payload = status.json()
+        self.assertEqual(payload["total_artists"], 2)
+        self.assertEqual(payload["remaining_artists"], 2)
+        self.assertFalse(payload["running"])
+        for invalid in (
+            {"mode": "unknown", "limit": 25},
+            {"mode": "pending", "limit": 0},
+            {"mode": "pending", "limit": 51},
+            {"mode": "pending", "limit": True},
+            {"mode": "pending", "limit": 25, "all_remaining": "true"},
+        ):
+            with self.subTest(payload=invalid):
+                result = self.client.post(
+                    "/api/library/artist-aliases/enrichment/start", json=invalid,
+                )
+                self.assertEqual(result.status_code, 422)
+
     def test_global_search_returns_artist_album_track_categories(self):
         result = self.client.get("/api/search?q=Artist%20One")
         self.assertEqual(result.status_code, 200)

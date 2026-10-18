@@ -111,7 +111,9 @@ async def sync_artist_aliases(
             except ValueError:
                 return {"status": "invalid_mbid", "added": [],
                         "aliases": fetch_aliases(db, artist_id)}
-            await asyncio.sleep(1.1)
+            # Bulk runner owns the pacing for every request in the session.
+            if not getattr(client, "rate_limited", False):
+                await asyncio.sleep(1.1)
 
         record = await _json(
             client, f"{_MUSICBRAINZ}/{mbid}",
@@ -120,7 +122,10 @@ async def sync_artist_aliases(
         if str(record.get("id") or "").lower() != mbid.lower():
             return {"status": "identity_mismatch", "added": [],
                     "aliases": fetch_aliases(db, artist_id)}
-        if not known_mbid and not _is_verified(record, artist_name):
+        # An MBID alone may be stale or incorrectly tagged in a music file.
+        # Require the artist's actual local name to appear on the verified
+        # MusicBrainz record even when an MBID is already stored.
+        if not _is_verified(record, artist_name):
             return {"status": "identity_mismatch", "added": [],
                     "aliases": fetch_aliases(db, artist_id)}
 

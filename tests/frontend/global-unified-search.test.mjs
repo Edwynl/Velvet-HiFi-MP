@@ -13,6 +13,11 @@ const track = { id: 30, title: '失落沙洲', album_id: 7,
                 album_title: '理想人生', artist_name: '徐佳瑩', format: 'FLAC' };
 const requests = [];
 let resolvedUnknownAlias = false;
+let aliasJob = {
+  running: false, stopping: false, status: 'idle', mode: 'pending',
+  processed: 0, total: 0, synced_artists: 1, remaining_artists: 2,
+  unresolved_artists: 1, aliases_imported: 3,
+};
 const response = data => ({
   ok: true, status: 200, headers: { get: () => 'application/json' },
   async json() { return structuredClone(data); },
@@ -22,6 +27,21 @@ const request = async (url, opts = {}) => {
   const u = new URL(url, 'http://localhost');
   requests.push({ url: u, method: opts.method || 'GET' });
   const q = u.searchParams.get('q') || '';
+  if (u.pathname === '/api/library/artist-aliases/enrichment' && (!opts.method || opts.method === 'GET')) {
+    return response(aliasJob);
+  }
+  if (u.pathname === '/api/library/artist-aliases/enrichment/start') {
+    const body = JSON.parse(opts.body);
+    aliasJob = { ...aliasJob, running:true, stopping:false, status:'running',
+                 mode:body.mode, all_remaining:body.all_remaining,
+                 total:body.all_remaining ? 2 : 1, processed:0 };
+    return response(aliasJob);
+  }
+  if (u.pathname === '/api/library/artist-aliases/enrichment/stop') {
+    aliasJob = { ...aliasJob, running:false, stopping:false, status:'stopped',
+                 processed:aliasJob.total };
+    return response(aliasJob);
+  }
   if (u.pathname === '/api/search/resolve-artist-alias') {
     resolvedUnknownAlias = true;
     return response({ status: 'ok', artist_id: 3, added: ['Lala Alias'] });
@@ -112,6 +132,22 @@ assert.deepEqual([...dom.window.document.querySelectorAll(
 // From ARTISTS: global search can still show albums and songs.
 await dom.window.navigate('artists');
 await wait(() => dom.window.document.querySelector('#artists-grid'));
+await wait(() => dom.window.document.querySelector('#artist-enrichment-summary')
+  ?.textContent.includes('2 remaining'));
+assert.equal(dom.window.document.querySelector('#artist-alias-next-batch').disabled, false,
+             'Batch sync must be explicitly user-initiated');
+dom.window.document.querySelector('#artist-alias-next-batch').click();
+await wait(() => requests.some(r => r.url.pathname === '/api/library/artist-aliases/enrichment/start'));
+assert.equal(aliasJob.running, true);
+assert.equal(aliasJob.all_remaining, false);
+await wait(() => dom.window.document.querySelector('#artist-alias-stop-batch').disabled === false);
+dom.window.document.querySelector('#artist-alias-stop-batch').click();
+await wait(() => aliasJob.running === false);
+await wait(() => dom.window.document.querySelector('#artist-alias-all-batch').disabled === false);
+dom.window.document.querySelector('#artist-alias-all-batch').click();
+await wait(() => requests.some(r => r.url.pathname === '/api/library/artist-aliases/enrichment/start'
+  && r.method === 'POST' && aliasJob.all_remaining === true));
+assert.equal(aliasJob.all_remaining, true, 'Whole-library sync requires an explicit click');
 await searchFromCurrentView('Lala Hsu');
 
 // Artist cards retain navigation, and the alias control remains on the detail.

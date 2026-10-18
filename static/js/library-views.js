@@ -515,6 +515,26 @@ async function renderArtists(vc) {
       <div class="section-title">Artists</div>
       <div class="section-sub" id="artists-count">${totalArtists} artists</div>
     </div>
+    <section class="artist-enrichment-panel" id="artist-enrichment-panel"
+             aria-label="Artist name enrichment">
+      <div class="artist-enrichment-copy">
+        <div class="artist-enrichment-title">Artist Names · MusicBrainz</div>
+        <div class="artist-enrichment-meta" id="artist-enrichment-summary"
+             role="status" aria-live="polite">Checking local artist coverage…</div>
+        <div class="artist-enrichment-meta" id="artist-enrichment-current"></div>
+        <progress id="artist-enrichment-progress" max="100" value="0"
+                  aria-label="Current artist alias sync batch progress"></progress>
+      </div>
+      <div class="artist-enrichment-actions">
+        <button class="btn btn-ghost" id="artist-alias-next-batch" disabled>Sync next 25</button>
+        <button class="btn btn-ghost" id="artist-alias-all-batch" disabled>Sync all remaining</button>
+        <button class="btn btn-ghost" id="artist-alias-retry-batch" disabled>Retry unresolved</button>
+        <button class="btn btn-ghost" id="artist-alias-stop-batch" disabled>Stop</button>
+      </div>
+      <div class="artist-enrichment-note">
+        Opt-in · 25 at a time, or all remaining at MusicBrainz’s slow request rate · stop/resume anytime · your files stay local
+      </div>
+    </section>
     <div class="grid artist-grid" id="artists-grid"></div>
     <div class="back-to-top" id="back-to-top-btn" style="display:none">↑</div>
     <div class="pagination" id="artists-pagination">
@@ -598,6 +618,88 @@ async function renderArtists(vc) {
 
   // Global catalog search from any tab; local page controls remain available.
   setupSearch({ autoFocus: false });
+
+  // The worker survives navigation. Only this lightweight progress poll is
+  // associated with the Artists view; polling stops when its panel detaches.
+  const aliasPanel = UI['artist-enrichment-panel'];
+  const nextAliasBtn = UI['artist-alias-next-batch'];
+  const allAliasBtn = UI['artist-alias-all-batch'];
+  const retryAliasBtn = UI['artist-alias-retry-batch'];
+  const stopAliasBtn = UI['artist-alias-stop-batch'];
+  let aliasTimer = null;
+  let aliasPollInFlight = false;
+
+  async function updateAliasProgress() {
+    if (!aliasPanel?.isConnected || state.view !== 'artists' || aliasPollInFlight) return;
+    aliasPollInFlight = true;
+    let status;
+    try {
+      status = await api('/library/artist-aliases/enrichment');
+      if (!aliasPanel.isConnected || state.view !== 'artists' || !status) return;
+      const summary = UI['artist-enrichment-summary'];
+      const current = UI['artist-enrichment-current'];
+      const progress = UI['artist-enrichment-progress'];
+      const running = Boolean(status.running);
+      if (summary) {
+        summary.textContent =
+          `${status.synced_artists || 0} verified · ${status.remaining_artists || 0} remaining` +
+          ` · ${status.unresolved_artists || 0} unresolved` +
+          ` · ${status.aliases_imported || 0} aliases imported`;
+      }
+      if (current) {
+        const processed = Number(status.processed || 0);
+        const total = Number(status.total || 0);
+        const batchLine = running
+          ? `Batch ${processed}/${total} · ${status.current_artist || 'Starting…'}`
+          : `Status: ${status.status || 'idle'}`;
+        current.textContent = status.error ? `${batchLine} · ${status.error}` : batchLine;
+      }
+      if (progress) {
+        progress.value = status.total
+          ? Math.round((Number(status.processed || 0) / status.total) * 100)
+          : 0;
+      }
+      if (nextAliasBtn) nextAliasBtn.disabled = running || !status.remaining_artists;
+      if (allAliasBtn) allAliasBtn.disabled = running || !status.remaining_artists;
+      if (retryAliasBtn) retryAliasBtn.disabled = running || !status.unresolved_artists;
+      if (stopAliasBtn) stopAliasBtn.disabled = !running || status.stopping;
+    } finally {
+      aliasPollInFlight = false;
+      clearTimeout(aliasTimer);
+      if (aliasPanel?.isConnected && state.view === 'artists' && status?.running) {
+        aliasTimer = setTimeout(updateAliasProgress, 1800);
+      }
+    }
+  }
+
+  async function startAliasBatch(mode, allRemaining = false) {
+    if (nextAliasBtn) nextAliasBtn.disabled = true;
+    if (allAliasBtn) allAliasBtn.disabled = true;
+    if (retryAliasBtn) retryAliasBtn.disabled = true;
+    try {
+      const result = await api('/library/artist-aliases/enrichment/start', {
+        method: 'POST',
+        body: JSON.stringify({ mode, limit: 25, all_remaining: allRemaining }),
+      });
+      if (result?.running) showToast('Artist name enrichment started');
+      await updateAliasProgress();
+    } catch (error) {
+      showToast('Unable to start name enrichment');
+    }
+  }
+  nextAliasBtn?.addEventListener('click', () => startAliasBatch('pending'));
+  allAliasBtn?.addEventListener('click', () => {
+    if (confirm('Sync all remaining artist names? MusicBrainz requests are rate-limited; a large library may take hours. You can stop and resume any time.')) {
+      startAliasBatch('pending', true);
+    }
+  });
+  retryAliasBtn?.addEventListener('click', () => startAliasBatch('retry'));
+  stopAliasBtn?.addEventListener('click', async () => {
+    stopAliasBtn.disabled = true;
+    await api('/library/artist-aliases/enrichment/stop', { method: 'POST' });
+    await updateAliasProgress();
+  });
+  updateAliasProgress();
 
   prevBtn.addEventListener('click', () => {
     if (currentPage <= 1) return;

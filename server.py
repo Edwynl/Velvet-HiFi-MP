@@ -74,6 +74,7 @@ from library_browse import fetch_albums, fetch_artists, fetch_tracks
 from library_paging import album_catalog_filters, fetch_album_page, fetch_artist_page
 from artist_aliases import add_alias, fetch_aliases
 from artist_alias_sync import AliasSyncUnavailable, sync_artist_aliases, resolve_search_alias
+from artist_alias_batch import ArtistAliasEnrichmentJob, DEFAULT_BATCH_SIZE, MAX_BATCH_SIZE
 from library_safety import AlbumFileArchive, ArchiveError, list_album_archives, restore_album_files
 from library_discovery import (
     fetch_album_radio,
@@ -388,6 +389,7 @@ app.add_middleware(CORSMiddleware, allow_origins=ALLOWED_ORIGINS,
 # Global scan state
 _scan_job = ScanJobState(MUSIC_DIR)
 _duplicate_job = JobState({"running": False, "progress": 0, "total": 0, "current_file": "", "groups": [], "error": None, "finished_at": None})
+_alias_enrichment_job = ArtistAliasEnrichmentJob(get_db)
 # One library job at a time: scans, folder refreshes and duplicate hashing all
 # commit per file, and a commit from one job between another job's per-file
 # read and write fails that file with "database is locked" (BUSY_SNAPSHOT).
@@ -1129,6 +1131,50 @@ async def create_artist_alias(artist_id: int, request: Request):
                 "aliases": fetch_aliases(db, artist_id)}
     finally:
         db.close()
+
+
+@app.get("/api/library/artist-aliases/enrichment")
+def artist_alias_enrichment_status():
+    """Progress plus persisted overall coverage; safe to poll from any view."""
+    db = get_db()
+    try:
+        return _alias_enrichment_job.overview(db)
+    finally:
+        db.close()
+
+
+@app.post("/api/library/artist-aliases/enrichment/start", status_code=202)
+def start_artist_alias_enrichment(body: dict):
+    """Start a bounded, opt-in MusicBrainz lookup batch; never run at startup."""
+    mode = body.get("mode", "pending")
+    limit = body.get("limit", DEFAULT_BATCH_SIZE)
+    all_remaining = body.get("all_remaining", False)
+    if type(all_remaining) is not bool:
+        raise HTTPException(422, "all_remaining must be a boolean")
+    if mode not in ("pending", "retry"):
+        raise HTTPException(422, "mode must be pending or retry")
+    if type(limit) is not int or not 1 <= limit <= MAX_BATCH_SIZE:
+        raise HTTPException(422, "limit must be an integer between 1 and 50")
+    db = get_db()
+    try:
+        with _library_task_lock:
+            if _album_mutation_active or _scan_job.is_running() or _duplicate_job.is_running():
+                raise HTTPException(409, "Wait for library maintenance or scanning to finish")
+            try:
+                result = _alias_enrichment_job.start(
+                    db, mode=mode, limit=limit, all_remaining=all_remaining,
+                )
+            except RuntimeError as exc:
+                raise HTTPException(409, str(exc))
+        return result
+    finally:
+        db.close()
+
+
+@app.post("/api/library/artist-aliases/enrichment/stop")
+def stop_artist_alias_enrichment():
+    """Cooperatively stop after the in-flight artist; progress is persistent."""
+    return _alias_enrichment_job.stop()
 
 
 @app.post("/api/artists/{artist_id}/aliases/sync")
@@ -2508,6 +2554,8 @@ def _claim_library_scan(begin) -> str | None:
             return "Album file maintenance in progress"
         if _scan_job.is_running():
             return "Scan already in progress"
+        if _alias_enrichment_job.state.is_running():
+            return "Stop artist name enrichment before scanning the music library"
         if _duplicate_job.is_running():
             return "Duplicate check in progress; scan again when it finishes"
         begin()
@@ -2678,6 +2726,8 @@ def start_duplicate_scan(background_tasks: BackgroundTasks):
             raise HTTPException(409, "Finish the library scan before checking duplicates")
         if _duplicate_job.is_running():
             raise HTTPException(409, "Duplicate scan already running")
+        if _alias_enrichment_job.state.is_running():
+            raise HTTPException(409, "Stop artist name enrichment before duplicate scanning")
         _duplicate_job.mark_running(
             progress=0, total=0, current_file="", groups=[], error=None,
             finished_at=None, candidate_files=0, files_examined=0,

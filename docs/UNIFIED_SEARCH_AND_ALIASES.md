@@ -45,6 +45,38 @@ filter of displayed cards; full OpenCC conversion is done by the global search.
 - Explicit + Alias is available for stage names absent from MusicBrainz. It is
   not a hardcoded Chinese conversion dictionary.
 
+## Batch alias enrichment (Artists page)
+
+The Artists page now has a user-controlled MusicBrainz enrichment panel:
+
+- **Sync next 25** — fetch a small batch of unprocessed local artists.
+- **Sync all remaining** — explicitly confirm a potentially hours-long task,
+  paced at least 1.25 seconds between MusicBrainz requests; the worker caps a
+  single selection at 20,000 artist records.
+- **Retry unresolved** — recheck artists previously marked not found,
+  ambiguous, invalid MBID, identity mismatch, unavailable, or error.
+- **Stop** — cooperative, after the currently active remote artist lookup.
+  No audio file is changed.
+
+Schema migration 14 records per-artist checkpoints with status, timestamp,
+last error and imported aliases count. Every artist is committed separately;
+the next batch resumes the unprocessed set even after server restart. Job
+progress survives *navigation*; a process restart resets in-memory current-job
+progress but retains durable per-artist coverage.
+
+No MusicBrainz calls happen on application startup or ordinary searches.
+Results may be incomplete if the local artist has no verifiable MusicBrainz
+identity, including artists with common names. Never guess or merge artists.
+An outage pauses the batch to avoid hammering MusicBrainz. Existing alias
+records and FLAC tags remain untouched.
+
+API:
+- `GET /api/library/artist-aliases/enrichment` — progress/coverage.
+- `POST /api/library/artist-aliases/enrichment/start` with JSON
+  `{"mode":"pending","limit":25,"all_remaining":false}` — start.
+- `POST /api/library/artist-aliases/enrichment/stop` — stop.
+- Retry with `{"mode":"retry","limit":25}`.
+
 ## Review / local Windows checks
 
 Run locally; do **not** trigger GitHub Actions. Keep PR #17 Draft until Claude

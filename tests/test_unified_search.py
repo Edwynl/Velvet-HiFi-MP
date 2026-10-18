@@ -190,6 +190,22 @@ class UnifiedLibrarySearchTests(unittest.TestCase):
         self.assertEqual(status["status"], "ok")
         self.assertEqual(len(fake.requests), 1)
 
+    def test_preexisting_mbid_must_still_match_local_artist_identity(self):
+        # Imported file tags can contain an incorrect MBID. Never import an
+        # unrelated performer's aliases merely because an MBID was present.
+        self.db.execute("UPDATE artists SET mbid=? WHERE id=1", (MBID,))
+        fake = MockMusicBrainzClient(record={
+            "id": MBID, "name": "Different Artist",
+            "sort-name": "Different Artist",
+            "aliases": [{"name": "Unrelated Stage Name"}],
+        })
+        status = asyncio.run(sync_artist_aliases(self.db, 1, client=fake))
+        self.assertEqual(status["status"], "identity_mismatch")
+        self.assertNotIn("Unrelated Stage Name", status["aliases"])
+        self.assertEqual(self.db.execute(
+            "SELECT COUNT(*) FROM artist_aliases WHERE artist_id=1"
+        ).fetchone()[0], 0)
+
     def test_musicbrainz_does_not_take_another_artist_primary_name(self):
         self.db.execute("INSERT INTO artists(id,name) VALUES(2,'LaLa Hsu')")
         fake = MockMusicBrainzClient()

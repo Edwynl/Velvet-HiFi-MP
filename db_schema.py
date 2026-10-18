@@ -4,7 +4,7 @@ import sqlite3
 from dsp_engine import FACTORY_DSP_PRESETS, legacy_eq_bands_to_filters
 
 
-LATEST_SCHEMA_VERSION = 13
+LATEST_SCHEMA_VERSION = 14
 
 
 def _table_columns(conn: sqlite3.Connection, table_name: str) -> set[str]:
@@ -572,6 +572,34 @@ def migration_013_track_title_key(conn: sqlite3.Connection) -> None:
     )
 
 
+
+def migration_014_artist_alias_enrichment(conn: sqlite3.Connection) -> None:
+    """Durable, per-artist MusicBrainz alias-enrichment checkpoints.
+
+    No audio metadata or artist names are rewritten. Unfinished requests have
+    no checkpoint, so the next user-initiated batch resumes automatically.
+    """
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS artist_alias_enrichment_state (
+            artist_id       INTEGER PRIMARY KEY
+                            REFERENCES artists(id) ON DELETE CASCADE,
+            status          TEXT NOT NULL,
+            aliases_added   INTEGER NOT NULL DEFAULT 0,
+            attempted_at    REAL NOT NULL DEFAULT (strftime('%s','now')),
+            error           TEXT NOT NULL DEFAULT ''
+        );
+        CREATE INDEX IF NOT EXISTS idx_artist_alias_enrichment_status
+            ON artist_alias_enrichment_state(status, attempted_at);
+        CREATE TRIGGER IF NOT EXISTS trg_alias_enrichment_artist_rename
+        AFTER UPDATE OF name, mbid ON artists
+        BEGIN
+            DELETE FROM artist_alias_enrichment_state WHERE artist_id=NEW.id;
+        END;
+        """
+    )
+
+
 MIGRATIONS = (
     (1, "create_base_schema", migration_001_create_base_schema),
     (2, "align_album_columns", migration_002_add_album_favorites),
@@ -586,6 +614,7 @@ MIGRATIONS = (
     (11, "artist_aliases", migration_011_artist_aliases),
     (12, "opencc_catalog_search", migration_012_opencc_catalog_search),
     (13, "track_title_key", migration_013_track_title_key),
+    (14, "artist_alias_enrichment", migration_014_artist_alias_enrichment),
 )
 
 
