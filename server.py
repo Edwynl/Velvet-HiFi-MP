@@ -1148,11 +1148,13 @@ async def cast_control(device_udn: str, action: str):
 async def get_cast_status(device_udn: str):
     """Get current playback state and position from cast device."""
     state = upnp_server.get_transport_info(device_udn)
-    pos, dur = upnp_server.get_position_info(device_udn)
+    pos, dur, track_id = upnp_server.get_position_info(device_udn, include_track_id=True)
     return {
         "state": state,
         "position": pos,
         "duration": dur,
+        # An ID only, never the GetPositionInfo TrackURI (which carries a ticket).
+        "track_id": track_id,
         "is_playing": state == "PLAYING"
     }
 
