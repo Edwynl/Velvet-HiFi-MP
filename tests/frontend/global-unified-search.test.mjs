@@ -12,8 +12,6 @@ const album = { id: 7, title: '理想人生', artist_id: 3, artist_name: '徐佳
 const track = { id: 30, title: '失落沙洲', album_id: 7,
                 album_title: '理想人生', artist_name: '徐佳瑩', format: 'FLAC' };
 const requests = [];
-let resolvedUnknownAlias = false;
-let resolvedLateAlias = false;
 const response = data => ({
   ok: true, status: 200, headers: { get: () => 'application/json' },
   async json() { return structuredClone(data); },
@@ -23,23 +21,6 @@ const request = async (url, opts = {}) => {
   const u = new URL(url, 'http://localhost');
   requests.push({ url: u, method: opts.method || 'GET' });
   const q = u.searchParams.get('q') || '';
-  if (u.pathname === '/api/search/resolve-artist-alias') {
-    if (q === 'Late Alias' && u.searchParams.get('detail_offset') !== '5') {
-      return response({ status: 'more_candidates', next_offset: 5, remaining: 1 });
-    }
-    return response({ status: 'needs_review', artist_id: 3,
-      candidate: { mbid: 'a47ac8f5-6774-4540-842f-f1eb0a19845c',
-                   name: '徐佳瑩', country: 'TW' } });
-  }
-  if (u.pathname === '/api/artists/3/aliases/confirm') {
-    if (q === 'Late Alias' || JSON.parse(opts.body).query_alias === 'Late Alias') {
-      resolvedLateAlias = true;
-    } else {
-      resolvedUnknownAlias = true;
-    }
-    return response({ status: 'ok', artist_id: 3,
-                      aliases: ['LaLa Hsu', 'Lala Alias'], added: ['Lala Alias'] });
-  }
   if (u.pathname === '/api/search/category') {
     const kind = u.searchParams.get('kind');
     const continuation = {
@@ -55,7 +36,7 @@ const request = async (url, opts = {}) => {
       return response({ artists: [artist], albums: [album], tracks: [track],
                         total_artists: 2, total_albums: 2, total_tracks: 2 });
     }
-    if (/lala hsu|徐佳莹|徐佳瑩/i.test(q) || (q === 'Lala Alias' && resolvedUnknownAlias) || (q === 'Late Alias' && resolvedLateAlias)) {
+    if (/lala hsu|徐佳莹|徐佳瑩/i.test(q)) {
       return response({ artists: [artist], albums: [album], tracks: [track],
                         total_artists: 1, total_albums: 1, total_tracks: 1 });
     }
@@ -157,26 +138,24 @@ await wait(() => dom.window.document.querySelector('#artist-aliases-list')?.text
 assert.equal(requests.some(item => item.url.pathname === '/api/search'
                        && !item.url.searchParams.get('q')), false);
 
-// No automatic remote network lookup on keystrokes. The user explicitly opts in
-// when searching a stage name not yet known to the local library.
-resolvedUnknownAlias = false;
+// No remote network lookup on keystrokes. The search-page MusicBrainz resolver
+// is withdrawn with the rest of the enrichment UI, so an unknown alias is no
+// longer a dead link: the empty state hands off to the artist page and + Alias.
 await dom.window.navigate('home');
 await wait(() => dom.window.document.querySelector('#search-input'));
 const missingInput = dom.window.document.querySelector('#search-input');
 missingInput.value = 'Lala Alias';
 missingInput.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
-await wait(() => dom.window.document.querySelector('#search-resolve-alias-btn'));
-assert.equal(requests.some(item => item.url.pathname === '/api/search/resolve-artist-alias'), false);
-const findAlias = dom.window.document.querySelector('#search-resolve-alias-btn');
-findAlias.dispatchEvent(new dom.window.MouseEvent('pointerdown', { bubbles: true }));
-assert.equal(findAlias.isConnected, true,
-             'Pointerdown on the alias resolver must not close the search view');
-findAlias.click();
-await wait(() => resolvedUnknownAlias);
-await wait(() => dom.window.document.querySelector('.search-artist-grid .artist-card'));
-assert.equal(dom.window.document.querySelectorAll('.search-albums-grid .card').length, 1);
-assert.equal(requests.some(item => item.url.pathname === '/api/artists/3/aliases/confirm'), true,
-             'An unverified identity requires a second explicit approval request');
+await wait(() => dom.window.document.querySelector('#global-search-groups')
+  ?.textContent.includes('No artists, albums, or tracks found'));
+assert.equal(dom.window.document.querySelector('#search-resolve-alias-btn'), null,
+             'The withdrawn search-page MusicBrainz resolver must not reappear');
+assert.ok(dom.window.document.querySelector('#global-search-groups').textContent.includes('+ Alias'),
+          'An unknown alias is handled on the artist page, not by a remote lookup');
+assert.equal(requests.some(item => item.url.pathname === '/api/search/resolve-artist-alias'), false,
+             'Typing an unknown alias must not contact MusicBrainz');
+assert.equal(requests.some(item => item.url.pathname === '/api/artists/3/aliases/confirm'), false,
+             'Typing an unknown alias must not silently add a name to the library');
 
 // Every category supports continuation without navigating to a special menu.
 await dom.window.navigate('home');
@@ -225,7 +204,6 @@ async function createRaceHarness() {
         if (['/api/dsp/profiles', '/api/recently-added', '/api/stats'].includes(parsed.pathname)) {
           return response([]);
         }
-        if (parsed.pathname === '/api/search/resolve-artist-alias') return response({ status: 'not_found' });
         return response({});
       };
       window.alert = () => {};
@@ -424,29 +402,19 @@ for (const sequence of ['composing-flag-only', 'compositionend-before-input', 'r
   } finally { h.dom.window.close(); }
 }
 
-// A matching English alias at candidate #6 is available on a second,
-// explicitly requested MusicBrainz lookup rather than silently omitted.
+// Search never reaches a MusicBrainz identity route, for any query. With the
+// enrichment UI withdrawn there is no page-through-candidates path left, and a
+// stage name the library does not know stays unknown rather than being guessed.
 await dom.window.navigate('home');
 await wait(() => dom.window.document.querySelector('#search-input'));
 const late = dom.window.document.querySelector('#search-input');
 late.value = 'Late Alias';
 late.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
-await wait(() => dom.window.document.querySelector('#search-resolve-alias-btn'));
-dom.window.document.querySelector('#search-resolve-alias-btn').click();
-await wait(() => requests.some(item => item.url.pathname === '/api/search/resolve-artist-alias'
-  && item.url.searchParams.get('q') === 'Late Alias'
-  && item.url.searchParams.get('detail_offset') === '0'));
-// "Checking MusicBrainz…" also contains "Check": wait until the first lookup
-// has finished and re-enabled the button, or the second click is dropped.
-await wait(() => {
-  const button = dom.window.document.querySelector('#search-resolve-alias-btn');
-  return button && !button.disabled && button.textContent.includes('more MusicBrainz candidates');
-});
-dom.window.document.querySelector('#search-resolve-alias-btn').click();
-await wait(() => requests.some(item => item.url.pathname === '/api/search/resolve-artist-alias'
-  && item.url.searchParams.get('detail_offset') === '5'));
-await wait(() => resolvedLateAlias);
-await wait(() => dom.window.document.querySelector('.search-artist-grid .artist-card'));
+await wait(() => dom.window.document.querySelector('#global-search-groups')
+  ?.textContent.includes('No artists, albums, or tracks found'));
+assert.equal(requests.some(item => /resolve-artist-alias|aliases\/confirm|musicbrainz/i
+                 .test(item.url.pathname + item.url.search)), false,
+  'No search interaction may contact a MusicBrainz identity route');
 
 console.log('frontend_global_unified_search=OK');
 dom.window.close();
