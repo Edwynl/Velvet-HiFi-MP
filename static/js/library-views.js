@@ -2677,27 +2677,6 @@ async function renderAlbum(vc, { id }) {
   if (state.currentTrack) highlightPlaying(state.currentTrack.id);
 }
 
-function chooseMusicBrainzIdentity(candidates, localName) {
-  // No implicit first-result matching. The user must select the exact
-  // MusicBrainz entry, including available type, country and disambiguation.
-  if (!Array.isArray(candidates) || !candidates.length) return null;
-  const visible = candidates.filter(item => item?.mbid).slice(0, 10);
-  if (!visible.length) return null;
-  const options = visible.map((item, i) => {
-    const details = [item.type, item.country, item.disambiguation]
-      .filter(Boolean).join(' · ');
-    return `${i + 1}. ${item.name || 'Unknown'}${details ? ' — ' + details : ''} [${item.mbid}]`;
-  });
-  const answer = prompt(
-    `Confirm the MusicBrainz identity for "${localName}".\\n` +
-    'Different musicians can have the same name. Verify before linking.\\n' +
-    'Enter the correct number, or Cancel to skip:\\n' + options.join('\\n'), ''
-  );
-  const choice = Number(answer);
-  if (!answer || !Number.isInteger(choice) || choice < 1 || choice > visible.length) return null;
-  return visible[choice - 1];
-}
-
 // ── Search ────────────────────────────────────────────────────────────────────
 
 // A response to an older IME/input query must never replace newer results.
@@ -2777,57 +2756,10 @@ async function renderSearch(vc, { q } = {}) {
       <div class="empty-state-sub" style="padding:24px 0 16px">
         No artists, albums, or tracks found in your library.
       </div>
-      <button class="btn btn-ghost" id="search-resolve-alias-btn"
-              title="Check MusicBrainz once and verify another artist name">
-        Find artist by another name
-      </button>
       <div class="section-sub" style="padding:10px 0">
-        MusicBrainz is contacted only if you click. You must confirm uncertain identities.
+        If this artist is in your library under a different name, open the artist page
+        and use + Alias to add a stage name, translated name or romanised alias.
       </div>`;
-    const lookupButton = UI['search-resolve-alias-btn'];
-    let detailOffset = 0;
-    lookupButton?.addEventListener('click', async () => {
-      lookupButton.disabled = true;
-      lookupButton.textContent = 'Checking MusicBrainz…';
-      try {
-        let result = await api(
-          `/search/resolve-artist-alias?q=${encodeURIComponent(query)}&detail_offset=${detailOffset}`,
-          { method: 'POST', timeoutMs: 35000 },
-        );
-        if (result?.status === 'more_candidates') {
-          detailOffset = result.next_offset;
-          lookupButton.textContent = `Check ${result.remaining} more MusicBrainz candidates`;
-          showToast('No match in the first group. Click again to check the remaining candidates.');
-          return;
-        }
-        if (result?.status === 'needs_review') {
-          const selected = chooseMusicBrainzIdentity(
-            result.candidate ? [result.candidate] : [], query
-          );
-          if (!selected) return;
-          result = await api(`/artists/${result.artist_id}/aliases/confirm`, {
-            method: 'POST', timeoutMs: 35000,
-            body: JSON.stringify({ mbid: selected.mbid, query_alias: query }),
-          });
-        }
-        if (result?.status === 'ok') {
-          showToast('Verified artist name added to the local library');
-          // A slow remote lookup must not replace a newer typed query/view.
-          if (state.view === 'search' && state.viewParams?.q === query) {
-            await renderSearch(vc, { q: query });
-          }
-        } else if (result) {
-          showToast('No confirmed matching artist. Search its primary name and use + Alias.', 6000);
-        }
-      } finally {
-        if (lookupButton.isConnected) {
-          lookupButton.disabled = false;
-          lookupButton.textContent = detailOffset
-            ? 'Check more MusicBrainz candidates'
-            : 'Find artist by another name';
-        }
-      }
-    });
     return;
   }
 

@@ -161,35 +161,6 @@ class ServerApiTests(unittest.TestCase):
         conn.execute("INSERT INTO libraries (id, path) VALUES (1, 'C:/ExistingLibrary')")
         conn.commit()
 
-    def test_artist_alias_enrichment_overview_and_input_bounds(self):
-        status = self.client.get("/api/library/artist-aliases/enrichment")
-        self.assertEqual(status.status_code, 200)
-        payload = status.json()
-        self.assertEqual(payload["total_artists"], 2)
-        self.assertEqual(payload["remaining_artists"], 2)
-        self.assertFalse(payload["running"])
-        for invalid in (
-            {"mode": "unknown", "limit": 25},
-            {"mode": "pending", "limit": 0},
-            {"mode": "pending", "limit": 51},
-            {"mode": "pending", "limit": True},
-            {"mode": "pending", "limit": 25, "all_remaining": "true"},
-        ):
-            with self.subTest(payload=invalid):
-                result = self.client.post(
-                    "/api/library/artist-aliases/enrichment/start", json=invalid,
-                )
-                self.assertEqual(result.status_code, 422)
-
-    def test_bulk_musicbrainz_pacing_blocks_overlapping_manual_sync(self):
-        # During a batch, manual MusicBrainz requests must not bypass its
-        # conservative request-rate limit.
-        with patch.object(server._alias_enrichment_job.state, "is_running", return_value=True):
-            single = self.client.post("/api/artists/1/aliases/sync")
-            fallback = self.client.post("/api/search/resolve-artist-alias?q=Stage")
-        self.assertEqual(single.status_code, 409)
-        self.assertEqual(fallback.status_code, 409)
-
     def test_global_search_returns_artist_album_track_categories(self):
         result = self.client.get("/api/search?q=Artist%20One")
         self.assertEqual(result.status_code, 200)
@@ -219,51 +190,6 @@ class ServerApiTests(unittest.TestCase):
         self.assertEqual(self.client.get(
             "/api/search/category?kind=unknown&q=anything",
         ).status_code, 422)
-
-    def test_artist_identity_review_queue_and_manual_confirmation_checkpoint(self):
-        from artist_aliases import add_alias
-
-        with closing(self._open_connection()) as db:
-            db.execute(
-                "INSERT INTO artist_alias_enrichment_state "
-                "(artist_id,status) VALUES(1,'needs_review')"
-            )
-            db.commit()
-        queue = self.client.get("/api/library/artist-aliases/enrichment/review")
-        self.assertEqual(queue.status_code, 200)
-        self.assertEqual(queue.json()["artists"][0]["name"], "Artist One")
-        self.assertEqual(self.client.post(
-            "/api/artists/1/aliases/confirm", json={},
-        ).status_code, 422)
-
-        async def approved(db, artist_id, *, confirmed_mbid, query_alias):
-            self.assertEqual(artist_id, 1)
-            db.execute(
-                "UPDATE artists SET mbid=? WHERE id=?",
-                (confirmed_mbid, artist_id),
-            )
-            add_alias(db, artist_id, "English Stage One")
-            return {
-                "status": "ok", "artist_id": artist_id,
-                "aliases": ["English Stage One"], "added": ["English Stage One"],
-            }
-
-        with patch.object(server, "sync_artist_aliases", side_effect=approved):
-            response = self.client.post(
-                "/api/artists/1/aliases/confirm",
-                json={"mbid": "a47ac8f5-6774-4540-842f-f1eb0a19845c",
-                      "query_alias": "English Stage One"},
-            )
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()["status"], "ok")
-        with closing(self._open_connection()) as db:
-            record = db.execute(
-                "SELECT status,aliases_added FROM artist_alias_enrichment_state "
-                "WHERE artist_id=1"
-            ).fetchone()
-            self.assertEqual(tuple(record), ("ok", 1))
-        search = self.client.get("/api/search?q=English%20Stage%20One")
-        self.assertEqual([a["id"] for a in search.json()["artists"]], [1])
 
     def test_alias_post_immediately_updates_global_results(self):
         response = self.client.post("/api/artists/1/aliases", json={"name": "Stage One"})
@@ -334,19 +260,6 @@ class ServerApiTests(unittest.TestCase):
             and call.kwargs.get("batch_size") == 200
             for call in index.call_args_list
         ))
-
-    def test_english_alias_resolver_accepts_continuation_offset(self):
-        async def fake_resolver(db, query, *, detail_offset=0):
-            return {"status": "more_candidates", "next_offset": detail_offset + 5}
-        with patch.object(server, "resolve_search_alias", side_effect=fake_resolver):
-            response = self.client.post(
-                "/api/search/resolve-artist-alias?q=Late%20Alias&detail_offset=5",
-            )
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()["next_offset"], 10)
-        self.assertEqual(self.client.post(
-            "/api/search/resolve-artist-alias?q=Late&detail_offset=10"
-        ).status_code, 422)
 
     def test_alias_post_refuses_other_artist_primary_name(self):
         response = self.client.post("/api/artists/1/aliases", json={"name": "Artist Two"})
@@ -2198,25 +2111,6 @@ class ServerApiTests(unittest.TestCase):
         self.assertTrue(audio.exists())
         with self._connect() as db:
             self.assertIsNotNone(db.execute("SELECT id FROM albums WHERE id=1").fetchone())
-
-    def test_album_mutations_refuse_while_alias_enrichment_runs(self):
-        # The alias worker commits checkpoints and index refreshes between
-        # MusicBrainz requests; an album transaction must not interleave.
-        audio = self.root / "music" / "one.flac"
-        # setUp leaves a scan marked running; only the alias job may be busy here.
-        with patch.object(server._scan_job, "is_running", return_value=False), \
-             patch.object(server._alias_enrichment_job.state, "is_running", return_value=True):
-            delete =self.client.delete("/api/albums/1?delete_files=true")
-            restore = self.client.post("/api/library/trash/anytoken/restore")
-        # Both endpoints also answer 409 for unrelated reasons; require the
-        # maintenance guard itself to be the one that refused.
-        for response in (delete, restore):
-            self.assertEqual(response.status_code, 409)
-            self.assertIn("Library maintenance is busy", response.json()["detail"])
-        self.assertTrue(audio.exists())
-        with self._connect() as db:
-            self.assertIsNotNone(db.execute("SELECT id FROM albums WHERE id=1").fetchone())
-
 
 class CastDispatcherTests(unittest.TestCase):
     """The per-renderer dispatcher: one SOAP job at a time, whatever the callers do."""
