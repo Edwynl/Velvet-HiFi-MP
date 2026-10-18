@@ -348,21 +348,47 @@ def get_transport_info(device_udn):
         except: pass
     return "UNKNOWN"
 
-def get_position_info(device_udn):
-    """Get current position and duration. Returns (rel_time_sec, duration_sec)."""
+def _velvet_track_id_from_uri(uri):
+    """Identify our own stream without returning the renderer's media ticket."""
+    if not uri:
+        return None
+    try:
+        parsed = urlparse(uri)
+        if parsed.scheme != "http" or parsed.hostname != LOCAL_IP or parsed.port != MAIN_PORT:
+            return None
+        match = re.fullmatch(r"/api/stream/([1-9][0-9]*)", parsed.path)
+        return int(match.group(1)) if match else None
+    except (TypeError, ValueError):
+        return None
+
+
+def get_position_info(device_udn, *, include_track_id=False):
+    """Get position/duration; optionally identify a VELVET TrackURI.
+
+    TrackURI comes from the same GetPositionInfo response, so enabling
+    identity does not add another SOAP round trip. Other callers retain
+    the original two-value tuple. An unsupported/external URI yields None.
+    """
+    def result(position=0, duration=0, track_id=None):
+        return (position, duration, track_id) if include_track_id else (position, duration)
+
     dev = discovered_devices.get(device_udn)
-    if not dev: return 0, 0
-    
+    if not dev:
+        return result()
+
     svc = "urn:schemas-upnp-org:service:AVTransport:1"
     res = soap_request(dev["control_url"], svc, "GetPositionInfo", "")
     if res:
         try:
             body = res.decode("utf-8")
-            rel_time = _parse_soap_arg(body, "RelTime")
-            duration = _parse_soap_arg(body, "TrackDuration")
-            return _parse_time(rel_time), _parse_time(duration)
-        except: pass
-    return 0, 0
+            position = _parse_time(_parse_soap_arg(body, "RelTime"))
+            duration = _parse_time(_parse_soap_arg(body, "TrackDuration"))
+            track_id = (_velvet_track_id_from_uri(_parse_soap_arg(body, "TrackURI"))
+                        if include_track_id else None)
+            return result(position, duration, track_id)
+        except Exception:
+            pass
+    return result()
 
 def _parse_time(t_str):
     """Parse UPnP time string H:MM:SS or H:MM:SS.mmm to seconds."""

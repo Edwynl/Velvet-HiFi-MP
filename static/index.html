@@ -6001,6 +6001,10 @@ input[type=range]::-webkit-slider-thumb:hover { background: var(--gold); }
   grid-column: 1 / -1; padding: 20px 0; color: #a49b8c; font-size: 12px;
   line-height: 1.7; max-width: 560px;
 }
+.view-home .home-playlist-shelf { grid-template-columns: repeat(3, minmax(0, 1fr)) !important; }
+@media (min-width: 1101px) {
+  .view-home .home-playlist-shelf { grid-template-columns: repeat(6, minmax(0, 1fr)) !important; }
+}
 .home-artist-shelf .card-art { border-radius: 50%; border: 1px solid var(--border); }
 .home-artist-shelf .card-title { margin-top: 12px; }
 .home-artist-shelf .card-sub { color: #a49b8c; }
@@ -6178,6 +6182,14 @@ input[type=range]::-webkit-slider-thumb:hover { background: var(--gold); }
         </svg>
         Artists
       </div>
+      <div class="nav-item" data-view="playlists">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+          <path d="M9 19V6l12-2v13"/>
+          <circle cx="6" cy="18" r="3"/>
+          <circle cx="18" cy="16" r="3"/>
+        </svg>
+        Playlists
+      </div>
       <div class="nav-item" data-view="composers">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
           <path d="M9 18V5l10-2v13"/>
@@ -6221,14 +6233,7 @@ input[type=range]::-webkit-slider-thumb:hover { background: var(--gold); }
         </svg>
         Genres
       </div>
-      <div class="nav-item" data-view="playlists">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
-          <path d="M9 19V6l12-2v13"/>
-          <circle cx="6" cy="18" r="3"/>
-          <circle cx="18" cy="16" r="3"/>
-        </svg>
-        Playlists
-      </div>
+
       <div class="nav-item" data-view="zones">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
           <rect x="2" y="4" width="8" height="6" rx="1"/>
@@ -6994,12 +6999,12 @@ function getTopNavHtml(activeView) {
     { id: 'discover', icon: '<circle cx="12" cy="12" r="8"/><path d="M12 7v5l3 3"/><path d="M16.5 7.5l1.5-3"/>' },
     { id: 'albums', icon: '<rect x="2" y="2" width="20" height="20" rx="5" ry="5"/><path d="M12 18V6"/><path d="M6 12h12"/>' },
     { id: 'artists', icon: '<path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/>' },
+    { id: 'playlists', icon: '<path d="M9 19V6l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/>' },
     { id: 'composers', icon: '<path d="M9 18V5l10-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="16" cy="16" r="3"/>' },
     { id: 'works', icon: '<rect x="4" y="4" width="16" height="16" rx="2"/><path d="M8 8h8M8 12h8M8 16h5"/>' },
     { id: 'credits', icon: '<circle cx="8" cy="8" r="3"/><circle cx="16" cy="7" r="2.5"/><circle cx="15" cy="16" r="3"/><path d="M3 20c0-2.4 2.2-4 5-4s5 1.6 5 4"/><path d="M13 13c.7-.8 1.7-1.2 3-1.2 2.2 0 4 1.2 5 3.2"/>' },
     { id: 'tracks', icon: '<line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/>' },
     { id: 'genres', icon: '<path d="M4 7a2 2 0 0 1 2-2h5l9 9-6 6-9-9V7z"/><circle cx="8.5" cy="8.5" r="1.5"/>' },
-    { id: 'playlists', icon: '<path d="M9 19V6l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/>' },
     { id: 'zones', icon: '<rect x="2" y="4" width="8" height="6" rx="1"/><rect x="14" y="4" width="8" height="6" rx="1"/><rect x="8" y="14" width="8" height="6" rx="1"/><path d="M6 10v2h12v2"/>' },
     { id: 'history', icon: '<circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>' }
   ];
@@ -7134,6 +7139,11 @@ async function activateZone(zone, transferPlayback = true) {
   state.castConfirmedTrackId = null;
   state.castConfirmedTrack = null;
   state.castConfirmedQueue = null;
+  state.castPlaybackUnverified = false;
+  state.castDspUnverified = false;
+  state.castMismatchNotified = false;
+  state.castMismatchPolls = 0;
+  state.castAutoNextArmed = false;
   state.castPending = false;
   restoreZoneDspSelection();
   updatePlayerUI(state.currentTrack || {});
@@ -7214,6 +7224,10 @@ function describeSignalProcessing(zoneType, dspProfile, upsample, plan = null, c
   const replaygainLine = rg => `ReplayGain ${rg.mode}: ${rg.applied_db > 0 ? '+' : ''}${rg.applied_db.toFixed(2)} dB`
     + (rg.reason ? ` (${rg.reason})` : '');
   if (zoneType === 'cast') {
+    if (castDsp?.pending) {
+      return ['Latest change not confirmed by the renderer yet',
+        'Renderer stream, DSP and ReplayGain processing are unverified'];
+    }
     const transcoded = castDsp?.stream === 'dsp_transcode';
     const castReplaygain = castDsp?.replaygain;
     const lines = [transcoded
@@ -7267,6 +7281,7 @@ function describeSignalProcessing(zoneType, dspProfile, upsample, plan = null, c
 function describeZoneDsp(zoneType, dspProfile, plan = null, castDsp = null) {
   const requested = dspProfile ? dspProfile.name : 'Off';
   if (zoneType === 'cast') {
+    if (castDsp?.pending) return { requested, effective: 'Unverified (renderer change not confirmed)' };
     if (!castDsp) return { requested, effective: dspProfile ? 'Not applied (not cast yet)' : 'Off (source direct)' };
     let effective = 'Off (source direct)';
     if (castDsp.status === 'applied') effective = castDsp.effective_name || 'DSP applied';
@@ -7294,9 +7309,13 @@ async function showSignalPath() {
   ].filter(Boolean).join(' · ');
 
   const activeZone = getActiveZone();
-  // While a re-cast is unanswered, what the renderer plays is not confirmed.
+  // An unanswered or failed cast cannot confirm the renderer's DSP/ReplayGain
+  // path, even when it still reports the same track. Show uncertainty until
+  // another cast is acknowledged, rather than advertising the old processing.
   const castDsp = activeZone.type !== 'cast' ? null
-    : state.castPending && state.castDsp ? { ...state.castDsp, pending: true } : state.castDsp;
+    : (state.castPending || state.castDspUnverified)
+      ? { ...(state.castDsp || {}), pending: true }
+      : state.castDsp;
   let plan = null;
   // A renderer's transcode was resolved at the source rate, as this plan is.
   if (dspProfile && (activeZone.type !== 'cast'
@@ -7311,7 +7330,9 @@ async function showSignalPath() {
   const processing = describeSignalProcessing(activeZone.type, dspProfile, state.upsample, plan, castDsp, replaygain).map(escHtml).join('<br>');
   const zoneDsp = describeZoneDsp(activeZone.type, dspProfile, plan, castDsp);
   const output = activeZone.type === 'cast'
-    ? `Streaming to ${escHtml(activeZone.name)}`
+    ? (castDsp?.pending
+      ? `Renderer playback / processing not confirmed on ${escHtml(activeZone.name)}`
+      : `Streaming to ${escHtml(activeZone.name)}`)
     : activeZone.type === 'native'
       ? `Playing on ${escHtml(activeZone.name)}`
       : 'Local browser audio output';
@@ -7942,6 +7963,10 @@ const state = {
   castConfirmedTrack: null, // that track itself, to go back to when a newer cast fails
   castConfirmedQueue: null, // { queue, idx } that track was playing from
   castAutoNextArmed: false, // a STOPPED-at-the-end status may start the next track
+  castPlaybackUnverified: false, // URI not reconciled after an uncertain/failed cast
+  castDspUnverified: false, // failed DSP/ReplayGain re-cast: processing path is unknown
+  castMismatchNotified: false, // report a renderer's unexpected track once
+  castMismatchPolls: 0, // consecutive statuses naming another track
   isComposing: false,
   mobilePlayerDismissed: false,
 };
@@ -8709,12 +8734,54 @@ async function playTrack(track, queue, idx) {
   // Mobile player auto-open is handled above for first-touch playback only.
 }
 
+// A transport state and time alone cannot identify what a DLNA renderer is
+// actually playing. After a failed cast the renderer may have accepted the
+// new URI despite an HTTP/SOAP error, or Stop may have ended the old one.
+// GetPositionInfo's TrackURI is reduced to a ticket-free track_id by the
+// server; only a matching identity can restore progress/auto-next authority.
+// Devices that omit TrackURI remain in a safe unverified state until a new
+// confirmed cast (regular, uninterrupted casts continue working as before).
+const CAST_MISMATCH_POLLS = 3;
+function castStatusBelongsToConfirmed(status) {
+  // A lagging TrackURI is possible just after a successful cast. Ignore
+  // explicit evidence for ANOTHER VELVET track rather than using its progress
+  // or STOPPED-at-the-end to auto-skip the current track. For a confirmed
+  // cast, an unidentifiable/rewritten URI remains a compatibility fallback.
+  const hasTrackId = status.track_id !== null && status.track_id !== undefined;
+  const mismatch = hasTrackId && String(status.track_id) !== String(state.castConfirmedTrackId);
+  if (mismatch) {
+    // One lagging sample is ignored, but a renderer that keeps naming another
+    // track (e.g. another VELVET client cast to it) must not freeze silently.
+    state.castMismatchPolls = (state.castMismatchPolls || 0) + 1;
+    if (state.castMismatchPolls >= CAST_MISMATCH_POLLS) state.castPlaybackUnverified = true;
+    if (state.castPlaybackUnverified) {
+      state.castAutoNextArmed = false;
+      state.playing = false;
+      updatePlayBtnUI();
+      if (!state.castMismatchNotified) {
+        showToast('Renderer is on another track; select a song to resync');
+        state.castMismatchNotified = true;
+      }
+    }
+    return false;
+  }
+  state.castMismatchPolls = 0;
+  if (!state.castPlaybackUnverified) return true;
+  if (hasTrackId) {
+    state.castPlaybackUnverified = false;
+    state.castMismatchNotified = false;
+    return true;
+  }
+  return false;
+}
+
 // Take the play/pause state from the renderer itself (after a failed or
 // overtaken control or cast), unless a newer Play/Pause is still unanswered.
 async function refreshCastTransport(device) {
   const isCurrent = castStatusGuard();
   const status = await api(`/cast/status/${device.udn}`);
-  if (!status || !isCurrent() || !isCastZone() || state.castDevice?.udn !== device.udn) return;
+  if (!status || !isCurrent() || !isCastZone() || state.castDevice?.udn !== device.udn
+      || !castStatusBelongsToConfirmed(status)) return;
   if (status.state === 'PLAYING') state.playing = true;
   else if (['PAUSED_PLAYBACK', 'STOPPED', 'NO_MEDIA_PRESENT'].includes(status.state)) state.playing = false;
   updatePlayBtnUI();
@@ -8745,7 +8812,7 @@ function startCastPolling() {
     if (!isCurrent()) return;
     try {
       const status = await api(`/cast/status/${state.castDevice.udn}`);
-      if (!status || !isCurrent()) return;
+      if (!status || !isCurrent() || !castStatusBelongsToConfirmed(status)) return;
       if (status.state === 'PLAYING') {
         state.playing = true;
         state.castAutoNextArmed = true;
@@ -8755,7 +8822,10 @@ function startCastPolling() {
         state.playing = false;
         // Auto-next logic for casting (not right after a failed cast's
         // rollback: a stale end position there is no natural completion)
-        if (state.castAutoNextArmed && status.position > 0 && status.position >= status.duration - 2) {
+        const position = Number(status.position);
+        const duration = Number(status.duration);
+        if (state.castAutoNextArmed && Number.isFinite(duration) && duration > 0
+            && Number.isFinite(position) && position > 0 && position >= duration - 2) {
           stopCastPolling();
           playNext();
         }
@@ -8875,6 +8945,10 @@ function applyCastResult(res, { track, device, dspProfile, startSeconds, control
   state.castConfirmedTrackId = track?.id ?? null;
   state.castConfirmedTrack = track || null;
   state.castConfirmedQueue = { queue: state.queue, idx: state.queueIdx };
+  state.castPlaybackUnverified = false;
+  state.castDspUnverified = false;
+  state.castMismatchNotified = false;
+  state.castMismatchPolls = 0;
   state.castAutoNextArmed = true;
   state.castStartOffset = Number(res.start_offset) || 0;
   // A direct stream that could not seek restarts from the beginning.
@@ -8913,7 +8987,22 @@ function applyCastResult(res, { track, device, dspProfile, startSeconds, control
 // restored track, or null when there is nothing to go back to.
 function restoreConfirmedCastTrack(failedTrack) {
   const confirmed = state.castConfirmedTrack;
-  if (!confirmed || confirmed.id === failedTrack?.id) return null;
+  if (!confirmed) return null;
+  // A failed or indeterminate cast may have replaced the last processing
+  // stream even when GetPositionInfo still names the same audio track.
+  state.castDspUnverified = true;
+  state.castAutoNextArmed = false;
+  state.playing = false;
+  // A failed DSP/ReplayGain recast of the same song can also have stopped
+  // its stream; do not leave the old auto-next armed in that case. Whatever
+  // the renderer holds is still this song, so a PLAYING status may rearm it
+  // (identity need not be re-proven, even by devices without TrackURI).
+  if (confirmed.id === failedTrack?.id) {
+    updatePlayBtnUI();
+    return confirmed;
+  }
+  state.castPlaybackUnverified = true;
+  state.castMismatchNotified = false;
   state.currentTrack = confirmed;
   const context = state.castConfirmedQueue;
   if (context) {
@@ -9776,7 +9865,7 @@ async function recastForReplayGain(mode) {
   const track = state.currentTrack;
   const device = state.castDevice;
   const current = state.castDsp?.replaygain;
-  if (current && !state.castPending) {
+  if (current && !state.castPending && !state.castDspUnverified) {
     const next = await api(`/tracks/${track.id}/replaygain?mode=${mode}`).catch(() => null);
     if (state.replaygain !== mode || state.currentTrack !== track || state.castDevice !== device) return;
     if (next && !state.castPending && state.castDsp?.replaygain === current

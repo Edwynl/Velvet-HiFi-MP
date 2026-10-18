@@ -79,5 +79,48 @@ class UpnpServerTests(unittest.TestCase):
             self.assertEqual(calls, actions)
 
 
+    def test_get_position_info_returns_safe_velvet_track_identity(self):
+        discovered = {"renderer-1": {"control_url": "http://renderer/control"}}
+        uris = [
+            ("http://192.168.1.10:9876/api/stream/42?ticket=SECRET&amp;dsp=3", 42),
+            ("http://192.168.1.10:9876/api/stream/43?ticket=SECRET", 43),
+            ("http://evil.example:9876/api/stream/42?ticket=SECRET", None),
+            ("http://192.168.1.10:9877/api/stream/42", None),
+            ("http://192.168.1.10:9876/api/covers/42", None),
+            ("", None),
+        ]
+        with patch.object(upnp_server, "LOCAL_IP", "192.168.1.10"), \
+             patch.object(upnp_server, "MAIN_PORT", 9876), \
+             patch.object(upnp_server, "discovered_devices", discovered):
+            for uri, expected_track_id in uris:
+                with self.subTest(uri=uri):
+                    response = (
+                        "<s:Envelope><s:Body><u:GetPositionInfoResponse>"
+                        "<RelTime>0:00:07</RelTime><TrackDuration>0:02:00</TrackDuration>"
+                        f"<TrackURI>{uri}</TrackURI>"
+                        "</u:GetPositionInfoResponse></s:Body></s:Envelope>"
+                    ).encode("utf-8")
+                    with patch.object(upnp_server, "soap_request", return_value=response) as soap:
+                        self.assertEqual(upnp_server.get_position_info("renderer-1"), (7, 120))
+                        self.assertEqual(
+                            upnp_server.get_position_info("renderer-1", include_track_id=True),
+                            (7, 120, expected_track_id),
+                        )
+                        self.assertEqual(soap.call_count, 2)
+
+    def test_get_position_info_handles_missing_device_and_failed_soap(self):
+        with patch.object(upnp_server, "discovered_devices", {}):
+            self.assertEqual(upnp_server.get_position_info("missing"), (0, 0))
+            self.assertEqual(
+                upnp_server.get_position_info("missing", include_track_id=True),
+                (0, 0, None),
+            )
+        with patch.object(upnp_server, "discovered_devices",
+                          {"r": {"control_url": "http://renderer/control"}}), \
+             patch.object(upnp_server, "soap_request", return_value=None):
+            self.assertEqual(upnp_server.get_position_info("r", include_track_id=True),
+                             (0, 0, None))
+
+
 if __name__ == "__main__":
     unittest.main()
