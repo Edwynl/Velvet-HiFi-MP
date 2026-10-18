@@ -95,7 +95,9 @@ const input=dom.window.document.querySelector('#search-input');
 input.value='137';
 input.dispatchEvent(new dom.window.Event('input',{ bubbles:true }));
 await wait(()=>requests.some(u=>u.pathname==='/api/search' && u.searchParams.get('q')==='137'));
-await wait(()=>dom.window.document.querySelector('#albums-grid')?.textContent.includes('137 Track'));
+await wait(()=>dom.window.document.querySelector('#global-search-results')?.textContent.includes('137 Track'));
+assert.equal(dom.window.document.querySelector('.search-results .result-section-title')?.textContent.startsWith('Tracks'), true,
+             'Global search shows the track section when no artist/album matches');
 assert.equal(requests.some(u=>u.pathname==='/api/search' && !u.searchParams.get('q')), false,
              'Never ask server to search with an empty query');
 await dom.window.navigate('artists');
@@ -115,11 +117,29 @@ await wait(() => document.querySelectorAll('#artists-grid .card').length === 5);
 const artistSearch=document.querySelector('#search-input');
 artistSearch.value='Artist 75';
 artistSearch.dispatchEvent(new dom.window.Event('input', { bubbles:true }));
-await wait(() => document.querySelector('#artists-grid').textContent.includes('No artists found'));
-assert.equal(document.querySelector('[data-region="korea"]').getAttribute('aria-pressed'), 'true');
+// The Artists topbar is the unified global search, so typing leaves this page
+// instead of filtering it locally, and the region filter must not swallow the
+// keystroke. Local artist filtering stays reachable through the global
+// search's Artists category, which uses the same search parameter.
+await wait(()=>requests.some(u=>u.pathname==='/api/search' && u.searchParams.get('q')==='Artist 75'));
+await wait(()=>document.querySelector('#global-search-groups'));
+assert.equal(document.querySelector('#artists-grid'), null,
+             'The Artists topbar routes to global search rather than filtering locally');
+assert.equal(requests.filter(u=>u.pathname==='/api/artists/page').at(-1).searchParams.get('search'), null,
+             'Global search must not send a local Artists filter');
+// Region filtering is unaffected by that round trip.
+await dom.window.navigate('artists');
+await wait(()=>document.querySelector('#artists-grid'));
+document.querySelector('[data-region="korea"]').click();
+await wait(()=>document.querySelectorAll('#artists-grid .card').length === 60);
+assert.equal(document.querySelector('#page-info').textContent, 'Page 1 / 2');
 document.querySelector('[data-region=""]').click();
-await wait(() => document.querySelectorAll('#artists-grid .card').length === 1);
-assert.ok(document.querySelector('#artists-grid').textContent.includes('Artist 75'));
-assert.equal(document.querySelector('#page-info').textContent, 'Page 1 / 1');
+await wait(()=>requests.filter(u=>u.pathname==='/api/artists/page').at(-1).searchParams.get('region')==='');
+await wait(()=>document.querySelectorAll('#artists-grid .card').length === 60);
+assert.equal(document.querySelector('#page-info').textContent, 'Page 1 / 2');
+assert.ok(document.querySelector('#artists-grid').textContent.includes('Artist 1'));
+// Let the in-flight page render finish before the window closes, otherwise its
+// response lands after teardown and throws on the detached document.
+await new Promise(r=>setTimeout(r,80));
 console.log('frontend_mobile_catalog_paging_check=OK');
 dom.window.close();

@@ -78,7 +78,7 @@ from library_search_index import refresh_track_search_index
 from library_browse import fetch_albums, fetch_artists, fetch_tracks
 from library_paging import album_catalog_filters, fetch_album_page, fetch_artist_page
 from home_recommendations import fetch_home_shelves, parse_home_ids
-from artist_aliases import fetch_aliases
+from artist_aliases import add_alias, fetch_aliases
 from library_safety import AlbumFileArchive, ArchiveError, list_album_archives, restore_album_files
 from library_discovery import (
     fetch_album_radio,
@@ -88,6 +88,8 @@ from library_discovery import (
     fetch_genres,
     fetch_recently_added,
     search_tracks,
+    search_library,
+    search_library_category,
 )
 from library_detail import (
     fetch_artist_albums,
@@ -137,6 +139,14 @@ from library_stats import (
 )
 
 from chinese_variants import get_all_variants, to_simplified, to_traditional
+
+# Request bounds for search. A very long query makes the reverse direction fall
+# back to a full instr() scan per term batch, and an unbounded limit turns one
+# request into an arbitrarily large JSON materialization. These are validated
+# by FastAPI, so an abusive request gets a 422 instead of running the query.
+MAX_SEARCH_QUERY_LENGTH = 128
+MAX_SEARCH_LIMIT = 200
+MAX_TRACKS_LIMIT = 500
 
 # ─── Import Settings ──────────────────────────────────────────────────────────
 
@@ -1351,6 +1361,73 @@ def get_artist(artist_id: int):
     result["primary_genre"] = genre["genre"] if genre else None
     return result
 
+def _refresh_alias_search_keys() -> None:
+    """Refresh alias keys in bounded, committed SQLite transactions.
+
+    One popular artist can dirty thousands of tracks. A single unbounded
+    refresh would hold SQLite's write lock throughout that rebuild and delay
+    player/library mutations. Indexing is performed on Starlette's background
+    worker after the API response; dirty records stay searchable meanwhile.
+    """
+    for _ in range(160):  # covers >100k dirty tracks on a 66k-song library
+        if (_album_mutation_active or _scan_job.is_running()
+                or _duplicate_job.is_running()):
+            return
+        db = get_db()
+        try:
+            remaining = db.execute(
+                "SELECT (SELECT COUNT(*) FROM track_search_dirty) + "
+                "(SELECT COUNT(*) FROM catalog_search_dirty)"
+            ).fetchone()[0]
+            if not remaining:
+                return
+            refresh_track_search_index(db, batch_size=200, max_rows=800)
+            db.commit()
+        except sqlite3.Error:
+            db.rollback()
+            log.exception("Alias search index refresh deferred; dirty rows remain searchable")
+            return
+        finally:
+            db.close()
+
+
+@app.post("/api/artists/{artist_id}/aliases")
+def create_artist_alias(artist_id: int, body: dict, background_tasks: BackgroundTasks):
+    """Add one explicitly confirmed alternate artist name.
+
+    No automatic assumptions based on romanization: an English stage name
+    needs a verified alias link, not just Traditional/Simplified conversion.
+    A plain `def` so the SQLite work, including the trigger that re-queues
+    every track of the artist, runs on a worker thread, not the event loop.
+    """
+    name = body.get("name")
+    if not isinstance(name, str) or not name.strip() or len(name.strip()) > 128:
+        raise HTTPException(422, "Alias must be 1-128 characters")
+    name = name.strip()
+    db = get_db()
+    try:
+        artist = db.execute("SELECT name FROM artists WHERE id=?", (artist_id,)).fetchone()
+        if artist is None:
+            raise HTTPException(404, "Artist not found")
+        if db.execute(
+            "SELECT 1 FROM artists WHERE id != ? AND name=? COLLATE NOCASE",
+            (artist_id, name),
+        ).fetchone():
+            raise HTTPException(409, "This name already belongs to another artist")
+        try:
+            added = add_alias(db, artist_id, name)
+            db.commit()
+        except sqlite3.IntegrityError:
+            db.rollback()
+            raise HTTPException(409, "This alias already belongs to another artist")
+        if added:
+            background_tasks.add_task(_refresh_alias_search_keys)
+        return {"status": "ok", "added": bool(added),
+                "aliases": fetch_aliases(db, artist_id)}
+    finally:
+        db.close()
+
+
 @app.get("/api/artists/{artist_id}/albums")
 def get_artist_albums(artist_id: int):
     db = get_db()
@@ -1484,12 +1561,33 @@ async def get_artist_details(artist_id: int):
 
     return result
 
+@app.get("/api/search/category")
+def search_one_category(
+    kind: str = Query(..., pattern="^(artists|albums|tracks)$"),
+    q: str = Query(..., min_length=1, max_length=MAX_SEARCH_QUERY_LENGTH),
+    limit: int = Query(24, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+):
+    """Bounded continuation for Artists, Albums or Tracks in global search."""
+    db = get_db()
+    try:
+        return search_library_category(
+            db, kind, q, limit, offset,
+            get_all_variants, to_simplified, to_traditional,
+        )
+    finally:
+        db.close()
+
+
 @app.get("/api/search")
-def search(q: str, limit: int = 80):
+def search(
+    q: str = Query("", max_length=MAX_SEARCH_QUERY_LENGTH),
+    limit: int = Query(80, ge=1, le=MAX_SEARCH_LIMIT),
+):
     started_at = time.perf_counter()
     db = get_db()
     try:
-        result = search_tracks(
+        result = search_library(
             db,
             q=q,
             limit=limit,
@@ -3099,9 +3197,9 @@ async def enrich_artist_bio(artist_id: int):
 # ─── Play History API ─────────────────────────────────────────────────────────
 @app.get("/api/tracks")
 def list_tracks(
-    limit: int = 100,
-    offset: int = 0,
-    search: str = "",
+    limit: int = Query(100, ge=1, le=MAX_TRACKS_LIMIT),
+    offset: int = Query(0, ge=0),
+    search: str = Query("", max_length=MAX_SEARCH_QUERY_LENGTH),
     sort: str = "title",
     favorites_only: bool = False,
 ):
