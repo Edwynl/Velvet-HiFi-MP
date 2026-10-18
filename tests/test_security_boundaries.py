@@ -59,9 +59,10 @@ class SecurityBoundaryTests(unittest.TestCase):
         with TestClient(server.app, base_url="http://localhost:8765",
                         client=("127.0.0.1", 50123)) as loopback, \
              patch.object(server.security, "is_auth_enabled", return_value=False):
-            self.assertEqual(loopback.get("/api/stats").status_code, 200)
-            self.assertEqual(loopback.get("/api/stats", headers=tailnet).status_code, 403)
-            self.assertEqual(loopback.get("/api/stats", headers={"Host": tailnet["Host"]}).status_code, 403)
+            self.assertEqual(loopback.get("/api/stats", headers=tailnet).status_code, 200)
+            self.assertEqual(loopback.post("/api/config", headers=tailnet, json={}).status_code, 403)
+            self.assertEqual(loopback.post("/api/config", json={},
+                                           headers={"Host": tailnet["Host"]}).status_code, 403)
             self.assertEqual(loopback.post("/api/security/setup-password", headers=tailnet,
                                            json={"password": "long-password"}).status_code, 403)
 
@@ -72,14 +73,15 @@ class SecurityBoundaryTests(unittest.TestCase):
              patch.object(server.security, "is_auth_enabled", return_value=True), \
              patch.dict("os.environ", {"VELVET_AUTH_ENFORCE_ALL_NETWORKS": "false"}), \
              verify as verify_auth:
-            self.assertEqual(loopback.get("/api/stats", headers=tailnet).status_code, 401)
+            self.assertEqual(loopback.get("/api/stats", headers=tailnet).status_code, 200)
+            self.assertEqual(loopback.post("/api/config", headers=tailnet, json={}).status_code, 401)
             self.assertEqual(verify_auth.call_args.kwargs["ip"], "proxied:100.101.102.103")
 
     def test_forwarded_headers_never_raise_trust_of_remote_peer(self):
         with TestClient(server.app, base_url="http://localhost:8765",
                         client=("203.0.113.7", 50125)) as remote, \
              patch.object(server.security, "is_auth_enabled", return_value=False):
-            response = remote.get("/api/stats", headers={"X-Forwarded-For": "127.0.0.1"})
+            response = remote.post("/api/config", json={}, headers={"X-Forwarded-For": "127.0.0.1"})
             self.assertEqual(response.status_code, 403)
 
     def test_audio_soxr_profiles_use_valid_resampler(self):
@@ -109,7 +111,7 @@ class SecurityBoundaryTests(unittest.TestCase):
                 self.assertEqual(self.client.post("/api/security/setup-password",
                     headers=headers, json={"password": "long-password"}).status_code, 403)
 
-    def test_cover_cookie_never_authorizes_mutations(self):
+    def test_cookies_never_authorize_admin_routes(self):
         calls = []
         def verify(**kwargs):
             calls.append(kwargs)
@@ -117,11 +119,11 @@ class SecurityBoundaryTests(unittest.TestCase):
         self.client.cookies.set("velvet_cover_key", "cover-secret")
         with patch.object(server.security, "is_auth_enabled", return_value=True), \
              patch.object(server.security, "verify_auth", side_effect=verify):
-            # A missing cover may return 404, but it must pass authentication.
+            # Covers are public: a missing cover may return 404, never 401.
             with patch.object(server, "get_db") as db:
                 db.return_value.execute.return_value.fetchone.return_value = None
                 self.assertNotEqual(self.client.get("/api/covers/99999").status_code, 401)
-            self.assertEqual(calls[-1]["api_key"], "cover-secret")
+            self.assertEqual(calls, [])
             self.assertEqual(self.client.post("/api/security/disable").status_code, 401)
             self.assertIsNone(calls[-1]["api_key"])
 
@@ -140,7 +142,7 @@ class SecurityBoundaryTests(unittest.TestCase):
         self.assertEqual(body["stream_ticket_expires_at"], 123)
         self.assertNotIn("test-key", body["stream_ticket"])
 
-    def test_login_response_has_scoped_cookie_and_no_store(self):
+    def test_login_response_is_no_store_and_sets_no_cookie(self):
         with patch.object(server.security, "is_auth_enabled", return_value=True), \
              patch.object(server.security, "verify_auth", return_value={"allowed": True}), \
              patch.object(server.security, "get_security_manager") as manager, \
@@ -149,10 +151,7 @@ class SecurityBoundaryTests(unittest.TestCase):
             response = self.client.post("/api/security/login", headers={"X-Password": "password"})
             self.assertEqual(response.json()["api_key"], "test-key")
             self.assertEqual(response.headers["cache-control"], "no-store")
-            cookie = response.headers["set-cookie"]
-            self.assertIn("HttpOnly", cookie)
-            self.assertIn("Path=/api/covers", cookie)
-            self.assertIn("SameSite=strict", cookie)
+            self.assertNotIn("set-cookie", response.headers)
 
 
 if __name__ == "__main__":

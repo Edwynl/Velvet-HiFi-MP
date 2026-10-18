@@ -86,7 +86,7 @@ def isolated_http_server(*, enabled=False, enforce_all=True):
 
 
 class TailscaleProxyHttpTests(unittest.TestCase):
-    def test_unconfigured_proxy_cannot_browse_mutate_or_claim_initial_password(self):
+    def test_unconfigured_proxy_can_listen_but_not_mutate_or_claim_initial_password(self):
         with isolated_http_server() as client:
             self.assertEqual(client.get("/api/stats").status_code, 200)
             variants = [SERVE_HEADERS, {"Host": SERVE_HEADERS["Host"]},
@@ -96,7 +96,7 @@ class TailscaleProxyHttpTests(unittest.TestCase):
                         {"Tailscale-User-Login": "test@example.invalid"}]
             for headers in variants:
                 with self.subTest(headers=headers):
-                    self.assertEqual(client.get("/api/stats", headers=headers).status_code, 403)
+                    self.assertEqual(client.get("/api/stats", headers=headers).status_code, 200)
                     self.assertEqual(client.delete("/api/albums/1?delete_files=true",
                                                    headers=headers).status_code, 403)
                     self.assertEqual(client.post("/api/security/setup-password", headers=headers,
@@ -108,13 +108,14 @@ class TailscaleProxyHttpTests(unittest.TestCase):
             for headers in (SERVE_HEADERS, {**SERVE_HEADERS, "X-Forwarded-For": "127.0.0.1"},
                             {**SERVE_HEADERS, "X-Forwarded-For": "::1"}):
                 with self.subTest(enforce_all=enforce_all, headers=headers):
-                    self.assertEqual(client.get("/api/stats", headers=headers).status_code, 401)
+                    self.assertEqual(client.get("/api/stats", headers=headers).status_code, 200)
+                    self.assertEqual(client.post("/api/config", headers=headers, json={}).status_code, 401)
                     self.assertEqual(client.post("/api/security/disable", headers=headers).status_code, 401)
-                    self.assertEqual(client.get("/api/stats", headers={**headers,
+                    self.assertEqual(client.post("/api/config", json={}, headers={**headers,
                         "X-API-Key": "invalid-test-key"}).status_code, 401)
             authorized = {**SERVE_HEADERS, "X-API-Key": TEST_KEY}
-            self.assertEqual(client.get("/api/stats", headers=authorized).status_code, 200)
-            # Public app shell remains usable for the login screen.
+            self.assertEqual(client.post("/api/config", json={}, headers=authorized).status_code, 200)
+            # Public app shell remains usable.
             self.assertEqual(client.get("/", headers=SERVE_HEADERS).status_code, 200)
             self.assertTrue(client.get("/api/security/status").json()["enabled"])
 

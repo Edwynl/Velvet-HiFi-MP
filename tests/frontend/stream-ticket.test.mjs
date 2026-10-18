@@ -46,7 +46,7 @@ const hours = h => Math.floor(1_700_000_000_000 / 1000) + h * 3600;
     '/api/stream/5?upsample=none&dsp=3&ticket=T-login');
 }
 
-// 2. Login: the ticket is in memory before render() makes anything tappable,
+// 2. Admin login: the ticket is in memory as soon as the prompt resolves,
 //    even while a background /stream-ticket request never resolves.
 {
   const hung = deferred();
@@ -68,8 +68,9 @@ const hours = h => Math.floor(1_700_000_000_000 / 1000) + h * 3600;
     },
   });
   vm.runInContext(between('async function submitLogin()', 'function coverUrl('), context);
-  await run('submitLogin()');
-  assert.equal(ticketAtRender, 'T-login', 'Ticket must be ready before the view renders');
+  assert.equal(await run('submitLogin()'), true);
+  ticketAtRender = run('currentStreamTicket()');
+  assert.equal(ticketAtRender, 'T-login', 'Ticket must be ready as soon as the admin login resolves');
   assert.equal(calls.length, 0, 'Login needs no separate ticket request');
 }
 

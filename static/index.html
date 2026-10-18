@@ -7626,12 +7626,16 @@ const _keptViews = new Map();  // view -> { nodes, scrollTop, savedAt }
 
 // `opts.timeoutMs` overrides the 8 s limit; with `opts.timeoutResult` a
 // timeout returns that value (no toast) so the caller can tell it apart.
+// Listening needs no login; only admin routes (sensitive settings, cast,
+// library edits) answer 401. Such a call asks for the admin password once,
+// then retries with the issued key. silentAuth skips the prompt (startup).
 async function api(path, opts = {}) {
-  const { timeoutMs = 8000, timeoutResult, ...fetchOpts } = opts;
+  const { timeoutMs = 8000, timeoutResult, silentAuth = false, adminRetry = false, ...fetchOpts } = opts;
+  const retryOpts = { ...opts, adminRetry: true };
   opts = fetchOpts;
   if ((opts.method || 'GET').toUpperCase() !== 'GET') _keptViews.clear();
   const headers = opts.headers || {};
-  if (opts.body && !headers['Content-Type']) {
+  if (opts.body && !headers['Content-Type'] && !(opts.body instanceof FormData)) {
     headers['Content-Type'] = 'application/json';
   }
 
@@ -7646,20 +7650,19 @@ async function api(path, opts = {}) {
 
   try {
     log(`[VELVET] API Call: ${path}`);
-    const r = await fetch('/api' + path, { ...opts, headers, signal: controller.signal });
+    const r = await fetch('/api' + path, { ...fetchOpts, headers, signal: controller.signal });
     clearTimeout(timeoutId);
 
-    // Handle 401 - need to authenticate
+    // 401 = this action needs the admin password.
     if (r.status === 401) {
+      if (silentAuth || adminRetry) return null;
+      let message = '';
       try {
-        const data = await r.json();
-        if (data && data.error) {
-          showLoginModal(data.error);
-          return null;
-        }
+        message = (await r.json())?.error || '';
       } catch {
         // ignore json parse error on 401
       }
+      if (await requestAdminLogin(message)) return api(path, retryOpts);
       return null;
     }
 
@@ -7706,7 +7709,18 @@ async function api(path, opts = {}) {
   }
 }
 
-function showLoginModal(errorMessage) {
+// One prompt at a time: concurrent admin calls share it, then each retries.
+let adminLoginPromise = null;
+
+function requestAdminLogin(message) {
+  if (!adminLoginPromise) {
+    adminLoginPromise = new Promise(resolve => showLoginModal(message, resolve))
+      .finally(() => { adminLoginPromise = null; });
+  }
+  return adminLoginPromise;
+}
+
+function showLoginModal(errorMessage, onDone = () => {}) {
   // Remove existing modal
   const existing = document.getElementById('login-modal');
   if (existing) existing.remove();
@@ -7715,14 +7729,14 @@ function showLoginModal(errorMessage) {
   modal.id = 'login-modal';
   modal.innerHTML = `
     <div class="login-overlay"></div>
-    <div class="login-box">
-      <div class="login-title">Authentication Required</div>
-      <div class="login-desc">${errorMessage || 'Enter your password to access remotely'}</div>
+    <div class="login-box" role="dialog" aria-modal="true" aria-labelledby="login-title">
+      <div class="login-title" id="login-title">Admin Password Required</div>
+      <div class="login-desc">This action changes settings or controls a device. Enter the admin password to continue.</div>
+      <div class="login-error" id="login-error"></div>
       <input type="password" id="login-password" class="login-input"
-             placeholder="Password" autofocus>
-      <button class="btn btn-gold login-btn" onclick="submitLogin()">
-        Access Library
-      </button>
+             placeholder="Admin password" autocomplete="current-password" autofocus>
+      <button class="btn btn-gold login-btn" id="login-submit">Confirm</button>
+      <button class="btn login-btn login-cancel" id="login-cancel">Cancel</button>
     </div>
     <style>
       .login-overlay {
@@ -7731,62 +7745,72 @@ function showLoginModal(errorMessage) {
       .login-box {
         position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);
         background:var(--s2);border:1px solid var(--border);border-radius:var(--radius);
-        padding:32px;z-index:10000;width:320px;text-align:center;
+        padding:32px;z-index:10000;width:min(320px, calc(100vw - 32px));text-align:center;
       }
       .login-title {font-size:18px;font-weight:600;color:var(--text);margin-bottom:8px}
-      .login-desc {font-size:13px;color:var(--muted);margin-bottom:20px}
+      .login-desc {font-size:13px;color:var(--muted);margin-bottom:16px}
+      .login-error {font-size:13px;color:#ff6b6b;margin-bottom:12px;min-height:1em}
       .login-input {
         width:100%;background:var(--s3);border:1px solid var(--border);border-radius:var(--radius);
         padding:12px;color:var(--text);font-size:14px;outline:none;margin-bottom:16px
       }
       .login-input:focus {border-color:var(--gold)}
       .login-btn {width:100%;justify-content:center}
+      .login-cancel {margin-top:8px;background:transparent;color:var(--muted)}
     </style>
   `;
   document.body.appendChild(modal);
+  // Only a server reason worth showing (wrong password, lockout) goes here.
+  if (errorMessage && errorMessage !== 'Authentication required') {
+    document.getElementById('login-error').textContent = errorMessage;
+  }
 
-  // Handle Enter key
-  document.getElementById('login-password').addEventListener('keypress', (e) => {
-    if (e.key === 'Enter') submitLogin();
+  const finish = ok => { modal.remove(); onDone(ok); };
+  const submit = async () => { if (await submitLogin()) finish(true); };
+  document.getElementById('login-submit').addEventListener('click', submit);
+  document.getElementById('login-cancel').addEventListener('click', () => finish(false));
+  document.getElementById('login-password').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') submit();
+    if (e.key === 'Escape') finish(false);
   });
 }
 
+// Exchanges the admin password for the shared API key. Returns true on success.
 async function submitLogin() {
   const password = document.getElementById('login-password').value;
-  if (!password) return;
+  if (!password) return false;
+  const showError = message => {
+    const el = document.getElementById('login-error');
+    if (el) el.textContent = message;
+  };
 
   try {
-    // Try to verify with password by calling an API that requires auth
-    const testResp = await fetch('/api/stats', {
+    // /security/login verifies the password and returns the existing key
+    // without rotating it, so other logged-in devices keep working.
+    const keyResp = await fetch('/api/security/login', {
+      method: 'POST',
       headers: { 'X-Password': password }
     });
-
-    if (testResp.ok) {
-      // Get API key for future requests
-      // Credential management requires authentication. Authenticate this
-      // request with the password just verified, then retain the new key.
-      const keyResp = await fetch('/api/security/login', {
-        method: 'POST',
-        headers: { 'X-Password': password }
-      });
-      if (!keyResp.ok) {
-        alert('Login succeeded but the access key could not be obtained.');
-        return;
-      }
-      const keyResult = await keyResp.json();
-      if (!keyResult.success || !keyResult.api_key) return;
-      storeApiKey(keyResult.api_key);
-      authState.isAuthenticated = true;
-      document.getElementById('login-modal')?.remove();
-      adoptStreamTicket(keyResult);
-      // Refresh current view
-      await loadDspProfiles();
-      await render();
-    } else {
-      alert('Invalid password');
+    if (!keyResp.ok) {
+      let reason = '';
+      try { reason = (await keyResp.json())?.error || ''; } catch { /* non-JSON */ }
+      showError(keyResp.status === 401 && reason !== 'Too many failed attempts. Please wait.'
+        ? 'Incorrect password'
+        : (reason || `Login failed (${keyResp.status})`));
+      return false;
     }
+    const keyResult = await keyResp.json();
+    if (!keyResult.success || !keyResult.api_key) {
+      showError('The access key could not be obtained.');
+      return false;
+    }
+    storeApiKey(keyResult.api_key);
+    authState.isAuthenticated = true;
+    adoptStreamTicket(keyResult);
+    return true;
   } catch (e) {
-    alert('Authentication failed: ' + e.message);
+    showError('Authentication failed: ' + e.message);
+    return false;
   }
 }
 
@@ -10980,10 +11004,10 @@ loadStats();
 loadDspProfiles();
 
 window.addEventListener('DOMContentLoaded', async () => {
-  // Refresh the cover-only HttpOnly cookie for clients with a saved API key.
-  // Startup session refresh: also delivers the stream ticket before the first
-  // navigation renders anything the user can tap.
-  if (authState.apiKey) adoptStreamTicket(await api('/security/login', { method: 'POST' }));
+  // Startup session refresh for clients with a saved admin key: delivers the
+  // stream ticket before the first navigation renders anything the user can
+  // tap. A stale key must not prompt for the password at startup.
+  if (authState.apiKey) adoptStreamTicket(await api('/security/login', { method: 'POST', silentAuth: true }));
   maintainStreamTicket();
   log('[VELVET] DOM ready, performing initial navigation...');
   // EQ Controls
