@@ -860,28 +860,6 @@ async function renderArtists(vc) {
       <div class="section-sub" id="artists-count">${totalArtists} artists</div>
     </div>
     <div class="artist-region-filters" id="artist-region-filters" role="group" aria-label="Filter artists by region"></div>
-    <section class="artist-enrichment-panel" id="artist-enrichment-panel"
-             aria-label="Artist name enrichment">
-      <div class="artist-enrichment-copy">
-        <div class="artist-enrichment-title">Artist Names · MusicBrainz</div>
-        <div class="artist-enrichment-meta" id="artist-enrichment-summary"
-             role="status" aria-live="polite">Checking local artist coverage…</div>
-        <div class="artist-enrichment-meta" id="artist-enrichment-current"></div>
-        <progress id="artist-enrichment-progress" max="100" value="0"
-                  aria-label="Current artist alias sync batch progress"></progress>
-      </div>
-      <div class="artist-enrichment-actions">
-        <button class="btn btn-ghost" id="artist-alias-next-batch" disabled>Sync next 25</button>
-        <button class="btn btn-ghost" id="artist-alias-all-batch" disabled>Sync all remaining</button>
-        <button class="btn btn-ghost" id="artist-alias-retry-batch" disabled>Retry unresolved</button>
-        <button class="btn btn-ghost" id="artist-alias-review-batch" disabled>Review identities</button>
-        <button class="btn btn-ghost" id="artist-alias-audit-legacy">Audit old aliases</button>
-        <button class="btn btn-ghost" id="artist-alias-stop-batch" disabled>Stop</button>
-      </div>
-      <div class="artist-enrichment-note">
-        Opt-in · 25 at a time, or all remaining at MusicBrainz's slow request rate · stop/resume anytime · your files stay local
-      </div>
-    </section>
     <div class="grid artist-grid" id="artists-grid" aria-live="polite"></div>
     <div class="back-to-top" id="back-to-top-btn" style="display:none">↑</div>
     <div class="pagination" id="artists-pagination">
@@ -1010,165 +988,6 @@ async function renderArtists(vc) {
   // Global catalog search from any tab; local page controls remain available.
   // setupSearch owns #search-input, so this view must not also bind it.
   setupSearch({ autoFocus: false });
-
-  // The worker survives navigation. Only this lightweight progress poll is
-  // associated with the Artists view; polling stops when its panel detaches.
-  const aliasPanel = UI['artist-enrichment-panel'];
-  const nextAliasBtn = UI['artist-alias-next-batch'];
-  const allAliasBtn = UI['artist-alias-all-batch'];
-  const retryAliasBtn = UI['artist-alias-retry-batch'];
-  const reviewAliasBtn = UI['artist-alias-review-batch'];
-  const auditAliasBtn = UI['artist-alias-audit-legacy'];
-  const stopAliasBtn = UI['artist-alias-stop-batch'];
-  let aliasTimer = null;
-  let aliasPollInFlight = false;
-
-  let aliasPollFailures = 0;
-  let aliasLastRunning = false;
-  async function updateAliasProgress() {
-    if (!aliasPanel?.isConnected || state.view !== 'artists' || aliasPollInFlight) return;
-    aliasPollInFlight = true;
-    let status = null;
-    try {
-      status = await api('/library/artist-aliases/enrichment');
-      if (!aliasPanel.isConnected || state.view !== 'artists') return;
-      if (!status) {
-        aliasPollFailures++;
-        return;
-      }
-      aliasPollFailures = 0;
-      aliasLastRunning = Boolean(status.running);
-      const summary = UI['artist-enrichment-summary'];
-      const current = UI['artist-enrichment-current'];
-      const progress = UI['artist-enrichment-progress'];
-      const running = aliasLastRunning;
-      if (summary) {
-        summary.textContent =
-          `${status.synced_artists || 0} verified · ${status.remaining_artists || 0} remaining` +
-          ` · ${status.needs_review_artists || 0} require review` +
-          ` · ${status.unresolved_artists || 0} unresolved` +
-          ` · ${status.aliases_imported || 0} aliases imported`;
-      }
-      if (current) {
-        const processed = Number(status.processed || 0);
-        const total = Number(status.total || 0);
-        const batchLine = running
-          ? `Batch ${processed}/${total} · ${status.current_artist || 'Starting…'}`
-          : `Status: ${status.status || 'idle'}`;
-        current.textContent = status.error ? `${batchLine} · ${status.error}` : batchLine;
-      }
-      if (progress) {
-        progress.value = status.total
-          ? Math.round((Number(status.processed || 0) / status.total) * 100)
-          : 0;
-      }
-      if (nextAliasBtn) nextAliasBtn.disabled = running || !status.remaining_artists;
-      if (allAliasBtn) allAliasBtn.disabled = running || !status.remaining_artists;
-      if (retryAliasBtn) retryAliasBtn.disabled = running || !status.retryable_artists;
-      if (reviewAliasBtn) reviewAliasBtn.disabled = running || !status.needs_review_artists;
-      if (stopAliasBtn) stopAliasBtn.disabled = !running || status.stopping;
-    } catch (err) {
-      aliasPollFailures++;
-    } finally {
-      aliasPollInFlight = false;
-      clearTimeout(aliasTimer);
-      // A brief Wi-Fi/Tailscale outage must not permanently strand the panel.
-      // Retry with a bounded backoff even if api() returned null on failure.
-      if (aliasPanel?.isConnected && state.view === 'artists'
-          && (aliasLastRunning || aliasPollFailures > 0)) {
-        const wait = aliasPollFailures
-          ? Math.min(30000, 1500 * (2 ** Math.min(aliasPollFailures, 5)))
-          : 1800;
-        aliasTimer = setTimeout(updateAliasProgress, wait);
-      }
-    }
-  }
-
-  async function startAliasBatch(mode, allRemaining = false) {
-    if (nextAliasBtn) nextAliasBtn.disabled = true;
-    if (allAliasBtn) allAliasBtn.disabled = true;
-    if (retryAliasBtn) retryAliasBtn.disabled = true;
-    try {
-      const result = await api('/library/artist-aliases/enrichment/start', {
-        method: 'POST',
-        body: JSON.stringify({ mode, limit: 25, all_remaining: allRemaining }),
-      });
-      if (result?.running) showToast('Artist name enrichment started');
-      await updateAliasProgress();
-    } catch (error) {
-      // A refused start (a scan or duplicate check is running, the job is
-      // already active, the request failed) must not leave the panel stuck:
-      // updateAliasProgress only re-enables these buttons on the success path,
-      // and it schedules no follow-up poll because nothing started.
-      showToast(error?.message || 'Unable to start name enrichment');
-      await updateAliasProgress();
-    }
-  }
-  nextAliasBtn?.addEventListener('click', () => startAliasBatch('pending'));
-  allAliasBtn?.addEventListener('click', () => {
-    if (confirm('Sync all remaining artist names? MusicBrainz requests are rate-limited; a large library may take hours. You can stop and resume any time.')) {
-      startAliasBatch('pending', true);
-    }
-  });
-  retryAliasBtn?.addEventListener('click', () => startAliasBatch('retry'));
-  reviewAliasBtn?.addEventListener('click', async () => {
-    const data = await api('/library/artist-aliases/enrichment/review?limit=50');
-    const artists = data?.artists || [];
-    if (!artists.length) {
-      showToast('No artist identities require review');
-      await updateAliasProgress();
-      return;
-    }
-    const answer = prompt(
-      'Artists needing identity confirmation. Choose an artist number to open Sync Names:\\n' +
-      artists.map((item, i) => `${i + 1}. ${item.name}`).join('\\n'), ''
-    );
-    const choice = Number(answer);
-    if (!answer || !Number.isInteger(choice) || choice < 1 || choice > artists.length) return;
-    await navigate('artist', { id: artists[choice - 1].id });
-    showToast('Press Sync Names, inspect the candidates, then confirm a matching identity');
-  });
-  auditAliasBtn?.addEventListener('click', async () => {
-    const response = await api('/library/artist-aliases/audit?limit=25');
-    const entries = response?.aliases || [];
-    if (!entries.length) {
-      showToast('No unknown-origin artist aliases need review');
-      return;
-    }
-    const indexText = prompt(
-      `${response.total} legacy aliases have unknown origins.\\n` +
-      'Some may have been entered manually; none are removed automatically.\\n' +
-      'Choose a number to inspect:\\n' +
-      entries.map((item, i) => `${i + 1}. ${item.artist_name} ← ${item.alias}`).join('\\n'),
-      ''
-    );
-    const index = Number(indexText);
-    if (!indexText || !Number.isInteger(index) || index < 1 || index > entries.length) return;
-    const entry = entries[index - 1];
-    const actionText = prompt(
-      `Check: "${entry.alias}" really belongs to "${entry.artist_name}".\\n` +
-      'Type KEEP to trust this alias, or REMOVE if incorrect. Cancel makes no changes.',
-      ''
-    );
-    const action = String(actionText || '').trim().toUpperCase();
-    if (action !== 'KEEP' && action !== 'REMOVE') return;
-    if (action === 'REMOVE' && !confirm(
-      `Remove alias "${entry.alias}" from "${entry.artist_name}"? This does not modify audio files.`
-    )) return;
-    const result = await api(`/artists/${entry.artist_id}/aliases/audit`, {
-      method: 'POST',
-      body: JSON.stringify({ name: entry.alias, action: action.toLowerCase() }),
-    });
-    if (result?.status === 'ok') {
-      showToast(action === 'KEEP' ? 'Alias reviewed and retained' : 'Incorrect alias removed');
-    }
-  });
-  stopAliasBtn?.addEventListener('click', async () => {
-    stopAliasBtn.disabled = true;
-    await api('/library/artist-aliases/enrichment/stop', { method: 'POST' });
-    await updateAliasProgress();
-  });
-  updateAliasProgress();
 
   prevBtn.addEventListener('click', () => {
     if (currentPage <= 1) return;
@@ -2359,7 +2178,6 @@ async function renderArtist(vc, { id }) {
     <div class="artist-bio" id="artist-bio"><div class="bio-loading">Loading artist bio…</div></div>
     <div style="padding: 0 24px; margin-bottom: 16px;">
       <button class="btn btn-gold" id="artist-radio-btn">Artist Radio</button>
-      <button class="btn btn-ghost" id="artist-sync-alias-btn" title="Import verified alternate artist names from MusicBrainz">Sync Names</button>
       <button class="btn btn-ghost" id="artist-add-alias-btn" title="Add a stage name, translated name, or romanized alias">+ Alias</button>
       <button class="btn btn-ghost" id="refresh-artist-btn" title="Re-read artist name and all album metadata from files">🔄 Re-read Tags</button>
     </div>
@@ -2414,38 +2232,6 @@ async function renderArtist(vc, { id }) {
     if (!result || result.status !== 'ok') return;
     refreshAliasNames(result.aliases);
     showToast('Artist alias saved. All search tabs will now recognize it.');
-  });
-
-  UI['artist-sync-alias-btn']?.addEventListener('click', async () => {
-    const btn = UI['artist-sync-alias-btn'];
-    if (btn?.disabled) return;
-    if (btn) btn.disabled = true;
-    showToast('Checking verified MusicBrainz artist aliases…', 4000);
-    try {
-      const result = await api(`/artists/${id}/aliases/sync`, { method: 'POST', timeoutMs: 35000 });
-      if (!result) return;
-      if (result.status === 'ok') {
-        refreshAliasNames(result.aliases);
-        showToast(`MusicBrainz names synced · ${result.added?.length || 0} added`);
-      } else if (result.status === 'needs_review') {
-        const selected = chooseMusicBrainzIdentity(result.candidates, artist.name);
-        if (!selected) return;
-        const approved = await api(`/artists/${id}/aliases/confirm`, {
-          method: 'POST', timeoutMs: 35000,
-          body: JSON.stringify({ mbid: selected.mbid }),
-        });
-        if (approved?.status === 'ok') {
-          refreshAliasNames(approved.aliases);
-          showToast(`Artist identity confirmed · ${approved.added?.length || 0} aliases added`);
-        } else if (approved) {
-          showToast('MusicBrainz identity could not be verified; no aliases were linked');
-        }
-      } else {
-        showToast('No verified identity found. Use + Alias if you know a correct stage name.', 5500);
-      }
-    } finally {
-      if (btn) btn.disabled = false;
-    }
   });
 
   // Refresh artist metadata
@@ -2891,27 +2677,6 @@ async function renderAlbum(vc, { id }) {
   if (state.currentTrack) highlightPlaying(state.currentTrack.id);
 }
 
-function chooseMusicBrainzIdentity(candidates, localName) {
-  // No implicit first-result matching. The user must select the exact
-  // MusicBrainz entry, including available type, country and disambiguation.
-  if (!Array.isArray(candidates) || !candidates.length) return null;
-  const visible = candidates.filter(item => item?.mbid).slice(0, 10);
-  if (!visible.length) return null;
-  const options = visible.map((item, i) => {
-    const details = [item.type, item.country, item.disambiguation]
-      .filter(Boolean).join(' · ');
-    return `${i + 1}. ${item.name || 'Unknown'}${details ? ' — ' + details : ''} [${item.mbid}]`;
-  });
-  const answer = prompt(
-    `Confirm the MusicBrainz identity for "${localName}".\\n` +
-    'Different musicians can have the same name. Verify before linking.\\n' +
-    'Enter the correct number, or Cancel to skip:\\n' + options.join('\\n'), ''
-  );
-  const choice = Number(answer);
-  if (!answer || !Number.isInteger(choice) || choice < 1 || choice > visible.length) return null;
-  return visible[choice - 1];
-}
-
 // ── Search ────────────────────────────────────────────────────────────────────
 
 // A response to an older IME/input query must never replace newer results.
@@ -2991,57 +2756,10 @@ async function renderSearch(vc, { q } = {}) {
       <div class="empty-state-sub" style="padding:24px 0 16px">
         No artists, albums, or tracks found in your library.
       </div>
-      <button class="btn btn-ghost" id="search-resolve-alias-btn"
-              title="Check MusicBrainz once and verify another artist name">
-        Find artist by another name
-      </button>
       <div class="section-sub" style="padding:10px 0">
-        MusicBrainz is contacted only if you click. You must confirm uncertain identities.
+        If this artist is in your library under a different name, open the artist page
+        and use + Alias to add a stage name, translated name or romanised alias.
       </div>`;
-    const lookupButton = UI['search-resolve-alias-btn'];
-    let detailOffset = 0;
-    lookupButton?.addEventListener('click', async () => {
-      lookupButton.disabled = true;
-      lookupButton.textContent = 'Checking MusicBrainz…';
-      try {
-        let result = await api(
-          `/search/resolve-artist-alias?q=${encodeURIComponent(query)}&detail_offset=${detailOffset}`,
-          { method: 'POST', timeoutMs: 35000 },
-        );
-        if (result?.status === 'more_candidates') {
-          detailOffset = result.next_offset;
-          lookupButton.textContent = `Check ${result.remaining} more MusicBrainz candidates`;
-          showToast('No match in the first group. Click again to check the remaining candidates.');
-          return;
-        }
-        if (result?.status === 'needs_review') {
-          const selected = chooseMusicBrainzIdentity(
-            result.candidate ? [result.candidate] : [], query
-          );
-          if (!selected) return;
-          result = await api(`/artists/${result.artist_id}/aliases/confirm`, {
-            method: 'POST', timeoutMs: 35000,
-            body: JSON.stringify({ mbid: selected.mbid, query_alias: query }),
-          });
-        }
-        if (result?.status === 'ok') {
-          showToast('Verified artist name added to the local library');
-          // A slow remote lookup must not replace a newer typed query/view.
-          if (state.view === 'search' && state.viewParams?.q === query) {
-            await renderSearch(vc, { q: query });
-          }
-        } else if (result) {
-          showToast('No confirmed matching artist. Search its primary name and use + Alias.', 6000);
-        }
-      } finally {
-        if (lookupButton.isConnected) {
-          lookupButton.disabled = false;
-          lookupButton.textContent = detailOffset
-            ? 'Check more MusicBrainz candidates'
-            : 'Find artist by another name';
-        }
-      }
-    });
     return;
   }
 
