@@ -10579,19 +10579,26 @@ function setupSearch({ autoFocus = state.view === 'search' } = {}) {
     input.blur();
   }
 
-  input.addEventListener('compositionstart', () => { state.isComposing = true; });
+  input.addEventListener('compositionstart', () => {
+    clearTimeout(searchTimer);
+    state.isComposing = true;
+  });
   input.addEventListener('compositionend', () => { 
     state.isComposing = false; 
     // Trigger search after composition finishes
     input.dispatchEvent(new Event('input'));
   });
 
-  input.addEventListener('input', () => {
-    if (state.isComposing) return;
+  input.addEventListener('input', (event) => {
     clearTimeout(searchTimer);
+    if (!input.isConnected || state.isComposing || event.isComposing) return;
     const q = input.value;
     if (!q.length) {
-      exitSearch();
+      // IME/autocorrect can clear the editor before inserting its committed
+      // replacement. Wait for that sequence to settle before leaving search.
+      searchTimer = setTimeout(() => {
+        if (input.isConnected && !state.isComposing && !input.value) exitSearch();
+      }, 350);
       return;
     }
     // Whitespace is part of the editor's draft, not a request to leave search.
@@ -10600,7 +10607,7 @@ function setupSearch({ autoFocus = state.view === 'search' } = {}) {
     if (!query || (state.view === 'search'
         && query === String(state.viewParams?.q || '').trim())) return;
     searchTimer = setTimeout(() => {
-      navigate('search', { q });
+      if (input.isConnected && !state.isComposing) navigate('search', { q });
     }, 350);
   });
 

@@ -398,6 +398,68 @@ for (const origin of ['home', 'albums', 'artists', 'discover', 'tracks']) {
   } finally { h.dom.window.close(); }
 }
 
+// Space/autocorrect commits may temporarily empty the input before replacing
+// Kelly with "Kelly ". None of these intermediate events should exit search.
+for (const sequence of ['composing-flag-only', 'compositionend-before-input', 'replacement']) {
+  const h = await createRaceHarness();
+  try {
+    h.type('Kelly');
+    await raceWait(() => h.pending.length === 1);
+    h.pending[0].resolve(racePayload('Kelly'));
+    const document = h.dom.window.document;
+    await raceWait(() => document.querySelector('#global-search-groups')?.textContent.includes('Kelly'));
+    const input = document.querySelector('#search-input');
+    input.focus();
+    let exits = 0;
+    const exit = h.dom.window.exitSearch;
+    h.dom.window.exitSearch = () => { exits++; return exit(); };
+    if (sequence === 'compositionend-before-input') {
+      input.dispatchEvent(new h.dom.window.CompositionEvent('compositionstart', { bubbles: true }));
+    }
+    input.value = '';
+    input.dispatchEvent(new h.dom.window.InputEvent('input', {
+      bubbles: true, inputType: sequence === 'replacement' ? 'deleteContentBackward' : 'insertCompositionText',
+      isComposing: sequence !== 'replacement',
+    }));
+    if (sequence === 'compositionend-before-input') {
+      input.dispatchEvent(new h.dom.window.CompositionEvent('compositionend', { bubbles: true }));
+    }
+    await new Promise(resolve => setTimeout(resolve, 50));
+    assert.equal(exits, 0, sequence + ': transient emptiness must not dismiss the editor');
+    input.value = 'Kelly ';
+    input.dispatchEvent(new h.dom.window.InputEvent('input', {
+      bubbles: true, inputType: 'insertReplacementText', data: 'Kelly ',
+    }));
+    await new Promise(resolve => setTimeout(resolve, 400));
+    assert.equal(exits, 0);
+    assert.equal(h.dom.window.eval('state.view'), 'search');
+    assert.equal(document.querySelector('#search-input'), input);
+    assert.equal(input.value, 'Kelly ');
+    assert.equal(document.activeElement, input);
+    assert.equal(h.pending.length, 1, 'A replacement with the same query must not refetch');
+    h.type('');
+    await raceWait(() => exits === 1);
+    assert.equal(h.dom.window.eval('state.view'), 'home', 'A settled clear still exits search');
+  } finally { h.dom.window.close(); }
+}
+
+// Starting composition cancels a query queued before the IME took over.
+{
+  const h = await createRaceHarness();
+  try {
+    const input = h.dom.window.document.querySelector('#search-input');
+    input.focus();
+    h.type('Kel');
+    input.dispatchEvent(new h.dom.window.CompositionEvent('compositionstart', { bubbles: true }));
+    await new Promise(resolve => setTimeout(resolve, 400));
+    assert.equal(h.pending.length, 0, 'No request should navigate away during composition');
+    input.value = 'Kelly ';
+    input.dispatchEvent(new h.dom.window.CompositionEvent('compositionend', { bubbles: true }));
+    await raceWait(() => h.pending.length === 1);
+    assert.equal(h.pending[0].query, 'Kelly');
+  } finally { h.dom.window.close(); }
+}
+
 // A slow older query must never overwrite a newer one.
 {
   const h = await createRaceHarness();
