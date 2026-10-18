@@ -2259,7 +2259,42 @@ async function renderSearch(vc, { q } = {}) {
     return;
   }
   if (!artists.length && !albums.length && !tracks.length) {
-    container.innerHTML = '<div class="empty-state-sub" style="padding:24px 0">No artists, albums, or tracks found.</div>';
+    container.innerHTML = `
+      <div class="empty-state-sub" style="padding:24px 0 16px">
+        No artists, albums, or tracks found in your library.
+      </div>
+      <button class="btn btn-ghost" id="search-resolve-alias-btn"
+              title="Check MusicBrainz once and link a verified alternative artist name">
+        Find artist by another name
+      </button>
+      <div class="section-sub" style="padding:10px 0">
+        This checks MusicBrainz only when clicked. Your music stays local.
+      </div>`;
+    const lookupButton = UI['search-resolve-alias-btn'];
+    lookupButton?.addEventListener('click', async () => {
+      lookupButton.disabled = true;
+      lookupButton.textContent = 'Checking MusicBrainz…';
+      try {
+        const result = await api(
+          `/search/resolve-artist-alias?q=${encodeURIComponent(query)}`,
+          { method: 'POST', timeoutMs: 35000 },
+        );
+        if (result?.status === 'ok') {
+          showToast('Verified artist name added to your library');
+          // A slow remote lookup must not replace a later typed query or page.
+          if (state.view === 'search' && state.viewParams?.q === query) {
+            await renderSearch(vc, { q: query });
+          }
+        } else if (result) {
+          showToast('No unique verified artist in your library. Search by the primary name, then use + Alias.', 6000);
+        }
+      } finally {
+        if (lookupButton.isConnected) {
+          lookupButton.disabled = false;
+          lookupButton.textContent = 'Find artist by another name';
+        }
+      }
+    });
     return;
   }
 

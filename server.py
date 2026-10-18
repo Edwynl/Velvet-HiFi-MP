@@ -73,7 +73,7 @@ from library_search_index import refresh_track_search_index
 from library_browse import fetch_albums, fetch_artists, fetch_tracks
 from library_paging import album_catalog_filters, fetch_album_page, fetch_artist_page
 from artist_aliases import add_alias, fetch_aliases
-from artist_alias_sync import AliasSyncUnavailable, sync_artist_aliases
+from artist_alias_sync import AliasSyncUnavailable, sync_artist_aliases, resolve_search_alias
 from library_safety import AlbumFileArchive, ArchiveError, list_album_archives, restore_album_files
 from library_discovery import (
     fetch_album_radio,
@@ -1298,6 +1298,27 @@ async def get_artist_details(artist_id: int):
         result["bio_fetched"] = True
 
     return result
+
+@app.post("/api/search/resolve-artist-alias")
+def resolve_unrecognized_artist_alias(
+    q: str = Query(..., min_length=1, max_length=MAX_SEARCH_QUERY_LENGTH),
+):
+    """Opt-in lookup only, never called as part of typing into search."""
+    db = get_db()
+    try:
+        try:
+            result = asyncio.run(resolve_search_alias(db, q))
+        except AliasSyncUnavailable as exc:
+            db.rollback()
+            raise HTTPException(502, str(exc))
+        if result.get("status") == "ok":
+            db.commit()
+        else:
+            db.rollback()
+        return result
+    finally:
+        db.close()
+
 
 @app.get("/api/search")
 def search(

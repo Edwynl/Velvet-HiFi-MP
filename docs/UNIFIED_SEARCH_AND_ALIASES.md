@@ -27,6 +27,11 @@ filter of displayed cards; full OpenCC conversion is done by the global search.
 - Aliases are persisted in existing `artist_aliases` linked to the artist ID.
   Its triggers dirty track, artist and album index rows immediately.
 - Artist detail now offers **Sync Names** (opt-in MusicBrainz) and **+ Alias**.
+- The global search empty state also offers **Find artist by another name**.
+  It searches MusicBrainz once **only after a click**, checks that the remote
+  name/alias maps unambiguously to an artist already in the local library,
+  imports the verified alias, and repeats the offline search. A new alias
+  that cannot be verified never merges/creates artist records.
 - Sync resolves a stable MusicBrainz ID by stored MBID or **verified exact
   canonical artist name**, then looks up `inc=aliases`. It also imports a
   verified MusicBrainz sort-name and its given/family reordered form, e.g.
@@ -56,6 +61,8 @@ Acceptance cases:
 - `徐佳莹` finds stored `徐佳瑩` in Artists, associated Albums, and Tracks.
 - After **Sync Names** on verified artist 徐佳瑩, `LaLa Hsu` and `lala hsu`
   produce the same three categories. Verify on a copy of the real library.
+- When `Lala Hsu` has no initial local result, the optional one-click
+  MusicBrainz resolution links it to existing 徐佳瑩 and reruns local search.
 - After explicit **+ Alias**, results are immediately correct before reindex.
 - `爱你` ranks `愛你` ahead of `愛`; literal `a_b` and `100%` remain
   literal in prefix ranking.

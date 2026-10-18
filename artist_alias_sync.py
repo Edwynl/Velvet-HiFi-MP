@@ -124,34 +124,123 @@ async def sync_artist_aliases(
             return {"status": "identity_mismatch", "added": [],
                     "aliases": fetch_aliases(db, artist_id)}
 
-        current = {a.casefold() for a in fetch_aliases(db, artist_id)}
-        added = []
-        conflicts = []
-        # Include the verified sort-name and its given/family reordered form,
-        # because not every MusicBrainz artist has a Latin name alias.
-        for name in dict.fromkeys(_identity_names(record)):
-            if not 1 <= len(name) <= 128 or name.casefold() == artist_name.casefold():
+        return _store_verified_aliases(db, artist_id, artist_name, mbid, record,
+                                       known_mbid=bool(known_mbid))
+    finally:
+        if own_client:
+            await client.aclose()
+
+
+def _store_verified_aliases(
+    db: sqlite3.Connection,
+    artist_id: int,
+    artist_name: str,
+    mbid: str,
+    record: dict,
+    *,
+    known_mbid: bool,
+    query_alias: str = "",
+) -> dict:
+    """Persist only verified names, respecting collisions with other artists."""
+    current = {a.casefold() for a in fetch_aliases(db, artist_id)}
+    added = []
+    conflicts = []
+    choices = [*_identity_names(record)]
+    if query_alias and _is_verified(record, query_alias):
+        choices.append(query_alias.strip())
+    for name in dict.fromkeys(choices):
+        if not 1 <= len(name) <= 128 or name.casefold() == artist_name.casefold():
+            continue
+        if name.casefold() in current:
+            continue
+        other = db.execute(
+            "SELECT id FROM artists WHERE id != ? AND name = ? COLLATE NOCASE",
+            (artist_id, name),
+        ).fetchone()
+        if other:
+            conflicts.append(name)
+            continue
+        if add_alias(db, artist_id, name):
+            current.add(name.casefold())
+            added.append(name)
+        else:
+            conflicts.append(name)
+    if not known_mbid:
+        db.execute("UPDATE artists SET mbid=? WHERE id=?", (mbid, artist_id))
+    return {
+        "status": "ok", "artist_id": artist_id, "mbid": mbid,
+        "added": added, "conflicts": conflicts,
+        "aliases": fetch_aliases(db, artist_id),
+    }
+
+
+async def resolve_search_alias(
+    db: sqlite3.Connection,
+    query: str,
+    *,
+    client: httpx.AsyncClient | None = None,
+) -> dict:
+    """Explicit one-click fallback when an English stage name is not indexed.
+
+    Search MusicBrainz for the typed alias; link it to an existing local artist
+    only if both the remote alias and the remote/local artist identity verify.
+    Never create/merge artists, and never query remotely while typing.
+    """
+    query = (query or "").strip()
+    if not 1 <= len(query) <= 128:
+        return {"status": "invalid_query"}
+    own_client = client is None
+    if own_client:
+        client = httpx.AsyncClient(timeout=15)
+    try:
+        response = await _json(
+            client, _MUSICBRAINZ + "/",
+            {"query": query, "fmt": "json", "limit": 10},
+        )
+        candidates = [
+            candidate for candidate in response.get("artists", [])
+            if isinstance(candidate, dict) and candidate.get("id")
+            and _is_verified(candidate, query)
+        ]
+        if not candidates:
+            return {"status": "not_found"}
+        local_artists = db.execute("SELECT id,name,mbid FROM artists").fetchall()
+        pairs = {}
+        for candidate in candidates:
+            try:
+                mbid = str(uuid.UUID(str(candidate["id"])))
+            except ValueError:
                 continue
-            if name.casefold() in current:
-                continue
-            other = db.execute(
-                "SELECT id FROM artists WHERE id != ? AND name = ? COLLATE NOCASE",
-                (artist_id, name),
-            ).fetchone()
-            if other:
-                conflicts.append(name)
-                continue
-            if add_alias(db, artist_id, name):
-                current.add(name.casefold())
-                added.append(name)
-            else:
-                conflicts.append(name)
-        if not known_mbid:
-            db.execute("UPDATE artists SET mbid=? WHERE id=?", (mbid, artist_id))
-        return {
-            "status": "ok", "mbid": mbid, "added": added, "conflicts": conflicts,
-            "aliases": fetch_aliases(db, artist_id),
-        }
+            candidate_name = candidate.get("name") or ""
+            for row in local_artists:
+                # An existing MBID is the strongest identity link. Otherwise
+                # require the same canonical primary artist name, not a guess.
+                if (row[2] and str(row[2]).lower() == mbid.lower()) or (
+                    candidate_name and search_fold(candidate_name) == search_fold(str(row[1]))
+                ):
+                    pairs[(int(row[0]), mbid)] = str(row[1])
+        if len(pairs) != 1:
+            return {"status": "ambiguous" if pairs else "not_in_library"}
+        (artist_id, mbid), artist_name = next(iter(pairs.items()))
+        await asyncio.sleep(1.1)
+        record = await _json(client, f"{_MUSICBRAINZ}/{mbid}",
+                             {"inc": "aliases", "fmt": "json"})
+        if str(record.get("id") or "").lower() != mbid.lower():
+            return {"status": "identity_mismatch"}
+        if not _is_verified(record, query) or (
+            not _is_verified(record, artist_name)
+            and not db.execute("SELECT 1 FROM artists WHERE id=? AND mbid=?",
+                               (artist_id, mbid)).fetchone()
+        ):
+            return {"status": "identity_mismatch"}
+        known_mbid = db.execute(
+            "SELECT mbid FROM artists WHERE id=?", (artist_id,)
+        ).fetchone()[0]
+        result = _store_verified_aliases(
+            db, artist_id, artist_name, mbid, record,
+            known_mbid=bool(known_mbid), query_alias=query,
+        )
+        return result
     finally:
         if own_client:
             await client.aclose()

@@ -12,6 +12,7 @@ const album = { id: 7, title: '理想人生', artist_id: 3, artist_name: '徐佳
 const track = { id: 30, title: '失落沙洲', album_id: 7,
                 album_title: '理想人生', artist_name: '徐佳瑩', format: 'FLAC' };
 const requests = [];
+let resolvedUnknownAlias = false;
 const response = data => ({
   ok: true, status: 200, headers: { get: () => 'application/json' },
   async json() { return structuredClone(data); },
@@ -21,8 +22,12 @@ const request = async (url, opts = {}) => {
   const u = new URL(url, 'http://localhost');
   requests.push({ url: u, method: opts.method || 'GET' });
   const q = u.searchParams.get('q') || '';
+  if (u.pathname === '/api/search/resolve-artist-alias') {
+    resolvedUnknownAlias = true;
+    return response({ status: 'ok', artist_id: 3, added: ['Lala Alias'] });
+  }
   if (u.pathname === '/api/search') {
-    if (/lala hsu|徐佳莹|徐佳瑩/i.test(q)) {
+    if (/lala hsu|徐佳莹|徐佳瑩/i.test(q) || (q === 'Lala Alias' && resolvedUnknownAlias)) {
       return response({ artists: [artist], albums: [album], tracks: [track],
                         total_artists: 1, total_albums: 1 });
     }
@@ -120,5 +125,20 @@ await wait(() => dom.window.document.querySelector('#artist-aliases-list')?.text
 
 assert.equal(requests.some(item => item.url.pathname === '/api/search'
                        && !item.url.searchParams.get('q')), false);
+
+// No automatic remote network lookup on keystrokes. The user explicitly opts in
+// when searching a stage name not yet known to the local library.
+await dom.window.navigate('home');
+await wait(() => dom.window.document.querySelector('#search-input'));
+const missingInput = dom.window.document.querySelector('#search-input');
+missingInput.value = 'Lala Alias';
+missingInput.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
+await wait(() => dom.window.document.querySelector('#search-resolve-alias-btn'));
+assert.equal(requests.some(item => item.url.pathname === '/api/search/resolve-artist-alias'), false);
+dom.window.document.querySelector('#search-resolve-alias-btn').click();
+await wait(() => resolvedUnknownAlias);
+await wait(() => dom.window.document.querySelector('.search-artist-grid .artist-card'));
+assert.equal(dom.window.document.querySelectorAll('.search-albums-grid .card').length, 1);
+
 console.log('frontend_global_unified_search=OK');
 dom.window.close();

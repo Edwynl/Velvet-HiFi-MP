@@ -7,7 +7,7 @@ import sqlite3
 import unittest
 from unittest.mock import patch
 
-from artist_alias_sync import sync_artist_aliases
+from artist_alias_sync import sync_artist_aliases, resolve_search_alias
 from artist_aliases import add_alias
 from chinese_variants import get_all_variants, to_simplified, to_traditional
 from db_schema import apply_migrations
@@ -147,6 +147,40 @@ class UnifiedLibrarySearchTests(unittest.TestCase):
         self.assertEqual(status["status"], "ambiguous")
         self.assertEqual(len(fake.requests), 1)
         self.assertEqual(match_catalog_ids(self.db, "artist", "LaLa Hsu"), set())
+
+    def test_one_click_alias_resolution_finds_existing_chinese_artist(self):
+        # First global search is offline and cannot guess the Latin stage name.
+        self.assertEqual(self.search("Lala Hsu")["artists"], [])
+        fake = MockMusicBrainzClient()
+        with patch("artist_alias_sync.asyncio.sleep", _instant_sleep):
+            result = asyncio.run(resolve_search_alias(self.db, "Lala Hsu", client=fake))
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["artist_id"], 1)
+        self.db.commit()
+        resolved = self.search("Lala Hsu")
+        self.assertEqual([r["id"] for r in resolved["artists"]], [1])
+        self.assertEqual([r["id"] for r in resolved["albums"]], [1])
+        self.assertEqual([r["id"] for r in resolved["tracks"]], [1])
+
+    def test_one_click_alias_resolution_rejects_unrelated_artist(self):
+        fake = MockMusicBrainzClient(
+            artists=[{"id": MBID, "name": "Other Person",
+                      "sort-name": "Hsu, LaLa"}],
+            record={"id": MBID, "name": "Other Person", "sort-name": "Hsu, LaLa",
+                    "aliases": []},
+        )
+        with patch("artist_alias_sync.asyncio.sleep", _instant_sleep):
+            result = asyncio.run(resolve_search_alias(self.db, "Lala Hsu", client=fake))
+        self.assertEqual(result["status"], "not_in_library")
+        self.assertEqual(self.search("Lala Hsu")["artists"], [])
+
+    def test_one_click_alias_resolution_never_guesses_on_ambiguous_artist(self):
+        self.db.execute("INSERT INTO artists(id,name) VALUES(2,'徐佳莹')")
+        fake = MockMusicBrainzClient()
+        with patch("artist_alias_sync.asyncio.sleep", _instant_sleep):
+            result = asyncio.run(resolve_search_alias(self.db, "Lala Hsu", client=fake))
+        self.assertEqual(result["status"], "ambiguous")
+        self.assertEqual(self.db.execute("SELECT COUNT(*) FROM artist_aliases").fetchone()[0], 0)
 
     def test_musicbrainz_existing_mbid_needs_only_lookup(self):
         self.db.execute("UPDATE artists SET mbid=? WHERE id=1", (MBID,))
