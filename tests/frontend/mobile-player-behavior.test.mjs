@@ -43,7 +43,8 @@ async function waitFor(predicate, { timeoutMs = 4000, intervalMs = 20 } = {}) {
   throw new Error('Timed out waiting for condition');
 }
 
-function createHarness() {
+function createHarness({ unsupportedMediaActions = [] } = {}) {
+  const mediaActions = new Map();
   const route = (url, opts = {}) => {
     const method = (opts.method || 'GET').toUpperCase();
     const parsedUrl = new URL(url, 'http://localhost');
@@ -85,10 +86,15 @@ function createHarness() {
       return Promise.resolve(makeJsonResponse([]));
     }
 
+    if (parsedUrl.pathname === '/api/home' && method === 'GET') {
+      return Promise.resolve(makeJsonResponse({ recently_opened: [], frequent_artists: [], for_you: [], global_picks: [] }));
+    }
+
     throw new Error(`Unhandled fetch: ${method} ${parsedUrl.pathname}`);
   };
 
   return {
+    mediaActions,
     async createDom() {
       const html = inlineFrontendModules(readFileSync(HTML_PATH, 'utf8')).replace(/<link[^>]+>/g, '');
       const dom = new JSDOM(html, {
@@ -130,7 +136,12 @@ function createHarness() {
           window.navigator.mediaSession = {
             metadata: null,
             playbackState: 'none',
-            setActionHandler() {},
+            setActionHandler(action, handler) {
+              if (unsupportedMediaActions.includes(action)) {
+                throw new window.DOMException(`Unsupported action: ${action}`, 'NotSupportedError');
+              }
+              mediaActions.set(action, handler);
+            },
           };
           window.HTMLMediaElement.prototype.play = function() {
             this.paused = false;
@@ -293,6 +304,58 @@ async function testMobileProgressMirrorsPlaybackState() {
   }
 }
 
+async function testLockScreenTrackControls() {
+  const harness = createHarness();
+  const dom = await harness.createDom();
+  try {
+    const { mediaActions } = harness;
+    assert.equal(mediaActions.get('seekbackward'), null, 'Disable the lock-screen skip-back action');
+    assert.equal(mediaActions.get('seekforward'), null, 'Disable the lock-screen skip-forward action');
+    for (const action of ['play', 'pause', 'previoustrack', 'nexttrack']) {
+      assert.equal(typeof mediaActions.get(action), 'function', `Register ${action}`);
+    }
+
+    const audio = primeAudio(dom, { currentTime: 0 });
+    const played = [];
+    dom.window.playTrack = track => { played.push(track.id); };
+    dom.window.eval('state.queue = [{id: 1}, {id: 2}, {id: 3}]; state.queueIdx = 1;');
+    mediaActions.get('nexttrack')();
+    assert.equal(dom.window.eval('state.queueIdx'), 2);
+    assert.deepEqual(played, [3], 'Next selects the next queued track, without seeking');
+    assert.equal(audio.currentTime, 0);
+    mediaActions.get('previoustrack')();
+    assert.equal(dom.window.eval('state.queueIdx'), 1);
+    assert.deepEqual(played, [3, 2], 'Previous uses the same queue controls as the player');
+    audio.currentTime = 30;
+    mediaActions.get('previoustrack')();
+    assert.equal(audio.currentTime, 0, 'Preserve the player convention: restart after three seconds');
+    assert.deepEqual(played, [3, 2]);
+
+    dom.window.eval('state.queueIdx = 0;');
+    mediaActions.get('previoustrack')();
+    dom.window.eval('state.queueIdx = 2;');
+    mediaActions.get('nexttrack')();
+    assert.deepEqual(played, [3, 2], 'Queue boundaries do not start an invalid track');
+  } finally {
+    dom.window.close();
+  }
+}
+
+async function testUnsupportedMediaActionDoesNotStopSetup() {
+  for (const action of ['play', 'pause', 'previoustrack', 'nexttrack', 'seekbackward', 'seekforward']) {
+    const harness = createHarness({ unsupportedMediaActions: [action] });
+    const dom = await harness.createDom();
+    try {
+      assert.equal(harness.mediaActions.has(action), false);
+      assert.equal(harness.mediaActions.size, 5, `An unsupported ${action} must not stop other registrations`);
+      assert.equal(typeof dom.window.navigate, 'function');
+      assert.ok(dom.window.eval('browserWatchdogId'), 'Playback watchdog still starts');
+    } finally {
+      dom.window.close();
+    }
+  }
+}
+
 function testUltraCompactLandscapeCssGuards() {
   const html = inlineFrontendModules(readFileSync(HTML_PATH, 'utf8'));
 
@@ -439,10 +502,49 @@ function testConstrainedDesktopAlbumLayoutGuards() {
   );
 }
 
+async function testFullscreenLibraryNavigation() {
+  const dom = await createHarness().createDom();
+  try {
+    dom.window.eval(`
+      window.libraryVisits = [];
+      navigate = (view, params) => window.libraryVisits.push({ view, ...params });
+      state.currentTrack = { id: 1, title: 'Song', artist_id: 7, artist_name: 'Artist', album_id: 11, album_title: 'Album' };
+      updatePlayerUI(state.currentTrack);
+      toggleMobilePlayer(true);
+    `);
+    dom.window.document.querySelector('#mobile-player-track-artist a').click();
+    assert.deepEqual(JSON.parse(JSON.stringify(dom.window.libraryVisits)), [{ view: 'artist', id: 7 }]);
+    assert.equal(dom.window.document.getElementById('mobile-fullscreen-player').classList.contains('open'), false);
+    dom.window.eval('toggleMobilePlayer(true)');
+    const cover = dom.window.document.getElementById('mobile-player-cover');
+    cover.click();
+    assert.equal(dom.window.libraryVisits.at(-1).view, 'album');
+    assert.equal(dom.window.libraryVisits.at(-1).id, 11);
+    dom.window.eval(`state.currentTrack = { id: 2, title: 'Next', artist_id: 8, artist_name: 'Other', album_id: 12 }; updatePlayerUI(state.currentTrack);`);
+    dom.window.document.querySelector('#mobile-landscape-track-artist a').click();
+    assert.equal(dom.window.libraryVisits.at(-1).id, 8, 'Links follow the current track');
+    dom.window.eval('updateVUMetersInfo()');
+    dom.window.document.querySelector('#mobile-vu-track-artist a').click();
+    assert.equal(dom.window.libraryVisits.at(-1).view, 'artist');
+    assert.equal(dom.window.libraryVisits.at(-1).id, 8, 'VU metadata refresh preserves artist navigation');
+    cover.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    assert.equal(dom.window.libraryVisits.at(-1).id, 12);
+    dom.window.eval(`state.currentTrack = { id: 3, title: 'No metadata' }; updatePlayerUI(state.currentTrack);`);
+    assert.equal(cover.hasAttribute('role'), false);
+    assert.equal(dom.window.document.querySelector('#mobile-player-track-artist a'), null);
+    const count = dom.window.libraryVisits.length;
+    cover.click();
+    assert.equal(dom.window.libraryVisits.length, count, 'Missing IDs never navigate to stale details');
+  } finally { dom.window.close(); }
+}
+
 async function main() {
+  await testFullscreenLibraryNavigation();
   await testAutoOpenOnlyBeforeDismiss();
   await testBottomBarPauseDoesNotOpenFullscreen();
   await testMobileProgressMirrorsPlaybackState();
+  await testLockScreenTrackControls();
+  await testUnsupportedMediaActionDoesNotStopSetup();
   testUltraCompactLandscapeCssGuards();
   testLandscapeMiniPlayerProgressCssGuards();
   testLandscapeMobileVolumeStripHidden();

@@ -7,16 +7,37 @@ materialized; album statistics are evaluated for the selected records.
 from __future__ import annotations
 
 import sqlite3
+import re
+import unicodedata
 from typing import Callable
+from artist_ranking import artist_familiarity
+
+ALBUM_GENRE_GROUPS = (
+    'Asian Pop', 'Pop & Rock', 'Jazz', 'Classical', 'Hip-Hop & R&B',
+    'Electronic', 'Soundtracks', 'Folk & World', 'Other',
+)
+
+
+def album_genre_group(value: str | None) -> str:
+    """Group catalog labels for browsing without rewriting imported tags."""
+    name = ''.join(c for c in unicodedata.normalize('NFKD', value or '')
+                   if not unicodedata.combining(c)).casefold()
+    rules = (
+        ('Soundtracks', r'soundtrack|film|anime|jeux video|video game|原声|原聲|サウンドトラック'),
+        ('Jazz', r'jazz|爵士'),
+        ('Classical', r'classic|classique|古典|クラシック'),
+        ('Hip-Hop & R&B', r'hip.?hop|\brap\b|r&b|rhythm|soul|funk|说唱|說唱'),
+        ('Electronic', r'electro|dance|house|techno|trance|drum|电子|電子'),
+        ('Asian Pop', r'asie|asia|far east|[cjk][ -]?pop|mandopop|cantopop|华语|華語|国语|國語|粤语|粵語|港台|ポップ|韓国|韩国|日本'),
+        ('Pop & Rock', r'pop|rock|metal|punk|alternati|indie|inde\b|流行'),
+        ('Folk & World', r'folk|country|blues|monde|world|reggae|afro|latin|民族|民谣|民謠|世界'),
+    )
+    return next((group for group, pattern in rules if re.search(pattern, name)), 'Other')
 
 
 def album_catalog_filters(db: sqlite3.Connection) -> dict:
-    genres = [
-        row[0] for row in db.execute(
-            "SELECT DISTINCT trim(genre) FROM albums WHERE trim(coalesce(genre,'')) != '' "
-            "ORDER BY trim(genre) COLLATE NOCASE"
-        )
-    ]
+    present = {album_genre_group(row[0]) for row in db.execute('SELECT DISTINCT genre FROM albums')}
+    genres = [group for group in ALBUM_GENRE_GROUPS if group in present]
     decades = [
         f"{int(row[0])}s" for row in db.execute(
             "SELECT DISTINCT CAST(year / 10 AS INTEGER) * 10 "
@@ -60,8 +81,15 @@ def fetch_album_page(
         for item in like:
             args.extend((item, item))
     if genre:
-        parts.append("trim(al.genre) = ?")  # same normalization as the offered labels
-        args.append(genre)
+        if genre in ALBUM_GENRE_GROUPS:
+            labels = [row[0] for row in db.execute("SELECT DISTINCT trim(coalesce(genre,'')) FROM albums")
+                      if album_genre_group(row[0]) == genre]
+            parts.append("trim(coalesce(al.genre,'')) IN (" + ','.join('?' for _ in labels) + ")" if labels else '0')
+            args.extend(labels)
+        else:
+            # Preserve exact filtering for existing callers using raw tags.
+            parts.append("trim(al.genre) = ?")
+            args.append(genre)
     if decade:
         if not decade.endswith("s") or not decade[:-1].isdigit():
             raise ValueError("Invalid decade")
@@ -102,6 +130,7 @@ def fetch_artist_page(
     search: str = "",
     limit: int = 60,
     offset: int = 0,
+    sort: str = 'name',
     get_all_variants: Callable[[str], list[str]] | None = None,
 ) -> dict:
     """Count before slicing; only aggregate credits for the requested artists."""
@@ -128,15 +157,23 @@ def fetch_artist_page(
         )
         params = params * 2
     total = db.execute(f"SELECT COUNT(*) FROM artists ar {where}", params).fetchone()[0]
+    db.create_function('velvet_artist_familiarity', 1, artist_familiarity, deterministic=True)
+    order = ('velvet_artist_familiarity(ar.name) DESC, play_count DESC, favorite_count DESC, library_album_count DESC, '
+             'ar.sort_name COLLATE NOCASE ASC, ar.id ASC' if sort == 'popular' else
+             'ar.sort_name COLLATE NOCASE ASC, ar.id ASC')
     rows = db.execute(
         f"""
         SELECT ar.*,
+               (SELECT COUNT(*) FROM play_history ph JOIN tracks pt ON pt.id=ph.track_id
+                WHERE pt.artist_id=ar.id) AS play_count,
+               (SELECT COUNT(*) FROM albums fa WHERE fa.artist_id=ar.id AND fa.is_favorite=1) AS favorite_count,
+               (SELECT COUNT(*) FROM albums la WHERE la.artist_id=ar.id) AS library_album_count,
                (SELECT COUNT(DISTINCT t.album_id)
                 FROM track_artists ta JOIN tracks t ON ta.track_id=t.id
                 WHERE ta.artist_id=ar.id) AS album_count,
                (SELECT COUNT(*) FROM track_artists ta WHERE ta.artist_id=ar.id) AS track_count
         FROM artists ar {where}
-        ORDER BY ar.sort_name COLLATE NOCASE ASC, ar.id ASC
+        ORDER BY {order}
         LIMIT ? OFFSET ?
         """,
         (*params, limit, offset),

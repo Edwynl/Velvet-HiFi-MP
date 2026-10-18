@@ -295,6 +295,10 @@ function createHarness() {
       return makeJsonResponse({ success: true });
     }
 
+    if (parsedUrl.pathname === '/api/home' && method === 'GET') {
+      return makeJsonResponse({ recently_opened: [], frequent_artists: [], for_you: [], global_picks: [] });
+    }
+
     throw new Error(`Unhandled fetch: ${method} ${parsedUrl.pathname}`);
   }
 

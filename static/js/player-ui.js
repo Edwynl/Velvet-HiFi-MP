@@ -221,6 +221,30 @@ function updateMobileFavoriteButton(track) {
   favBtn.title = isFavorite ? 'Remove favorite' : 'Favorite album';
 }
 
+function updatePlayingArtistLink(element, track) {
+  if (!element) return;
+  const name = track.artist_name || track.artist || track.album_artist || '—';
+  element.textContent = name;
+  if (!Number.isSafeInteger(Number(track.artist_id)) || Number(track.artist_id) <= 0) return;
+  const link = document.createElement('a');
+  link.href = '#artist/' + encodeURIComponent(track.artist_id);
+  link.textContent = name;
+  link.className = 'playing-library-link';
+  link.addEventListener('click', event => {
+    event.preventDefault();
+    event.stopPropagation();
+    openPlayingLibraryItem('artist', track.artist_id);
+  });
+  element.replaceChildren(link);
+}
+
+function openPlayingLibraryItem(view, id) {
+  if (!Number.isSafeInteger(Number(id)) || Number(id) <= 0) return;
+  if (vuMeterOpen) toggleVUMeters(false);
+  toggleMobilePlayer(false, { source: 'dismiss' });
+  navigate(view, { id: Number(id) });
+}
+
 function updatePlayerUI(track) {
   UI['player-title'].textContent  = track.title || '—';
   UI['player-artist'].textContent = track.artist_name || track.artist || track.album_artist || '—';
@@ -275,9 +299,21 @@ function updatePlayerUI(track) {
 
   // ─── Mobile Player UI Update ───
   UI['mobile-player-track-title'].textContent = track.title || '—';
-  UI['mobile-player-track-artist'].textContent = track.artist_name || track.artist || track.album_artist || '—';
+  updatePlayingArtistLink(UI['mobile-player-track-artist'], track);
   UI['mobile-landscape-track-title'].textContent = track.title || '—';
-  UI['mobile-landscape-track-artist'].textContent = track.artist_name || track.artist || track.album_artist || '—';
+  updatePlayingArtistLink(UI['mobile-landscape-track-artist'], track);
+  const albumCover = UI['mobile-player-cover'];
+  if (Number.isSafeInteger(Number(track.album_id)) && Number(track.album_id) > 0) {
+    albumCover.setAttribute('role', 'link');
+    albumCover.tabIndex = 0;
+    albumCover.setAttribute('aria-label', 'Open album' + (track.album_title ? ': ' + track.album_title : ''));
+    albumCover.title = 'Open album';
+  } else {
+    albumCover.removeAttribute('role');
+    albumCover.removeAttribute('tabindex');
+    albumCover.removeAttribute('aria-label');
+    albumCover.removeAttribute('title');
+  }
   const mobileBadge = UI['mobile-player-hires-badge'];
   if (showHiRes || compactFormat) {
     mobileBadge.style.display = 'flex';
@@ -307,7 +343,7 @@ function updatePlayerUI(track) {
   const vuTitle = UI['mobile-vu-track-title'];
   const vuArtist = UI['mobile-vu-track-artist'];
   if (vuTitle) vuTitle.textContent = track.title || '—';
-  if (vuArtist) vuArtist.textContent = track.artist_name || track.artist || track.album_artist || '—';
+  updatePlayingArtistLink(vuArtist, track);
   
   const vuFormat = UI['mobile-vu-format'];
   const vuSR = UI['mobile-vu-sr'];

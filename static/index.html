@@ -5869,6 +5869,178 @@ input[type=range]::-webkit-slider-thumb:hover { background: var(--gold); }
   }
 }
 
+/* Home album shelves: static reflections reuse the decoded cover, with no
+   extra image nodes, image requests, WebGL or animation loop. */
+.view-home .home-listening-room {
+  display: flex; align-items: flex-end; justify-content: space-between;
+  gap: 24px; padding-bottom: 22px;
+}
+.view-home .home-hero-copy { min-width: 0; }
+.view-home .home-greeting { font-weight: 400; margin: 0; }
+.view-home .home-sub { color: #a49b8c; }
+.home-shelf { margin-bottom: 30px; }
+.home-shelf-heading { display: flex; align-items: baseline; gap: 14px; min-width: 0; }
+.home-shelf-number { color: var(--gold); font: 10px 'DM Mono', monospace; }
+.home-shelf-head { align-items: baseline; }
+.home-shelf-head .discover-section-sub { color: #a49b8c; max-width: 620px; }
+.home-shelf-head h2 { font-weight: 400; }
+.home-shelf-link { color: var(--gold); font-size: 11px; text-decoration: none; white-space: nowrap; }
+.view-home .home-shelf-grid { grid-template-columns: repeat(6, minmax(0, 1fr)); row-gap: 26px; }
+.view-home .home-artist-shelf { grid-template-columns: repeat(8, minmax(0, 1fr)); }
+.home-album-card .card-art {
+  margin-bottom: 26px; overflow: hidden; border: 1px solid rgba(255,255,255,.09);
+  box-shadow: 0 8px 16px rgba(0,0,0,.28);
+  transform: perspective(900px) rotateX(2deg);
+}
+.home-album-card .card-title-row { position: relative; }
+.home-shelf .card a { color: inherit; text-decoration: none; }
+.home-shelf .card a:focus-visible, .home-shelf button:focus-visible,
+.home-shelf-link:focus-visible {
+  outline: 2px solid var(--gold); outline-offset: 4px; border-radius: 3px;
+}
+.home-album-card .card-sub { color: #a49b8c; }
+.home-card-reason { color: #9b9387; font-size: 10px; margin-top: 4px; line-height: 1.4; }
+.home-shelf-empty, .home-shelf-placeholder {
+  grid-column: 1 / -1; padding: 20px 0; color: #a49b8c; font-size: 12px;
+  line-height: 1.7; max-width: 560px;
+}
+.home-artist-shelf .card-art { border-radius: 50%; border: 1px solid var(--border); }
+.home-artist-shelf .card-title { margin-top: 12px; }
+.home-artist-shelf .card-sub { color: #a49b8c; }
+@media (hover: hover) and (pointer: fine) {
+  .home-album-card:hover .card-art { transform: perspective(900px) rotateY(-3deg) rotateX(2deg); }
+}
+@media (max-width: 1120px) {
+  .view-home .home-listening-room { flex-direction: column; align-items: flex-start; gap: 18px; }
+  .view-home .home-shelf-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  .view-home .home-artist-shelf { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+}
+@media (max-width: 768px) {
+  .view-home .home-listening-room { padding-bottom: 18px; }
+  .home-shelf { margin-bottom: 24px; }
+  .home-shelf-head { gap: 10px; padding-bottom: 16px; }
+  .home-shelf-heading { gap: 9px; }
+  .home-shelf-head .discover-section-title { font-size: 22px; }
+  .home-shelf-head .discover-section-sub { font-size: 11px; line-height: 1.6; }
+  .home-shelf-link { font-size: 10px; }
+  .view-home .home-shelf-grid { gap: 20px 9px; }
+  .home-album-card .card-art { margin-bottom: 20px; }
+  .home-card-reason { font-size: 9px; }
+}
+@media (orientation: landscape) and (max-height: 500px) {
+  .view-home .home-shelf-grid { grid-template-columns: repeat(6, minmax(0, 1fr)) !important; }
+  .view-home .home-artist-shelf { grid-template-columns: repeat(8, minmax(0, 1fr)) !important; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .view-home .home-album-card, .view-home .home-album-card .card-art { transform: none; transition: none; }
+}
+/* Centered cover flow. Native scrolling owns touch and momentum; JavaScript
+   updates cover transforms only while the rail is moving. */
+.view-home .home-coverflow.home-shelf-grid {
+  --flow-cover: clamp(220px, 24vw, 280px);
+  --flow-step: calc(var(--flow-cover) * .5);
+  display: flex; align-items: flex-start; gap: 0;
+  position: relative; width: 100%;
+  height: calc(var(--flow-cover) * 1.34 + 102px);
+  padding: 22px calc((100% - var(--flow-cover)) / 2) 0;
+  overflow-x: auto; overflow-y: hidden;
+  perspective: 1000px; perspective-origin: 50% 38%;
+  scroll-snap-type: x mandatory; overscroll-behavior-x: contain;
+  scrollbar-width: none; touch-action: pan-x pan-y;
+}
+.home-coverflow::-webkit-scrollbar { display: none; }
+.view-home .home-coverflow .home-flow-slot {
+  flex: 0 0 var(--flow-cover); width: var(--flow-cover); min-width: 0;
+  margin-inline-end: calc(var(--flow-step) - var(--flow-cover));
+  position: relative; transform-style: preserve-3d;
+  scroll-snap-align: center; scroll-snap-stop: normal;
+  pointer-events: none;
+}
+.view-home .home-coverflow .home-flow-slot:last-child { margin-inline-end: 0; }
+.view-home .home-coverflow .home-album-card {
+  width: 100%; margin: 0;
+  position: relative; transform-origin: 50% 40%;
+  transform: translateY(var(--flow-lift, 0px)) translateZ(var(--flow-depth, 0px)) rotateY(var(--flow-angle, 0deg)) scale(var(--flow-scale, 1));
+  pointer-events: auto;
+  opacity: var(--flow-alpha, 1); transition: none;
+}
+.view-home .home-coverflow .home-album-card .card-art {
+  transform: none; border-radius: 7px;
+  margin-bottom: calc(var(--flow-cover) * .34 + 12px);
+  box-shadow: 0 14px 24px rgba(0,0,0,.4);
+}
+.home-coverflow .home-cover-reflection {
+  position: absolute; top: calc(var(--flow-cover) + 7px); left: 0;
+  width: 100%; height: calc(var(--flow-cover) * .34);
+  overflow: hidden; pointer-events: none; opacity: .58;
+  -webkit-mask-image: linear-gradient(to bottom, #000 0%, rgba(0,0,0,.65) 35%, transparent 100%);
+  mask-image: linear-gradient(to bottom, #000 0%, rgba(0,0,0,.65) 35%, transparent 100%);
+}
+.home-cover-reflection::before {
+  content: ''; position: absolute; left: 0; top: 0;
+  width: 100%; height: var(--flow-cover);
+  background-image: var(--reflection-image); background-size: 100% 100%;
+  background-repeat: no-repeat; transform: scaleY(-1);
+}
+.view-home .home-coverflow .card-art img { transform: none; transition: none; }
+.home-coverflow .card-title-row, .home-coverflow .card-sub, .home-coverflow .home-card-reason {
+  opacity: var(--flow-caption, 1);
+}
+.home-coverflow .home-album-card:not(.is-current) .card-title-row,
+.home-coverflow .home-album-card:not(.is-current) .card-sub,
+.home-coverflow .home-album-card:not(.is-current) .home-card-reason { visibility: hidden; }
+#recent-grid.home-coverflow { --flow-step: calc(var(--flow-cover) * .62); }
+#recent-grid.home-coverflow .home-album-card:not(.is-current) .card-title-row,
+#recent-grid.home-coverflow .home-album-card:not(.is-current) .card-sub,
+#recent-grid.home-coverflow .home-album-card:not(.is-current) .home-card-reason { visibility: visible; pointer-events: none; }
+.view-home .home-coverflow.is-dragging { scroll-snap-type: none; cursor: grabbing; }
+@media (hover: hover) and (pointer: fine) {
+  .home-coverflow { cursor: grab; user-select: none; -webkit-user-select: none; }
+  .home-coverflow .card { cursor: inherit; }
+}
+.view-home .home-coverflow .card-title-row { justify-content: center !important; gap: 8px !important; }
+.view-home .home-coverflow .card-title { flex: 0 1 auto !important; font-size: 15px; text-align: center; }
+.view-home .home-coverflow .card-sub { text-align: center; font-size: 12px; }
+.view-home .home-coverflow .home-card-reason { text-align: center; font-size: 10px; }
+.home-coverflow:focus-visible { outline: 1px solid var(--gold); outline-offset: -5px; }
+.home-flow-controls { display: flex; justify-content: center; align-items: center; gap: 18px; padding: 0 16px 20px; }
+.home-flow-position { min-width: 62px; color: #a49b8c; text-align: center; font: 10px 'DM Mono', monospace; }
+.playing-library-link { color: inherit; text-decoration: none; cursor: pointer; }
+.playing-library-link:hover { color: var(--gold); text-decoration: underline; }
+.playing-library-link:focus-visible, #mobile-player-cover[role="link"]:focus-visible {
+  outline: 2px solid var(--gold); outline-offset: 4px;
+}
+#mobile-player-cover[role="link"] { cursor: pointer; -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; }
+@media (min-width: 769px) {
+  #albums-grid .card-title-row { position: relative; }
+  #albums-grid .card-title-row:has(.hires-badge) { padding-right: 34px; }
+  #albums-grid .card-title { margin-bottom: 0; line-height: 1.25; }
+  #albums-grid .card-title-row .hires-badge { position: absolute; top: 0; right: 0; }
+  #albums-grid .card-sub { margin-top: 0; line-height: 1.25; }
+  #albums-grid .card-title-row:has(.hires-badge) + .card-sub { padding-right: 34px; }
+}
+@media (max-width: 768px) {
+  /* Keep the badge from stretching the title row and opening a metadata gap. */
+  :is(#artist-albums-grid, #albums-grid) { row-gap: 16px; }
+  :is(#artist-albums-grid, #albums-grid) .card-title-row { position: relative; }
+  :is(#artist-albums-grid, #albums-grid) .card-title-row:has(.hires-badge) { padding-right: 34px; }
+  :is(#artist-albums-grid, #albums-grid) .card-title { margin-bottom: 0; line-height: 1.25; }
+  :is(#artist-albums-grid, #albums-grid) .card-title-row .hires-badge {
+    position: absolute; top: 0; right: 0; height: 28px !important; width: auto;
+  }
+  :is(#artist-albums-grid, #albums-grid) .card-sub { margin-top: 0; line-height: 1.25; }
+  :is(#artist-albums-grid, #albums-grid) .card-title-row:has(.hires-badge) + .card-sub { padding-right: 34px; }
+}
+@media (max-width: 768px) {
+  .view-home .home-coverflow.home-shelf-grid {
+    --flow-cover: min(52vw, 226px); --flow-step: calc(var(--flow-cover) * .48);
+    padding-top: 16px; height: calc(var(--flow-cover) * 1.34 + 97px);
+  }
+  .home-flow-controls { padding-bottom: 12px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .view-home .home-coverflow .home-album-card { transform: scale(var(--flow-scale, 1)); }
+}
 </style>
 </head>
 <body>
@@ -9129,7 +9301,7 @@ function updateVUMetersInfo() {
   const vuCodec = UI['mobile-vu-codec'];
 
   if (vuTitle) vuTitle.textContent = track.title || '—';
-  if (vuArtist) vuArtist.textContent = track.artist_name || track.artist || '—';
+  updatePlayingArtistLink(vuArtist, track);
   if (vuFormat) vuFormat.textContent = track.bit_depth ? `${track.bit_depth}-BIT` : (track.format || '—');
   if (vuSr) vuSr.textContent = track.sample_rate ? fmtCompactSR(track.sample_rate) : '—';
   if (vuCodec) vuCodec.textContent = track.format || '—';
@@ -9329,6 +9501,14 @@ function openFullscreenPlayer(e) {
 // Bind close button
 UI['mobile-player-back'].addEventListener('click', () => toggleMobilePlayer(false, { source: 'dismiss' }));
 UI['player-art'].addEventListener('click', openFullscreenPlayer);
+UI['mobile-player-cover'].addEventListener('click', () => {
+  openPlayingLibraryItem('album', state.currentTrack?.album_id);
+});
+UI['mobile-player-cover'].addEventListener('keydown', event => {
+  if (event.key !== 'Enter') return;
+  event.preventDefault();
+  openPlayingLibraryItem('album', state.currentTrack?.album_id);
+});
 
 // Provide a way to manually open only from the now-playing info block on mobile.
 UI['player'].addEventListener('click', e => {
@@ -9485,7 +9665,16 @@ document.addEventListener('click', e => {
 // ─── Media Session Controls ───────────────────────────────────────────────────
 
 if ('mediaSession' in navigator) {
-  navigator.mediaSession.setActionHandler('play', async () => {
+  const setMediaAction = (action, handler) => {
+    try {
+      navigator.mediaSession.setActionHandler(action, handler);
+    } catch (error) {
+      // Older mobile browsers support only a subset of Media Session actions.
+      // One unsupported action must not prevent the remaining player setup.
+      console.warn(`[VELVET] MediaSession ${action} unavailable:`, error?.message || error);
+    }
+  };
+  setMediaAction('play', async () => {
     cleanupSuspendedAudioContextIfNeeded();
     audio.playbackRate = 1.0;
     try {
@@ -9505,7 +9694,7 @@ if ('mediaSession' in navigator) {
       }
     }
   });
-  navigator.mediaSession.setActionHandler('pause', async () => {
+  setMediaAction('pause', async () => {
     // Clean up suspended AudioContext on pause to prevent broken graph causing
     // pitch/speed issues when resuming later on mobile.
     cleanupSuspendedAudioContextIfNeeded();
@@ -9515,12 +9704,16 @@ if ('mediaSession' in navigator) {
     state.playing = false;
     updatePlayBtnUI();
   });
-  navigator.mediaSession.setActionHandler('previoustrack', () => {
+  setMediaAction('previoustrack', () => {
     UI['btn-prev'].click();
   });
-  navigator.mediaSession.setActionHandler('nexttrack', () => {
+  setMediaAction('nexttrack', () => {
     UI['btn-next'].click();
   });
+  // Music uses previous/next track controls rather than podcast-style skips.
+  // Explicitly clear seeking actions so the platform can prefer track buttons.
+  setMediaAction('seekbackward', null);
+  setMediaAction('seekforward', null);
 }
 
 startBrowserPlaybackWatchdog();
@@ -9707,6 +9900,8 @@ async function render({ restore = false } = {}) {
     console.error('[VELVET] Critical Error: #view-container not found in DOM');
     return;
   }
+  vc._disposeHome?.();
+  vc._disposeHome = null;
   
   scrollToTop();
 

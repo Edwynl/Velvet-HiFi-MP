@@ -210,6 +210,10 @@ function createHarness({ initialHash = '#home' } = {}) {
       return Promise.resolve(makeJsonResponse(searchResults[query] || { tracks: [] }));
     }
 
+    if (parsedUrl.pathname === '/api/home' && method === 'GET') {
+      return Promise.resolve(makeJsonResponse({ recently_opened: [], frequent_artists: [], for_you: [], global_picks: [] }));
+    }
+
     throw new Error(`Unhandled fetch: ${method} ${parsedUrl.pathname}`);
   };
 
