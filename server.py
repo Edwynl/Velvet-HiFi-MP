@@ -826,7 +826,12 @@ async def cast_to_device(device_udn: str, request: Request):
     (off|track|album) adds the file's tagged gain the same way: a non-zero
     gain also selects the transcode. `start_seconds` resumes the track there:
     the transcode starts at that offset, a direct stream is seeked by the
-    renderer after Play.
+    renderer after Play. `recast` marks a settings change for the track the
+    renderer already has: a paused renderer stays paused.
+
+    Casts to one renderer run one at a time in arrival order, and a request
+    superseded while it waited is skipped ({"superseded": true}), so a stale
+    request can never replace newer playback.
     """
     data = await request.json()
     track_id = data.get("track_id")
@@ -843,6 +848,10 @@ async def cast_to_device(device_udn: str, request: Request):
     replaygain_mode = data.get("replaygain", "off")
     if not isinstance(replaygain_mode, str) or replaygain_mode not in REPLAYGAIN_MODES:
         raise HTTPException(422, f"replaygain must be one of {list(REPLAYGAIN_MODES)}")
+    recast = data.get("recast", False)
+    if not isinstance(recast, bool):
+        raise HTTPException(422, "recast must be a boolean")
+    generation = _next_cast_generation(device_udn)
 
     db = get_db()
     track = db.execute(
@@ -883,22 +892,73 @@ async def cast_to_device(device_udn: str, request: Request):
     meta = upnp_server._didl_wrap(upnp_server.track_xml(
         track, "0", stream_query=stream_query, start_seconds=start if transcoded else 0))
 
+    def cast():
+        paused = recast and upnp_server.get_transport_info(device_udn) == "PAUSED_PLAYBACK"
+        transport = upnp_server.cast_track(device_udn, stream_url, meta, play=not paused)
+        position_restored = None
+        if transport and start and not transcoded:
+            # A direct stream resumes by seeking; positions then stay absolute.
+            position_restored = upnp_server.seek(device_udn, start)
+            if not position_restored:
+                log.warning("[CAST] Renderer did not seek to %.1fs; it plays from the start", start)
+        return transport or "failed", position_restored
+
     # cast_track performs blocking SOAP calls and sleeps; keep the event loop free.
-    success = await asyncio.to_thread(upnp_server.cast_track, device_udn, stream_url, meta)
-    start_offset = start if transcoded else 0
-    if success and start and not transcoded:
-        # Renderer positions on a direct stream are absolute once it seeks;
-        # if it cannot seek, the track plays from the start.
-        if not await asyncio.to_thread(upnp_server.seek, device_udn, start):
-            log.warning("[CAST] Renderer did not seek to %.1fs; playing from the start", start)
+    outcome = await asyncio.to_thread(_run_latest_cast, device_udn, generation, cast)
+    if outcome is None:
+        return {"success": False, "superseded": True}
+    transport, position_restored = outcome
     # Renderer positions are relative to the stream: the UI adds start_offset.
-    return {"success": success, "dsp": dsp_status, "replaygain": replaygain, "start_offset": start_offset}
+    return {
+        # "loaded": the new stream is set and paused (a paused renderer stays
+        # paused); "play_failed": set, but the renderer refused Play.
+        "success": transport in ("playing", "loaded"),
+        "transport": transport,
+        "position_restored": position_restored,
+        "dsp": dsp_status,
+        "replaygain": replaygain,
+        "start_offset": start if transcoded else 0,
+    }
+
+
+# Per-renderer cast ordering. Requests run on worker threads (and the test
+# client uses a loop per request), so these are thread locks.
+_cast_state_lock = threading.Lock()
+_cast_renderer_locks: dict[str, threading.Lock] = {}
+_cast_generations: dict[str, int] = {}
+
+
+def _next_cast_generation(device_udn: str) -> int:
+    """Mark a newer request for this renderer; older queued ones are skipped."""
+    with _cast_state_lock:
+        _cast_generations[device_udn] = _cast_generations.get(device_udn, 0) + 1
+        return _cast_generations[device_udn]
+
+
+def _run_latest_cast(device_udn: str, generation: int, operation):
+    """Run one renderer's SOAP sequences one at a time; None if superseded while waiting."""
+    with _cast_state_lock:
+        renderer_lock = _cast_renderer_locks.setdefault(device_udn, threading.Lock())
+    with renderer_lock:
+        with _cast_state_lock:
+            if _cast_generations.get(device_udn) != generation:
+                return None
+        return operation()
+
 
 @app.post("/api/cast/control/{device_udn}/{action}")
 async def cast_control(device_udn: str, action: str):
-    """Pause, Play, or Stop the cast device."""
-    success = upnp_server.cast_control(device_udn, action)
-    return {"success": success}
+    """Pause, Play, or Stop the cast device.
+
+    Ordered after any cast in progress for the renderer; Stop also cancels
+    casts still waiting, so leaving a renderer cannot be undone by a late one.
+    """
+    generation = (_next_cast_generation(device_udn) if action == "Stop"
+                  else _cast_generations.get(device_udn, 0))
+    success = await asyncio.to_thread(
+        _run_latest_cast, device_udn, generation,
+        lambda: upnp_server.cast_control(device_udn, action))
+    return {"success": bool(success)}
 
 @app.get("/api/cast/status/{device_udn}")
 async def get_cast_status(device_udn: str):
@@ -2229,6 +2289,9 @@ async def _stream_with_dsp(file_path: str, dsp_filter: str, timeout_seconds: int
     lease = await _acquire_transcode_slot()
     cmd = [
         "ffmpeg", "-nostdin", *_ffmpeg_input_args(file_path, start_seconds),
+        # The gain is already in the samples: copying the source's
+        # REPLAYGAIN_*/R128_* tags would let a player apply it twice.
+        "-map_metadata", "-1",
         "-af", dsp_filter,
         "-c:a", "flac",
         "-compression_level", "0",
@@ -3321,7 +3384,11 @@ def update_dsp_profile(profile_id: int, body: dict):
 
     updates = []
     params = []
-    normalized = _normalize_dsp_payload(body)
+    try:
+        normalized = _normalize_dsp_payload(body)
+    except HTTPException:
+        db.close()
+        raise
 
     if "name" in normalized:
         updates.append("name=?")

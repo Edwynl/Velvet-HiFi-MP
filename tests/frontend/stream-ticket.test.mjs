@@ -143,10 +143,12 @@ const hours = h => Math.floor(1_700_000_000_000 / 1000) + h * 3600;
   const castCalls = [];
   const castContext = vm.createContext({
     JSON,
-    state: { dspProfile: '2', dspProfiles: [] },
+    state: { dspProfile: '2', dspProfiles: [], castDevice: { udn: 'uuid:renderer' }, currentTrack: { id: 5 } },
     location: { origin: 'http://localhost:8765' },
     audio: { pause() {} },
     showToast() {},
+    isCastZone() { return true; },
+    updatePlayBtnUI() {},
     markExpectedBrowserPause() {},
     startCastPolling() {},
     streamUrl() { throw new Error('castTo must not build a credentialed URL'); },

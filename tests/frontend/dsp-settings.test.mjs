@@ -46,6 +46,7 @@ const AUTOEQ_IMPORTED_FILTERS = [
 function createHarness() {
   let nextProfileId = 100;
   const requests = [];
+  const castControl = { paused: false, seekOk: true, replaygainDb: -7.1, hold: false, held: [] };
   const dspProfiles = [
     {
       id: 2,
@@ -246,13 +247,18 @@ function createHarness() {
 
     // Mirrors server.cast_to_device: an active preset or a ReplayGain gain
     // (this track is tagged -7.1 dB) gets the DSP transcode.
+    // `castControl` sets the fake renderer's state (paused, seek refused)
+    // and can hold answers to complete them out of order.
     if (parsedUrl.pathname.startsWith('/api/cast/') && method === 'POST') {
       const requested = body?.dsp_profile_id || null;
       const rgMode = body?.replaygain || 'off';
-      const rgDb = rgMode === 'off' ? 0 : -7.1;
+      const rgDb = rgMode === 'off' ? 0 : castControl.replaygainDb;
       const transcoded = Boolean(requested || rgDb);
-      return makeJsonResponse({
+      const paused = Boolean(body?.recast) && castControl.paused;
+      const response = makeJsonResponse({
         success: true,
+        transport: paused ? 'loaded' : 'playing',
+        position_restored: !transcoded && body?.start_seconds ? castControl.seekOk : null,
         start_offset: transcoded ? (body.start_seconds || 0) : 0,
         dsp: {
           requested_profile_id: requested,
@@ -263,6 +269,15 @@ function createHarness() {
         },
         replaygain: { mode: rgMode, applied_db: rgDb, reason: rgMode === 'off' ? 'ReplayGain off' : null },
       });
+      if (!castControl.hold) return response;
+      return new Promise(resolve => castControl.held.push(() => resolve(response)));
+    }
+
+    const replaygainMatch = parsedUrl.pathname.match(/^\/api\/tracks\/(\d+)\/replaygain$/);
+    if (replaygainMatch && method === 'GET') {
+      const mode = parsedUrl.searchParams.get('mode');
+      return makeJsonResponse({ mode, applied_db: mode === 'off' ? 0 : castControl.replaygainDb,
+        reason: mode === 'off' ? 'ReplayGain off' : null });
     }
 
     if (parsedUrl.pathname === '/api/playback/stop' && method === 'POST') {
@@ -275,6 +290,7 @@ function createHarness() {
   return {
     requests,
     dspProfiles,
+    castControl,
     async createDom() {
       const html = inlineFrontendModules(readFileSync(HTML_PATH, 'utf8'))
         .replace(/<link[^>]+>/g, '');
@@ -597,7 +613,7 @@ async function main() {
     chooseDsp('2');
     await waitFor(() => dom.window.eval('state.castDsp?.requested_profile_id') === 2);
     const recast = harness.requests.slice(requestsBefore).find(request => request.path === '/api/cast/uuid:renderer');
-    assert.deepEqual(recast.body, { track_id: 1, dsp_profile_id: 2, start_seconds: 42 });
+    assert.deepEqual(recast.body, { track_id: 1, dsp_profile_id: 2, start_seconds: 42, recast: true });
     assert.equal(dom.window.eval('state.castStartOffset'), 42);
     const castDsp = dom.window.eval('state.castDsp');
     const blackBackground = { id: 2, name: 'Black Background' };
@@ -628,7 +644,7 @@ async function main() {
     dom.window.setReplayGainMode('album');
     await waitFor(() => dom.window.eval('state.castDsp?.replaygain?.mode') === 'album');
     const rgRecast = harness.requests.slice(requestsBefore).find(request => request.path === '/api/cast/uuid:renderer');
-    assert.deepEqual(rgRecast.body, { track_id: 1, dsp_profile_id: null, replaygain: 'album', start_seconds: 42 });
+    assert.deepEqual(rgRecast.body, { track_id: 1, dsp_profile_id: null, replaygain: 'album', start_seconds: 42, recast: true });
     assert.equal(dom.window.eval('state.castStartOffset'), 42);
     const rgLines = dom.window.describeSignalProcessing('cast', null, 'none', null,
       dom.window.eval('state.castDsp'), { mode: 'album' });
@@ -646,11 +662,77 @@ async function main() {
     dom.window.setReplayGainMode('off');
     await waitFor(() => dom.window.eval('state.castDsp?.replaygain?.mode') === 'off');
     const offRecast = harness.requests.slice(requestsBefore).find(request => request.path === '/api/cast/uuid:renderer');
-    assert.deepEqual(offRecast.body, { track_id: 1, dsp_profile_id: null, start_seconds: 42 });
+    assert.deepEqual(offRecast.body, { track_id: 1, dsp_profile_id: null, start_seconds: 42, recast: true });
     assert.equal(dom.window.describeSignalProcessing('cast', null, 'none', null, dom.window.eval('state.castDsp'),
       { mode: 'off' }).join(' | '), 'Direct source stream to renderer | VELVET DSP off');
-    dom.window.eval('stopCastPolling(); state.currentTrack = null;');
+
+    // No re-cast when the renderer's gain would not change (no tags, or
+    // track and album alike): the stream keeps playing untouched.
+    const { castControl } = harness;
+    const castsSince = before => harness.requests.slice(before).filter(request => request.path === '/api/cast/uuid:renderer');
+    const tick = () => new Promise(resolve => setTimeout(resolve, 50));
+    castControl.replaygainDb = 0;
+    requestsBefore = harness.requests.length;
+    dom.window.setReplayGainMode('album');
+    await waitFor(() => dom.window.eval('state.castDsp?.replaygain?.mode') === 'album');
+    dom.window.setReplayGainMode('off');
+    await waitFor(() => dom.window.eval('state.castDsp?.replaygain?.mode') === 'off');
+    assert.equal(castsSince(requestsBefore).length, 0, 'untagged: no re-cast');
+    castControl.replaygainDb = -7.1;
+
+    // A paused renderer stays paused when its gain changes.
+    dom.window.eval('stopCastPolling(); state.playing = true; state.castPosition = 42;');
+    castControl.paused = true;
+    requestsBefore = harness.requests.length;
+    dom.window.setReplayGainMode('album');
+    await waitFor(() => dom.window.eval('state.castDsp?.replaygain?.mode') === 'album');
+    assert.equal(castsSince(requestsBefore)[0].body.recast, true);
+    assert.equal(dom.window.eval('state.playing'), false);
+    assert.equal(dom.window.eval('state.castDsp.transport'), 'loaded');
+    castControl.paused = false;
+    requestsBefore = harness.requests.length;
+    dom.window.setReplayGainMode('track');
+    await waitFor(() => dom.window.eval('state.castDsp?.replaygain?.mode') === 'track');
+    assert.equal(castsSince(requestsBefore).length, 0, 'same gain: no re-cast');
+
+    // A direct stream that could not seek is never reported as resumed.
+    castControl.seekOk = false;
+    dom.window.eval('stopCastPolling(); state.castPosition = 42;');
+    dom.window.setReplayGainMode('off');
+    await waitFor(() => dom.window.eval('state.castDsp?.replaygain?.mode') === 'off');
+    assert.equal(dom.window.eval('state.castPosition'), 0);
+    assert.equal(dom.window.eval('state.castStartOffset'), 0);
+    assert.equal(dom.window.eval('state.playing'), true);
+    castControl.seekOk = true;
+
+    // Out-of-order answers: only the newest request updates the player.
+    dom.window.eval('stopCastPolling(); state.castPosition = 42;');
+    castControl.hold = true;
+    dom.window.setReplayGainMode('album');
+    await waitFor(() => castControl.held.length === 1);
+    dom.window.setReplayGainMode('off');
+    await waitFor(() => castControl.held.length === 2);
+    castControl.held[1]();
+    await waitFor(() => dom.window.eval('state.castPending') === false);
+    castControl.held[0]();
+    await tick();
+    assert.equal(dom.window.eval('state.castDsp.replaygain.mode'), 'off');
+    assert.equal(dom.window.eval('state.castDsp.stream'), 'direct');
+    assert.equal(dom.window.eval('state.castStartOffset'), 0);
+
+    // Leaving the zone while a re-cast is in flight: its answer is dropped.
+    castControl.held = [];
+    dom.window.setReplayGainMode('album');
+    await waitFor(() => castControl.held.length === 1);
     await dom.window.activateZone(browserZone, false);
+    castControl.hold = false;
+    castControl.held[0]();
+    await tick();
+    assert.equal(dom.window.eval('state.castDsp'), null);
+    assert.equal(dom.window.eval('state.castStartOffset'), 0);
+    assert.equal(dom.window.eval('state.outputMode'), 'browser');
+    dom.window.eval('stopCastPolling(); state.currentTrack = null;');
+    dom.window.setReplayGainMode('off');
   } finally {
     dom.window.close();
   }

@@ -6853,6 +6853,7 @@ function describeSignalProcessing(zoneType, dspProfile, upsample, plan = null, c
     const lines = [transcoded
       ? 'VELVET DSP stream to renderer (24-bit FLAC, source sample rate)'
       : 'Direct source stream to renderer'];
+    if (castDsp?.transport === 'play_failed') lines.push('Renderer refused Play: stream loaded, not playing');
     if (dspProfile && !castDspMatches(castDsp, dspProfile)) {
       lines.push(`DSP ${dspProfile.name} not applied on this renderer yet`);
     } else if (!dspProfile && castDsp?.status === 'applied') {
@@ -7600,6 +7601,8 @@ const state = {
   castDsp: null, // the server's DSP status for what the renderer is playing
   castStartOffset: 0, // seconds into the track where the renderer's stream starts
   castPosition: 0, // track position on the renderer (offset included)
+  castSeq: 0, // the newest castTo request; older answers are dropped
+  castPending: false, // the newest castTo request has not answered yet
   isComposing: false,
   mobilePlayerDismissed: false,
 };
@@ -8404,8 +8407,18 @@ function stopCastPolling() {
   }
 }
 
-// `startSeconds` resumes the track there (a DSP change mid-track).
-async function castTo(track, device, { startSeconds = 0 } = {}) {
+// `startSeconds` resumes the track there (a DSP change mid-track); `recast`
+// marks a settings change for the track the renderer already has, so the
+// server keeps a paused renderer paused.
+async function castTo(track, device, { startSeconds = 0, recast = false } = {}) {
+  // Only the newest cast may update the player: a late answer for an older
+  // request, another track or another zone is dropped. (The server also
+  // runs one renderer's casts in order and skips superseded ones.)
+  const castSeq = (state.castSeq || 0) + 1;
+  state.castSeq = castSeq;
+  state.castPending = true;
+  const isStale = () => castSeq !== state.castSeq || !isCastZone()
+    || state.castDevice?.udn !== device.udn || state.currentTrack?.id !== track.id;
   showToast(`Casting to ${device.name}...`);
   try {
     // The server hands the renderer its own ticketed URL for this track:
@@ -8419,30 +8432,46 @@ async function castTo(track, device, { startSeconds = 0 } = {}) {
         dsp_profile_id: Number(state.dspProfile) || null,
         ...(state.replaygain && state.replaygain !== 'off' ? { replaygain: state.replaygain } : {}),
         ...(startSeconds > 0 ? { start_seconds: Math.round(startSeconds * 10) / 10 } : {}),
+        ...(recast ? { recast: true } : {}),
       })
     });
-    if (res.success) {
+    if (isStale() || res.superseded) return;
+    // "play_failed": the renderer holds the new stream but refused Play.
+    if (res.success || res.transport === 'play_failed') {
       markExpectedBrowserPause(1200);
       audio.pause();
       state.castDsp = res.dsp ? {
         ...res.dsp,
         effective_name: res.dsp.effective_profile_id ? dspProfile?.name : null,
         replaygain: res.replaygain || null,
+        transport: res.transport || null,
       } : null;
       state.castStartOffset = Number(res.start_offset) || 0;
-      state.castPosition = startSeconds > 0 ? startSeconds : 0;
+      // A direct stream that could not seek restarts from the beginning.
+      const resumed = startSeconds > 0 && (state.castStartOffset > 0 || res.position_restored !== false);
+      state.castPosition = resumed ? startSeconds : 0;
+      state.playing = res.transport === 'playing';
+      updatePlayBtnUI();
       let dspNote = '';
       if (res.dsp?.status === 'applied') dspNote = ` · DSP ${dspProfile?.name || ''}`.trimEnd();
       if (res.dsp?.status === 'bypassed') dspNote = ' · DSP bypassed (no active processing)';
       const rgDb = Number(res.replaygain?.applied_db) || 0;
       if (rgDb) dspNote += ` · ReplayGain ${rgDb > 0 ? '+' : ''}${rgDb.toFixed(2)} dB`;
-      showToast(`Playing on ${device.name}${dspNote}`);
+      if (res.transport === 'play_failed') {
+        showToast(`${device.name} loaded the stream but did not start playing`);
+      } else if (startSeconds > 0 && !resumed) {
+        showToast(`${device.name} could not seek: playing from the start${dspNote}`);
+      } else {
+        showToast(`${res.transport === 'loaded' ? 'Updated (paused) on' : 'Playing on'} ${device.name}${dspNote}`);
+      }
       startCastPolling();
     } else {
       showToast(`Failed to cast to ${device.name}`);
     }
   } catch (e) {
-    showToast(`Error: ${e.message}`);
+    if (!isStale()) showToast(`Error: ${e.message}`);
+  } finally {
+    if (castSeq === state.castSeq) state.castPending = false;
   }
 }
 
@@ -9242,6 +9271,26 @@ UI['upsample-select'].addEventListener('change', e => {
   syncMobileLandscapeControls();
 });
 
+// A renderer is re-cast for a ReplayGain change only when the gain it gets
+// changes: the same gain (no tags, or track and album alike) keeps its
+// stream playing untouched.
+async function recastForReplayGain(mode) {
+  const track = state.currentTrack;
+  const device = state.castDevice;
+  const current = state.castDsp?.replaygain;
+  if (current && !state.castPending) {
+    const next = await api(`/tracks/${track.id}/replaygain?mode=${mode}`).catch(() => null);
+    if (state.replaygain !== mode || state.currentTrack !== track || state.castDevice !== device) return;
+    if (next && !state.castPending && state.castDsp?.replaygain === current
+        && Number(next.applied_db) === Number(current.applied_db)) {
+      state.castDsp = { ...state.castDsp, replaygain: next };
+      showToast(`ReplayGain ${mode}: gain unchanged on ${device.name}`);
+      return;
+    }
+  }
+  castTo(track, device, { startSeconds: state.castPosition || 0, recast: true });
+}
+
 // ReplayGain is applied by the server in browser and renderer streams (not
 // on native outputs); a running stream restarts at the same position to
 // pick it up.
@@ -9252,8 +9301,8 @@ function setReplayGainMode(mode) {
   const select = $('eq-replaygain');
   if (select) select.value = mode;
   if (state.currentTrack && isCastZone()) {
-    // Re-cast from where the renderer is now; castTo reports the result.
-    castTo(state.currentTrack, state.castDevice, { startSeconds: state.castPosition || 0 });
+    // castTo reports the result.
+    recastForReplayGain(mode);
     return;
   }
   if (state.currentTrack && isNativeZone()) {
@@ -9292,7 +9341,7 @@ UI['dsp-select'].addEventListener('change', e => {
     if (isCastZone()) {
       // Re-cast the renderer's stream (DSP transcode or direct source) from
       // where it is now.
-      castTo(state.currentTrack, state.castDevice, { startSeconds: state.castPosition || 0 });
+      castTo(state.currentTrack, state.castDevice, { startSeconds: state.castPosition || 0, recast: true });
     } else if (isNativeZone()) {
       playTrack(state.currentTrack, state.queue, state.queueIdx);
     } else {

@@ -1,6 +1,8 @@
 """Exercise real codecs, not just command-line mocks; no audio hardware used."""
+import array
 import asyncio
 import json
+import math
 import shutil
 import subprocess
 import sys
@@ -14,7 +16,7 @@ from starlette.responses import StreamingResponse
 
 import server
 from audio_streaming import iter_ffmpeg_stdout
-from dsp_engine import build_dsp_filter_chain
+from dsp_engine import build_dsp_filter_chain, read_replaygain_tags, resolve_replaygain
 
 
 @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "FFmpeg tools required")
@@ -84,7 +86,8 @@ class FFmpegIntegrationTests(unittest.IsolatedAsyncioTestCase):
             source = Path(folder) / "source.flac"
             subprocess.run(["ffmpeg", "-v", "error", "-f", "lavfi", "-i",
                             "sine=frequency=440:sample_rate=44100:duration=16",
-                            "-ac", "2", str(source)], check=True, capture_output=True)
+                            "-ac", "2", "-c:a", "flac", "-frame_size", "1024", str(source)],
+                           check=True, capture_output=True)
             dsp = build_dsp_filter_chain({"preamp_db": -1}, 44100)
             response = await server._stream_with_dsp(str(source), dsp, start_seconds=15)
             output = Path(folder) / "output.flac"
@@ -93,6 +96,38 @@ class FFmpegIntegrationTests(unittest.IsolatedAsyncioTestCase):
             pcm = subprocess.run(["ffmpeg", "-v", "error", "-i", str(output), "-f", "s16le",
                                   "-ac", "1", "pipe:1"], check=True, capture_output=True).stdout
             self.assertEqual(len(pcm) // 2, 44100)
+
+    async def test_replaygain_transcode_applies_the_gain_once_and_drops_gain_tags(self):
+        # The gain goes into the samples; the source's ReplayGain/R128 tags
+        # must not reach the output, or a renderer could apply them again.
+        with tempfile.TemporaryDirectory() as folder:
+            source = Path(folder) / "tagged.flac"
+            subprocess.run(["ffmpeg", "-v", "error", "-f", "lavfi", "-i",
+                            "sine=frequency=1000:sample_rate=44100:duration=2", "-ac", "2",
+                            "-metadata", "REPLAYGAIN_TRACK_GAIN=-6.00 dB",
+                            "-metadata", "REPLAYGAIN_TRACK_PEAK=0.5",
+                            "-metadata", "R128_TRACK_GAIN=-1536", str(source)],
+                           check=True, capture_output=True)
+            replaygain = resolve_replaygain(read_replaygain_tags(source), "track")
+            self.assertEqual(replaygain["applied_db"], -6.0)
+            dsp = build_dsp_filter_chain(None, 44100, replaygain["applied_db"])
+            response = await server._stream_with_dsp(str(source), dsp)
+            output = Path(folder) / "output.flac"
+            output.write_bytes(b"".join([block async for block in response.body_iterator]))
+            probe = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format_tags:stream_tags",
+                                    "-of", "json", str(output)], check=True, capture_output=True)
+            tags = json.loads(probe.stdout)
+            names = {key.upper() for section in [tags.get("format", {}), *tags.get("streams", [])]
+                     for key in section.get("tags", {})}
+            self.assertFalse({name for name in names if "REPLAYGAIN" in name or "R128" in name}, names)
+
+            def rms(path):
+                pcm = subprocess.run(["ffmpeg", "-v", "error", "-i", str(path), "-f", "f64le",
+                                      "-ac", "1", "pipe:1"], check=True, capture_output=True).stdout
+                samples = array.array("d", pcm)
+                return math.sqrt(sum(s * s for s in samples) / len(samples))
+
+            self.assertAlmostEqual(20 * math.log10(rms(output) / rms(source)), -6.0, delta=0.01)
 
 
 class DisconnectIntegrationTests(unittest.IsolatedAsyncioTestCase):

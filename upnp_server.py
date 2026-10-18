@@ -247,8 +247,13 @@ def soap_request(url, service, action, args_xml):
         log.error(f"SOAP Error ({action}): {e}")
         return None
 
-def cast_track(device_udn, track_url, meta_xml=""):
-    """Set URI and Play on a remote DLNA renderer."""
+def cast_track(device_udn, track_url, meta_xml="", play=True):
+    """Set URI and (unless `play` is False) Play on a remote DLNA renderer.
+
+    Returns False when the renderer did not take the URI, otherwise
+    "playing" (Play accepted), "play_failed" (URI loaded, Play refused) or
+    "loaded" (play=False).
+    """
     dev = discovered_devices.get(device_udn)
     if not dev:
         discover_renderers(timeout=1.5)
@@ -296,14 +301,17 @@ def cast_track(device_udn, track_url, meta_xml=""):
         return False
 
     log.info(f"[CAST] SetAVTransportURI succeeded")
+    if not play:
+        return "loaded"
     time.sleep(2)
 
-    # Try Play
     log.info(f"[CAST] Sending Play...")
-    soap_request(ctrl_url, svc, "Play", '<Speed>1</Speed>')
+    if soap_request(ctrl_url, svc, "Play", '<Speed>1</Speed>') is None:
+        log.error(f"[CAST] Renderer loaded the URI but refused Play")
+        return "play_failed"
 
     log.info(f"[CAST] Cast sequence completed")
-    return True
+    return "playing"
 
 def cast_control(device_udn, action):
     """Send Play, Pause, or Stop to device."""
