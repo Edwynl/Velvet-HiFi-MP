@@ -313,16 +313,21 @@ function albumListFetches(harness) {
   return harness.fetchLog.filter(entry => entry === 'GET /api/albums/page').length;
 }
 
-async function openAlbumFromAlbums(dom, harness, scrollTop) {
+async function openAlbumFromAlbums(dom, harness, scrollTop, useDocument = false) {
+  const main = dom.window.document.querySelector('#main');
+  if (useDocument) {
+    main.style.overflowY = 'visible';
+    dom.window.scrollTo = ({ top }) => { dom.window.document.documentElement.scrollTop = top; };
+  }
   await dom.window.navigate('albums');
   const grid = await waitFor(() => dom.window.document.querySelector('#albums-grid .album-card, #albums-grid > *')
     && dom.window.document.querySelector('#albums-grid'));
   // jsdom does not lay out: emulate a scroll offset that, like a browser's,
   // clamps to 0 as soon as the view's content is removed.
-  const main = dom.window.document.querySelector('#main');
+  const root = useDocument ? dom.window.document.documentElement : main;
   const viewContainer = dom.window.document.querySelector('#view-container');
   let mainScrollTop = 0;
-  Object.defineProperty(main, 'scrollTop', {
+  Object.defineProperty(root, 'scrollTop', {
     configurable: true,
     get: () => {
       if (!viewContainer.childElementCount) mainScrollTop = 0;
@@ -330,18 +335,18 @@ async function openAlbumFromAlbums(dom, harness, scrollTop) {
     },
     set: v => { mainScrollTop = viewContainer.childElementCount ? v : 0; },
   });
-  main.scrollTop = scrollTop;
+  root.scrollTop = scrollTop;
   await dom.window.navigate('album', { id: 11 });
   await waitFor(() => dom.window.document.querySelector('.back-btn'));
-  return { grid, main };
+  return { grid, main: root };
 }
 
-async function testBackToAlbumsRestoresKeptViewWithoutRefetch() {
+async function testBackToAlbumsRestoresKeptViewWithoutRefetch(useDocument = false) {
   const harness = createHarness();
   const dom = await harness.createDom();
 
   try {
-    const { grid, main } = await openAlbumFromAlbums(dom, harness, 640);
+    const { grid, main } = await openAlbumFromAlbums(dom, harness, 640, useDocument);
     const fetchesBefore = albumListFetches(harness);
 
     dom.window.history.back();
@@ -350,6 +355,48 @@ async function testBackToAlbumsRestoresKeptViewWithoutRefetch() {
     assert.equal(albumListFetches(harness), fetchesBefore, 'back must not refetch the album list');
     assert.equal(dom.window.document.querySelector('#albums-grid'), grid, 'back must reuse the same grid node');
     assert.equal(main.scrollTop, 640, 'back must restore the scroll position');
+  } finally {
+    await new Promise(resolve => dom.window.setTimeout(resolve, 10));
+  }
+}
+
+async function testDocumentScrollControlsFollowLayoutChanges() {
+  const harness = createHarness();
+  const dom = await harness.createDom();
+  try {
+    const main = dom.window.document.querySelector('#main');
+    const root = dom.window.document.documentElement;
+    let documentScrollListeners = 0;
+    const add = dom.window.addEventListener.bind(dom.window);
+    const remove = dom.window.removeEventListener.bind(dom.window);
+    dom.window.addEventListener = (type, ...rest) => { if (type === 'scroll') documentScrollListeners += 1; return add(type, ...rest); };
+    dom.window.removeEventListener = (type, ...rest) => { if (type === 'scroll') documentScrollListeners -= 1; return remove(type, ...rest); };
+    for (let i = 0; i < 3; i += 1) {
+      await dom.window.navigate('albums');
+      await waitFor(() => dom.window.document.querySelector('#albums-grid > *'));
+    }
+    assert.equal(documentScrollListeners, 1, 'document scroll listeners must not stack');
+    main.style.overflowY = 'visible';
+    root.scrollTop = 640;
+    const button = dom.window.document.querySelector('#back-to-top-btn');
+    const calls = [];
+    root.scrollTo = options => { calls.push(options); root.scrollTop = options.top; };
+    dom.window.dispatchEvent(new dom.window.Event('scroll'));
+    assert.equal(button.style.display, 'flex', 'native page scrolling reveals the back-to-top control');
+    button.click();
+    assert.equal(root.scrollTop, 0);
+    assert.equal(calls[0].behavior, 'smooth');
+    dom.window.dispatchEvent(new dom.window.Event('scroll'));
+    assert.equal(button.style.display, 'none');
+
+    // Rotation changes the CSS owner without re-rendering this view.
+    main.style.overflowY = 'auto';
+    main.scrollTop = 700;
+    main.scrollTo = options => { main.scrollTop = options.top; };
+    main.dispatchEvent(new dom.window.Event('scroll'));
+    assert.equal(button.style.display, 'flex');
+    button.click();
+    assert.equal(main.scrollTop, 0);
   } finally {
     await new Promise(resolve => dom.window.setTimeout(resolve, 10));
   }
@@ -631,6 +678,8 @@ async function main() {
   await testAlbumSwipeOpensPlaylistPickerWithoutPlayingOrInlinePlus();
   await testAlbumBackFallsBackWhenHistoryBackDoesNothing();
   await testBackToAlbumsRestoresKeptViewWithoutRefetch();
+  await testBackToAlbumsRestoresKeptViewWithoutRefetch(true);
+  await testDocumentScrollControlsFollowLayoutChanges();
   await testMenuNavigationAndMutationsRenderAlbumsFresh();
   await testAlbumsReRenderDoesNotStackScrollListeners();
   await testGenreViewDoesNotReuseCachedMarkupAcrossIds();

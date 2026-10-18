@@ -403,6 +403,15 @@ function highlightPlaying(trackId) {
   }
 }
 
+// Follow the CSS scroll owner: iPhone portrait uses the document so iOS can
+// handle its native status-bar tap; other layouts retain the main scroller.
+function getScrollRoot() {
+  const main = UI['main'];
+  return main && getComputedStyle(main).overflowY !== 'visible'
+    ? main
+    : (document.scrollingElement || document.documentElement);
+}
+
 // Scroll to top helper
 function scrollToTop() {
   const main = UI['main'];

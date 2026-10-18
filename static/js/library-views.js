@@ -547,12 +547,17 @@ const ALBUMS_PER_PAGE = 60;  // Bounded remote page; avoid 15k records per Tails
 const ARTISTS_PER_PAGE = 60;  // Same bounded page budget as albums.
 
 // #main outlives every view, so each re-render replaces its view's previous
-// scroll handler instead of stacking another one.
+// scroll handler instead of stacking another one. Listen on the document too:
+// iPhone portrait uses native page scrolling, and rotation can switch owners.
 const viewScrollHandlers = {};
 function setViewScrollHandler(view, mainEl, handler) {
-  if (viewScrollHandlers[view]) mainEl.removeEventListener('scroll', viewScrollHandlers[view]);
+  if (viewScrollHandlers[view]) {
+    mainEl.removeEventListener('scroll', viewScrollHandlers[view]);
+    window.removeEventListener('scroll', viewScrollHandlers[view]);
+  }
   viewScrollHandlers[view] = handler;
   mainEl.addEventListener('scroll', handler, { passive: true });
+  window.addEventListener('scroll', handler, { passive: true });
 }
 
 async function renderAlbums(vc) {
@@ -661,17 +666,17 @@ async function renderAlbums(vc) {
   // Scroll to top on header click
   headerEl.addEventListener('click', (e) => {
     if (e.target.tagName === 'SELECT' || e.target.tagName === 'INPUT' || e.target.tagName === 'BUTTON') return;
-    mainEl.scrollTo({ top: 0, behavior: 'smooth' });
+    getScrollRoot().scrollTo({ top: 0, behavior: 'smooth' });
   });
 
   // Show/hide back-to-top button based on scroll position
   setViewScrollHandler('albums', mainEl, () => {
-    backToTopBtn.style.display = mainEl.scrollTop > 300 ? 'flex' : 'none';
+    backToTopBtn.style.display = getScrollRoot().scrollTop > 300 ? 'flex' : 'none';
   });
 
   // Back to top button click
   backToTopBtn.addEventListener('click', () => {
-    mainEl.scrollTo({ top: 0, behavior: 'smooth' });
+    getScrollRoot().scrollTo({ top: 0, behavior: 'smooth' });
   });
 
   function getFilteredData() { return allAlbums; }
@@ -1044,17 +1049,17 @@ async function renderArtists(vc) {
   // Scroll to top on header click
   headerEl.addEventListener('click', (e) => {
     if (e.target.tagName === 'INPUT' || e.target.tagName === 'BUTTON') return;
-    mainEl.scrollTo({ top: 0, behavior: 'smooth' });
+    getScrollRoot().scrollTo({ top: 0, behavior: 'smooth' });
   });
 
   // Show/hide back-to-top button based on scroll position
   setViewScrollHandler('artists', mainEl, () => {
-    backToTopBtn.style.display = mainEl.scrollTop > 300 ? 'flex' : 'none';
+    backToTopBtn.style.display = getScrollRoot().scrollTop > 300 ? 'flex' : 'none';
   });
 
   // Back to top button click
   backToTopBtn.addEventListener('click', () => {
-    mainEl.scrollTo({ top: 0, behavior: 'smooth' });
+    getScrollRoot().scrollTo({ top: 0, behavior: 'smooth' });
   });
 
   function updatePagination() {
@@ -1149,13 +1154,13 @@ async function renderArtists(vc) {
   prevBtn.addEventListener('click', () => {
     if (currentPage <= 1) return;
     currentPage--;
-    mainEl.scrollTo({ top: 0, behavior: 'smooth' });
+    getScrollRoot().scrollTo({ top: 0, behavior: 'smooth' });
     loadPage();
   });
   nextBtn.addEventListener('click', () => {
     if (currentPage >= Math.max(1, Math.ceil(totalArtists / ARTISTS_PER_PAGE))) return;
     currentPage++;
-    mainEl.scrollTo({ top: 0, behavior: 'smooth' });
+    getScrollRoot().scrollTo({ top: 0, behavior: 'smooth' });
     loadPage();
   });
 

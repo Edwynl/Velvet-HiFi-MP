@@ -5971,6 +5971,35 @@ input[type=range]::-webkit-slider-thumb:hover { background: var(--gold); }
   }
 }
 
+/* iPhone portrait: the native status-bar tap scrolls the document. Keep the
+   installed-app viewport/grid above, but let main's content size itself into
+   the document instead of creating a second vertical scroll view. */
+@supports (-webkit-touch-callout: none) {
+  @media (max-width: 600px) and (orientation: portrait) {
+    html { overflow-x: clip; overflow-y: auto; }
+    body { overflow: visible; }
+    html:has(#sidebar.open) { overflow-y: hidden; }
+
+    #main { overflow: visible; align-self: start; }
+    #view-container {
+      padding-bottom: calc(var(--player-h) + env(safe-area-inset-bottom, 0px));
+    }
+    .topbar { top: env(safe-area-inset-top, 0px); }
+
+    /* Keep scrolling content out of the status bar, above the sticky header. */
+    body::before {
+      content: ''; position: fixed; top: 0; left: 0; right: 0;
+      height: env(safe-area-inset-top, 0px);
+      background: var(--bg); z-index: 20; pointer-events: none;
+    }
+    #player {
+      position: fixed; bottom: 0;
+      left: env(safe-area-inset-left, 0px);
+      right: env(safe-area-inset-right, 0px);
+    }
+  }
+}
+
 /* Home album shelves: static reflections reuse the decoded cover, with no
    extra image nodes, image requests, WebGL or animation loop. */
 .view-home .home-listening-room {
@@ -10248,7 +10277,7 @@ async function navigate(view, params = {}, push = true) {
   const vc = UI['view-container'];
   if (prevView && KEEP_ALIVE_VIEWS.has(prevView) && vc.firstChild) {
     // Read the offset first: removing the content clamps it to 0.
-    const scrollTop = UI['main']?.scrollTop || 0;
+    const scrollTop = getScrollRoot()?.scrollTop || 0;
     const nodes = document.createDocumentFragment();
     nodes.append(...vc.childNodes);
     _keptViews.set(prevView, { nodes, scrollTop, savedAt: Date.now() });
@@ -10394,8 +10423,8 @@ async function render({ restore = false } = {}) {
   if (kept && restore && Date.now() - kept.savedAt < _DATA_CACHE_TTL_MS) {
     vc.replaceChildren(kept.nodes);
     vc.style.opacity = '1';
-    const main = UI['main'];
-    if (main) main.scrollTop = kept.scrollTop;
+    const root = getScrollRoot();
+    if (root) root.scrollTop = kept.scrollTop;
     log('[VELVET] Render complete (kept view):', state.view);
     return;
   }
