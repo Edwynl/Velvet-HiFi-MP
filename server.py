@@ -131,6 +131,14 @@ from library_stats import (
 
 from chinese_variants import get_all_variants, to_simplified, to_traditional
 
+# Request bounds for search. A very long query makes the reverse direction fall
+# back to a full instr() scan per term batch, and an unbounded limit turns one
+# request into an arbitrarily large JSON materialization. These are validated
+# by FastAPI, so an abusive request gets a 422 instead of running the query.
+MAX_SEARCH_QUERY_LENGTH = 128
+MAX_SEARCH_LIMIT = 200
+MAX_TRACKS_LIMIT = 500
+
 # ─── Import Settings ──────────────────────────────────────────────────────────
 
 from settings import get_settings, VelvetSettings, ScanConstants
@@ -1228,7 +1236,10 @@ async def get_artist_details(artist_id: int):
     return result
 
 @app.get("/api/search")
-def search(q: str, limit: int = 80):
+def search(
+    q: str = Query("", max_length=MAX_SEARCH_QUERY_LENGTH),
+    limit: int = Query(80, ge=1, le=MAX_SEARCH_LIMIT),
+):
     started_at = time.perf_counter()
     db = get_db()
     try:
@@ -2823,9 +2834,9 @@ async def enrich_artist_bio(artist_id: int):
 # ─── Play History API ─────────────────────────────────────────────────────────
 @app.get("/api/tracks")
 def list_tracks(
-    limit: int = 100,
-    offset: int = 0,
-    search: str = "",
+    limit: int = Query(100, ge=1, le=MAX_TRACKS_LIMIT),
+    offset: int = Query(0, ge=0),
+    search: str = Query("", max_length=MAX_SEARCH_QUERY_LENGTH),
     sort: str = "title",
     favorites_only: bool = False,
 ):

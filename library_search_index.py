@@ -15,7 +15,8 @@ from library_search_match import indexed_text, _catalog_fields
 
 # A changed dictionary, fold algorithm, or on-disk format MUST invalidate keys.
 # 3: terms also carry credited artist and alias names (reverse-match parity).
-_INDEX_FORMAT = 3
+# 4: search_text rows also carry title_key, so search can rank in SQL.
+_INDEX_FORMAT = 4
 INDEX_SIGNATURE = f"{_INDEX_FORMAT}:opencc-{package_version('OpenCC')}:t2s-nfkc-casefold:dual-keys"
 
 
@@ -51,7 +52,7 @@ def _build_rows(db: sqlite3.Connection, track_ids: list[int]):
             credited.setdefault(track_id, []).append(name)
 
     index_rows, term_rows = [], []
-    for track_id, *fields in db.execute(
+    for track_id, title, *rest in db.execute(
         f"""SELECT t.id, t.title, ar.name, al.title, t.composer, t.work_title,
                    t.performer, t.conductor, t.ensemble
             FROM tracks t
@@ -59,8 +60,15 @@ def _build_rows(db: sqlite3.Connection, track_ids: list[int]):
             LEFT JOIN albums al ON al.id=t.album_id
             WHERE t.id IN ({marks})""", track_ids
     ):
+        fields = [title, *rest]
         values = [*fields, *credited.get(track_id, [])]
-        index_rows.append((track_id, indexed_text(values)))
+        # title_key lets search rank an exact canonical match above a track that
+        # only matched because its title is a substring of the query.
+        index_rows.append((
+            track_id,
+            indexed_text(values),
+            search_fold(str(title)) if title else "",
+        ))
         # Reverse-substring compatibility with the original search. The index
         # stores complete field keys; never allow a substring across fields.
         # Credited artists and aliases must be listed here too: search_text is
@@ -73,6 +81,23 @@ def _build_rows(db: sqlite3.Connection, track_ids: list[int]):
                 terms.update((literal_fold(str(value)), search_fold(str(value))))
         term_rows.extend((term, track_id) for term in terms if term)
     return index_rows, term_rows
+
+
+_catalog_columns_cache: set[str] | None = None
+
+
+def _catalog_has_genre_key(db: sqlite3.Connection) -> bool:
+    """genre_key arrived in migration 13; older libraries still lack it.
+
+    Cached per process: the schema only changes when migrations run, which is
+    before any search.
+    """
+    global _catalog_columns_cache
+    if _catalog_columns_cache is None:
+        _catalog_columns_cache = {
+            row[1] for row in db.execute("PRAGMA table_info(catalog_search_index)")
+        }
+    return "genre_key" in _catalog_columns_cache
 
 
 def _refresh_catalog_indexes(db: sqlite3.Connection, batch_size: int) -> None:
@@ -97,11 +122,24 @@ def _refresh_catalog_indexes(db: sqlite3.Connection, batch_size: int) -> None:
                 (kind, *ids),
             )
             fields = _catalog_fields(db, kind, ids)
-            db.executemany(
-                "INSERT INTO catalog_search_index(kind,entity_id,search_text) VALUES (?,?,?)",
-                [(kind, entity_id, indexed_text(values))
-                 for entity_id, values in fields.items()],
-            )
+            rows = [(kind, entity_id, indexed_text(values))
+                    for entity_id, values in fields.items()]
+            if _catalog_has_genre_key(db) and kind == "album":
+                genres = dict(db.execute(
+                    f"SELECT id, genre FROM albums WHERE id IN ({marks})", ids
+                ))
+                db.executemany(
+                    "INSERT INTO catalog_search_index"
+                    "(kind,entity_id,search_text,genre_key) VALUES (?,?,?,?)",
+                    [(k, e, s, search_fold(str(g or "")))
+                     for k, e, s in rows for g in (genres.get(e),)],
+                )
+            else:
+                db.executemany(
+                    "INSERT INTO catalog_search_index(kind,entity_id,search_text) "
+                    "VALUES (?,?,?)",
+                    rows,
+                )
             db.execute(
                 f"DELETE FROM catalog_search_dirty WHERE kind=? AND entity_id IN ({marks})",
                 (kind, *ids),
@@ -153,7 +191,8 @@ def refresh_track_search_index(db: sqlite3.Connection, batch_size: int = 2000) -
         db.execute(f"DELETE FROM track_search_terms WHERE track_id IN ({marks})", track_ids)
         keys, terms = _build_rows(db, track_ids)
         db.executemany(
-            "INSERT INTO track_search_index(track_id,search_text) VALUES(?,?)", keys
+            "INSERT INTO track_search_index(track_id,search_text,title_key) VALUES(?,?,?)",
+            keys,
         )
         db.executemany(
             "INSERT INTO track_search_terms(term,track_id) VALUES(?,?)", terms

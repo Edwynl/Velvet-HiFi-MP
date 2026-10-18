@@ -2,10 +2,16 @@
 import sqlite3
 import unittest
 
-from chinese_variants import search_fold
+from chinese_variants import search_fold, literal_fold
 from db_schema import LATEST_SCHEMA_VERSION, apply_migrations
 from library_search_index import refresh_track_search_index
-from library_search_match import match_track_ids, match_catalog_ids
+from library_search_match import (
+    _MAX_QUERY_LENGTH,
+    match_track_ids,
+    match_catalog_ids,
+    normalize_query,
+)
+from library_browse import fetch_tracks
 from library_paging import fetch_album_page, fetch_artist_page
 from library_discovery import search_tracks
 from chinese_variants import get_all_variants, to_simplified, to_traditional
@@ -191,6 +197,104 @@ class FoldIdempotenceTests(unittest.TestCase):
             with self.subTest(text=text):
                 once = search_fold(text)
                 self.assertEqual(search_fold(once), once)
+
+
+class SearchRelevanceTests(unittest.TestCase):
+    """Ordering must answer the query, not merely contain it.
+
+    A Simplified query also matches titles that are only a substring of it via
+    the reverse clause, so sorting on raw LOWER(title) alone put 愛 above the
+    exact match 愛你 for the query 爱你.
+    """
+
+    def setUp(self):
+        self.db = sqlite3.connect(":memory:")
+        self.db.row_factory = sqlite3.Row
+        apply_migrations(self.db)
+        self.db.execute("INSERT INTO artists(id,name,sort_name) VALUES(1,'陳奕迅','陳奕迅')")
+        self.db.execute("INSERT INTO albums(id,artist_id,title,genre) VALUES(1,1,'專輯','搖滾')")
+        for track_id, title in ((1, "愛"), (2, "愛你"), (3, "愛你的承諾")):
+            self.db.execute(
+                "INSERT INTO tracks(id,album_id,artist_id,title,file_path) VALUES(?,1,1,?,?)",
+                (track_id, title, f"C:/music/{track_id}.flac"),
+            )
+            self.db.execute(
+                "INSERT INTO track_artists(track_id,artist_id) VALUES(?,1)", (track_id,))
+        self.db.commit()
+        refresh_track_search_index(self.db)
+        self.db.commit()
+
+    def tearDown(self):
+        self.db.close()
+
+    def titles(self, limit=10):
+        return [t["title"] for t in search_tracks(self.db, "爱你", limit, None, None, None)["tracks"]]
+
+    def test_exact_canonical_match_ranks_first(self):
+        self.assertEqual(self.titles(1), ["愛你"])
+
+    def test_ranking_is_exact_then_prefix_then_rest(self):
+        self.assertEqual(self.titles(3), ["愛你", "愛你的承諾", "愛"])
+
+    def test_browse_uses_the_same_relevance_order(self):
+        rows = fetch_tracks(self.db, 10, 0, "爱你", "title", False)
+        self.assertEqual([t["title"] for t in rows["tracks"]],
+                         ["愛你", "愛你的承諾", "愛"])
+
+    def test_relevance_order_is_stable_across_pages(self):
+        pages = [fetch_tracks(self.db, 1, offset, "爱你", "title", False)["tracks"][0]["title"]
+                 for offset in (0, 1, 2)]
+        self.assertEqual(pages, ["愛你", "愛你的承諾", "愛"])
+
+    def test_long_query_still_matches_via_reverse(self):
+        """Reverse matching is what lets a full title find a shorter one."""
+        ids = match_track_ids(self.db, "01 愛你", reverse=True)
+        self.assertEqual(ids, {1, 2})
+        self.assertEqual(match_track_ids(self.db, "01 愛你", reverse=False), set())
+
+
+class GenreFoldingTests(unittest.TestCase):
+    """A Simplified genre query must reach a Traditional stored label."""
+
+    def setUp(self):
+        self.db = sqlite3.connect(":memory:")
+        self.db.row_factory = sqlite3.Row
+        apply_migrations(self.db)
+        self.db.execute("INSERT INTO artists(id,name,sort_name) VALUES(1,'周杰倫','周杰倫')")
+        self.db.execute("INSERT INTO albums(id,artist_id,title,genre) VALUES(1,1,'專輯','搖滾')")
+        self.db.execute(
+            "INSERT INTO tracks(id,album_id,artist_id,title,file_path) VALUES(1,1,1,'歌','C:/m/1.flac')")
+        self.db.commit()
+        refresh_track_search_index(self.db)
+        self.db.commit()
+
+    def tearDown(self):
+        self.db.close()
+
+    def test_simplified_genre_query_matches_traditional_genre(self):
+        self.assertEqual(fetch_tracks(self.db, 10, 0, "摇滚", "title", False)["total"], 1)
+        self.assertEqual(fetch_tracks(self.db, 10, 0, "搖滾", "title", False)["total"], 1)
+
+    def test_genre_edit_requeries_the_album(self):
+        self.db.execute("UPDATE albums SET genre='金屬' WHERE id=1")
+        self.db.commit()
+        refresh_track_search_index(self.db)
+        self.db.commit()
+        self.assertEqual(fetch_tracks(self.db, 10, 0, "摇滚", "title", False)["total"], 0)
+        self.assertEqual(fetch_tracks(self.db, 10, 0, "金属", "title", False)["total"], 1)
+
+    def test_album_search_does_not_start_matching_on_genre(self):
+        self.assertNotIn(1, match_catalog_ids(self.db, "album", "摇滚"))
+
+
+class QueryBoundsTests(unittest.TestCase):
+    def test_long_query_is_truncated_for_matching(self):
+        raw, folded = normalize_query("愛" * 5000)
+        self.assertEqual(len(folded), _MAX_QUERY_LENGTH)
+
+    def test_normal_query_is_untouched(self):
+        self.assertEqual(normalize_query("谢谢你"),
+                         (literal_fold("谢谢你"), search_fold("谢谢你")))
 
 
 if __name__ == "__main__":

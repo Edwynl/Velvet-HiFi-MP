@@ -85,7 +85,13 @@ def search_tracks(
     Exact raw spellings are included in the index, preventing loss when a
     phrase-level conversion changes how a substring is segmented.
     """
-    from library_search_match import ids_json, match_track_ids
+    from library_search_match import (
+        ids_json,
+        match_track_ids,
+        normalize_query,
+        rank_order_by,
+        rank_params,
+    )
 
     q = (q or "").strip()
     if not q or limit < 1:
@@ -93,14 +99,48 @@ def search_tracks(
     ids = match_track_ids(db, q, reverse=True)
     if not ids:
         return {"tracks": []}
+    _, folded = normalize_query(q)
+    # Rank on the stored folded title. Sorting by raw LOWER(title) cannot see
+    # that a Simplified query equals a Traditional title, so 愛 (matched only
+    # by the reverse-substring clause) used to outrank the exact match 愛你.
+    if _has_title_key(db):
+        rank = rank_order_by("ti")
+        # LEFT, not INNER: a track whose index row has not been built yet must
+        # still appear, ranked last. An inner join silently dropped every
+        # unindexed track.
+        join_rank = "LEFT JOIN track_search_index ti ON ti.track_id = t.id"
+        rank_args = rank_params(folded)
+    else:
+        rank = "(LOWER(t.title)=?) DESC, LOWER(t.title), t.id"
+        join_rank = ""
+        rank_args = (q.lower(),)
     rows = db.execute(
-        f"""SELECT {_TRACK_COLUMNS} {_TRACK_JOINS}
+        f"""SELECT {_TRACK_COLUMNS} {_TRACK_JOINS} {join_rank}
             WHERE t.id IN (SELECT value FROM json_each(?))
-            ORDER BY (LOWER(t.title)=?) DESC, LOWER(t.title), t.id
+            ORDER BY {rank}
             LIMIT ?""",
-        (ids_json(ids), q.lower(), limit),
+        (ids_json(ids), *rank_args, limit),
     ).fetchall()
     return {"tracks": [dict(row) for row in rows]}
+
+
+_title_key_available: bool | None = None
+
+
+def _has_title_key(db: sqlite3.Connection) -> bool:
+    """title_key arrived in migration 13; a pre-migration library lacks it.
+
+    Cached per process: the schema only changes when migrations run, which is
+    before any search.
+    """
+    global _title_key_available
+    if _title_key_available is None:
+        try:
+            db.execute("SELECT title_key FROM track_search_index LIMIT 1").fetchone()
+            _title_key_available = True
+        except sqlite3.OperationalError:
+            _title_key_available = False
+    return _title_key_available
 
 
 def fetch_genres(db: sqlite3.Connection) -> list[dict]:

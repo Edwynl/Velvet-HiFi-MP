@@ -20,6 +20,10 @@ from chinese_variants import literal_fold, search_fold
 SEP = "\x1f"
 _BATCH = 400
 _MAX_SUBSTRINGS = 10000
+# Beyond this a query cannot usefully narrow anything, and the reverse direction
+# falls back to a full instr() scan per term batch. Truncation is safe because
+# the index only matches substrings of the query.
+_MAX_QUERY_LENGTH = 128
 
 
 def indexed_text(values) -> str:
@@ -111,9 +115,65 @@ def _substrings(key: str, max_length: int) -> set[str] | None:
     return out
 
 
+_catalog_columns_cache: set[str] | None = None
+
+
+def _catalog_has_genre_key_index(db: sqlite3.Connection) -> bool:
+    """genre_key arrived in migration 13; a pre-migration library lacks it.
+
+    Cached per process: the schema only changes when migrations run, which is
+    before any search.
+    """
+    global _catalog_columns_cache
+    if _catalog_columns_cache is None:
+        _catalog_columns_cache = {
+            row[1] for row in db.execute("PRAGMA table_info(catalog_search_index)")
+        }
+    return "genre_key" in _catalog_columns_cache
+
+
+def normalize_query(query: str) -> tuple[str, str]:
+    """Fold a query once, enforcing the bounds the HTTP layer relies on.
+
+    A very long query makes the reverse direction fall back to
+    `instr(?, term)` over every term in the index, which is a full scan per
+    batch. Truncating is safe because the index only ever matches substrings of
+    the query: a term that the truncated prefix cannot contain was never going
+    to match.
+    """
+    query = query or ""
+    if len(query) > _MAX_QUERY_LENGTH:
+        query = query[:_MAX_QUERY_LENGTH]
+    return literal_fold(query), search_fold(query)
+
+
+def rank_order_by(alias: str = "ti") -> str:
+    """ORDER BY fragment ranking tracks by how well they answer the query.
+
+    Consumes exactly three bound parameters, all the folded query key: an exact
+    canonical title, then a prefix, then any substring. Ranking uses the stored
+    `title_key` because a raw `LOWER(title)` cannot tell that a Simplified
+    query equals a Traditional title exactly -- which is what let 愛 outrank
+    愛你 for the query 爱你.
+    """
+    return (
+        "CASE"
+        f" WHEN {alias}.title_key = ? THEN 0"
+        f" WHEN {alias}.title_key LIKE ? || '%' THEN 1"
+        f" WHEN instr({alias}.title_key, ?) > 0 THEN 2"
+        " ELSE 3 END,"
+        " LOWER(t.title), t.id"
+    )
+
+
+def rank_params(folded: str) -> tuple[str, str, str]:
+    """The three parameters consumed by `rank_order_by`."""
+    return folded, folded + "%", folded
+
+
 def match_track_ids(db: sqlite3.Connection, query: str, *, reverse: bool = True) -> set[int]:
     """Complete candidate set; no page-limit shortcut may hide Chinese matches."""
-    raw, folded = literal_fold(query), search_fold(query)
+    raw, folded = normalize_query(query)
     if not raw and not folded:
         return set()
     if not _ready(db) or not _existing(db, "track_search_index"):
@@ -202,7 +262,7 @@ def match_catalog_ids(db: sqlite3.Connection, kind: str, query: str) -> set[int]
     """Artist/album matches including aliases; correct before index refresh."""
     if kind not in ("artist", "album"):
         raise ValueError("Invalid catalog kind")
-    raw, folded = literal_fold(query), search_fold(query)
+    raw, folded = normalize_query(query)
     if not raw and not folded:
         return set()
     ready = (_ready(db) and _existing(db, "catalog_search_index")

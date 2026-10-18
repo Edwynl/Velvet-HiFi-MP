@@ -14,6 +14,7 @@ from library_discovery import (
     search_tracks,
 )
 from library_search_index import refresh_track_search_index
+from library_search_match import match_track_ids
 
 
 class LibraryDiscoveryTests(unittest.TestCase):
@@ -229,11 +230,23 @@ class TrackSearchIndexTests(unittest.TestCase):
         self.assertGreater(dirty, 1500)
         for q in ("钢琴", "鋼琴手", "钢琴与我"):
             with self.subTest(q=q):
-                before_refresh = _real_search(self.db, q)
-                self.assertEqual(before_refresh, self._exact(q))
+                before_page = _real_search(self.db, q)
+                self.assertEqual(before_page, self._exact(q))
+                # The complete match set, not a ranked top-N page: ranking reads
+                # the stored title_key, so a just-renamed track is only promoted
+                # once its index row is rebuilt. Comparing two ranked pages would
+                # only measure that reordering.
+                before_ids = match_track_ids(self.db, q, reverse=True)
                 self._build()
-                self.assertEqual(_real_search(self.db, q), before_refresh)
+                self.assertEqual(match_track_ids(self.db, q, reverse=True), before_ids)
                 self.db.execute("UPDATE albums SET title=title || '' WHERE id=1")
+        # Track 10 was renamed to 鋼琴小品. Once rebuilt, its folded title is a
+        # prefix of 钢琴, so ranking must promote it above the "Other song N"
+        # fillers instead of leaving it buried in title order.
+        self._build()
+        ranked = _real_search(self.db, "钢琴", 5)
+        self.assertIn(10, ranked)
+        self.assertNotIn(101, ranked)
         self.assertIn(1600, _real_search(self.db, "钢琴曲"))
 
     def test_deleted_track_leaves_no_index_rows(self):

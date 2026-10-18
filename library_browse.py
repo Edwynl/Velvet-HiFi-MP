@@ -108,19 +108,46 @@ def fetch_tracks(
     where_parts = []
     params: list = []
     count_params: list = []
+    genre_join = ""
+    rank_args: tuple = ()
 
     if search:
-        from library_search_match import ids_json, match_track_ids
+        from library_search_match import (
+            _catalog_has_genre_key_index,
+            ids_json,
+            match_track_ids,
+            normalize_query,
+        )
         # Preserve the old genre lookup in addition to Chinese title/credits.
         search_ids = ids_json(match_track_ids(db, search, reverse=True))
-        # Genre remains a literal substring (not a LIKE wildcard pattern).
-        genre_term = search.casefold()
-        where_parts.append(
-            "(t.id IN (SELECT value FROM json_each(?)) "
-            "OR instr(LOWER(COALESCE(al.genre,'')), ?) > 0)"
-        )
-        params.extend((search_ids, genre_term))
-        count_params.extend((search_ids, genre_term))
+        _, folded = normalize_query(search)
+        # Genre is folded at index time too, so 摇滚 matches a stored 搖滾.
+        if _catalog_has_genre_key_index(db):
+            genre_join = (
+                " LEFT JOIN catalog_search_index csi "
+                "ON csi.kind='album' AND csi.entity_id=al.id"
+            )
+            where_parts.append(
+                "(t.id IN (SELECT value FROM json_each(?)) "
+                "OR instr(COALESCE(csi.genre_key,''), ?) > 0)"
+            )
+        else:
+            where_parts.append(
+                "(t.id IN (SELECT value FROM json_each(?)) "
+                "OR instr(LOWER(COALESCE(al.genre,'')), ?) > 0)"
+            )
+        params.extend((search_ids, folded))
+        count_params.extend((search_ids, folded))
+
+        # Answer the query first; an explicit UI sort still breaks the tie.
+        from library_discovery import _has_title_key
+
+        if _has_title_key(db):
+            from library_search_match import rank_order_by, rank_params
+
+            order_by = rank_order_by("ti") + ", " + order_by
+            genre_join += " LEFT JOIN track_search_index ti ON ti.track_id = t.id"
+            rank_args = rank_params(folded)
 
     if favorites_only:
         where_parts.append("al.is_favorite = 1")
@@ -145,6 +172,7 @@ def fetch_tracks(
             FROM tracks t
             JOIN artists ar ON t.artist_id = ar.id
             JOIN albums al ON t.album_id = al.id
+            {genre_join}
             {where_clause}
             """,
             count_params,
@@ -157,10 +185,11 @@ def fetch_tracks(
         FROM tracks t
         JOIN artists ar ON t.artist_id = ar.id
         JOIN albums al ON t.album_id = al.id
+        {genre_join}
         {where_clause}
         ORDER BY {order_by}
         LIMIT ? OFFSET ?
         """,
-        (*params, limit, offset),
+        (*params, *rank_args, limit, offset),
     ).fetchall()
     return {"tracks": _row_dicts(rows), "total": total}
