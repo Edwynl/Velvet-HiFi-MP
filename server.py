@@ -862,22 +862,46 @@ async def cast_to_device(device_udn: str, request: Request):
 
     generation = _supersede_casts(device_udn)
     _register_cast_request(device_udn, request_id)
+    prepared = concurrent.futures.Future()  # the resolved stream, set below
+
+    def superseded():
+        with _cast_state_lock:
+            return _cast_generations.get(device_udn) != generation
+
+    def job():
+        if superseded():
+            return {"success": False, "superseded": True}  # a newer cast or Stop arrived
+        try:
+            stream = prepared.result(timeout=CAST_PREPARE_TIMEOUT_SECONDS)
+        except concurrent.futures.CancelledError:
+            return {"success": False, "cancelled": True}
+        except concurrent.futures.TimeoutError:
+            return {"success": False, "error": "Timed out resolving the stream"}
+        if superseded():
+            return {"success": False, "superseded": True}
+        return _cast_now(device_udn, stream, start, recast)
+
+    # Queued on arrival, before the stream is resolved: a Play/Pause sent
+    # after this cast always runs after it, so a slow lookup cannot let an
+    # older new-track cast undo a later Pause. Its outcome is recorded for
+    # /api/cast/result on every path, including cancellation.
+    future = _renderer_dispatcher(device_udn).submit(
+        job, on_done=lambda outcome: _record_cast_result(device_udn, request_id, outcome))
     try:
         stream = await asyncio.to_thread(_resolve_cast_stream, track_id, requested_dsp, start, replaygain_mode)
     except HTTPException as exc:
+        prepared.set_exception(exc)
         _record_cast_result(device_udn, request_id, {"success": False, "error": exc.detail})
         raise
-
-    def job():
-        with _cast_state_lock:
-            if _cast_generations.get(device_udn) != generation:
-                return {"success": False, "superseded": True}  # a newer cast or Stop arrived
-        return _cast_now(device_udn, stream, start, recast)
-
-    # Queued in arrival order with this renderer's other casts and controls;
-    # the outcome is recorded for /api/cast/result even if this request is cancelled.
-    future = _renderer_dispatcher(device_udn).submit(
-        job, on_done=lambda outcome: _record_cast_result(device_udn, request_id, outcome))
+    except Exception as exc:
+        prepared.set_exception(exc)
+        _record_cast_result(device_udn, request_id, {"success": False, "error": "Cast failed"})
+        raise
+    except BaseException:  # cancelled while resolving
+        prepared.cancel()
+        _record_cast_result(device_udn, request_id, {"success": False, "cancelled": True})
+        raise
+    prepared.set_result(stream)
     return await asyncio.wrap_future(future)
 
 
@@ -1011,6 +1035,7 @@ _cast_generations: dict[str, int] = {}  # bumped by each cast and Stop
 _cast_user_paused: dict[str, bool] = {}  # last Play/Pause not yet honoured by a cast
 _cast_results: dict[str, dict[str, dict | None]] = {}  # request_id -> response (None: pending)
 _CAST_RESULTS_KEPT = 16
+CAST_PREPARE_TIMEOUT_SECONDS = 60
 
 
 def _renderer_dispatcher(device_udn: str) -> _RendererDispatcher:
@@ -1064,7 +1089,9 @@ async def cast_control(device_udn: str, action: str):
     Controls are never dropped: they run in arrival order with the
     renderer's casts, and a Play/Pause decides whether later re-casts play
     until one has honoured it. Stop also cancels casts still waiting, so
-    leaving a renderer cannot be undone by a late one.
+    leaving a renderer cannot be undone by a late one. An accepted control
+    runs even if its HTTP request is cancelled while it waits (a client
+    leaving the page must still stop the renderer).
     """
     if action == "Stop":
         _supersede_casts(device_udn)
@@ -1078,7 +1105,8 @@ async def cast_control(device_udn: str, action: str):
                 _cast_user_paused[device_udn] = action == "Pause"
         return success
 
-    success = await asyncio.wrap_future(_renderer_dispatcher(device_udn).submit(control))
+    future = _renderer_dispatcher(device_udn).submit(control)
+    success = await asyncio.shield(asyncio.wrap_future(future))
     return {"success": bool(success)}
 
 @app.get("/api/cast/status/{device_udn}")

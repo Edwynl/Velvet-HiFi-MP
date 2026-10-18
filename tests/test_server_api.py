@@ -955,6 +955,101 @@ class ServerApiTests(unittest.TestCase):
         self.assertEqual(retry["transport"], "loaded")
         self.assertNotIn("renderer-rg", server._cast_user_paused, "honoured by the confirmed cast")
 
+    def _slow_resolve(self):
+        """Patch stream resolution to wait until `release` is set."""
+        release, entered = threading.Event(), threading.Event()
+        original = server._resolve_cast_stream
+
+        def resolve(*args):
+            entered.set()
+            self.assertTrue(release.wait(10))
+            return original(*args)
+
+        return patch.object(server, "_resolve_cast_stream", side_effect=resolve), release, entered
+
+    def _ordered_with_slow_resolve(self, cast_body, control, reported_state):
+        self._allow_music_root()
+        log = []
+        resolve_patch, release, entered = self._slow_resolve()
+        results = {}
+
+        def fake_cast(udn, url, meta, play=True):
+            log.append(("cast", play))
+            return "playing" if play else "loaded"
+
+        def fake_control(udn, action):
+            log.append(("control", action))
+            return True
+
+        def post(name, path, body=None):
+            results[name] = self.client.post(path, json=body).json()
+
+        dispatcher = server._renderer_dispatcher("renderer-slow")
+        with resolve_patch, \
+                patch.object(upnp_server, "cast_track", side_effect=fake_cast), \
+                patch.object(upnp_server, "cast_control", side_effect=fake_control), \
+                patch.object(upnp_server, "get_transport_info", return_value=reported_state), \
+                patch.object(upnp_server, "seek", return_value=True):
+            cast = threading.Thread(target=post, args=("cast", "/api/cast/renderer-slow", cast_body))
+            cast.start()
+            self.assertTrue(entered.wait(10))  # the cast is resolving its stream
+            before = dispatcher.submitted
+            ctl = threading.Thread(target=post, args=("control", f"/api/cast/control/renderer-slow/{control}"))
+            ctl.start()
+            deadline = time.monotonic() + 10
+            while dispatcher.submitted == before and time.monotonic() < deadline:
+                time.sleep(0.01)
+            time.sleep(0.1)
+            self.assertEqual(log, [], "the control waits for the earlier cast")
+            release.set()
+            cast.join(10)
+            ctl.join(10)
+        return log, results
+
+    def test_pause_sent_while_a_new_track_resolves_is_not_undone(self):
+        log, results = self._ordered_with_slow_resolve({"track_id": 1}, "Pause", "PLAYING")
+        # The cast runs first (it was requested first); the Pause after it wins.
+        self.assertEqual(log, [("cast", True), ("control", "Pause")])
+        self.assertTrue(results["control"]["success"])
+        self.assertTrue(server._cast_user_paused["renderer-slow"])
+
+    def test_play_sent_while_a_recast_resolves_is_not_undone(self):
+        log, results = self._ordered_with_slow_resolve(
+            {"track_id": 1, "recast": True}, "Play", "PAUSED_PLAYBACK")
+        self.assertEqual(log, [("cast", False), ("control", "Play")])
+        self.assertEqual(results["cast"]["transport"], "loaded")
+        self.assertFalse(server._cast_user_paused["renderer-slow"])
+
+    def test_a_cast_that_fails_or_is_cancelled_while_resolving_is_recorded(self):
+        self._allow_music_root()
+        with patch.object(server, "_resolve_cast_stream", side_effect=RuntimeError("disk gone")), \
+                patch.object(upnp_server, "cast_track", side_effect=AssertionError("must not cast")):
+            client = TestClient(server.app, raise_server_exceptions=False)
+            response = client.post("/api/cast/renderer-fail", json={"track_id": 1, "request_id": "boom"})
+            self.assertEqual(response.status_code, 500)
+            self.assertEqual(self.client.get("/api/cast/result/renderer-fail/boom").json(),
+                             {"done": True, "success": False, "error": "Cast failed"})
+
+        class FakeRequest:
+            async def json(self):
+                return {"track_id": 1, "request_id": "gone"}
+
+        resolve_patch, release, entered = self._slow_resolve()
+
+        async def scenario():
+            task = asyncio.ensure_future(server.cast_to_device("renderer-fail", FakeRequest()))
+            await asyncio.to_thread(entered.wait, 10)
+            task.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await task
+            release.set()
+            await asyncio.wrap_future(server._renderer_dispatcher("renderer-fail").submit(lambda: None))
+
+        with resolve_patch, patch.object(upnp_server, "cast_track", side_effect=AssertionError("must not cast")):
+            asyncio.run(scenario())
+        self.assertEqual(self.client.get("/api/cast/result/renderer-fail/gone").json(),
+                         {"done": True, "success": False, "cancelled": True})
+
     def test_play_and_pause_work_before_any_cast_to_the_renderer(self):
         calls = []
         with patch.object(upnp_server, "cast_control", side_effect=lambda udn, action: calls.append(action) or True):
@@ -1750,10 +1845,19 @@ class CastDispatcherTests(unittest.TestCase):
         self.assertEqual(asyncio.run(scenario()), [f"j{i}" for i in range(5)])
         self.assertEqual(self.max_active, 1)
 
-    def test_a_cancelled_stop_or_control_sends_nothing(self):
-        # A Stop whose request is cancelled before its turn sends no SOAP Stop;
-        # the casts it superseded on arrival stay superseded (leaving was asked for).
+    def test_a_control_still_runs_when_its_request_is_cancelled(self):
+        # Active cast -> Pause and Stop queued -> their HTTP waits are cancelled:
+        # both SOAP commands still run, after the cast and never overlapping it.
         calls = []
+
+        def control(udn, action):
+            with self.lock:
+                self.active += 1
+                self.max_active = max(self.max_active, self.active)
+            calls.append(action)
+            with self.lock:
+                self.active -= 1
+            return True
 
         async def scenario():
             dispatcher = server._renderer_dispatcher("renderer-cancel")
@@ -1765,17 +1869,18 @@ class CastDispatcherTests(unittest.TestCase):
                 await asyncio.sleep(0.05)
                 task.cancel()
             await asyncio.sleep(0.05)
+            self.assertEqual(calls, [], "controls wait for the running cast")
             self.release.set()
             await asyncio.wrap_future(busy)
             await asyncio.wrap_future(dispatcher.submit(lambda: None))  # drained
             return generation
 
-        with patch.object(upnp_server, "cast_control", side_effect=lambda udn, action: calls.append(action) or True):
+        with patch.object(upnp_server, "cast_control", side_effect=control):
             generation = asyncio.run(scenario())
-        self.assertEqual(calls, [])
+        self.assertEqual(calls, ["Pause", "Stop"])
+        self.assertEqual(self.max_active, 1)
         self.assertEqual(server._cast_generations["renderer-cancel"], generation + 1)
         self.assertNotIn("renderer-cancel", server._cast_user_paused)
-
 
 if __name__ == "__main__":
     unittest.main()

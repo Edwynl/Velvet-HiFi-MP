@@ -844,6 +844,42 @@ async function main() {
     assert.equal(dom.window.eval('state.castStartOffset'), 0);
     assert.equal(dom.window.eval('state.outputMode'), 'browser');
     assert.equal(dom.window.eval('state.playing'), playingAfterSwitch, 'late Pause answer ignored');
+
+    // Leave renderer A and come straight back to it: the old session's cast
+    // answer is dropped, and the new session's cast waits for the old Stop.
+    await dom.window.activateZone(renderer, false);
+    dom.window.eval("stopCastPolling(); state.currentTrack = { id: 1, title: 'Cast Track', duration: 180 };");
+    castControl.hold = true;
+    castControl.held = [];
+    const castPosts = () => harness.requests.filter(request => request.path === '/api/cast/uuid:renderer').length;
+    dom.window.eval('castTo(state.currentTrack, state.castDevice)');
+    await waitFor(() => castControl.held.length === 1);
+    castControl.holdControls = true;
+    castControl.heldControls = [];
+    await dom.window.activateZone(browserZone, false);
+    await waitFor(() => castControl.heldControls.length === 1); // the Stop, unanswered
+    await dom.window.activateZone(renderer, false);
+    castControl.held[0](); // the old session's cast answer arrives now
+    await tick();
+    assert.equal(dom.window.eval('state.castDsp'), null, 'old cast answer must not reach the new session');
+    assert.equal(dom.window.eval('state.castPollId'), null, 'no polling started for the old answer');
+    const postsBefore = castPosts();
+    dom.window.eval('castTo(state.currentTrack, state.castDevice)');
+    await tick();
+    assert.equal(castPosts(), postsBefore, 'the new cast waits for the old Stop');
+    castControl.holdControls = false;
+    castControl.heldControls[0]();
+    await waitFor(() => castPosts() === postsBefore + 1);
+    const paths = harness.requests.map(request => request.path);
+    const stopIndex = paths.lastIndexOf('/api/cast/control/uuid:renderer/Stop');
+    const newCastIndex = paths.lastIndexOf('/api/cast/uuid:renderer');
+    assert.ok(stopIndex >= 0 && stopIndex < newCastIndex, 'Stop is sent before the new cast');
+    await waitFor(() => castControl.held.length === 2);
+    castControl.hold = false;
+    castControl.held[1]();
+    await waitFor(() => dom.window.eval('state.castDsp') !== null);
+    dom.window.eval('stopCastPolling();');
+    await dom.window.activateZone(browserZone, false);
     dom.window.eval('stopCastPolling(); state.currentTrack = null;');
     dom.window.setReplayGainMode('off');
   } finally {

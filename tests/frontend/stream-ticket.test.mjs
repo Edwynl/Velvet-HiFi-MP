@@ -148,6 +148,7 @@ const hours = h => Math.floor(1_700_000_000_000 / 1000) + h * 3600;
     audio: { pause() {} },
     showToast() {},
     isCastZone() { return true; },
+    castStopSettled() { return Promise.resolve(); },
     updatePlayBtnUI() {},
     markExpectedBrowserPause() {},
     startCastPolling() {},
