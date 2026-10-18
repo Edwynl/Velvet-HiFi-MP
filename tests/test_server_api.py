@@ -1237,6 +1237,21 @@ class ServerApiTests(unittest.TestCase):
         self.assertEqual(self.client.get("/api/cast/result/renderer-fail/gone").json(),
                          {"done": True, "success": False, "cancelled": True})
 
+    def test_cast_status_exposes_only_ticket_free_track_id(self):
+        with patch.object(upnp_server, "get_transport_info", return_value="PLAYING"), \
+             patch.object(upnp_server, "get_position_info",
+                          return_value=(7, 120, 42)) as position:
+            response = self.client.get("/api/cast/status/renderer-1")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), {
+            "state": "PLAYING",
+            "position": 7,
+            "duration": 120,
+            "track_id": 42,
+            "is_playing": True,
+        })
+        position.assert_called_once_with("renderer-1", include_track_id=True)
+
     def test_play_and_pause_work_before_any_cast_to_the_renderer(self):
         calls = []
         with patch.object(upnp_server, "cast_control", side_effect=lambda udn, action: calls.append(action) or True):
