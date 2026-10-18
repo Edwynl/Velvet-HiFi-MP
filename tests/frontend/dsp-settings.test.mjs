@@ -49,7 +49,7 @@ function createHarness() {
   const castControl = { paused: false, seekOk: true, replaygainDb: -7.1, hold: false, held: [],
     fail: false, controlFail: false, payloads: {}, serverResults: {},
     holdControls: false, heldControls: [], transportState: 'PLAYING',
-    statusPosition: 5, holdStatus: false, heldStatus: [] };
+    statusPosition: 5, statusTrackId: null, holdStatus: false, heldStatus: [] };
   const dspProfiles = [
     {
       id: 2,
@@ -255,7 +255,8 @@ function createHarness() {
 
     if (parsedUrl.pathname.startsWith('/api/cast/status/') && method === 'GET') {
       const status = makeJsonResponse({ state: castControl.transportState, position: castControl.statusPosition,
-        duration: 120, is_playing: castControl.transportState === 'PLAYING' });
+        duration: 120, track_id: castControl.statusTrackId,
+        is_playing: castControl.transportState === 'PLAYING' });
       if (!castControl.holdStatus) return status;
       return new Promise(resolve => castControl.heldStatus.push(() => resolve(status)));
     }
@@ -1028,6 +1029,17 @@ async function main() {
     castControl.fail = false;
     assertRolledBack('other album');
     await assertNoSkipOnStaleEnd('other album');
+    // The renderer may have loaded B even though its SOAP result failed.
+    // A PLAYING/near-end response for B must never resume A's progress or auto-next.
+    castControl.statusTrackId = 4;
+    castControl.transportState = 'PLAYING';
+    castControl.statusPosition = 119;
+    await assertNoSkipOnStaleEnd('renderer is actually on B');
+    assert.equal(dom.window.eval('state.castPlaybackUnverified'), true);
+    assert.equal(dom.window.eval('state.castAutoNextArmed'), false);
+    assert.equal(dom.window.eval('state.playing'), false);
+    // Only a URI confirming A permits a recovery poll to rearm auto-next.
+    castControl.statusTrackId = 3;
     // Once a status shows it playing, a real end advances in the restored queue.
     castControl.transportState = 'PLAYING';
     castControl.statusPosition = 7;
@@ -1050,9 +1062,16 @@ async function main() {
     dom.window.eval('CAST_TIMING.requestTimeoutMs = 100; CAST_TIMING.resultPollMs = 20; CAST_TIMING.reconcileMs = 200;');
     castControl.hold = true;
     castControl.held = [];
+    castControl.statusTrackId = null; // a renderer that does not expose TrackURI
     await failNewCast('playTrack(window.__albumB[0], window.__albumB, 0);');
     assertRolledBack('timed out');
     await assertNoSkipOnStaleEnd('timed out');
+    castControl.transportState = 'PLAYING';
+    castControl.statusPosition = 119;
+    await assertNoSkipOnStaleEnd('unidentifiable renderer after a timed-out cast');
+    assert.equal(dom.window.eval('state.castPlaybackUnverified'), true);
+    assert.equal(dom.window.eval('state.playing'), false);
+    assert.equal(dom.window.eval('state.castAutoNextArmed'), false);
     castControl.held.forEach(release => release()); // its late answer is dropped
     castControl.held = [];
     castControl.hold = false;
@@ -1060,8 +1079,21 @@ async function main() {
     assert.equal(dom.window.eval('state.currentTrack.id'), 3);
     dom.window.eval('CAST_TIMING.requestTimeoutMs = 90000; CAST_TIMING.resultPollMs = 2000; CAST_TIMING.reconcileMs = 180000;'
       + ' stopCastPolling(); playNext = window.__originalPlayNext;');
+    // A same-song DSP/ReplayGain re-cast can fail after the server sends Stop.
+    // A confirmed ID alone must not preserve its old auto-next permission.
+    castControl.fail = true;
+    dom.window.eval('castTo(state.currentTrack, state.castDevice, { recast: true });');
+    await waitFor(() => dom.window.eval('state.castPending') === false);
+    assert.equal(dom.window.eval('state.castPlaybackUnverified'), true);
+    assert.equal(dom.window.eval('state.castAutoNextArmed'), false);
+    assert.equal(dom.window.eval('state.playing'), false);
+    castControl.fail = false;
+    castControl.statusTrackId = 3;
     castControl.transportState = 'PLAYING';
     castControl.statusPosition = 5;
+    dom.window.eval('startCastPolling();');
+    await waitFor(() => dom.window.eval('state.castPlaybackUnverified') === false);
+    dom.window.eval('stopCastPolling();');
 
     // A status snapshot taken before a Play/Pause must not undo it when it
     // answers late (poll and on-demand refresh alike).
