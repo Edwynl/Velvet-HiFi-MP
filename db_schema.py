@@ -4,7 +4,7 @@ import sqlite3
 from dsp_engine import FACTORY_DSP_PRESETS, legacy_eq_bands_to_filters
 
 
-LATEST_SCHEMA_VERSION = 16
+LATEST_SCHEMA_VERSION = 17
 
 
 def _table_columns(conn: sqlite3.Connection, table_name: str) -> set[str]:
@@ -652,6 +652,52 @@ def migration_016_artist_alias_provenance(conn: sqlite3.Connection) -> None:
     )
 
 
+def migration_017_alias_checkpoint_hygiene(conn: sqlite3.Connection) -> None:
+    """Stop no-op writes from discarding a completed checkpoint.
+
+    `AFTER UPDATE OF name, mbid` fires whenever those columns appear in the
+    SET list, even when the value is identical. Fingerprint and bio metadata
+    writers re-save the same MBID, which used to delete a finished
+    `artist_alias_enrichment_state` row and force a needless re-sync.
+
+    A `needs_review` checkpoint is also invalidated when the artist's release
+    evidence actually changes: automatic corroboration needs two distinctive
+    local albums, so an artist parked on one album becomes verifiable once a
+    second distinctive album is imported. Only the evidence-bearing columns
+    count, and only the review status is cleared -- completed syncs stay.
+    """
+    conn.executescript(
+        """
+        DROP TRIGGER IF EXISTS trg_alias_enrichment_artist_rename;
+        CREATE TRIGGER trg_alias_enrichment_artist_rename
+        AFTER UPDATE OF name, mbid ON artists
+        WHEN NEW.name IS NOT OLD.name OR NEW.mbid IS NOT OLD.mbid
+        BEGIN
+            DELETE FROM artist_alias_enrichment_state WHERE artist_id=NEW.id;
+        END;
+        DROP TRIGGER IF EXISTS trg_alias_enrichment_album_added;
+        CREATE TRIGGER trg_alias_enrichment_album_added
+        AFTER INSERT ON albums
+        WHEN NEW.artist_id IS NOT NULL
+        BEGIN
+            DELETE FROM artist_alias_enrichment_state
+             WHERE artist_id=NEW.artist_id AND status='needs_review';
+        END;
+        DROP TRIGGER IF EXISTS trg_alias_enrichment_album_changed;
+        CREATE TRIGGER trg_alias_enrichment_album_changed
+        AFTER UPDATE OF title, artist_id ON albums
+        WHEN NEW.artist_id IS NOT OLD.artist_id
+          OR NEW.title IS NOT OLD.title
+        BEGIN
+            DELETE FROM artist_alias_enrichment_state
+             WHERE artist_id=NEW.artist_id AND status='needs_review';
+            DELETE FROM artist_alias_enrichment_state
+             WHERE artist_id=OLD.artist_id AND status='needs_review';
+        END;
+        """
+    )
+
+
 MIGRATIONS = (
     (1, "create_base_schema", migration_001_create_base_schema),
     (2, "align_album_columns", migration_002_add_album_favorites),
@@ -669,6 +715,7 @@ MIGRATIONS = (
     (14, "artist_alias_enrichment", migration_014_artist_alias_enrichment),
     (15, "artist_mbid_verified", migration_015_artist_mbid_verified),
     (16, "artist_alias_provenance", migration_016_artist_alias_provenance),
+    (17, "alias_checkpoint_hygiene", migration_017_alias_checkpoint_hygiene),
 )
 
 

@@ -95,6 +95,38 @@ def _exec(sql, params=()):
         except: pass
 
 
+def _has_mbid_verified_column() -> bool:
+    """`artists.mbid_verified` arrives with schema 15; stay usable below it."""
+    rows = _query("SELECT name FROM pragma_table_info('artists') WHERE name='mbid_verified'")
+    return bool(rows)
+
+
+def _set_unverified_artist_mbid(mbid: str, artist_id: int) -> bool:
+    """Write an automatic MBID unless this artist already has a verified one.
+
+    Returns True when the value was written. Fingerprint metadata is a guess:
+    a collaboration or a wrong AcoustID association reports a different
+    artist, and overwriting a confirmed identity would leave the imported
+    aliases and provenance pointing at an artist the row no longer names.
+    A verified MBID may only change through explicit identity review.
+    """
+    if _has_mbid_verified_column():
+        sql = "UPDATE artists SET mbid=? WHERE id=? AND COALESCE(mbid_verified,0)=0"
+    else:
+        sql = "UPDATE artists SET mbid=? WHERE id=?"
+    conn = _db()
+    try:
+        cur = conn.execute(sql, (mbid, artist_id))
+        conn.commit()
+        return cur.rowcount > 0
+    except Exception as e:
+        log.warning(f"DB exec error: {e}")
+        return False
+    finally:
+        try: conn.close()
+        except: pass
+
+
 def _normalize_image_to_jpeg_bytes(
     raw_bytes: bytes,
     max_edge: Optional[int] = None,
@@ -278,8 +310,17 @@ async def enrich_track_fingerprint(track_id: int) -> dict:
         if meta.get("artist"):
             existing_artist = _query("SELECT id FROM artists WHERE id=?", (track["artist_id"],))
             if existing_artist and meta.get("artist_mbid"):
-                _exec("UPDATE artists SET mbid=? WHERE id=?",
-                      (meta["artist_mbid"], track["artist_id"]))
+                # AcoustID reports the *track's* credited artist, which for a
+                # collaboration or a bad fingerprint association is somebody
+                # else. Writing it over an independently verified identity would
+                # silently replace a confirmed MBID and strand the aliases and
+                # provenance that were imported for it. A verified identity may
+                # only be changed through explicit identity review.
+                if not _set_unverified_artist_mbid(meta["artist_mbid"], track["artist_id"]):
+                    log.info(
+                        "[ENRICH] kept verified MBID for artist %s; refused AcoustID id %s",
+                        track["artist_id"], meta["artist_mbid"],
+                    )
 
         # Update album with release MBID → can be used for cover fetch
         if meta.get("release_mbid") and track.get("album_id"):

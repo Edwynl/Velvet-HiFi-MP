@@ -312,6 +312,16 @@ async def _corroborate_release_groups(
     return qualified[0] if len(qualified) == 1 else None
 
 
+def _identity_snapshot(db: sqlite3.Connection, artist_id: int) -> tuple[str, object, int]:
+    """The identity a sync decision was based on, for optimistic checking."""
+    row = db.execute(
+        "SELECT name, mbid, mbid_verified FROM artists WHERE id=?", (artist_id,),
+    ).fetchone()
+    if row is None:
+        return ("", None, 0)
+    return (str(row[0]), row[1], int(row[2] or 0))
+
+
 def _store_verified_aliases(
     db: sqlite3.Connection,
     artist_id: int,
@@ -323,8 +333,21 @@ def _store_verified_aliases(
     query_alias: str = "",
     evidence_method: str = "trusted_mbid",
     evidence_albums: tuple[str, ...] = (),
+    expected_identity: tuple[str, object, int] | None = None,
 ) -> dict:
-    """Save only names from a verified identity; never change display names."""
+    """Save only names from a verified identity; never change display names.
+
+    `expected_identity` is the row as it looked before the slow MusicBrainz
+    calls. If anything moved the artist meanwhile — a rename, or automatic
+    fingerprint metadata claiming a different MBID — the evidence on hand was
+    gathered for an identity that no longer exists, so nothing is written and
+    the artist goes back to human review instead.
+    """
+    if expected_identity is not None and _identity_snapshot(db, artist_id) != expected_identity:
+        return {
+            "status": "identity_changed", "artist_id": artist_id, "added": [],
+            "aliases": fetch_aliases(db, artist_id),
+        }
     current = {value.casefold() for value in fetch_aliases(db, artist_id)}
     added = []
     conflicts = []
@@ -389,6 +412,9 @@ async def sync_artist_aliases(
     if row is None:
         raise ValueError("Artist not found")
     artist_name, local_raw = str(row[1]), row[2]
+    # Captured before any network call: the decision below is only valid for
+    # the identity this row had when the lookup started.
+    identity = (str(row[1]), row[2], int(row[3] or 0))
     local_mbid = _mbid(local_raw) if local_raw else None
     if local_raw and not local_mbid:
         return {"status": "invalid_mbid", "added": [], "aliases": fetch_aliases(db, artist_id)}
@@ -469,6 +495,7 @@ async def sync_artist_aliases(
             db, artist_id, artist_name, mbid, record,
             known_mbid=(mbid == local_mbid), query_alias=query_alias,
             evidence_method=evidence_method, evidence_albums=evidence_albums,
+            expected_identity=identity,
         )
     finally:
         if own_client:

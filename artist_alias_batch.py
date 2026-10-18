@@ -37,6 +37,10 @@ MAX_FINAL_REFRESH_PASSES = 150
 _RETRY_STATUSES = (
     "not_found", "ambiguous", "identity_mismatch", "invalid_mbid",
     "unavailable", "error",
+    # The row changed identity while the remote lookup was in flight, so no
+    # evidence was committed. The next attempt starts from the current
+    # identity, which makes it retryable without weakening review.
+    "identity_changed",
 )
 # needs_review is deliberately not retryable. It needs a human identity choice.
 
