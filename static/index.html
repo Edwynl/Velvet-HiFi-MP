@@ -6956,15 +6956,37 @@ function isNativeZone() {
 
 async function stopCurrentOutput() {
   if (isCastZone()) {
-    // The server runs Stop after any cast in progress (and cancels waiting
-    // ones), so a slow renderer does not hold up switching outputs.
-    await api(`/cast/control/${state.castDevice.udn}/Stop`, { method: 'POST', timeoutResult: null });
+    // Not awaited: the server runs Stop after any cast in progress (and
+    // cancels waiting ones), so a slow renderer never holds up switching
+    // outputs. Its answer only reports a renderer that may still play.
+    // Requests to this renderer made after leaving wait for that answer
+    // (castStopSettled), so a quick return can never be overtaken by it.
+    const device = state.castDevice;
     stopCastPolling();
+    const stop = api(`/cast/control/${device.udn}/Stop`,
+      { method: 'POST', timeoutMs: CAST_TIMING.requestTimeoutMs, timeoutResult: null })
+      .then(res => {
+        if (!res?.success) showToast(`${device.name} did not confirm Stop; it may still be playing`);
+      })
+      .finally(() => {
+        const pending = state.castStopPending[device.udn];
+        pending?.delete(stop);
+        if (pending && !pending.size) delete state.castStopPending[device.udn];
+      });
+    (state.castStopPending[device.udn] ||= new Set()).add(stop);
   } else if (isNativeZone()) {
     await api('/playback/stop', { method: 'POST' });
   } else {
     markExpectedBrowserPause();
     audio.pause();
+  }
+}
+
+// Resolves once every Stop sent to this renderer so far has been answered.
+async function castStopSettled(device) {
+  let pending;
+  while ((pending = state.castStopPending[device.udn]) && pending.size) {
+    await Promise.allSettled([...pending]);
   }
 }
 
@@ -7006,6 +7028,14 @@ async function activateZone(zone, transferPlayback = true) {
   state.castDsp = null;
   state.castStartOffset = 0;
   state.castPosition = 0;
+  // A late Play/Pause answer from the previous zone must not touch this one.
+  state.castControlSeq = (state.castControlSeq || 0) + 1;
+  state.castControlPending = null;
+  // A new zone session, even on the renderer just left: older cast and
+  // status answers belong to the previous session.
+  state.zoneEpoch = (state.zoneEpoch || 0) + 1;
+  state.castConfirmedTrackId = null;
+  state.castPending = false;
   restoreZoneDspSelection();
   updatePlayerUI(state.currentTrack || {});
   updatePlayBtnUI();
@@ -7850,6 +7880,11 @@ const state = {
   castPosition: 0, // track position on the renderer (offset included)
   castSeq: 0, // the newest castTo request; older answers are dropped
   castPending: false, // the newest castTo request has not answered yet
+  castControlSeq: 0, // the newest Play/Pause request; older answers are ignored
+  castControlPending: null, // 'Play' | 'Pause' while that request is unanswered
+  zoneEpoch: 0, // bumped on every output-zone change
+  castStopPending: {}, // udn -> Set of the unanswered Stops sent when leaving it
+  castConfirmedTrackId: null, // the track whose cast the renderer last acknowledged
   isComposing: false,
   mobilePlayerDismissed: false,
 };
@@ -8610,12 +8645,43 @@ async function playTrack(track, queue, idx) {
   // Mobile player auto-open is handled above for first-touch playback only.
 }
 
+// Take the play/pause state from the renderer itself (after a failed or
+// overtaken control or cast), unless a newer Play/Pause is still unanswered.
+async function refreshCastTransport(device) {
+  const isCurrent = castStatusGuard();
+  const status = await api(`/cast/status/${device.udn}`);
+  if (!status || !isCurrent() || !isCastZone() || state.castDevice?.udn !== device.udn) return;
+  if (status.state === 'PLAYING') state.playing = true;
+  else if (['PAUSED_PLAYBACK', 'STOPPED', 'NO_MEDIA_PRESENT'].includes(status.state)) state.playing = false;
+  updatePlayBtnUI();
+}
+
+// A renderer status snapshot may update the player only if, from request to
+// answer, nothing newer happened: same zone session, same confirmed cast and
+// track, and no Play/Pause sent or still unanswered. Returns that check.
+function castStatusGuard() {
+  const epoch = state.zoneEpoch;
+  const castSeq = state.castSeq;
+  const trackId = state.currentTrack?.id;
+  const controlSeq = state.castControlSeq;
+  return () => epoch === state.zoneEpoch && castSeq === state.castSeq
+    && trackId === state.currentTrack?.id && controlSeq === state.castControlSeq
+    && !state.castPending && !state.castControlPending
+    && state.castConfirmedTrackId === trackId;
+}
+
 function startCastPolling() {
   stopCastPolling();
   state.castPollId = setInterval(async () => {
     if (!state.castDevice) return stopCastPolling();
+    // While a cast is unanswered the renderer may still report the previous
+    // stream (e.g. track A ending after B was chosen): never let that drive
+    // position, play state or auto-next. Poll again once the cast is confirmed.
+    const isCurrent = castStatusGuard();
+    if (!isCurrent()) return;
     try {
       const status = await api(`/cast/status/${state.castDevice.udn}`);
+      if (!status || !isCurrent()) return;
       if (status.state === 'PLAYING') {
         state.playing = true;
       } else if (status.state === 'PAUSED_PLAYBACK') {
@@ -8664,15 +8730,19 @@ async function castTo(track, device, { startSeconds = 0, recast = false } = {}) 
   const castSeq = (state.castSeq || 0) + 1;
   state.castSeq = castSeq;
   state.castPending = true;
-  const isStale = () => castSeq !== state.castSeq || !isCastZone()
+  const epoch = state.zoneEpoch;
+  const isStale = () => castSeq !== state.castSeq || epoch !== state.zoneEpoch || !isCastZone()
     || state.castDevice?.udn !== device.udn || state.currentTrack?.id !== track.id;
   const requestId = `${Date.now().toString(36)}-${castSeq}`;
+  const controlSeqAtSend = state.castControlSeq || 0;
   showToast(`Casting to ${device.name}...`);
   try {
     // The server hands the renderer its own ticketed URL for this track:
     // the direct source, or its DSP transcode when this zone's preset or a
     // ReplayGain gain is active.
     const dspProfile = state.dspProfiles.find(profile => String(profile.id) === String(state.dspProfile));
+    await castStopSettled(device);
+    if (isStale()) return;
     // A cast waits for the renderer's earlier casts and its own SOAP calls,
     // so it gets a longer limit than other requests.
     let res = await api(`/cast/${device.udn}`, {
@@ -8695,7 +8765,7 @@ async function castTo(track, device, { startSeconds = 0, recast = false } = {}) 
       res = await awaitCastResult(device, requestId, isStale);
     }
     if (isStale() || res?.superseded) return;
-    applyCastResult(res, { device, dspProfile, startSeconds });
+    applyCastResult(res, { track, device, dspProfile, startSeconds, controlSeqAtSend });
   } catch (e) {
     if (!isStale()) showToast(`Error: ${e.message}`);
   } finally {
@@ -8717,7 +8787,7 @@ async function awaitCastResult(device, requestId, isStale) {
   return null;
 }
 
-function applyCastResult(res, { device, dspProfile, startSeconds }) {
+function applyCastResult(res, { track, device, dspProfile, startSeconds, controlSeqAtSend = 0 }) {
   // "play_failed": the renderer holds the new stream but refused Play.
   if (!res || !(res.success || res.transport === 'play_failed')) {
     // Nothing confirmed: keep the last confirmed state (Signal Path unchanged).
@@ -8732,12 +8802,20 @@ function applyCastResult(res, { device, dspProfile, startSeconds }) {
     replaygain: res.replaygain || null,
     transport: res.transport || null,
   } : null;
+  // The renderer has acknowledged this track's stream: status answers may
+  // describe it from now on.
+  state.castConfirmedTrackId = track?.id ?? null;
   state.castStartOffset = Number(res.start_offset) || 0;
   // A direct stream that could not seek restarts from the beginning.
   const resumed = startSeconds > 0 && (state.castStartOffset > 0 || res.position_restored !== false);
   state.castPosition = resumed ? startSeconds : 0;
-  state.playing = res.transport === 'playing';
-  updatePlayBtnUI();
+  if ((state.castControlSeq || 0) === controlSeqAtSend) {
+    state.playing = res.transport === 'playing';
+    updatePlayBtnUI();
+  } else {
+    // A Play/Pause sent after this cast ran after it on the renderer.
+    refreshCastTransport(device);
+  }
   let dspNote = '';
   if (res.dsp?.status === 'applied') dspNote = ` · DSP ${dspProfile?.name || ''}`.trimEnd();
   if (res.dsp?.status === 'bypassed') dspNote = ' · DSP bypassed (no active processing)';
@@ -9017,16 +9095,41 @@ const togglePlayAction = async () => {
   if (!state.currentTrack) return;
 
   if (isCastZone()) {
-    const action = state.playing ? 'Pause' : 'Play';
-    // Ordered after any cast still running for this renderer.
-    const res = await api(`/cast/control/${state.castDevice.udn}/${action}`,
-      { method: 'POST', timeoutMs: CAST_TIMING.requestTimeoutMs });
-    if (res?.success) {
-      state.playing = !state.playing;
-      updatePlayBtnUI();
-    } else {
-      showToast(`${state.castDevice?.name || 'Renderer'} did not accept ${action}`);
+    const device = state.castDevice;
+    // Toggle what the user last asked for: a second click while a Pause is
+    // unanswered asks for Play, never a second Pause.
+    const wantsPlaying = state.castControlPending ? state.castControlPending === 'Play' : state.playing;
+    const action = wantsPlaying ? 'Pause' : 'Play';
+    const controlSeq = (state.castControlSeq || 0) + 1;
+    state.castControlSeq = controlSeq;
+    state.castControlPending = action;
+    const castSeqAtSend = state.castSeq;
+    const epoch = state.zoneEpoch;
+    const overtaken = () => controlSeq !== state.castControlSeq || epoch !== state.zoneEpoch
+      || !isCastZone() || state.castDevice?.udn !== device.udn;
+    await castStopSettled(device);
+    if (overtaken()) {
+      // Never send a Play/Pause the user can no longer mean.
+      if (controlSeq === state.castControlSeq) state.castControlPending = null;
+      return;
     }
+    // Ordered after any cast still running for this renderer.
+    const res = await api(`/cast/control/${device.udn}/${action}`,
+      { method: 'POST', timeoutMs: CAST_TIMING.requestTimeoutMs });
+    if (overtaken()) {
+      return; // a newer control or another zone owns the player state now
+    }
+    state.castControlPending = null;
+    if (res?.success && state.castSeq === castSeqAtSend) {
+      // Apply the acknowledged action itself, not a flip of whatever is current.
+      state.playing = action === 'Play';
+      updatePlayBtnUI();
+      return;
+    }
+    // Failed, or a cast was sent meanwhile and its answer may say otherwise:
+    // ask the renderer what it is doing.
+    if (!res?.success) showToast(`${device.name} did not accept ${action}`);
+    refreshCastTransport(device);
     return;
   }
 
