@@ -862,24 +862,37 @@ async def cast_to_device(device_udn: str, request: Request):
 
     generation = _supersede_casts(device_udn)
     _register_cast_request(device_udn, request_id)
-    prepared = concurrent.futures.Future()  # the resolved stream, set below
+    # The resolved stream, set below. A newer cast or Stop cancels it, which
+    # wakes this cast's job at once if it is already waiting for it, so a
+    # superseded lookup never holds the renderer's queue.
+    prepared = concurrent.futures.Future()
+    with _cast_state_lock:
+        _cast_preparing.setdefault(device_udn, {})[generation] = prepared
 
     def superseded():
         with _cast_state_lock:
             return _cast_generations.get(device_udn) != generation
 
     def job():
-        if superseded():
-            return {"success": False, "superseded": True}  # a newer cast or Stop arrived
         try:
-            stream = prepared.result(timeout=CAST_PREPARE_TIMEOUT_SECONDS)
-        except concurrent.futures.CancelledError:
-            return {"success": False, "cancelled": True}
-        except concurrent.futures.TimeoutError:
-            return {"success": False, "error": "Timed out resolving the stream"}
-        if superseded():
-            return {"success": False, "superseded": True}
-        return _cast_now(device_udn, stream, start, recast)
+            if superseded():
+                return {"success": False, "superseded": True}  # a newer cast or Stop arrived
+            try:
+                stream = prepared.result(timeout=CAST_PREPARE_TIMEOUT_SECONDS)
+            except concurrent.futures.CancelledError:
+                if superseded():
+                    return {"success": False, "superseded": True}
+                return {"success": False, "cancelled": True}
+            except concurrent.futures.TimeoutError:
+                return {"success": False, "error": "Timed out resolving the stream"}
+            if superseded():
+                return {"success": False, "superseded": True}
+            return _cast_now(device_udn, stream, start, recast)
+        finally:
+            with _cast_state_lock:
+                pending = _cast_preparing.get(device_udn, {})
+                if pending.get(generation) is prepared:
+                    del pending[generation]
 
     # Queued on arrival, before the stream is resolved: a Play/Pause sent
     # after this cast always runs after it, so a slow lookup cannot let an
@@ -890,19 +903,30 @@ async def cast_to_device(device_udn: str, request: Request):
     try:
         stream = await asyncio.to_thread(_resolve_cast_stream, track_id, requested_dsp, start, replaygain_mode)
     except HTTPException as exc:
-        prepared.set_exception(exc)
+        _settle(prepared, exception=exc)
         _record_cast_result(device_udn, request_id, {"success": False, "error": exc.detail})
         raise
     except Exception as exc:
-        prepared.set_exception(exc)
+        _settle(prepared, exception=exc)
         _record_cast_result(device_udn, request_id, {"success": False, "error": "Cast failed"})
         raise
     except BaseException:  # cancelled while resolving
         prepared.cancel()
         _record_cast_result(device_udn, request_id, {"success": False, "cancelled": True})
         raise
-    prepared.set_result(stream)
+    _settle(prepared, result=stream)
     return await asyncio.wrap_future(future)
+
+
+def _settle(future: concurrent.futures.Future, result=None, exception=None) -> None:
+    """Complete a cast's `prepared` future unless a newer cast or Stop cancelled it."""
+    try:
+        if exception is not None:
+            future.set_exception(exception)
+        else:
+            future.set_result(result)
+    except concurrent.futures.InvalidStateError:
+        pass  # superseded: the job has already returned
 
 
 def _resolve_cast_stream(track_id, requested_dsp, start, replaygain_mode) -> dict:
@@ -1032,6 +1056,7 @@ class _RendererDispatcher:
 _cast_state_lock = threading.Lock()
 _cast_dispatchers: dict[str, _RendererDispatcher] = {}
 _cast_generations: dict[str, int] = {}  # bumped by each cast and Stop
+_cast_preparing: dict[str, dict[int, concurrent.futures.Future]] = {}  # generation -> unresolved stream
 _cast_user_paused: dict[str, bool] = {}  # last Play/Pause not yet honoured by a cast
 _cast_results: dict[str, dict[str, dict | None]] = {}  # request_id -> response (None: pending)
 _CAST_RESULTS_KEPT = 16
@@ -1046,9 +1071,16 @@ def _renderer_dispatcher(device_udn: str) -> _RendererDispatcher:
 
 
 def _supersede_casts(device_udn: str) -> int:
-    """A new cast or Stop: every cast queued before it is skipped."""
+    """A new cast or Stop: every cast queued before it is skipped.
+
+    Casts still resolving their stream are woken (their `prepared` future
+    is cancelled) so they leave the queue at once; one already sending SOAP
+    keeps the renderer until it finishes.
+    """
     with _cast_state_lock:
         generation = _cast_generations[device_udn] = _cast_generations.get(device_udn, 0) + 1
+        for prepared in _cast_preparing.pop(device_udn, {}).values():
+            prepared.cancel()
         return generation
 
 

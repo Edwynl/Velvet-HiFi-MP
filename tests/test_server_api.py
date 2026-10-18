@@ -955,14 +955,17 @@ class ServerApiTests(unittest.TestCase):
         self.assertEqual(retry["transport"], "loaded")
         self.assertNotIn("renderer-rg", server._cast_user_paused, "honoured by the confirmed cast")
 
-    def _slow_resolve(self):
-        """Patch stream resolution to wait until `release` is set."""
+    def _slow_resolve(self, first_only=False):
+        """Patch stream resolution to wait until `release` is set (only the first call if `first_only`)."""
         release, entered = threading.Event(), threading.Event()
         original = server._resolve_cast_stream
+        calls = []
 
         def resolve(*args):
-            entered.set()
-            self.assertTrue(release.wait(10))
+            calls.append(args)
+            if not first_only or len(calls) == 1:
+                entered.set()
+                self.assertTrue(release.wait(10))
             return original(*args)
 
         return patch.object(server, "_resolve_cast_stream", side_effect=resolve), release, entered
@@ -1019,6 +1022,58 @@ class ServerApiTests(unittest.TestCase):
         self.assertEqual(log, [("cast", False), ("control", "Play")])
         self.assertEqual(results["cast"]["transport"], "loaded")
         self.assertFalse(server._cast_user_paused["renderer-slow"])
+
+    def _supersede_a_resolving_cast(self, path, body):
+        """Cast A blocks in stream resolution; `path` is sent and must not wait for A."""
+        self._allow_music_root()
+        log, results = [], {}
+        resolve_patch, release, entered = self._slow_resolve(first_only=True)
+        sent = threading.Event()
+
+        def fake_cast(udn, url, meta, play=True):
+            log.append(("cast", "dsp=" in url, play))
+            sent.set()
+            return "playing"
+
+        def fake_control(udn, action):
+            log.append(("control", action))
+            sent.set()
+            return True
+
+        def post(name, url, json_body=None):
+            results[name] = self.client.post(url, json=json_body).json()
+
+        with resolve_patch, \
+                patch.object(upnp_server, "cast_track", side_effect=fake_cast), \
+                patch.object(upnp_server, "cast_control", side_effect=fake_control), \
+                patch.object(upnp_server, "get_transport_info", return_value="PLAYING"), \
+                patch.object(upnp_server, "seek", return_value=True):
+            a = threading.Thread(target=post, args=("a", "/api/cast/renderer-sup", {"track_id": 1}))
+            a.start()
+            self.assertTrue(entered.wait(10))  # A holds the queue, waiting for its stream
+            b = threading.Thread(target=post, args=("b", path, body))
+            b.start()
+            # B reaches SOAP while A's lookup is still blocked.
+            self.assertTrue(sent.wait(5), "the newer request waited for the superseded lookup")
+            b.join(10)
+            self.assertTrue(a.is_alive(), "A's lookup is still blocked")
+            release.set()
+            a.join(10)
+        return log, results
+
+    def test_stop_is_not_held_up_by_a_superseded_cast_still_resolving(self):
+        log, results = self._supersede_a_resolving_cast("/api/cast/control/renderer-sup/Stop", None)
+        self.assertEqual(log, [("control", "Stop")])  # and A never plays afterwards
+        self.assertTrue(results["b"]["success"])
+        self.assertEqual(results["a"], {"success": False, "superseded": True})
+
+    def test_a_newer_cast_is_not_held_up_by_an_older_one_still_resolving(self):
+        profile_id = self._hot_profile_at_44k()
+        log, results = self._supersede_a_resolving_cast(
+            "/api/cast/renderer-sup", {"track_id": 1, "dsp_profile_id": profile_id})
+        self.assertEqual(log, [("cast", True, True)])
+        self.assertTrue(results["b"]["success"])
+        self.assertEqual(results["a"], {"success": False, "superseded": True})
 
     def test_a_cast_that_fails_or_is_cancelled_while_resolving_is_recorded(self):
         self._allow_music_root()

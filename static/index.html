@@ -6734,9 +6734,11 @@ async function stopCurrentOutput() {
         if (!res?.success) showToast(`${device.name} did not confirm Stop; it may still be playing`);
       })
       .finally(() => {
-        if (state.castStopPending[device.udn] === stop) delete state.castStopPending[device.udn];
+        const pending = state.castStopPending[device.udn];
+        pending?.delete(stop);
+        if (pending && !pending.size) delete state.castStopPending[device.udn];
       });
-    state.castStopPending[device.udn] = stop;
+    (state.castStopPending[device.udn] ||= new Set()).add(stop);
   } else if (isNativeZone()) {
     await api('/playback/stop', { method: 'POST' });
   } else {
@@ -6745,9 +6747,12 @@ async function stopCurrentOutput() {
   }
 }
 
-// Resolves once the last Stop sent to this renderer has been answered.
-function castStopSettled(device) {
-  return state.castStopPending[device.udn] || Promise.resolve();
+// Resolves once every Stop sent to this renderer so far has been answered.
+async function castStopSettled(device) {
+  let pending;
+  while ((pending = state.castStopPending[device.udn]) && pending.size) {
+    await Promise.allSettled([...pending]);
+  }
 }
 
 async function activateZone(zone, transferPlayback = true) {
@@ -7640,7 +7645,7 @@ const state = {
   castControlSeq: 0, // the newest Play/Pause request; older answers are ignored
   castControlPending: null, // 'Play' | 'Pause' while that request is unanswered
   zoneEpoch: 0, // bumped on every output-zone change
-  castStopPending: {}, // udn -> the unanswered Stop sent when leaving it
+  castStopPending: {}, // udn -> Set of the unanswered Stops sent when leaving it
   isComposing: false,
   mobilePlayerDismissed: false,
 };
@@ -8418,9 +8423,14 @@ function startCastPolling() {
   state.castPollId = setInterval(async () => {
     if (!state.castDevice) return stopCastPolling();
     const epoch = state.zoneEpoch;
+    const castSeq = state.castSeq;
+    const trackId = state.currentTrack?.id;
     try {
       const status = await api(`/cast/status/${state.castDevice.udn}`);
-      if (!status || epoch !== state.zoneEpoch) return; // answer for a previous zone session
+      // An answer asked for before a zone change or another cast (track)
+      // describes that earlier stream, not the current one.
+      if (!status || epoch !== state.zoneEpoch || castSeq !== state.castSeq
+          || trackId !== state.currentTrack?.id) return;
       if (status.state === 'PLAYING') {
         state.playing = true;
       } else if (status.state === 'PAUSED_PLAYBACK') {
@@ -8841,12 +8851,18 @@ const togglePlayAction = async () => {
     state.castControlPending = action;
     const castSeqAtSend = state.castSeq;
     const epoch = state.zoneEpoch;
+    const overtaken = () => controlSeq !== state.castControlSeq || epoch !== state.zoneEpoch
+      || !isCastZone() || state.castDevice?.udn !== device.udn;
     await castStopSettled(device);
+    if (overtaken()) {
+      // Never send a Play/Pause the user can no longer mean.
+      if (controlSeq === state.castControlSeq) state.castControlPending = null;
+      return;
+    }
     // Ordered after any cast still running for this renderer.
     const res = await api(`/cast/control/${device.udn}/${action}`,
       { method: 'POST', timeoutMs: CAST_TIMING.requestTimeoutMs });
-    if (controlSeq !== state.castControlSeq || epoch !== state.zoneEpoch
-        || !isCastZone() || state.castDevice?.udn !== device.udn) {
+    if (overtaken()) {
       return; // a newer control or another zone owns the player state now
     }
     state.castControlPending = null;

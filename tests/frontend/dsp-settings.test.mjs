@@ -48,7 +48,8 @@ function createHarness() {
   const requests = [];
   const castControl = { paused: false, seekOk: true, replaygainDb: -7.1, hold: false, held: [],
     fail: false, controlFail: false, payloads: {}, serverResults: {},
-    holdControls: false, heldControls: [], transportState: 'PLAYING' };
+    holdControls: false, heldControls: [], transportState: 'PLAYING',
+    statusPosition: 5, holdStatus: false, heldStatus: [] };
   const dspProfiles = [
     {
       id: 2,
@@ -253,8 +254,10 @@ function createHarness() {
     }
 
     if (parsedUrl.pathname.startsWith('/api/cast/status/') && method === 'GET') {
-      return makeJsonResponse({ state: castControl.transportState, position: 5, duration: 120,
-        is_playing: castControl.transportState === 'PLAYING' });
+      const status = makeJsonResponse({ state: castControl.transportState, position: castControl.statusPosition,
+        duration: 120, is_playing: castControl.transportState === 'PLAYING' });
+      if (!castControl.holdStatus) return status;
+      return new Promise(resolve => castControl.heldStatus.push(() => resolve(status)));
     }
 
     // Mirrors server.cast_to_device: an active preset or a ReplayGain gain
@@ -783,8 +786,8 @@ async function main() {
     assert.equal(dom.window.eval('state.playing'), true);
     castControl.controlFail = false;
 
-    // Two quick clicks ask for Pause then Play, never Pause twice; only the
-    // newest answer sets the player state.
+    // Two quick clicks: the second asks for Play (never a second Pause), and
+    // the first, overtaken before it was sent, is not sent at all.
     const controlsSince = before => harness.requests.slice(before)
       .filter(request => request.path.startsWith('/api/cast/control/')).map(request => request.path.split('/').at(-1));
     castControl.holdControls = true;
@@ -792,8 +795,9 @@ async function main() {
     dom.window.eval('stopCastPolling(); state.playing = true;');
     requestsBefore = harness.requests.length;
     dom.window.eval('togglePlayAction(); togglePlayAction();');
-    await waitFor(() => castControl.heldControls.length === 2);
-    assert.deepEqual(controlsSince(requestsBefore), ['Pause', 'Play']);
+    await waitFor(() => castControl.heldControls.length === 1);
+    await tick();
+    assert.deepEqual(controlsSince(requestsBefore), ['Play']);
     castControl.heldControls.forEach(release => release());
     await waitFor(() => dom.window.eval('state.castControlPending') === null);
     assert.equal(dom.window.eval('state.playing'), true);
@@ -879,6 +883,83 @@ async function main() {
     castControl.held[1]();
     await waitFor(() => dom.window.eval('state.castDsp') !== null);
     dom.window.eval('stopCastPolling();');
+    await dom.window.activateZone(browserZone, false);
+
+    const enterRenderer = async () => {
+      await dom.window.activateZone(renderer, false);
+      dom.window.eval("stopCastPolling(); state.currentTrack = { id: 1, title: 'Cast Track', duration: 180 };");
+    };
+    const releaseControls = async () => {
+      while (castControl.heldControls.length) {
+        castControl.heldControls.shift()();
+        await tick();
+      }
+    };
+
+    // A Play or Pause that waited for an old Stop is never sent once the
+    // user has left the renderer again.
+    for (const playing of [false, true]) {
+      await enterRenderer();
+      castControl.holdControls = true;
+      castControl.heldControls = [];
+      await dom.window.activateZone(browserZone, false); // Stop 1, unanswered
+      await enterRenderer();
+      dom.window.eval(`state.playing = ${playing}; togglePlayAction();`); // waits for Stop 1
+      await tick();
+      requestsBefore = harness.requests.length;
+      await dom.window.activateZone(browserZone, false); // Stop 2
+      await releaseControls();
+      await tick();
+      assert.deepEqual(controlsSince(requestsBefore), ['Stop'],
+        `${playing ? 'Pause' : 'Play'} must not reach the renderer after leaving it`);
+    }
+    castControl.holdControls = false;
+
+    // Two Stops answered out of order: a new cast waits for both.
+    await enterRenderer();
+    castControl.holdControls = true;
+    castControl.heldControls = [];
+    await dom.window.activateZone(browserZone, false); // Stop 1
+    await enterRenderer();
+    await dom.window.activateZone(browserZone, false); // Stop 2
+    await enterRenderer();
+    assert.equal(castControl.heldControls.length, 2);
+    const postsBeforeStops = castPosts();
+    dom.window.eval('castTo(state.currentTrack, state.castDevice)');
+    castControl.heldControls[1](); // Stop 2 answers first
+    await tick();
+    assert.equal(castPosts(), postsBeforeStops, 'still waiting for Stop 1');
+    castControl.heldControls[0]();
+    await waitFor(() => castPosts() === postsBeforeStops + 1);
+    castControl.holdControls = false;
+    castControl.heldControls = [];
+    await waitFor(() => dom.window.eval('state.castDsp') !== null);
+
+    // A status answer asked for during track 1 arrives after track 2 started:
+    // it must not move track 2's position or skip to the next track.
+    dom.window.eval('window.__playNextCalls = 0; window.__originalPlayNext = playNext;'
+      + ' playNext = () => { window.__playNextCalls += 1; };');
+    castControl.holdStatus = true;
+    castControl.heldStatus = [];
+    castControl.transportState = 'STOPPED';
+    castControl.statusPosition = 119; // "track 1 just ended"
+    dom.window.eval('startCastPolling();');
+    await waitFor(() => castControl.heldStatus.length === 1, { timeoutMs: 4000 });
+    dom.window.eval("state.currentTrack = { id: 2, title: 'Next Track', duration: 200 };"
+      + ' castTo(state.currentTrack, state.castDevice);');
+    await waitFor(() => dom.window.eval('state.castPending') === false);
+    const playingOnTrack2 = dom.window.eval('state.playing');
+    castControl.heldStatus[0]();
+    await tick();
+    assert.equal(dom.window.eval('window.__playNextCalls'), 0, 'old status must not skip track 2');
+    assert.equal(dom.window.eval('state.castPosition'), 0, 'old status must not move track 2');
+    assert.equal(dom.window.eval('state.playing'), playingOnTrack2);
+    dom.window.eval('stopCastPolling(); playNext = window.__originalPlayNext;');
+    castControl.holdStatus = false;
+    castControl.heldStatus.forEach(release => release());
+    castControl.heldStatus = [];
+    castControl.transportState = 'PLAYING';
+    castControl.statusPosition = 5;
     await dom.window.activateZone(browserZone, false);
     dom.window.eval('stopCastPolling(); state.currentTrack = null;');
     dom.window.setReplayGainMode('off');
