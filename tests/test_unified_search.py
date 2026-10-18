@@ -121,6 +121,57 @@ class UnifiedLibrarySearchTests(unittest.TestCase):
     def test_search_result_page_sizes_are_bounded(self):
         self.assertEqual(len(self.search("徐", artist_limit=1, album_limit=1)["artists"]), 1)
 
+    def _add_lee_catalog(self):
+        # Alphabetically "Brenda Lee" and "Christopher Lee" sort before "Lee".
+        for artist_id, name in ((2, "Brenda Lee"), (3, "Christopher Lee"), (4, "Lee"),
+                                (5, "Lee Ritenour")):
+            self.db.execute("INSERT INTO artists(id,name,sort_name) VALUES(?,?,?)",
+                            (artist_id, name, name))
+        for album_id, artist_id, title in ((2, 2, "A Lee Album"), (3, 3, "Lee"),
+                                           (4, 5, "Lee Sessions")):
+            self.db.execute("INSERT INTO albums(id,artist_id,title) VALUES(?,?,?)",
+                            (album_id, artist_id, title))
+        self.db.commit()
+        refresh_track_search_index(self.db)
+        self.db.commit()
+
+    def test_catalog_results_rank_exact_then_prefix_before_alphabetical(self):
+        self._add_lee_catalog()
+        result = self.search("lee")
+        self.assertEqual([a["name"] for a in result["artists"]],
+                         ["Lee", "Lee Ritenour", "Brenda Lee", "Christopher Lee"])
+        # Exact title first, then a title starting with the query, then a
+        # title that only contains it.
+        self.assertEqual([a["title"] for a in result["albums"]],
+                         ["Lee", "Lee Sessions", "A Lee Album"])
+        self.assertEqual(result["total_artists"], 4)
+
+    def test_catalog_rank_survives_paging(self):
+        self._add_lee_catalog()
+        names = [
+            search_library_category(
+                self.db, "artists", "lee", 1, offset,
+                get_all_variants, to_simplified, to_traditional,
+            )["items"][0]["name"]
+            for offset in range(4)
+        ]
+        self.assertEqual(names, ["Lee", "Lee Ritenour", "Brenda Lee", "Christopher Lee"])
+
+    def test_global_search_skips_artist_region_facets(self):
+        # Classifying every artist into a region is for the Artists page
+        # filter chips, not for every search keystroke.
+        with patch("library_paging.artist_region_map",
+                   side_effect=AssertionError("region map built for search")):
+            result = self.search("徐佳瑩")
+            page = search_library_category(
+                self.db, "artists", "徐佳瑩", 10, 0,
+                get_all_variants, to_simplified, to_traditional,
+            )
+        self.assertEqual([a["id"] for a in result["artists"]], [1])
+        self.assertEqual(result["total_artists"], 1)
+        self.assertEqual(page["total"], 1)
+        self.assertIsNone(page["items"][0]["region"])
+
     def test_name_only_sync_requires_explicit_mbid_confirmation(self):
         # One identical-name search hit is NOT proof of identity; another
         # artist of the same name may be outside MusicBrainz's first page.
@@ -214,6 +265,17 @@ class UnifiedLibrarySearchTests(unittest.TestCase):
             status = asyncio.run(sync_artist_aliases(self.db, 1, client=fake))
         self.assertEqual(status["status"], "ok")
         self.assertEqual(len(fake.requests), 1)
+
+    def test_resolve_bounds_paced_detail_lookups(self):
+        # Each detailed record is a paced request the user waits for; ten of
+        # them could outlast the client's timeout.
+        hits = [{"id": f"00000000-0000-0000-0000-00000000000{i}", "name": "Other"}
+                for i in range(1, 9)]
+        fake = MockMusicBrainzClient(artists=hits)
+        with patch("artist_alias_sync.asyncio.sleep", _instant_sleep):
+            asyncio.run(resolve_search_alias(self.db, "Lala Hsu", client=fake))
+        details = [url for url, _ in fake.requests if not url.endswith("/artist/")]
+        self.assertEqual(len(details), 5)
 
     def test_unconfirmed_mbid_is_not_identity_evidence(self):
         # Bio enrichment stores the first name-search hit, which may be a

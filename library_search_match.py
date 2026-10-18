@@ -115,21 +115,14 @@ def _substrings(key: str, max_length: int) -> set[str] | None:
     return out
 
 
-_catalog_columns_cache: set[str] | None = None
+def has_column(db: sqlite3.Connection, table: str, column: str) -> bool:
+    """Whether a pre-migration library already has this column.
 
-
-def _catalog_has_genre_key_index(db: sqlite3.Connection) -> bool:
-    """genre_key arrived in migration 13; a pre-migration library lacks it.
-
-    Cached per process: the schema only changes when migrations run, which is
-    before any search.
+    Asked of the given connection every time: the PRAGMA costs microseconds,
+    while a process-wide cache would pin the answer of whichever database was
+    opened first.
     """
-    global _catalog_columns_cache
-    if _catalog_columns_cache is None:
-        _catalog_columns_cache = {
-            row[1] for row in db.execute("PRAGMA table_info(catalog_search_index)")
-        }
-    return "genre_key" in _catalog_columns_cache
+    return any(row[1] == column for row in db.execute(f"PRAGMA table_info({table})"))
 
 
 def normalize_query(query: str) -> tuple[str, str]:
@@ -174,6 +167,26 @@ def rank_order_by(alias: str = "ti") -> str:
 def rank_params(folded: str) -> tuple[str, str, str]:
     """The three parameters consumed by `rank_order_by`."""
     return folded, folded, folded
+
+
+def catalog_rank(query: str, alias: str = "cr") -> tuple[str, tuple[str, ...]]:
+    """ORDER BY fragment and parameters ranking artists or albums by the query.
+
+    Joined `catalog_search_index` row `alias` holds every name key separated by
+    SEP: an exact key (name, title or alias) ranks first, a key that starts
+    with the query next, any other match last. Without it a broad query such as
+    "Lee" listed matches alphabetically, so the exact artist could fall past
+    the first page. A row awaiting refresh has no or stale keys and only loses
+    rank; whether it matches at all is decided by `match_catalog_ids`.
+    """
+    raw, folded = normalize_query(query)
+    keys = f"(char(31) || {alias}.search_text || char(31))"
+    sql = (
+        f"CASE WHEN instr({keys}, ?) > 0 OR instr({keys}, ?) > 0 THEN 0"
+        f" WHEN instr({keys}, ?) > 0 OR instr({keys}, ?) > 0 THEN 1"
+        " ELSE 2 END"
+    )
+    return sql, (SEP + raw + SEP, SEP + folded + SEP, SEP + raw, SEP + folded)
 
 
 def dirty_album_ids_matching(db: sqlite3.Connection, folded: str) -> set[int]:

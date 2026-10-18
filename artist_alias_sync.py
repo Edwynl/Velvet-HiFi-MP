@@ -20,6 +20,10 @@ from chinese_variants import search_fold
 _MUSICBRAINZ = "https://musicbrainz.org/ws/2/artist"
 _HEADERS = {"User-Agent": "VelvetHiFi/3.0 (https://github.com/Edwynl/Velvet-HiFi-MP)"}
 _MAX_CANDIDATES = 10
+# Each detailed record is a separate, paced (>=1.1s) MusicBrainz request made
+# while the user waits. Search results arrive best-scored first, so a few
+# lookups keep the click well inside the client's timeout.
+_MAX_RESOLVE_LOOKUPS = 5
 
 
 def _romanized_sort_name(name: str) -> str:
@@ -43,9 +47,13 @@ def _identity_names(data: dict) -> list[str]:
     return [name.strip() for name in names if isinstance(name, str) and name.strip()]
 
 
+def _identity_keys(data: dict) -> set[str]:
+    """Folded identity names, computed once per record."""
+    return {key for key in map(search_fold, _identity_names(data)) if key}
+
+
 def _is_verified(data: dict, candidate_name: str) -> bool:
-    value = search_fold(candidate_name)
-    return bool(value and any(search_fold(name) == value for name in _identity_names(data)))
+    return search_fold(candidate_name) in _identity_keys(data)
 
 
 def _mbid(value: object) -> str | None:
@@ -268,23 +276,28 @@ async def resolve_search_alias(
 
         # Only a user-confirmed MBID can rule a local artist in or out; an
         # unconfirmed one may be a namesake's ID from name-only enrichment.
-        locals_ = db.execute(
+        # Fold every local name once, not once per candidate record.
+        locals_ = []
+        for artist_id, local_name, local_raw in db.execute(
             "SELECT id,name,CASE WHEN mbid_verified THEN mbid END FROM artists"
-        ).fetchall()
+        ):
+            local_key = search_fold(str(local_name))
+            if local_key:
+                local_mbid = _mbid(local_raw) if local_raw else None
+                locals_.append((int(artist_id), str(local_name), local_mbid, local_key))
+        query_key = search_fold(query)
         pairs: dict[tuple[int, str], tuple[str, dict]] = {}
-        for position, (mbid, hit) in enumerate(candidates):
+        for mbid, hit in candidates[:_MAX_RESOLVE_LOOKUPS]:
             await _pace(client, first=False)
             record = await _detailed(client, mbid)
-            if _mbid(record.get("id")) != mbid or not _is_verified(record, query):
+            identity = _identity_keys(record)
+            if _mbid(record.get("id")) != mbid or query_key not in identity:
                 continue
-            for row in locals_:
-                artist_id, local_name, local_raw = int(row[0]), str(row[1]), row[2]
-                local_mbid = _mbid(local_raw) if local_raw else None
+            for artist_id, local_name, local_mbid, local_key in locals_:
                 if local_mbid and local_mbid != mbid:
                     continue
-                if not _is_verified(record, local_name):
-                    continue
-                pairs[(artist_id, mbid)] = (local_name, record)
+                if local_key in identity:
+                    pairs[(artist_id, mbid)] = (local_name, record)
 
         if not pairs:
             return {"status": "not_in_library"}

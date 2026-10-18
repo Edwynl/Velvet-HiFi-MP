@@ -102,7 +102,8 @@ def search_tracks_page(
     dirty-index matching use the same OpenCC contract as other categories.
     """
     from library_search_match import (
-        ids_json, match_track_ids, normalize_query, rank_order_by, rank_params,
+        has_column, ids_json, match_track_ids, normalize_query, rank_order_by,
+        rank_params,
     )
 
     q = (q or "").strip()
@@ -114,7 +115,7 @@ def search_tracks_page(
         return {"tracks": [], "total": 0}
 
     _, folded = normalize_query(q)
-    if _has_title_key(db):
+    if has_column(db, "track_search_index", "title_key"):
         rank = rank_order_by("ti")
         join_rank = "LEFT JOIN track_search_index ti ON ti.track_id = t.id"
         rank_args = rank_params(folded)
@@ -130,25 +131,6 @@ def search_tracks_page(
         (ids_json(ids), *rank_args, limit, offset),
     ).fetchall()
     return {"tracks": [dict(row) for row in rows], "total": total}
-
-
-_title_key_available: bool | None = None
-
-
-def _has_title_key(db: sqlite3.Connection) -> bool:
-    """title_key arrived in migration 13; a pre-migration library lacks it.
-
-    Cached per process: the schema only changes when migrations run, which is
-    before any search.
-    """
-    global _title_key_available
-    if _title_key_available is None:
-        try:
-            db.execute("SELECT title_key FROM track_search_index LIMIT 1").fetchone()
-            _title_key_available = True
-        except sqlite3.OperationalError:
-            _title_key_available = False
-    return _title_key_available
 
 
 def search_library(
@@ -177,7 +159,7 @@ def search_library(
     from library_paging import fetch_album_page, fetch_artist_page
 
     artists = fetch_artist_page(
-        db, search=q, limit=artist_limit, offset=0,
+        db, search=q, limit=artist_limit, offset=0, facets=False,
     )
     albums = fetch_album_page(
         db, search=q, limit=album_limit, offset=0,
@@ -216,7 +198,8 @@ def search_library_category(
                 "limit": limit, "offset": offset}
     if kind == "artists":
         from library_paging import fetch_artist_page
-        page = fetch_artist_page(db, search=query, limit=limit, offset=offset)
+        page = fetch_artist_page(db, search=query, limit=limit, offset=offset,
+                                 facets=False)
         items, total = page["artists"], page["total"]
     elif kind == "albums":
         from library_paging import fetch_album_page

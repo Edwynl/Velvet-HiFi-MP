@@ -36,6 +36,23 @@ def album_genre_group(value: str | None) -> str:
     return next((group for group, pattern in rules if re.search(pattern, name)), 'Other')
 
 
+def _search_rank(db: sqlite3.Connection, kind: str, id_sql: str,
+                 q: str) -> tuple[str, str, tuple]:
+    """JOIN, ORDER BY prefix and parameters that put the best matches first.
+
+    Like track search, a search answers the query before the chosen sort; the
+    sort still orders results of equal rank.
+    """
+    from library_search_match import catalog_rank, has_column
+
+    if not q or not has_column(db, "catalog_search_index", "search_text"):
+        return "", "", ()
+    order, args = catalog_rank(q)
+    join = (f" LEFT JOIN catalog_search_index cr"
+            f" ON cr.kind='{kind}' AND cr.entity_id={id_sql}")
+    return join, order + ", ", args
+
+
 def album_catalog_filters(db: sqlite3.Connection) -> dict:
     present = {album_genre_group(row[0]) for row in db.execute('SELECT DISTINCT genre FROM albums')}
     genres = [group for group in ALBUM_GENRE_GROUPS if group in present]
@@ -99,6 +116,7 @@ def fetch_album_page(
     where = (" WHERE " + " AND ".join(parts)) if parts else ""
     from_sql = "FROM albums al JOIN artists ar ON ar.id = al.artist_id"
     total = db.execute(f"SELECT COUNT(*) {from_sql}{where}", args).fetchone()[0]
+    rank_join, rank_order, rank_args = _search_rank(db, "album", "al.id", q)
     page_rows = db.execute(
         f"""
         SELECT al.*, ar.name AS artist_name,
@@ -106,11 +124,11 @@ def fetch_album_page(
                (SELECT MAX(CASE WHEN t.sample_rate > 44100 OR t.bit_depth > 16
                                 THEN 1 ELSE 0 END)
                 FROM tracks t WHERE t.album_id = al.id) AS is_hires
-        {from_sql}{where}
-        ORDER BY {orders.get(sort, orders["title"])}
+        {from_sql}{rank_join}{where}
+        ORDER BY {rank_order}{orders.get(sort, orders["title"])}
         LIMIT ? OFFSET ?
         """,
-        (*args, limit, offset),
+        (*args, *rank_args, limit, offset),
     ).fetchall()
     return {
         "albums": [dict(r) for r in page_rows],
@@ -129,8 +147,14 @@ def fetch_artist_page(
     sort: str = 'name',
     region: str = '',
     get_all_variants: Callable[[str], list[str]] | None = None,
+    facets: bool = True,
 ) -> dict:
-    """Count before slicing; only aggregate credits for the requested artists."""
+    """Count before slicing; only aggregate credits for the requested artists.
+
+    `facets=False` is for global search: it skips classifying every artist in
+    the library into a region (which the Artists page needs for its filter
+    chips) and returns rows without a region.
+    """
     if not 1 <= limit <= 200 or offset < 0:
         raise ValueError("Page size must be 1..200 and offset nonnegative")
     if region and region not in REGION_LABELS:
@@ -142,25 +166,35 @@ def fetch_artist_page(
         from library_search_match import ids_json, match_catalog_ids
         params = [ids_json(match_catalog_ids(db, "artist", q))]
         where = "WHERE ar.id IN (SELECT value FROM json_each(?))"
-    regions = artist_region_map(db)
-    db.create_function('velvet_artist_region', 1, lambda id: regions.get(id, 'unknown'), deterministic=True)
-    counts = dict(db.execute(
-        f'SELECT velvet_artist_region(ar.id), COUNT(*) FROM artists ar {where} GROUP BY 1', params
-    ).fetchall())
-    facets = [{'region': key, 'label': label, 'count': counts.get(key, 0)}
-              for key, label in REGION_LABELS.items()]
-    total = counts.get(region, 0) if region else sum(counts.values())
+    if facets or region:
+        regions = artist_region_map(db)
+        db.create_function('velvet_artist_region', 1, lambda id: regions.get(id, 'unknown'), deterministic=True)
+        counts = dict(db.execute(
+            f'SELECT velvet_artist_region(ar.id), COUNT(*) FROM artists ar {where} GROUP BY 1', params
+        ).fetchall())
+        region_facets = [{'region': key, 'label': label, 'count': counts.get(key, 0)}
+                         for key, label in REGION_LABELS.items()]
+        all_total = sum(counts.values())
+        total = counts.get(region, 0) if region else all_total
+        region_sql = 'velvet_artist_region(ar.id)'
+    else:
+        all_total = total = db.execute(
+            f'SELECT COUNT(*) FROM artists ar {where}', params
+        ).fetchone()[0]
+        region_facets = []
+        region_sql = 'NULL'
     if region:
         where = f'WHERE ({where[6:]}) AND ' if where else 'WHERE '
         where += 'velvet_artist_region(ar.id) = ?'
         params.append(region)
+    rank_join, rank_order, rank_args = _search_rank(db, "artist", "ar.id", q)
     db.create_function('velvet_artist_familiarity', 1, artist_familiarity, deterministic=True)
     order = ('velvet_artist_familiarity(ar.name) DESC, play_count DESC, favorite_count DESC, library_album_count DESC, '
              'ar.sort_name COLLATE NOCASE ASC, ar.id ASC' if sort == 'popular' else
              'ar.sort_name COLLATE NOCASE ASC, ar.id ASC')
     rows = db.execute(
         f"""
-        SELECT ar.*, velvet_artist_region(ar.id) AS region,
+        SELECT ar.*, {region_sql} AS region,
                (SELECT COUNT(*) FROM play_history ph JOIN tracks pt ON pt.id=ph.track_id
                 WHERE pt.artist_id=ar.id) AS play_count,
                (SELECT COUNT(*) FROM albums fa WHERE fa.artist_id=ar.id AND fa.is_favorite=1) AS favorite_count,
@@ -169,14 +203,14 @@ def fetch_artist_page(
                 FROM track_artists ta JOIN tracks t ON ta.track_id=t.id
                 WHERE ta.artist_id=ar.id) AS album_count,
                (SELECT COUNT(*) FROM track_artists ta WHERE ta.artist_id=ar.id) AS track_count
-        FROM artists ar {where}
-        ORDER BY {order}
+        FROM artists ar{rank_join} {where}
+        ORDER BY {rank_order}{order}
         LIMIT ? OFFSET ?
         """,
-        (*params, limit, offset),
+        (*params, *rank_args, limit, offset),
     ).fetchall()
     return {
         "artists": [dict(row) for row in rows],
         "total": total, "limit": limit, "offset": offset,
-        "regions": facets, "all_total": sum(counts.values()),
+        "regions": region_facets, "all_total": all_total,
     }

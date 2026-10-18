@@ -1362,18 +1362,39 @@ def get_artist(artist_id: int):
     result["primary_genre"] = genre["genre"] if genre else None
     return result
 
+def _refresh_alias_search_keys() -> None:
+    """Index the tracks an alias change just queued, after the response.
+
+    Every alias write re-queues all of that artist's tracks, and queued rows
+    are re-folded in Python on every search until something refreshes them.
+    A running scan, duplicate check, album mutation or alias batch refreshes
+    on its own, and committing between their per-file reads and writes would
+    fail them, so this stays out of their way; the queue stays correct.
+    """
+    if (_album_mutation_active or _scan_job.is_running() or _duplicate_job.is_running()
+            or _alias_enrichment_job.state.is_running()):
+        return
+    db = get_db()
+    try:
+        refresh_track_search_index(db)
+        db.commit()
+    except sqlite3.Error:
+        db.rollback()
+        log.exception("Alias search index refresh deferred; queued rows stay searchable")
+    finally:
+        db.close()
+
+
 @app.post("/api/artists/{artist_id}/aliases")
-async def create_artist_alias(artist_id: int, request: Request):
+def create_artist_alias(artist_id: int, body: dict, background_tasks: BackgroundTasks):
     """Add one explicitly confirmed alternate artist name.
 
     No automatic assumptions based on romanization: an English stage name
     needs a verified alias link, not just Traditional/Simplified conversion.
+    A plain `def` so the SQLite work, including the trigger that re-queues
+    every track of the artist, runs on a worker thread, not the event loop.
     """
-    try:
-        body = await request.json()
-    except ValueError:
-        raise HTTPException(422, "Invalid JSON body")
-    name = body.get("name") if isinstance(body, dict) else None
+    name = body.get("name")
     if not isinstance(name, str) or not name.strip() or len(name.strip()) > 128:
         raise HTTPException(422, "Alias must be 1-128 characters")
     name = name.strip()
@@ -1393,6 +1414,8 @@ async def create_artist_alias(artist_id: int, request: Request):
         except sqlite3.IntegrityError:
             db.rollback()
             raise HTTPException(409, "This alias already belongs to another artist")
+        if added:
+            background_tasks.add_task(_refresh_alias_search_keys)
         return {"status": "ok", "added": bool(added),
                 "aliases": fetch_aliases(db, artist_id)}
     finally:
@@ -1454,7 +1477,7 @@ def stop_artist_alias_enrichment():
 
 
 @app.post("/api/artists/{artist_id}/aliases/sync")
-def sync_musicbrainz_artist_aliases(artist_id: int):
+def sync_musicbrainz_artist_aliases(artist_id: int, background_tasks: BackgroundTasks):
     """Opt-in MusicBrainz alias import on a dedicated FastAPI worker thread.
 
     Network awaits never hold a pooled event-loop-thread DB connection while
@@ -1475,13 +1498,16 @@ def sync_musicbrainz_artist_aliases(artist_id: int):
             db.rollback()
             return result
         db.commit()
+        if result.get("added"):
+            background_tasks.add_task(_refresh_alias_search_keys)
         return result
     finally:
         db.close()
 
 
 @app.post("/api/artists/{artist_id}/aliases/confirm")
-def confirm_musicbrainz_artist_identity(artist_id: int, body: dict):
+def confirm_musicbrainz_artist_identity(artist_id: int, body: dict,
+                                        background_tasks: BackgroundTasks):
     """Only an explicit, named user selection may link a name-only MBID.
 
     MusicBrainz detail is re-fetched after confirmation; both the local
@@ -1522,6 +1548,8 @@ def confirm_musicbrainz_artist_identity(artist_id: int, body: dict):
             (artist_id, len(result.get("added") or [])),
         )
         db.commit()
+        if result.get("added"):
+            background_tasks.add_task(_refresh_alias_search_keys)
         return result
     finally:
         db.close()
@@ -1662,6 +1690,7 @@ async def get_artist_details(artist_id: int):
 
 @app.post("/api/search/resolve-artist-alias")
 def resolve_unrecognized_artist_alias(
+    background_tasks: BackgroundTasks,
     q: str = Query(..., min_length=1, max_length=MAX_SEARCH_QUERY_LENGTH),
 ):
     """Opt-in lookup only, never called as part of typing into search."""
@@ -1676,6 +1705,8 @@ def resolve_unrecognized_artist_alias(
             raise HTTPException(502, str(exc))
         if result.get("status") == "ok":
             db.commit()
+            if result.get("added"):
+                background_tasks.add_task(_refresh_alias_search_keys)
         else:
             db.rollback()
         return result

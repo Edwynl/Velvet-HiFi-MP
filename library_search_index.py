@@ -11,7 +11,7 @@ import sqlite3
 from importlib.metadata import version as package_version
 
 from chinese_variants import literal_fold, search_fold
-from library_search_match import indexed_text, _catalog_fields
+from library_search_match import has_column, indexed_text, _catalog_fields
 
 # A changed dictionary, fold algorithm, or on-disk format MUST invalidate keys.
 # 3: terms also carry credited artist and alias names (reverse-match parity).
@@ -83,29 +83,14 @@ def _build_rows(db: sqlite3.Connection, track_ids: list[int]):
     return index_rows, term_rows
 
 
-_catalog_columns_cache: set[str] | None = None
-
-
-def _catalog_has_genre_key(db: sqlite3.Connection) -> bool:
-    """genre_key arrived in migration 13; older libraries still lack it.
-
-    Cached per process: the schema only changes when migrations run, which is
-    before any search.
-    """
-    global _catalog_columns_cache
-    if _catalog_columns_cache is None:
-        _catalog_columns_cache = {
-            row[1] for row in db.execute("PRAGMA table_info(catalog_search_index)")
-        }
-    return "genre_key" in _catalog_columns_cache
-
-
 def _refresh_catalog_indexes(db: sqlite3.Connection, batch_size: int,
                             max_rows: int | None = None) -> None:
     if not db.execute(
         "SELECT 1 FROM sqlite_master WHERE type='table' AND name='catalog_search_dirty'"
     ).fetchone():
         return
+    # genre_key arrived in migration 13; older libraries still lack it.
+    with_genre_key = has_column(db, "catalog_search_index", "genre_key")
     done = 0
     while True:
         if max_rows is not None and done >= max_rows:
@@ -129,7 +114,7 @@ def _refresh_catalog_indexes(db: sqlite3.Connection, batch_size: int,
             fields = _catalog_fields(db, kind, ids)
             rows = [(kind, entity_id, indexed_text(values))
                     for entity_id, values in fields.items()]
-            if _catalog_has_genre_key(db) and kind == "album":
+            if with_genre_key and kind == "album":
                 genres = dict(db.execute(
                     f"SELECT id, genre FROM albums WHERE id IN ({marks})", ids
                 ))

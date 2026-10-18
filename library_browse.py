@@ -113,8 +113,8 @@ def fetch_tracks(
 
     if search:
         from library_search_match import (
-            _catalog_has_genre_key_index,
             dirty_album_ids_matching,
+            has_column,
             ids_json,
             match_track_ids,
             normalize_query,
@@ -123,7 +123,7 @@ def fetch_tracks(
         search_ids = ids_json(match_track_ids(db, search, reverse=True))
         _, folded = normalize_query(search)
         # Genre is folded at index time too, so 摇滚 matches a stored 搖滾.
-        if _catalog_has_genre_key_index(db):
+        if has_column(db, "catalog_search_index", "genre_key"):
             genre_join = (
                 " LEFT JOIN catalog_search_index csi "
                 "ON csi.kind='album' AND csi.entity_id=al.id"
@@ -150,9 +150,7 @@ def fetch_tracks(
             count_params.extend((search_ids, folded))
 
         # Answer the query first; an explicit UI sort still breaks the tie.
-        from library_discovery import _has_title_key
-
-        if _has_title_key(db):
+        if has_column(db, "track_search_index", "title_key"):
             from library_search_match import rank_order_by, rank_params
 
             order_by = rank_order_by("ti") + ", " + order_by

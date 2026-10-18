@@ -280,6 +280,33 @@ class ServerApiTests(unittest.TestCase):
         response = self.client.post("/api/artists/1/aliases", json={"name": "Artist Two"})
         self.assertEqual(response.status_code, 409)
 
+    def test_alias_post_rejects_a_body_that_is_not_an_object(self):
+        for body in (["Stage One"], "Stage One", {"name": 7}):
+            with self.subTest(body=body):
+                response = self.client.post("/api/artists/1/aliases", json=body)
+                self.assertEqual(response.status_code, 422)
+
+    def _queued_search_rows(self):
+        with closing(self._open_connection()) as db:
+            return (db.execute("SELECT COUNT(*) FROM track_search_dirty").fetchone()[0]
+                    + db.execute("SELECT COUNT(*) FROM catalog_search_dirty").fetchone()[0])
+
+    def test_alias_post_indexes_the_tracks_it_queued(self):
+        # Otherwise every later search re-folds all of the artist's tracks.
+        with patch.object(server._scan_job, "is_running", return_value=False):
+            response = self.client.post("/api/artists/1/aliases", json={"name": "Stage One"})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(self._queued_search_rows(), 0)
+        result = self.client.get("/api/search?q=stage%20one").json()
+        self.assertEqual([t["id"] for t in result["tracks"]], [1])
+
+    def test_alias_post_leaves_the_queue_to_a_running_scan(self):
+        # setUp marks a scan running; the scan refreshes when it finishes, and
+        # a commit between its per-file read and write would fail that file.
+        response = self.client.post("/api/artists/1/aliases", json={"name": "Stage One"})
+        self.assertEqual(response.status_code, 200)
+        self.assertGreater(self._queued_search_rows(), 0)
+
     def test_home_shelves_resolve_only_current_library_ids(self):
         response = self.client.get('/api/home?album_ids=2,999,1&artist_ids=2,1')
         self.assertEqual(response.status_code, 200)
