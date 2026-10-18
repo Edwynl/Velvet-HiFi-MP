@@ -596,7 +596,39 @@ async function testRefusedAlbumRemovalShowsServerReason() {
   }
 }
 
+async function testAlbumSwipeOpensPlaylistPickerWithoutPlayingOrInlinePlus() {
+  const harness = createHarness();
+  const dom = await harness.createDom();
+  try {
+    await dom.window.navigate('album', { id: 11 });
+    const document = dom.window.document;
+    const row = await waitFor(() => document.querySelector('#tracks-container .album-swipe-row .track-item'));
+    assert.equal(document.querySelector('#tracks-container .track-add-btn'), null);
+    let plays = 0, selectedTrack;
+    dom.window.playTrack = () => { plays++; };
+    dom.window.showPlaylistPicker = track => { selectedTrack = track; };
+    row.click();
+    assert.equal(plays, 1);
+    const pointer = (type, x) => {
+      const event = new dom.window.MouseEvent(type, { bubbles: true, clientX: x, clientY: 10, button: 0 });
+      Object.defineProperty(event, 'pointerId', { value: 1 });
+      row.dispatchEvent(event);
+    };
+    pointer('pointerdown', 180);
+    pointer('pointermove', 90);
+    pointer('pointerup', 90);
+    assert.ok(row.parentElement.classList.contains('is-open'));
+    row.click();
+    assert.equal(plays, 1, 'Swipe does not accidentally play');
+    row.parentElement.querySelector('.album-track-add').click();
+    assert.equal(selectedTrack.id, 101);
+    assert.equal(selectedTrack.album_title, 'Back Test Album');
+    assert.equal(plays, 1, 'The revealed action opens the picker without playing');
+  } finally { dom.window.close(); }
+}
+
 async function main() {
+  await testAlbumSwipeOpensPlaylistPickerWithoutPlayingOrInlinePlus();
   await testAlbumBackFallsBackWhenHistoryBackDoesNothing();
   await testBackToAlbumsRestoresKeptViewWithoutRefetch();
   await testMenuNavigationAndMutationsRenderAlbumsFresh();

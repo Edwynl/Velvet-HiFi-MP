@@ -2053,7 +2053,7 @@ async function renderPlaylist(vc, { id }) {
   playlist.tracks.forEach((track, index) => {
     const row = makeTrackRow(track, index + 1, true);
     row.querySelector('.track-add-btn')?.remove();
-    const swipe = makePlaylistSwipeRow(row, () => playTrack(track, playlist.tracks, index), () => {
+    const swipe = makeTrackSwipeRow(row, () => playTrack(track, playlist.tracks, index), () => {
       showConfirm({
         title: 'Remove from playlist?',
         body: `Remove “${escHtml(track.title)}” from “${escHtml(playlist.name)}”?`,
@@ -2079,26 +2079,29 @@ async function renderPlaylist(vc, { id }) {
   list.appendChild(fragment);
 }
 
-function makePlaylistSwipeRow(row, play, remove) {
+function makeTrackSwipeRow(row, play, action, { add = false } = {}) {
   const wrapper = document.createElement('div');
-  wrapper.className = 'playlist-swipe-row';
-  wrapper.innerHTML = `<button type="button" class="playlist-track-delete" title="Remove from playlist">
+  wrapper.className = 'track-swipe-row ' + (add ? 'album-swipe-row' : 'playlist-swipe-row');
+  const label = add ? 'Add to playlist' : 'Remove from playlist';
+  const icon = add ? 'M3 6h8M3 11h8M3 16h5M16 17V5l5-1v11M16 17a2 2 0 1 1-2-2h2M21 15a2 2 0 1 1-2-2h2'
+    : 'M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7M14 10v7';
+  wrapper.innerHTML = `<button type="button" class="track-swipe-action ${add ? 'album-track-add' : 'playlist-track-delete'}" title="${label}" aria-label="${label}">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
-      <path d="M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7M14 10v7"/>
+      <path d="${icon}"/>
     </svg></button>`;
   wrapper.appendChild(row);
   const button = wrapper.querySelector('button');
   let gesture = null;
   let suppressUntil = 0;
   const setOpen = open => {
-    if (open) wrapper.parentElement?.querySelectorAll('.playlist-swipe-row.is-open').forEach(other => {
+    if (open) wrapper.parentElement?.querySelectorAll('.track-swipe-row.is-open').forEach(other => {
       if (other !== wrapper) other.classList.remove('is-open');
     });
     wrapper.classList.toggle('is-open', open);
   };
   row.tabIndex = 0;
   row.setAttribute('role', 'button');
-  row.setAttribute('aria-description', 'Swipe left or press Left Arrow to reveal Remove from playlist.');
+  row.setAttribute('aria-description', `Swipe left or press Left Arrow to reveal ${label}.`);
   row.addEventListener('pointerdown', event => {
     if (event.isPrimary === false || event.button !== 0) return;
     gesture = { id: event.pointerId, x: event.clientX, y: event.clientY,
@@ -2139,7 +2142,7 @@ function makePlaylistSwipeRow(row, play, remove) {
     if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); row.click(); }
     if (event.key === 'Escape' || event.key === 'ArrowRight') { event.preventDefault(); setOpen(false); }
   });
-  button.addEventListener('click', event => { event.stopPropagation(); remove(); });
+  button.addEventListener('click', event => { event.stopPropagation(); action(); });
   button.addEventListener('keydown', event => {
     if (event.key === 'Escape') { setOpen(false); row.focus(); }
   });
@@ -2567,7 +2570,7 @@ async function renderAlbum(vc, { id }) {
     <div class="track-list">
       <div class="track-list-header">
         <div>#</div><div>Title</div>
-        <div>Format</div><div>Quality</div><div>Duration</div><div></div>
+        <div>Format</div><div>Quality</div><div>Duration</div>
       </div>
       <div id="tracks-container"></div>
     </div>
@@ -2640,18 +2643,15 @@ async function renderAlbum(vc, { id }) {
   const container = UI['tracks-container'];
   const fragment = document.createDocumentFragment();
   tracks.forEach((t, i) => {
-    const el = makeTrackRow(t, i + 1);
-    const trackIndex = i;
-    el.addEventListener('click', () => {
+    const row = makeTrackRow(t, i + 1);
+    row.querySelector('.track-add-btn')?.remove();
+    const trackWithInfo = { ...t, artist_name: t.artist_name || album.artist_name, album_title: album.title };
+    const swipe = makeTrackSwipeRow(row, () => {
       state.prevAlbumQueue = tracks;
-      const trackWithInfo = {
-        ...t,
-        artist_name: album.artist_name,
-        album_title: album.title
-      };
-      playTrack(trackWithInfo, tracks, trackIndex);
-    });
-    fragment.appendChild(el);
+      playTrack(trackWithInfo, tracks, i);
+    }, () => showPlaylistPicker(trackWithInfo), { add: true });
+    swipe.querySelector('.album-track-add').setAttribute('aria-label', `Add ${t.title} to playlist`);
+    fragment.appendChild(swipe);
   });
   container.appendChild(fragment);
 
