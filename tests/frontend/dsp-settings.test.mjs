@@ -988,23 +988,80 @@ async function main() {
     await waitFor(() => dom.window.eval('state.castConfirmedTrackId') === 3);
     dom.window.eval('stopCastPolling(); playNext = window.__originalPlayNext;');
 
-    // Track 3 is confirmed, the user picks track 4, and its cast fails: the
-    // player goes back to track 3 (what the renderer last acknowledged) and
-    // follows the renderer's status again instead of freezing on track 4.
+    // A new track's cast fails: the player goes back to the confirmed track,
+    // in the queue and at the occurrence it was played from, and follows the
+    // renderer again, without claiming it plays or skipping on a stale end.
+    const toastText = () => dom.window.document.getElementById('toast').textContent;
+    const showsPlayIcon = () => Boolean(dom.window.document.querySelector('#btn-play .icon-play'));
+    dom.window.eval('window.__playNextCalls = 0; playNext = () => { window.__playNextCalls += 1; };'
+      + " const castTrack = (id, title) => ({ id, title, artist_name: 'X', duration: 120 });"
+      + " window.__albumA = [castTrack(3, 'Track B'), castTrack(5, 'Track D'), castTrack(3, 'Track B')];"
+      + " window.__albumB = [castTrack(4, 'Track C'), castTrack(6, 'Track E')];"
+      + ' playTrack(window.__albumA[2], window.__albumA, 2);'); // the second occurrence of track 3
+    await waitFor(() => dom.window.eval('state.castConfirmedQueue?.queue === window.__albumA'));
+    const failNewCast = async pick => {
+      dom.window.eval(pick);
+      await waitFor(() => dom.window.eval('state.castPending') === false, { timeoutMs: 6000 });
+    };
+    const assertRolledBack = label => {
+      assert.equal(dom.window.eval('state.currentTrack.id'), 3, `${label}: confirmed track restored`);
+      assert.equal(dom.window.eval('state.queue === window.__albumA'), true, `${label}: its queue restored`);
+      assert.equal(dom.window.eval('state.queueIdx'), 2, `${label}: the occurrence it was played from`);
+      assert.equal(dom.window.eval('state.playing'), false, `${label}: never claimed playing`);
+      assert.ok(showsPlayIcon(), `${label}: play button shows not playing`);
+      assert.match(toastText(), /back to Track B; playback on .+ not verified/);
+      assert.doesNotMatch(toastText(), /still playing/);
+    };
+    const assertNoSkipOnStaleEnd = async label => {
+      const polls = statusPolls();
+      await waitFor(() => statusPolls() > polls);
+      await tick();
+      assert.equal(dom.window.eval('window.__playNextCalls'), 0, `${label}: a stale end position must not skip`);
+    };
+
+    // From another album; the server's URI retries sent Stop, so the
+    // renderer reports STOPPED at the old track's near-end position.
+    castControl.transportState = 'STOPPED';
+    castControl.statusPosition = 119;
     castControl.fail = true;
-    castControl.statusPosition = 7;
-    dom.window.eval("window.__queue = [state.currentTrack, { id: 4, title: 'Track C', artist_name: 'X', duration: 200 }];"
-      + ' playTrack(window.__queue[1], window.__queue, 1);');
-    await waitFor(() => harness.requests.at(-1).path === '/api/cast/uuid:renderer');
-    await waitFor(() => dom.window.eval('state.castPending') === false);
-    assert.equal(dom.window.eval('state.currentTrack.id'), 3, 'failed cast restores the confirmed track');
-    assert.equal(dom.window.eval('state.queueIdx'), 0);
-    const pollsAfterFail = statusPolls();
-    await waitFor(() => statusPolls() > pollsAfterFail, { timeoutMs: 4000 });
-    await waitFor(() => dom.window.eval('state.castPosition') === 7);
+    await failNewCast('playTrack(window.__albumB[0], window.__albumB, 0);');
     castControl.fail = false;
+    assertRolledBack('other album');
+    await assertNoSkipOnStaleEnd('other album');
+    // Once a status shows it playing, a real end advances in the restored queue.
+    castControl.transportState = 'PLAYING';
+    castControl.statusPosition = 7;
+    await waitFor(() => dom.window.eval('state.playing') === true);
+    assert.equal(dom.window.eval('state.castPosition'), 7);
+    castControl.transportState = 'STOPPED';
+    castControl.statusPosition = 119;
+    await waitFor(() => dom.window.eval('window.__playNextCalls') === 1);
+    dom.window.eval('window.__playNextCalls = 0;');
+
+    // From the same queue, which holds the confirmed track twice.
+    castControl.fail = true;
+    await failNewCast('playTrack(window.__albumA[1], window.__albumA, 1);');
+    castControl.fail = false;
+    assertRolledBack('same queue');
+    await assertNoSkipOnStaleEnd('same queue');
+
+    // An indeterminate cast (timed out, no result from the server): the same
+    // honest rollback, never "still playing", no skip on the stale end.
+    dom.window.eval('CAST_TIMING.requestTimeoutMs = 100; CAST_TIMING.resultPollMs = 20; CAST_TIMING.reconcileMs = 200;');
+    castControl.hold = true;
+    castControl.held = [];
+    await failNewCast('playTrack(window.__albumB[0], window.__albumB, 0);');
+    assertRolledBack('timed out');
+    await assertNoSkipOnStaleEnd('timed out');
+    castControl.held.forEach(release => release()); // its late answer is dropped
+    castControl.held = [];
+    castControl.hold = false;
+    await tick();
+    assert.equal(dom.window.eval('state.currentTrack.id'), 3);
+    dom.window.eval('CAST_TIMING.requestTimeoutMs = 90000; CAST_TIMING.resultPollMs = 2000; CAST_TIMING.reconcileMs = 180000;'
+      + ' stopCastPolling(); playNext = window.__originalPlayNext;');
+    castControl.transportState = 'PLAYING';
     castControl.statusPosition = 5;
-    dom.window.eval('stopCastPolling();');
 
     // A status snapshot taken before a Play/Pause must not undo it when it
     // answers late (poll and on-demand refresh alike).
