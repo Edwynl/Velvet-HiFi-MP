@@ -6721,7 +6721,9 @@ function isNativeZone() {
 
 async function stopCurrentOutput() {
   if (isCastZone()) {
-    await api(`/cast/control/${state.castDevice.udn}/Stop`, { method: 'POST' });
+    // The server runs Stop after any cast in progress (and cancels waiting
+    // ones), so a slow renderer does not hold up switching outputs.
+    await api(`/cast/control/${state.castDevice.udn}/Stop`, { method: 'POST', timeoutResult: null });
     stopCastPolling();
   } else if (isNativeZone()) {
     await api('/playback/stop', { method: 'POST' });
@@ -6841,17 +6843,23 @@ function castDspMatches(castDsp, dspProfile) {
 // `plan` is the server's resolved plan (/dsp/profiles/{id}/resolved): a
 // selected preset whose processing graph is empty is reported as bypassed.
 // `replaygain` is { mode } or the server's /tracks/{id}/replaygain result:
-// only browser streams apply it.
+// browser streams apply it, and a renderer when its cast reported the gain
+// (`castDsp.replaygain`, the same resolution); native outputs never do.
 function describeSignalProcessing(zoneType, dspProfile, upsample, plan = null, castDsp = null, replaygain = null) {
   const replaygainOn = replaygain && replaygain.mode && replaygain.mode !== 'off';
+  const replaygainLine = rg => `ReplayGain ${rg.mode}: ${rg.applied_db > 0 ? '+' : ''}${rg.applied_db.toFixed(2)} dB`
+    + (rg.reason ? ` (${rg.reason})` : '');
   if (zoneType === 'cast') {
     const transcoded = castDsp?.stream === 'dsp_transcode';
+    const castReplaygain = castDsp?.replaygain;
     const lines = [transcoded
       ? 'VELVET DSP stream to renderer (24-bit FLAC, source sample rate)'
       : 'Direct source stream to renderer'];
+    if (castDsp?.pending) lines.push('Latest change not confirmed by the renderer yet');
+    if (castDsp?.transport === 'play_failed') lines.push('Renderer refused Play: stream loaded, not playing');
     if (dspProfile && !castDspMatches(castDsp, dspProfile)) {
       lines.push(`DSP ${dspProfile.name} not applied on this renderer yet`);
-    } else if (!dspProfile && transcoded) {
+    } else if (!dspProfile && castDsp?.status === 'applied') {
       lines.push('VELVET DSP off; renderer still plays the previous DSP stream');
     } else if (!dspProfile) {
       lines.push('VELVET DSP off');
@@ -6861,7 +6869,13 @@ function describeSignalProcessing(zoneType, dspProfile, upsample, plan = null, c
       lines.push(`DSP ${dspProfile.name}`, ...dspPlanLines(plan));
     }
     if (upsample && upsample !== 'none') lines.push('PCM upsampling not applied on this renderer');
-    if (replaygainOn) lines.push('ReplayGain not applied on this renderer');
+    if (replaygainOn && castReplaygain?.mode === replaygain.mode) {
+      lines.push(replaygainLine(castReplaygain));
+    } else if (replaygainOn) {
+      lines.push(`ReplayGain ${replaygain.mode} not applied on this renderer yet`);
+    } else if (castReplaygain?.applied_db) {
+      lines.push('ReplayGain off; renderer still plays the previous ReplayGain stream');
+    }
     return lines;
   }
   const lines = [
@@ -6870,9 +6884,7 @@ function describeSignalProcessing(zoneType, dspProfile, upsample, plan = null, c
   if (replaygainOn && zoneType === 'native') {
     lines.push('ReplayGain not applied on this output');
   } else if (replaygainOn && typeof replaygain.applied_db === 'number') {
-    const db = replaygain.applied_db;
-    lines.push(`ReplayGain ${replaygain.mode}: ${db > 0 ? '+' : ''}${db.toFixed(2)} dB`
-      + (replaygain.reason ? ` (${replaygain.reason})` : ''));
+    lines.push(replaygainLine(replaygain));
   } else if (replaygainOn) {
     lines.push(`ReplayGain ${replaygain.mode} (status unavailable)`);
   }
@@ -6918,7 +6930,9 @@ async function showSignalPath() {
   ].filter(Boolean).join(' · ');
 
   const activeZone = getActiveZone();
-  const castDsp = activeZone.type === 'cast' ? state.castDsp : null;
+  // While a re-cast is unanswered, what the renderer plays is not confirmed.
+  const castDsp = activeZone.type !== 'cast' ? null
+    : state.castPending && state.castDsp ? { ...state.castDsp, pending: true } : state.castDsp;
   let plan = null;
   // A renderer's transcode was resolved at the source rate, as this plan is.
   if (dspProfile && (activeZone.type !== 'cast'
@@ -7244,7 +7258,11 @@ let authState = {
 const KEEP_ALIVE_VIEWS = new Set(['albums']);
 const _keptViews = new Map();  // view -> { nodes, scrollTop, savedAt }
 
+// `opts.timeoutMs` overrides the 8 s limit; with `opts.timeoutResult` a
+// timeout returns that value (no toast) so the caller can tell it apart.
 async function api(path, opts = {}) {
+  const { timeoutMs = 8000, timeoutResult, ...fetchOpts } = opts;
+  opts = fetchOpts;
   if ((opts.method || 'GET').toUpperCase() !== 'GET') _keptViews.clear();
   const headers = opts.headers || {};
   if (opts.body && !headers['Content-Type']) {
@@ -7258,7 +7276,7 @@ async function api(path, opts = {}) {
 
   // 8-second timeout to prevent infinite hangs on server startup
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 8000);
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
   try {
     log(`[VELVET] API Call: ${path}`);
@@ -7309,6 +7327,7 @@ async function api(path, opts = {}) {
     clearTimeout(timeoutId);
     if (e.name === 'AbortError') {
       console.warn(`API ${path} timed out`);
+      if (timeoutResult !== undefined) return timeoutResult;
       showToast('Connection timed out');
     } else {
       console.warn('API error:', path, e.message);
@@ -7592,6 +7611,8 @@ const state = {
   castDsp: null, // the server's DSP status for what the renderer is playing
   castStartOffset: 0, // seconds into the track where the renderer's stream starts
   castPosition: 0, // track position on the renderer (offset included)
+  castSeq: 0, // the newest castTo request; older answers are dropped
+  castPending: false, // the newest castTo request has not answered yet
   isComposing: false,
   mobilePlayerDismissed: false,
 };
@@ -8396,38 +8417,105 @@ function stopCastPolling() {
   }
 }
 
-// `startSeconds` resumes the track there (a DSP change mid-track).
-async function castTo(track, device, { startSeconds = 0 } = {}) {
+// `startSeconds` resumes the track there (a DSP change mid-track); `recast`
+// marks a settings change for the track the renderer already has, so the
+// server keeps a paused renderer paused.
+async function castTo(track, device, { startSeconds = 0, recast = false } = {}) {
+  // Only the newest cast may update the player: a late answer for an older
+  // request, another track or another zone is dropped. (The server also
+  // runs one renderer's casts in order and skips superseded ones.)
+  const castSeq = (state.castSeq || 0) + 1;
+  state.castSeq = castSeq;
+  state.castPending = true;
+  const isStale = () => castSeq !== state.castSeq || !isCastZone()
+    || state.castDevice?.udn !== device.udn || state.currentTrack?.id !== track.id;
+  const requestId = `${Date.now().toString(36)}-${castSeq}`;
   showToast(`Casting to ${device.name}...`);
   try {
     // The server hands the renderer its own ticketed URL for this track:
-    // the direct source, or its DSP transcode when this zone's preset is active.
+    // the direct source, or its DSP transcode when this zone's preset or a
+    // ReplayGain gain is active.
     const dspProfile = state.dspProfiles.find(profile => String(profile.id) === String(state.dspProfile));
-    const res = await api(`/cast/${device.udn}`, {
+    // A cast waits for the renderer's earlier casts and its own SOAP calls,
+    // so it gets a longer limit than other requests.
+    let res = await api(`/cast/${device.udn}`, {
       method: 'POST',
+      timeoutMs: CAST_TIMING.requestTimeoutMs,
+      timeoutResult: { timedOut: true },
       body: JSON.stringify({
         track_id: track.id,
         dsp_profile_id: Number(state.dspProfile) || null,
+        ...(state.replaygain && state.replaygain !== 'off' ? { replaygain: state.replaygain } : {}),
         ...(startSeconds > 0 ? { start_seconds: Math.round(startSeconds * 10) / 10 } : {}),
+        ...(recast ? { recast: true } : {}),
+        request_id: requestId,
       })
     });
-    if (res.success) {
-      markExpectedBrowserPause(1200);
-      audio.pause();
-      state.castDsp = res.dsp ? { ...res.dsp, effective_name: res.dsp.effective_profile_id ? dspProfile?.name : null } : null;
-      state.castStartOffset = Number(res.start_offset) || 0;
-      state.castPosition = startSeconds > 0 ? startSeconds : 0;
-      let dspNote = '';
-      if (res.dsp?.status === 'applied') dspNote = ` · DSP ${dspProfile?.name || ''}`.trimEnd();
-      if (res.dsp?.status === 'bypassed') dspNote = ' · DSP bypassed (no active processing)';
-      showToast(`Playing on ${device.name}${dspNote}`);
-      startCastPolling();
-    } else {
-      showToast(`Failed to cast to ${device.name}`);
+    if (res?.timedOut && !isStale()) {
+      // The server may still be talking to the renderer: never assume either
+      // outcome, ask for it (Signal Path says the change is unconfirmed).
+      showToast(`${device.name} is slow to respond; waiting for it`);
+      res = await awaitCastResult(device, requestId, isStale);
     }
+    if (isStale() || res?.superseded) return;
+    applyCastResult(res, { device, dspProfile, startSeconds });
   } catch (e) {
-    showToast(`Error: ${e.message}`);
+    if (!isStale()) showToast(`Error: ${e.message}`);
+  } finally {
+    if (castSeq === state.castSeq) state.castPending = false;
   }
+}
+
+const CAST_TIMING = { requestTimeoutMs: 90000, resultPollMs: 2000, reconcileMs: 180000 };
+
+// Poll the server for a timed-out cast's outcome; null if it never settles.
+async function awaitCastResult(device, requestId, isStale) {
+  const deadline = Date.now() + CAST_TIMING.reconcileMs;
+  while (Date.now() < deadline && !isStale()) {
+    await new Promise(resolve => setTimeout(resolve, CAST_TIMING.resultPollMs));
+    const result = await api(`/cast/result/${device.udn}/${requestId}`);
+    if (result?.done) return result;
+    if (!result) return null; // unknown to the server (e.g. it restarted)
+  }
+  return null;
+}
+
+function applyCastResult(res, { device, dspProfile, startSeconds }) {
+  // "play_failed": the renderer holds the new stream but refused Play.
+  if (!res || !(res.success || res.transport === 'play_failed')) {
+    // Nothing confirmed: keep the last confirmed state (Signal Path unchanged).
+    showToast(res?.error ? `Failed to cast to ${device.name}: ${res.error}` : `Failed to cast to ${device.name}`);
+    return;
+  }
+  markExpectedBrowserPause(1200);
+  audio.pause();
+  state.castDsp = res.dsp ? {
+    ...res.dsp,
+    effective_name: res.dsp.effective_profile_id ? dspProfile?.name : null,
+    replaygain: res.replaygain || null,
+    transport: res.transport || null,
+  } : null;
+  state.castStartOffset = Number(res.start_offset) || 0;
+  // A direct stream that could not seek restarts from the beginning.
+  const resumed = startSeconds > 0 && (state.castStartOffset > 0 || res.position_restored !== false);
+  state.castPosition = resumed ? startSeconds : 0;
+  state.playing = res.transport === 'playing';
+  updatePlayBtnUI();
+  let dspNote = '';
+  if (res.dsp?.status === 'applied') dspNote = ` · DSP ${dspProfile?.name || ''}`.trimEnd();
+  if (res.dsp?.status === 'bypassed') dspNote = ' · DSP bypassed (no active processing)';
+  const rgDb = Number(res.replaygain?.applied_db) || 0;
+  if (rgDb) dspNote += ` · ReplayGain ${rgDb > 0 ? '+' : ''}${rgDb.toFixed(2)} dB`;
+  if (res.transport === 'play_failed') {
+    showToast(`${device.name} loaded the stream but did not start playing`);
+  } else if (res.transport === 'loaded') {
+    showToast(`${device.name}: stream loaded; playback not started (was paused)${dspNote}`);
+  } else if (startSeconds > 0 && !resumed) {
+    showToast(`${device.name} could not seek: playing from the start${dspNote}`);
+  } else {
+    showToast(`Playing on ${device.name}${dspNote}`);
+  }
+  startCastPolling();
 }
 
 async function toggleCastMenu() {
@@ -8693,10 +8781,14 @@ const togglePlayAction = async () => {
 
   if (isCastZone()) {
     const action = state.playing ? 'Pause' : 'Play';
-    const res = await api(`/cast/control/${state.castDevice.udn}/${action}`, { method: 'POST' });
-    if (res.success) {
+    // Ordered after any cast still running for this renderer.
+    const res = await api(`/cast/control/${state.castDevice.udn}/${action}`,
+      { method: 'POST', timeoutMs: CAST_TIMING.requestTimeoutMs });
+    if (res?.success) {
       state.playing = !state.playing;
       updatePlayBtnUI();
+    } else {
+      showToast(`${state.castDevice?.name || 'Renderer'} did not accept ${action}`);
     }
     return;
   }
@@ -9226,15 +9318,41 @@ UI['upsample-select'].addEventListener('change', e => {
   syncMobileLandscapeControls();
 });
 
-// ReplayGain is applied by the server in browser streams only; a running
-// browser stream restarts at the same position to pick it up.
+// A renderer is re-cast for a ReplayGain change only when the gain it gets
+// changes: the same gain (no tags, or track and album alike) keeps its
+// stream playing untouched.
+async function recastForReplayGain(mode) {
+  const track = state.currentTrack;
+  const device = state.castDevice;
+  const current = state.castDsp?.replaygain;
+  if (current && !state.castPending) {
+    const next = await api(`/tracks/${track.id}/replaygain?mode=${mode}`).catch(() => null);
+    if (state.replaygain !== mode || state.currentTrack !== track || state.castDevice !== device) return;
+    if (next && !state.castPending && state.castDsp?.replaygain === current
+        && Number(next.applied_db) === Number(current.applied_db)) {
+      state.castDsp = { ...state.castDsp, replaygain: next };
+      showToast(`ReplayGain ${mode}: gain unchanged on ${device.name}`);
+      return;
+    }
+  }
+  castTo(track, device, { startSeconds: state.castPosition || 0, recast: true });
+}
+
+// ReplayGain is applied by the server in browser and renderer streams (not
+// on native outputs); a running stream restarts at the same position to
+// pick it up.
 function setReplayGainMode(mode) {
   if (!REPLAYGAIN_MODES.includes(mode)) return;
   state.replaygain = mode;
   persistReplayGainMode(mode);
   const select = $('eq-replaygain');
   if (select) select.value = mode;
-  if (state.currentTrack && (isCastZone() || isNativeZone())) {
+  if (state.currentTrack && isCastZone()) {
+    // castTo reports the result.
+    recastForReplayGain(mode);
+    return;
+  }
+  if (state.currentTrack && isNativeZone()) {
     showToast(mode === 'off' ? 'ReplayGain off' : 'ReplayGain not applied on this output');
     return;
   }
@@ -9270,7 +9388,7 @@ UI['dsp-select'].addEventListener('change', e => {
     if (isCastZone()) {
       // Re-cast the renderer's stream (DSP transcode or direct source) from
       // where it is now.
-      castTo(state.currentTrack, state.castDevice, { startSeconds: state.castPosition || 0 });
+      castTo(state.currentTrack, state.castDevice, { startSeconds: state.castPosition || 0, recast: true });
     } else if (isNativeZone()) {
       playTrack(state.currentTrack, state.queue, state.queueIdx);
     } else {
