@@ -1095,6 +1095,34 @@ async function main() {
     await waitFor(() => dom.window.eval('state.castPlaybackUnverified') === false);
     dom.window.eval('stopCastPolling();');
 
+    // A confirmed cast keeps trusting statuses: a lagging or renderer-chosen
+    // TrackURI must not disarm auto-next or raise the resync toast.
+    castControl.statusTrackId = 4;
+    dom.window.eval("showToast('');");
+    dom.window.eval('startCastPolling();');
+    const pollsBeforeMismatch = statusPolls();
+    await waitFor(() => statusPolls() > pollsBeforeMismatch);
+    await tick();
+    dom.window.eval('stopCastPolling();');
+    assert.equal(dom.window.eval('state.castPlaybackUnverified'), false);
+    assert.equal(dom.window.eval('state.castAutoNextArmed'), true);
+    assert.equal(dom.window.eval('state.playing'), true);
+    assert.doesNotMatch(toastText(), /another track/);
+
+    // A renderer without TrackURI: a failed same-song re-cast disarms
+    // auto-next, but a PLAYING status re-arms it instead of freezing forever.
+    castControl.statusTrackId = null;
+    castControl.fail = true;
+    dom.window.eval('castTo(state.currentTrack, state.castDevice, { recast: true });');
+    await waitFor(() => dom.window.eval('state.castPending') === false);
+    assert.equal(dom.window.eval('state.castPlaybackUnverified'), false);
+    assert.equal(dom.window.eval('state.castAutoNextArmed'), false);
+    assert.equal(dom.window.eval('state.playing'), false);
+    castControl.fail = false;
+    dom.window.eval('startCastPolling();');
+    await waitFor(() => dom.window.eval('state.castAutoNextArmed && state.playing') === true);
+    dom.window.eval('stopCastPolling();');
+
     // A status snapshot taken before a Play/Pause must not undo it when it
     // answers late (poll and on-demand refresh alike).
     for (const [snapshot, before] of [['PAUSED_PLAYBACK', false], ['PLAYING', true]]) {

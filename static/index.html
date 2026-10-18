@@ -8670,6 +8670,9 @@ async function playTrack(track, queue, idx) {
 // Devices that omit TrackURI remain in a safe unverified state until a new
 // confirmed cast (regular, uninterrupted casts continue working as before).
 function castStatusBelongsToConfirmed(status) {
+  // A confirmed cast is trusted as before; a lagging or renderer-chosen
+  // TrackURI must not disarm it. Identity is checked only after a failure.
+  if (!state.castPlaybackUnverified) return true;
   if (status.track_id !== null && status.track_id !== undefined) {
     if (String(status.track_id) !== String(state.castConfirmedTrackId)) {
       state.castPlaybackUnverified = true;
@@ -8686,7 +8689,7 @@ function castStatusBelongsToConfirmed(status) {
     state.castMismatchNotified = false;
     return true;
   }
-  return !state.castPlaybackUnverified;
+  return false;
 }
 
 // Take the play/pause state from the renderer itself (after a failed or
@@ -8897,16 +8900,18 @@ function applyCastResult(res, { track, device, dspProfile, startSeconds, control
 function restoreConfirmedCastTrack(failedTrack) {
   const confirmed = state.castConfirmedTrack;
   if (!confirmed) return null;
-  state.castPlaybackUnverified = true;
-  state.castMismatchNotified = false;
   state.castAutoNextArmed = false;
   state.playing = false;
   // A failed DSP/ReplayGain recast of the same song can also have stopped
-  // its stream; do not leave the old auto-next armed in that case.
+  // its stream; do not leave the old auto-next armed in that case. Whatever
+  // the renderer holds is still this song, so a PLAYING status may rearm it
+  // (identity need not be re-proven, even by devices without TrackURI).
   if (confirmed.id === failedTrack?.id) {
     updatePlayBtnUI();
     return confirmed;
   }
+  state.castPlaybackUnverified = true;
+  state.castMismatchNotified = false;
   state.currentTrack = confirmed;
   const context = state.castConfirmedQueue;
   if (context) {
