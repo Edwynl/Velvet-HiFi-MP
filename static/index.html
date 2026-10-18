@@ -5806,6 +5806,34 @@ input[type=range]::-webkit-slider-thumb:hover { background: var(--gold); }
   .mobile-vu-meter-options { gap: 7px 9px; }
   .mobile-vu-mode-btn, .mobile-vu-alignment select { padding: 5px 6px; }
 }
+/* iOS Home Screen PWA: some WebKit versions measure 100dvh without the
+   bottom ~59pt occupied by the browser's standalone viewport. Use 100vh
+   only for installed iOS web apps. Normal Safari, Android and desktop keep
+   the existing 100dvh layout. Do not double-count the Home Indicator inset:
+   the compact #player already includes env(safe-area-inset-bottom). */
+@media (display-mode: standalone) {
+  @supports (-webkit-touch-callout: none) {
+    html,
+    body {
+      height: 100vh;
+    }
+
+    #app {
+      height: 100vh;
+      grid-template-rows: minmax(0, 1fr) auto;
+    }
+
+    #main {
+      min-height: 0;
+    }
+
+    #sidebar,
+    .mobile-player-overlay {
+      height: 100vh;
+    }
+  }
+}
+
 </style>
 </head>
 <body>
