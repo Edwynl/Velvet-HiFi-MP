@@ -217,6 +217,17 @@ assert.equal(requests.some(item => item.url.pathname === '/api/search'
 
 // No automatic remote network lookup on keystrokes. The user explicitly opts in
 // when searching a stage name not yet known to the local library.
+// No automatic remote network lookup on keystrokes. The user explicitly opts in
+// when searching a stage name not yet known to the local library.
+// The artist-detail "Sync Names" flow above also confirms an identity through
+// /api/artists/3/aliases/confirm, and the mock treats that as importing the
+// alias. That request is still in flight when this step begins -- the alias list
+// renders from the artist's cached names before the confirmation returns -- so
+// wait for it to land before clearing the flag. Resetting first would let it
+// flip back to true, the query would be answered from the local library, and the
+// opt-in empty state would never render.
+await wait(() => requests.some(item => item.url.pathname === '/api/artists/3/aliases/confirm'));
+resolvedUnknownAlias = false;
 await dom.window.navigate('home');
 await wait(() => dom.window.document.querySelector('#search-input'));
 const missingInput = dom.window.document.querySelector('#search-input');
