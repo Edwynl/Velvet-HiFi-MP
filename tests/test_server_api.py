@@ -332,8 +332,8 @@ class ServerApiTests(unittest.TestCase):
         missing_artist_resp = self.client.get("/api/artists/999/image")
         self.assertEqual(missing_artist_resp.status_code, 404)
 
-    def _login_for_scoped_cookies(self):
-        """Log in with a fixed key, with auth on (the suite patches it off)."""
+    def _login_for_image_cookie(self):
+        """Log in with a fixed key so the client carries the image cookie."""
         security = server.security.get_security_manager()
         original = security.get_or_create_api_key
         security.get_or_create_api_key = lambda: "session-key"
@@ -345,38 +345,33 @@ class ServerApiTests(unittest.TestCase):
         self.assertEqual(resp.status_code, 200)
         return resp
 
-    def test_artist_image_cookie_is_issued_with_a_restricted_path(self):
+    def test_image_cookie_is_issued_for_cover_and_artist_paths(self):
         """An <img> element cannot send X-API-Key, so the cookie must exist.
 
-        Before the fix only /api/covers had a cookie scope, which made every
-        artist card 401 and left the library rendering no avatars at all.
-        The cookie is scoped so it cannot become a general API credential.
+        Before this, /api/artists/{id}/image had no cookie scope at all, so
+        every artist card returned 401 and the library rendered no avatars
+        even when image_path was populated.
         """
-        set_cookie = self._login_for_scoped_cookies().headers.get_list("set-cookie")
+        set_cookie = self._login_for_image_cookie().headers.get_list("set-cookie")
         joined = " ".join(set_cookie)
-        self.assertIn("velvet_artist_image_key=session-key", joined)
-        self.assertIn("Path=/api/artists", joined)
         self.assertIn("velvet_cover_key=session-key", joined)
-        # HttpOnly so page script cannot exfiltrate the credential.
-        artist_cookie = next(c for c in set_cookie
-                             if c.startswith("velvet_artist_image_key"))
-        self.assertIn("HttpOnly", artist_cookie)
-        self.assertIn("SameSite=strict", artist_cookie)
+        self.assertIn("Path=/api/covers", joined)
+        self.assertIn("Path=/api/artists", joined)
+        cookie = next(c for c in set_cookie if c.startswith("velvet_cover_key="))
+        self.assertIn("HttpOnly", cookie)
+        self.assertIn("SameSite=strict", cookie)
 
-    def test_artist_image_accepts_the_scoped_cookie_without_a_header(self):
-        """The cookie must actually satisfy auth for the artist image route.
-
-        This is the regression that made every avatar 401 in the browser: an
-        <img> request carries no API-key header, only the scoped cookie.
-        """
+    def test_artist_image_accepts_the_image_cookie_without_a_header(self):
+        """The regression: an <img> request carries only the cookie."""
         seen = {}
 
         def capture(**kwargs):
             seen["api_key"] = kwargs.get("api_key")
+            seen["record_failure"] = kwargs.get("record_failure")
             return {"allowed": kwargs.get("api_key") == "session-key",
                     "error": None}
 
-        self._login_for_scoped_cookies()
+        self._login_for_image_cookie()
 
         with patch.object(server.security, "is_auth_enabled", return_value=True), \
                 patch.object(server.security, "verify_auth", side_effect=capture), \
@@ -385,11 +380,12 @@ class ServerApiTests(unittest.TestCase):
             resp = self.client.get("/api/artists/1/image")
 
         self.assertEqual(seen.get("api_key"), "session-key")
+        self.assertFalse(seen.get("record_failure"))
         self.assertEqual(resp.status_code, 204)
 
-    def test_artist_image_cookie_does_not_unlock_other_api_routes(self):
-        """Scoping must not turn the avatar cookie into a general credential."""
-        self._login_for_scoped_cookies()
+    def test_image_cookie_does_not_unlock_other_api_routes(self):
+        """Scoping must not turn the image cookie into a general credential."""
+        self._login_for_image_cookie()
         captured = []
 
         def record(**kwargs):
@@ -403,6 +399,30 @@ class ServerApiTests(unittest.TestCase):
             self.assertEqual(self.client.get("/api/config").status_code, 401)
 
         self.assertTrue(all(k != "session-key" for k in captured))
+
+    def test_stale_image_cookie_does_not_count_toward_lockout(self):
+        """A grid of <img> tags replays one stale cookie dozens of times.
+
+        Those are not credential guesses; counting them would lock the owner
+        out before they can log in again.
+        """
+        recorded = []
+
+        def deny(**kwargs):
+            if kwargs.get("record_failure"):
+                recorded.append(kwargs.get("ip"))
+            return {"allowed": False, "error": "Invalid password or API key"}
+
+        with patch.object(server.security, "is_auth_enabled", return_value=True), \
+                patch.object(server.security, "verify_auth", side_effect=deny), \
+                patch.dict(os.environ, {"VELVET_AUTH_ENFORCE_ALL_NETWORKS": "true"}), \
+                patch.object(server, "get_client_ip", return_value="192.0.2.55"):
+            self.client.cookies.set("velvet_cover_key", "stale-key",
+                                    path="/api/artists", domain="testserver")
+            for artist_id in range(1, 12):
+                self.client.get(f"/api/artists/{artist_id}/image")
+
+        self.assertEqual(recorded, [])
 
     def test_create_custom_dsp_profile_persists_ordered_filters(self):
         resp = self.client.post(
