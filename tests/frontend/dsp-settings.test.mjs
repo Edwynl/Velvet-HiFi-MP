@@ -988,6 +988,24 @@ async function main() {
     await waitFor(() => dom.window.eval('state.castConfirmedTrackId') === 3);
     dom.window.eval('stopCastPolling(); playNext = window.__originalPlayNext;');
 
+    // Track 3 is confirmed, the user picks track 4, and its cast fails: the
+    // player goes back to track 3 (what the renderer last acknowledged) and
+    // follows the renderer's status again instead of freezing on track 4.
+    castControl.fail = true;
+    castControl.statusPosition = 7;
+    dom.window.eval("window.__queue = [state.currentTrack, { id: 4, title: 'Track C', artist_name: 'X', duration: 200 }];"
+      + ' playTrack(window.__queue[1], window.__queue, 1);');
+    await waitFor(() => harness.requests.at(-1).path === '/api/cast/uuid:renderer');
+    await waitFor(() => dom.window.eval('state.castPending') === false);
+    assert.equal(dom.window.eval('state.currentTrack.id'), 3, 'failed cast restores the confirmed track');
+    assert.equal(dom.window.eval('state.queueIdx'), 0);
+    const pollsAfterFail = statusPolls();
+    await waitFor(() => statusPolls() > pollsAfterFail, { timeoutMs: 4000 });
+    await waitFor(() => dom.window.eval('state.castPosition') === 7);
+    castControl.fail = false;
+    castControl.statusPosition = 5;
+    dom.window.eval('stopCastPolling();');
+
     // A status snapshot taken before a Play/Pause must not undo it when it
     // answers late (poll and on-demand refresh alike).
     for (const [snapshot, before] of [['PAUSED_PLAYBACK', false], ['PLAYING', true]]) {

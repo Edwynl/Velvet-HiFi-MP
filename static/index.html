@@ -7035,6 +7035,7 @@ async function activateZone(zone, transferPlayback = true) {
   // status answers belong to the previous session.
   state.zoneEpoch = (state.zoneEpoch || 0) + 1;
   state.castConfirmedTrackId = null;
+  state.castConfirmedTrack = null;
   state.castPending = false;
   restoreZoneDspSelection();
   updatePlayerUI(state.currentTrack || {});
@@ -7885,6 +7886,7 @@ const state = {
   zoneEpoch: 0, // bumped on every output-zone change
   castStopPending: {}, // udn -> Set of the unanswered Stops sent when leaving it
   castConfirmedTrackId: null, // the track whose cast the renderer last acknowledged
+  castConfirmedTrack: null, // that track itself, to go back to when a newer cast fails
   isComposing: false,
   mobilePlayerDismissed: false,
 };
@@ -8767,7 +8769,10 @@ async function castTo(track, device, { startSeconds = 0, recast = false } = {}) 
     if (isStale() || res?.superseded) return;
     applyCastResult(res, { track, device, dspProfile, startSeconds, controlSeqAtSend });
   } catch (e) {
-    if (!isStale()) showToast(`Error: ${e.message}`);
+    if (!isStale()) {
+      restoreConfirmedCastTrack(track);
+      showToast(`Error: ${e.message}`);
+    }
   } finally {
     if (castSeq === state.castSeq) state.castPending = false;
   }
@@ -8791,7 +8796,11 @@ function applyCastResult(res, { track, device, dspProfile, startSeconds, control
   // "play_failed": the renderer holds the new stream but refused Play.
   if (!res || !(res.success || res.transport === 'play_failed')) {
     // Nothing confirmed: keep the last confirmed state (Signal Path unchanged).
-    showToast(res?.error ? `Failed to cast to ${device.name}: ${res.error}` : `Failed to cast to ${device.name}`);
+    let message = `Failed to cast to ${device.name}`;
+    if (res?.error) message += `: ${res.error}`;
+    const restored = restoreConfirmedCastTrack(track);
+    if (restored) message += ` · still playing ${restored.title || 'the previous track'}`;
+    showToast(message);
     return;
   }
   markExpectedBrowserPause(1200);
@@ -8805,6 +8814,7 @@ function applyCastResult(res, { track, device, dspProfile, startSeconds, control
   // The renderer has acknowledged this track's stream: status answers may
   // describe it from now on.
   state.castConfirmedTrackId = track?.id ?? null;
+  state.castConfirmedTrack = track || null;
   state.castStartOffset = Number(res.start_offset) || 0;
   // A direct stream that could not seek restarts from the beginning.
   const resumed = startSeconds > 0 && (state.castStartOffset > 0 || res.position_restored !== false);
@@ -8831,6 +8841,22 @@ function applyCastResult(res, { track, device, dspProfile, startSeconds, control
     showToast(`Playing on ${device.name}${dspNote}`);
   }
   startCastPolling();
+}
+
+// A cast of a newly chosen track failed: the renderer still has the last
+// track it acknowledged, so show that one again. Status polls then match the
+// confirmed track and the player follows the renderer once more. Returns the
+// restored track, or null when there is nothing to go back to.
+function restoreConfirmedCastTrack(failedTrack) {
+  const confirmed = state.castConfirmedTrack;
+  if (!confirmed || confirmed.id === failedTrack?.id) return null;
+  state.currentTrack = confirmed;
+  const idx = state.queue.findIndex(t => t.id === confirmed.id);
+  if (idx >= 0) state.queueIdx = idx;
+  updatePlayerUI(confirmed);
+  highlightPlaying(confirmed.id);
+  if (UI['queue-panel']?.classList.contains('open')) renderQueue();
+  return confirmed;
 }
 
 async function toggleCastMenu() {
