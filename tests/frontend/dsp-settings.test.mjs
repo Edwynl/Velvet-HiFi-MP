@@ -1093,8 +1093,17 @@ async function main() {
     assert.equal(dom.window.eval('state.currentTrack.id'), 3);
     dom.window.eval('CAST_TIMING.requestTimeoutMs = 90000; CAST_TIMING.resultPollMs = 2000; CAST_TIMING.reconcileMs = 180000;'
       + ' stopCastPolling(); playNext = window.__originalPlayNext;');
+    // The earlier timed-out *new-track* cast left identity unverified. The
+    // renderer now reports A again: reconcile that before testing whether a
+    // later same-track recast itself incorrectly causes identity uncertainty.
+    castControl.statusTrackId = 3;
+    castControl.transportState = 'PLAYING';
+    castControl.statusPosition = 5;
+    dom.window.eval('startCastPolling();');
+    await waitFor(() => dom.window.eval('state.castPlaybackUnverified') === false);
+    dom.window.eval('stopCastPolling();');
     // A same-song DSP/ReplayGain re-cast can fail after the server sends Stop.
-    // A confirmed ID alone must not preserve its old auto-next permission.
+    // Track identity remains known, but the processing path does not.
     castControl.fail = true;
     dom.window.eval('castTo(state.currentTrack, state.castDevice, { recast: true });');
     await waitFor(() => dom.window.eval('state.castPending') === false);
@@ -1109,7 +1118,8 @@ async function main() {
     castControl.transportState = 'PLAYING';
     castControl.statusPosition = 5;
     dom.window.eval('startCastPolling();');
-    await waitFor(() => dom.window.eval('state.castPlaybackUnverified') === false);
+    await waitFor(() => dom.window.eval('state.castAutoNextArmed && state.playing') === true);
+    assert.equal(dom.window.eval('state.castPlaybackUnverified'), false);
     dom.window.eval('stopCastPolling();');
 
     // A newly confirmed B must never use old A's explicitly mismatched URI.
