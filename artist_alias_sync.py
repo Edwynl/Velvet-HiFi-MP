@@ -32,7 +32,7 @@ def _romanized_sort_name(name: str) -> str:
 def _identity_names(data: dict) -> list[str]:
     names = [data.get("name"), data.get("sort-name"),
              _romanized_sort_name(data.get("sort-name") or "")]
-    names.extend(a.get("name") for a in data.get("aliases", [])
+    names.extend(a.get("name") for a in (data.get("aliases") or [])
                  if isinstance(a, dict))
     return [str(n).strip() for n in names if isinstance(n, str) and n.strip()]
 

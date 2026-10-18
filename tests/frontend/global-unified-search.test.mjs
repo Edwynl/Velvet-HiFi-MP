@@ -135,7 +135,11 @@ missingInput.value = 'Lala Alias';
 missingInput.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
 await wait(() => dom.window.document.querySelector('#search-resolve-alias-btn'));
 assert.equal(requests.some(item => item.url.pathname === '/api/search/resolve-artist-alias'), false);
-dom.window.document.querySelector('#search-resolve-alias-btn').click();
+const findAlias = dom.window.document.querySelector('#search-resolve-alias-btn');
+findAlias.dispatchEvent(new dom.window.MouseEvent('pointerdown', { bubbles: true }));
+assert.equal(findAlias.isConnected, true,
+             'Pointerdown on the alias resolver must not close the search view');
+findAlias.click();
 await wait(() => resolvedUnknownAlias);
 await wait(() => dom.window.document.querySelector('.search-artist-grid .artist-card'));
 assert.equal(dom.window.document.querySelectorAll('.search-albums-grid .card').length, 1);

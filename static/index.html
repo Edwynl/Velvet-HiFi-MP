@@ -9664,8 +9664,9 @@ function setupSearch({ autoFocus = state.view === 'search' } = {}) {
     if (state.view !== 'search') return;
     const target = e.target;
     if (!(target instanceof Element)) return;
-    if (target.closest('.search-wrap')) return;
-    if (target.closest('.track-item, .card, .history-item, .search-section-header, .search-albums-grid')) return;
+    // Result cards and the opt-in alias lookup are interactive: clicking
+    // inside the search results must not dismiss the search view in capture.
+    if (target.closest('.search-wrap, .search-results')) return;
     exitSearch();
   };
   requestAnimationFrame(() => {
