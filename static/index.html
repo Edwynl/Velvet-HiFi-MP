@@ -5840,6 +5840,10 @@ input[type=range]::-webkit-slider-thumb:hover { background: var(--gold); }
    appearing as a zoomed/cropped view. Keep the menu above the status-bar
    safe area. Landscape, iPad, and desktop layouts are unchanged. */
 @media (max-width: 768px) and (orientation: portrait) {
+  :root {
+    --velvet-phone-safe-top: env(safe-area-inset-top, 0px);
+  }
+
   html, body {
     width: 100%;
     max-width: 100%;
@@ -5857,7 +5861,7 @@ input[type=range]::-webkit-slider-thumb:hover { background: var(--gold); }
     min-width: 0;
     min-height: 0;
     overflow-x: hidden;
-    padding-top: env(safe-area-inset-top, 0px);
+    padding-top: var(--velvet-phone-safe-top);
   }
 
   #view-container {
@@ -5873,7 +5877,7 @@ input[type=range]::-webkit-slider-thumb:hover { background: var(--gold); }
 
   .mobile-menu-btn {
     position: fixed;
-    top: calc(env(safe-area-inset-top, 0px) + 10px);
+    top: calc(var(--velvet-phone-safe-top) + 10px);
     left: 12px;
     z-index: 46; /* above sticky header, below sidebar */
     width: 44px;
@@ -5898,8 +5902,20 @@ input[type=range]::-webkit-slider-thumb:hover { background: var(--gold); }
   }
 
   #sidebar {
-    padding-top: env(safe-area-inset-top, 0px);
+    padding-top: var(--velvet-phone-safe-top);
     padding-bottom: env(safe-area-inset-bottom, 0px);
+  }
+}
+
+/* iOS 27 standalone can report safe-area-inset-top=0 with a
+   translucent status bar even on Dynamic Island iPhones. Only the
+   installed portrait app gets a minimum 59 CSS px clearance; browser
+   Safari and tablet/desktop remain unchanged. */
+@media (display-mode: standalone) and (max-width: 768px) and (orientation: portrait) {
+  @supports (-webkit-touch-callout: none) {
+    :root {
+      --velvet-phone-safe-top: max(59px, env(safe-area-inset-top, 0px));
+    }
   }
 }
 
@@ -6098,16 +6114,18 @@ input[type=range]::-webkit-slider-thumb:hover { background: var(--gold); }
     </div>
   </div>
 
+  <!-- Fixed mobile navigation toggle stays outside the scroll container
+       so iOS WebKit cannot clip its touch target. -->
+  <button class="mobile-menu-btn" id="mobile-menu-btn" type="button" aria-label="Open navigation menu" aria-controls="sidebar" aria-expanded="false">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+      <line x1="3" y1="12" x2="21" y2="12"/>
+      <line x1="3" y1="6" x2="21" y2="6"/>
+      <line x1="3" y1="18" x2="21" y2="18"/>
+    </svg>
+  </button>
+
   <!-- ─── Main Content ─── -->
   <main id="main">
-    <!-- Mobile Menu Button -->
-    <button class="mobile-menu-btn" id="mobile-menu-btn">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-        <line x1="3" y1="12" x2="21" y2="12"/>
-        <line x1="3" y1="6" x2="21" y2="6"/>
-        <line x1="3" y1="18" x2="21" y2="18"/>
-      </svg>
-    </button>
     <div id="view-container"></div>
   </main>
 
@@ -7239,6 +7257,7 @@ function initMobileMenu() {
     blurActiveEditor();
     sidebar.classList.add('open');
     overlay.classList.add('open');
+    menuBtn.setAttribute('aria-expanded', 'true');
     document.body.style.overflow = 'hidden';
   }
 
@@ -7246,6 +7265,7 @@ function initMobileMenu() {
     blurActiveEditor();
     sidebar.classList.remove('open');
     overlay.classList.remove('open');
+    menuBtn.setAttribute('aria-expanded', 'false');
     document.body.style.overflow = '';
   }
 
