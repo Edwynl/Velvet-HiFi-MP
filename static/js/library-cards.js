@@ -181,3 +181,21 @@ function makeTrackRow(track, num, showAlbum = false) {
 
 let searchTimer;
 let searchOutsideHandler = null;
+
+function makePlaylistCard(playlist) {
+  const card = document.createElement('div');
+  card.className = 'card';
+  card.innerHTML = `
+    <div class="card-art" style="display:flex;align-items:center;justify-content:center;background:linear-gradient(145deg,var(--s2),var(--s4));color:var(--gold)">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" style="width:36px;height:36px">
+        <path d="M9 19V6l12-2v13"></path>
+        <circle cx="6" cy="18" r="3"></circle>
+        <circle cx="18" cy="16" r="3"></circle>
+      </svg>
+    </div>
+    <div class="card-title">${escHtml(playlist.name)}</div>
+    <div class="card-sub">${playlist.track_count || 0} tracks</div>
+  `;
+  card.addEventListener('click', () => navigate('playlist', { id: playlist.id }));
+  return card;
+}

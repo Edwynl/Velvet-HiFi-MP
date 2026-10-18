@@ -306,7 +306,8 @@ async function renderHome(vc) {
     ['recent-grid', '01', 'New Release', '', 'albums'],
     ['home-opened-grid', '02', 'Recently opened', 'Pick up where your browsing left off.', 'albums'],
     ['home-artists-grid', '03', 'Your Artists', 'The voices you keep coming back to.', 'artists'],
-    ['home-recommendations-grid', '04', 'Made for you', 'Mostly Chinese & Asian records, with a little global pop. All in your library.', 'discover'],
+    ['home-playlists-grid', '04', 'Your Playlists', '', 'playlists'],
+    ['home-recommendations-grid', '05', 'Made for you', 'Mostly Chinese & Asian records, with a little global pop. All in your library.', 'discover'],
   ];
   vc.innerHTML = `
     <div class="topbar">
@@ -333,7 +334,7 @@ async function renderHome(vc) {
           </div>
           <a class="home-shelf-link" href="#${action}" data-home-nav="${action}" aria-label="Open ${action}">Explore</a>
         </div>
-        <div class="grid home-shelf-grid ${id === 'home-artists-grid' ? 'home-artist-shelf' : ''}" id="${id}" aria-busy="true">
+        <div class="grid home-shelf-grid ${id === 'home-artists-grid' ? 'home-artist-shelf' : id === 'home-playlists-grid' ? 'home-playlist-shelf' : ''}" id="${id}" aria-busy="true">
           <div class="home-shelf-placeholder">Finding your next record…</div>
         </div>
       </section>`).join('')}
@@ -354,7 +355,7 @@ async function renderHome(vc) {
       const fragment = document.createDocumentFragment();
       list.forEach(item => fragment.appendChild(factory(item)));
       grid.appendChild(fragment);
-      if (id !== 'home-artists-grid') cleanups.push(attachHomeCoverflow(grid));
+      if (id !== 'home-artists-grid' && id !== 'home-playlists-grid') cleanups.push(attachHomeCoverflow(grid));
     } else {
       const message = document.createElement('p');
       message.className = 'home-shelf-empty';
@@ -369,6 +370,13 @@ async function renderHome(vc) {
   });
   // Independent shelves: recent albums paint without waiting for personalization.
   await Promise.allSettled([
+    (async () => {
+      let playlists;
+      try { playlists = await api('/playlists'); } catch { /* Other shelves remain available. */ }
+      fill('home-playlists-grid', Array.isArray(playlists) ? playlists.slice(0, 6) : [], makePlaylistCard,
+        Array.isArray(playlists) ? 'Your playlists will appear here. Open Explore to create one.'
+          : 'Playlists are unavailable. Open Explore to try again.');
+    })(),
     (async () => {
       const stats = await api('/stats');
       if (!stats || !active()) return;
@@ -1980,23 +1988,7 @@ async function renderPlaylists(vc) {
   }
 
   const fragment = document.createDocumentFragment();
-  playlists.forEach(playlist => {
-    const card = document.createElement('div');
-    card.className = 'card';
-    card.innerHTML = `
-      <div class="card-art" style="display:flex;align-items:center;justify-content:center;background:linear-gradient(145deg,var(--s2),var(--s4));color:var(--gold)">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" style="width:36px;height:36px">
-          <path d="M9 19V6l12-2v13"></path>
-          <circle cx="6" cy="18" r="3"></circle>
-          <circle cx="18" cy="16" r="3"></circle>
-        </svg>
-      </div>
-      <div class="card-title">${escHtml(playlist.name)}</div>
-      <div class="card-sub">${playlist.track_count || 0} tracks</div>
-    `;
-    card.addEventListener('click', () => navigate('playlist', { id: playlist.id }));
-    fragment.appendChild(card);
-  });
+  playlists.forEach(playlist => fragment.appendChild(makePlaylistCard(playlist)));
   grid.appendChild(fragment);
 }
 

@@ -106,6 +106,7 @@ function createHarness({ initialHash = '#home' } = {}) {
     const method = (opts.method || 'GET').toUpperCase();
     const parsedUrl = new URL(url, 'http://localhost');
 
+    if (parsedUrl.pathname === '/api/playlists' && method === 'GET') return makeJsonResponse([]);
     if (parsedUrl.pathname === '/api/stats' && method === 'GET') {
       return Promise.resolve(makeJsonResponse({ artists: 1, albums: 3, tracks: 5, duration: 3 }));
     }

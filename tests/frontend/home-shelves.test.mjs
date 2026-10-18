@@ -16,7 +16,7 @@ const waitFor = async predicate => {
   throw new Error('Timed out waiting for Home');
 };
 
-async function harness(homeData, { measuredLayout = false } = {}) {
+async function harness(homeData, { measuredLayout = false, playlists = [] } = {}) {
   const requests = [];
   const html = inlineFrontendModules(readFileSync('static/index.html', 'utf8')).replace(/<link[^>]+>/g, '');
   const dom = new JSDOM(html, {
@@ -43,6 +43,7 @@ async function harness(homeData, { measuredLayout = false } = {}) {
       window.fetch = async url => {
         const u = new URL(url, 'http://localhost');
         requests.push(u);
+        if (u.pathname === '/api/playlists') return response(playlists);
         if (u.pathname === '/api/home') return response(await homeData);
         if (u.pathname === '/api/recently-added') return response(albums);
         if (u.pathname === '/api/stats') return response({ albums: 50, artists: 10, tracks: 500 });
@@ -67,9 +68,12 @@ const h = await harness({
   recently_opened: albums, frequent_artists: artists,
   for_you: albums.slice(0, 10).map(a => ({ ...a, id: a.id + 100 })),
   global_picks: albums.slice(0, 4).map(a => ({ ...a, id: a.id + 200 })),
-});
+}, { playlists: Array.from({ length: 8 }, (_, i) => ({ id:i+1, name:'Playlist '+(i+1), track_count:10 })) });
 try {
   await waitFor(() => h.doc.getElementById('home-recommendations-grid').getAttribute('aria-busy') === 'false');
+  await waitFor(() => h.doc.getElementById('home-playlists-grid').getAttribute('aria-busy') === 'false');
+  assert.equal(h.doc.querySelectorAll('#home-playlists-grid .card').length, 6);
+  assert.equal(h.doc.querySelector('.nav-item[data-view="artists"]').nextElementSibling.dataset.view, 'playlists');
   assert.equal(h.doc.querySelectorAll('#recent-grid .card').length, 24);
   assert.equal(h.doc.querySelectorAll('#home-opened-grid .card').length, 12);
   assert.equal(h.doc.querySelectorAll('#home-artists-grid .card').length, 8);
@@ -135,12 +139,20 @@ try {
   assert.equal(request.searchParams.get('artist_ids').split(',')[0], '2');
   h.window.localStorage.setItem('velvet:home-activity:v1', 'corrupt');
   assert.equal(h.window.readHomeActivity().albums.length, 0);
+  const destinations=[];
+  h.window.navigate=(view,params)=>destinations.push({view,params});
+  h.doc.querySelector('#home-playlists-grid .card').click();
+  assert.deepEqual(structuredClone(destinations.pop()), {view:'playlist',params:{id:1}});
+  h.doc.querySelector('[data-home-nav="playlists"]').click();
+  assert.equal(destinations.pop().view,'playlists');
 } finally { h.dom.window.close(); }
 
 const empty = await harness(null);
 try {
   await waitFor(() => empty.doc.getElementById('home-opened-grid').getAttribute('aria-busy') === 'false');
   assert.ok(empty.doc.getElementById('home-opened-grid').textContent.includes('Open an album'));
+  await waitFor(() => empty.doc.getElementById('home-playlists-grid').getAttribute('aria-busy') === 'false');
+  assert.ok(empty.doc.getElementById('home-playlists-grid').textContent.includes('Your playlists will appear here'));
   assert.equal(empty.doc.querySelectorAll('#recent-grid .card').length, 24, 'Recent uploads survive unavailable recommendations');
 } finally { empty.dom.window.close(); }
 
