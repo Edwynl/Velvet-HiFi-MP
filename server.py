@@ -1458,7 +1458,10 @@ async def get_artist_image(artist_id: int):
             headers={"Cache-Control": "max-age=86400"},
         )
 
-    return Response(status_code=204, headers={"Cache-Control": "max-age=86400"})
+    # No image yet: do not let the browser sit on this for a day. Avatars are
+    # backfilled in bulk, and a cached 204 would keep showing the placeholder
+    # long after the picture landed. Real images above stay cached for a day.
+    return Response(status_code=204, headers={"Cache-Control": "no-store"})
 
 @app.get("/api/artists/{artist_id}/details")
 async def get_artist_details(artist_id: int):
@@ -4034,9 +4037,15 @@ def _credential_response(request: Request, api_key: str):
                              "stream_ticket": stream_ticket,
                              "stream_ticket_expires_at": stream_expires_at},
                             headers={"Cache-Control": "no-store"})
-    # Image elements cannot attach API headers. Restrict this cookie to cover
-    # reads; it never authorizes mutations or the rest of the API.
+    # Image elements cannot attach API headers. Restrict these cookies to
+    # read-only image paths; they never authorize mutations or the rest of the
+    # API. Artist avatars need their own scope: /api/covers was the only image
+    # path the browser could load, so every artist card silently got a 401 and
+    # the library rendered no avatars at all.
     response.set_cookie("velvet_cover_key", api_key, path="/api/covers",
+                        httponly=True, samesite="strict",
+                        secure=request.url.scheme == "https")
+    response.set_cookie("velvet_artist_image_key", api_key, path="/api/artists",
                         httponly=True, samesite="strict",
                         secure=request.url.scheme == "https")
     return response
@@ -4231,8 +4240,11 @@ async def auth_middleware(request: Request, call_next):
         # logs, history and renderer metadata. Media URLs use tickets above.
         password = request.headers.get("X-Password")
         api_key = request.headers.get("X-API-Key")
-        if not api_key and request.method == "GET" and path.startswith("/api/covers/"):
-            api_key = request.cookies.get("velvet_cover_key")
+        if not api_key and request.method == "GET":
+            if path.startswith("/api/covers/"):
+                api_key = request.cookies.get("velvet_cover_key")
+            elif path.startswith("/api/artists/") and path.endswith("/image"):
+                api_key = request.cookies.get("velvet_artist_image_key")
         auth_result = security.verify_auth(
             password=password,
             api_key=api_key,
