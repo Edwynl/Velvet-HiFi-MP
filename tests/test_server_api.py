@@ -167,6 +167,15 @@ class ServerApiTests(unittest.TestCase):
                 )
                 self.assertEqual(result.status_code, 422)
 
+    def test_bulk_musicbrainz_pacing_blocks_overlapping_manual_sync(self):
+        # During a batch, manual MusicBrainz requests must not bypass its
+        # conservative request-rate limit.
+        with patch.object(server._alias_enrichment_job.state, "is_running", return_value=True):
+            single = self.client.post("/api/artists/1/aliases/sync")
+            fallback = self.client.post("/api/search/resolve-artist-alias?q=Stage")
+        self.assertEqual(single.status_code, 409)
+        self.assertEqual(fallback.status_code, 409)
+
     def test_global_search_returns_artist_album_track_categories(self):
         result = self.client.get("/api/search?q=Artist%20One")
         self.assertEqual(result.status_code, 200)

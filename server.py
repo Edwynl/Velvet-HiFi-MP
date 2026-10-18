@@ -1184,6 +1184,8 @@ def sync_musicbrainz_artist_aliases(artist_id: int):
     Network awaits never hold a pooled event-loop-thread DB connection while
     unrelated async requests execute. Search itself never contacts MusicBrainz.
     """
+    if _alias_enrichment_job.state.is_running():
+        raise HTTPException(409, "Wait for bulk alias enrichment or stop it before a manual MusicBrainz sync")
     db = get_db()
     try:
         try:
@@ -1350,6 +1352,8 @@ def resolve_unrecognized_artist_alias(
     q: str = Query(..., min_length=1, max_length=MAX_SEARCH_QUERY_LENGTH),
 ):
     """Opt-in lookup only, never called as part of typing into search."""
+    if _alias_enrichment_job.state.is_running():
+        raise HTTPException(409, "Wait for bulk alias enrichment or stop it before a manual MusicBrainz lookup")
     db = get_db()
     try:
         try:
