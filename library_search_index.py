@@ -1,57 +1,24 @@
-"""Precomputed search keys that narrow /api/search to a few candidate tracks.
+"""Precomputed dual-key track and catalog search indexes.
 
-Every key is the *search fold* of a field: ``to_simplified`` and then
-SQLite-style ASCII lowering. ``to_simplified`` is a per-character map whose
-values are never keys, so for the predicates search uses:
-
-* ``LOWER(field) LIKE '%p%'`` implies every ``%``/``_``-free piece of ``p``,
-  folded, is inside ``fold(field)``;
-* the variant fallback (``v``/``S(v)``/``T(v)`` inside the field, or the
-  field inside them) implies ``fold(v) in fold(field)`` or
-  ``fold(field) in fold(v)``.
-
-``track_search_index.search_text`` joins the folds of every field either
-predicate reads, so ``instr`` on it finds the forward candidates;
-``track_search_terms`` holds each fallback field's fold as a whole term, so
-the reverse candidates are the terms that are substrings of the query. The
-index only narrows: the original predicates still decide every result.
-
-Triggers (schema 10) queue changed tracks in ``track_search_dirty``; search
-checks those with the exact path, so a writer that never calls
-``refresh_track_search_index`` only costs speed.
+OpenCC T2S may rewrite *phrases*. It is NOT a homomorphism over individual
+characters or substrings, so we must never use the old per-character LIKE
+prefilter theorem. Store complete raw and converted field keys separately;
+search checks both. Dirty rows are matched from authoritative metadata.
 """
 from __future__ import annotations
 
-import hashlib
 import sqlite3
-import string
+from importlib.metadata import version as package_version
 
-from chinese_variants import _T2S_MAP, to_simplified
+from chinese_variants import literal_fold, search_fold
+from library_search_match import indexed_text, _catalog_fields
 
-SEP = "\x1f"
-_INDEX_FORMAT = 1
-_ASCII_LOWER = str.maketrans(string.ascii_uppercase, string.ascii_lowercase)
-
-
-def _signature() -> str:
-    digest = hashlib.sha1(repr(sorted(_T2S_MAP.items())).encode("utf-8")).hexdigest()
-    return f"{_INDEX_FORMAT}:{digest[:16]}"
-
-
-INDEX_SIGNATURE = _signature()
-
-
-def search_fold(text: str) -> str:
-    """Simplified Chinese, then only A-Z lowered (as SQLite's LOWER())."""
-    return to_simplified(text).translate(_ASCII_LOWER)
+# A changed dictionary, fold algorithm, or on-disk format MUST invalidate keys.
+_INDEX_FORMAT = 2
+INDEX_SIGNATURE = f"{_INDEX_FORMAT}:opencc-{package_version('OpenCC')}:t2s-nfkc-casefold:dual-keys"
 
 
 def read_index_meta(db: sqlite3.Connection) -> dict[str, str] | None:
-    """Index metadata, or None when the index tables do not exist yet.
-
-    ``signature`` equals INDEX_SIGNATURE once the index is built;
-    ``max_term_length`` bounds every stored term's length.
-    """
     try:
         return dict(db.execute("SELECT key, value FROM search_index_meta").fetchall())
     except sqlite3.OperationalError:
@@ -59,93 +26,138 @@ def read_index_meta(db: sqlite3.Connection) -> dict[str, str] | None:
 
 
 def _build_rows(db: sqlite3.Connection, track_ids: list[int]):
-    placeholders = ",".join("?" * len(track_ids))
+    marks = ",".join("?" for _ in track_ids)
     credited: dict[int, list[str]] = {}
     for track_id, name in db.execute(
-        f"""
-        SELECT ta.track_id, ar.name
-        FROM track_artists ta JOIN artists ar ON ar.id = ta.artist_id
-        WHERE ta.track_id IN ({placeholders})
-        """,
-        track_ids,
+        f"""SELECT ta.track_id, ar.name FROM track_artists ta
+            JOIN artists ar ON ar.id=ta.artist_id
+            WHERE ta.track_id IN ({marks})""", track_ids
     ):
         credited.setdefault(track_id, []).append(name)
-    if db.execute("SELECT 1 FROM sqlite_master WHERE name = 'artist_aliases'").fetchone():
-        # Search also matches credited artists by their other names.
+    if db.execute("SELECT 1 FROM sqlite_master WHERE name='artist_aliases'").fetchone():
         for track_id, name in db.execute(
-            f"""
-            SELECT ta.track_id, aa.name
-            FROM track_artists ta JOIN artist_aliases aa ON aa.artist_id = ta.artist_id
-            WHERE ta.track_id IN ({placeholders})
-            """,
-            track_ids,
+            f"""SELECT ta.track_id, aa.name FROM track_artists ta
+                JOIN artist_aliases aa ON aa.artist_id=ta.artist_id
+                WHERE ta.track_id IN ({marks})""", track_ids
+        ):
+            credited.setdefault(track_id, []).append(name)
+        # Primary artist aliases must also match tracks with no track_artists row.
+        for track_id, name in db.execute(
+            f"""SELECT t.id, aa.name FROM tracks t
+                JOIN artist_aliases aa ON aa.artist_id=t.artist_id
+                WHERE t.id IN ({marks})""", track_ids
         ):
             credited.setdefault(track_id, []).append(name)
 
-    index_rows = []
-    term_rows = []
-    for track_id, *fallback_fields in db.execute(
-        f"""
-        SELECT t.id, t.title, ar.name, al.title, t.composer, t.work_title,
-               t.performer, t.conductor, t.ensemble
-        FROM tracks t
-        LEFT JOIN artists ar ON ar.id = t.artist_id
-        LEFT JOIN albums al ON al.id = t.album_id
-        WHERE t.id IN ({placeholders})
-        """,
-        track_ids,
+    index_rows, term_rows = [], []
+    for track_id, *fields in db.execute(
+        f"""SELECT t.id, t.title, ar.name, al.title, t.composer, t.work_title,
+                   t.performer, t.conductor, t.ensemble
+            FROM tracks t
+            LEFT JOIN artists ar ON ar.id=t.artist_id
+            LEFT JOIN albums al ON al.id=t.album_id
+            WHERE t.id IN ({marks})""", track_ids
     ):
-        terms = list(dict.fromkeys(
-            search_fold(str(value)) for value in fallback_fields if value
-        ))
-        credit_terms = [search_fold(str(name)) for name in credited.get(track_id, []) if name]
-        index_rows.append((track_id, SEP.join(dict.fromkeys(terms + credit_terms))))
-        term_rows.extend((term, track_id) for term in terms)
+        index_rows.append((track_id, indexed_text([*fields, *credited.get(track_id, [])])))
+        # Reverse-substring compatibility with the original search. The index
+        # stores complete field keys; never allow a substring across fields.
+        terms = set()
+        for value in fields:
+            if value:
+                terms.update((literal_fold(str(value)), search_fold(str(value))))
+        term_rows.extend((term, track_id) for term in terms if term)
     return index_rows, term_rows
 
 
-def refresh_track_search_index(db: sqlite3.Connection, batch_size: int = 2000) -> int:
-    """Rebuild index rows for dirty tracks. The caller commits.
+def _refresh_catalog_indexes(db: sqlite3.Connection, batch_size: int) -> None:
+    if not db.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='catalog_search_dirty'"
+    ).fetchone():
+        return
+    while True:
+        dirty = db.execute(
+            "SELECT kind, entity_id FROM catalog_search_dirty "
+            "ORDER BY kind, entity_id LIMIT ?", (batch_size,),
+        ).fetchall()
+        if not dirty:
+            return
+        for kind in ("artist", "album"):
+            ids = [row[1] for row in dirty if row[0] == kind]
+            if not ids:
+                continue
+            marks = ",".join("?" for _ in ids)
+            db.execute(
+                f"DELETE FROM catalog_search_index WHERE kind=? AND entity_id IN ({marks})",
+                (kind, *ids),
+            )
+            fields = _catalog_fields(db, kind, ids)
+            db.executemany(
+                "INSERT INTO catalog_search_index(kind,entity_id,search_text) VALUES (?,?,?)",
+                [(kind, entity_id, indexed_text(values))
+                 for entity_id, values in fields.items()],
+            )
+            db.execute(
+                f"DELETE FROM catalog_search_dirty WHERE kind=? AND entity_id IN ({marks})",
+                (kind, *ids),
+            )
 
-    Returns the number of tracks processed; 0 on a pre-10 schema.
+
+def refresh_track_search_index(db: sqlite3.Connection, batch_size: int = 2000) -> int:
+    """Refresh index rows, including catalog keys. Caller owns the transaction.
+
+    Return value remains the number of track rows (backward compatibility).
+    A missing OpenCC installation fails at import rather than silently
+    degrading Chinese search to a 115-character map.
     """
+    if batch_size < 1:
+        raise ValueError("batch_size must be positive")
     meta = read_index_meta(db)
     if meta is None:
         return 0
     max_term_length = int(meta.get("max_term_length") or 0)
     if meta.get("signature") != INDEX_SIGNATURE:
-        # New index, or the conversion map changed: every key is suspect.
         db.execute("INSERT OR IGNORE INTO track_search_dirty(track_id) SELECT id FROM tracks")
+        if db.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='catalog_search_dirty'"
+        ).fetchone():
+            db.execute(
+                "INSERT OR IGNORE INTO catalog_search_dirty(kind,entity_id) "
+                "SELECT 'artist',id FROM artists"
+            )
+            db.execute(
+                "INSERT OR IGNORE INTO catalog_search_dirty(kind,entity_id) "
+                "SELECT 'album',id FROM albums"
+            )
         db.execute(
-            "INSERT OR REPLACE INTO search_index_meta(key, value) VALUES ('signature', ?)",
+            "INSERT OR REPLACE INTO search_index_meta(key,value) VALUES('signature',?)",
             (INDEX_SIGNATURE,),
         )
         max_term_length = 0
 
-    processed = 0
+    count = 0
     while True:
         track_ids = [row[0] for row in db.execute(
             "SELECT track_id FROM track_search_dirty ORDER BY track_id LIMIT ?",
             (batch_size,),
         )]
         if not track_ids:
-            return processed
-        placeholders = ",".join("?" * len(track_ids))
-        # Removed tracks keep no rows; present ones are rewritten below.
-        db.execute(f"DELETE FROM track_search_index WHERE track_id IN ({placeholders})", track_ids)
-        db.execute(f"DELETE FROM track_search_terms WHERE track_id IN ({placeholders})", track_ids)
-        index_rows, term_rows = _build_rows(db, track_ids)
+            break
+        marks = ",".join("?" for _ in track_ids)
+        db.execute(f"DELETE FROM track_search_index WHERE track_id IN ({marks})", track_ids)
+        db.execute(f"DELETE FROM track_search_terms WHERE track_id IN ({marks})", track_ids)
+        keys, terms = _build_rows(db, track_ids)
         db.executemany(
-            "INSERT INTO track_search_index(track_id, search_text) VALUES (?, ?)", index_rows
+            "INSERT INTO track_search_index(track_id,search_text) VALUES(?,?)", keys
         )
         db.executemany(
-            "INSERT INTO track_search_terms(term, track_id) VALUES (?, ?)", term_rows
+            "INSERT INTO track_search_terms(term,track_id) VALUES(?,?)", terms
         )
-        db.execute(f"DELETE FROM track_search_dirty WHERE track_id IN ({placeholders})", track_ids)
-        # Only ever grows, so it stays an upper bound when terms are removed.
-        max_term_length = max([max_term_length, *(len(term) for term, _ in term_rows)])
+        db.execute(f"DELETE FROM track_search_dirty WHERE track_id IN ({marks})", track_ids)
+        max_term_length = max([max_term_length, *(len(term) for term, _ in terms)])
         db.execute(
-            "INSERT OR REPLACE INTO search_index_meta(key, value) VALUES ('max_term_length', ?)",
-            (str(max_term_length),),
+            "INSERT OR REPLACE INTO search_index_meta(key,value) "
+            "VALUES('max_term_length',?)", (str(max_term_length),),
         )
-        processed += len(track_ids)
+        count += len(track_ids)
+    _refresh_catalog_indexes(db, batch_size)
+    return count

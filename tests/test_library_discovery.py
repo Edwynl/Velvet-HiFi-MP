@@ -4,7 +4,7 @@ import unittest
 from contextlib import closing
 from pathlib import Path
 
-from chinese_variants import _T2S_MAP, get_all_variants, to_simplified, to_traditional
+from chinese_variants import get_all_variants, to_simplified, to_traditional
 from db_schema import apply_migrations
 from library_discovery import (
     fetch_album_radio,
@@ -180,12 +180,16 @@ class TrackSearchIndexTests(unittest.TestCase):
         self.db.commit()
 
     def test_conversion_map_supports_folding(self):
-        # search_fold relies on to_simplified being idempotent and on
-        # simplified(traditional(x)) == simplified(x).
-        for traditional, simplified in _T2S_MAP.items():
-            self.assertEqual(to_simplified(simplified), simplified)
-            for char in (traditional, simplified):
-                self.assertEqual(to_simplified(to_traditional(char)), to_simplified(char))
+        # OpenCC is phrase-aware and S2T is not reversible: compare canonical
+        # *search keys*, not individual character round trips.
+        from library_search_index import search_fold
+        for traditional, simplified in (
+            ("周杰倫", "周杰伦"), ("快樂", "快乐"),
+            ("頭髮", "头发"), ("發展", "发展"),
+            ("陳綺貞", "陈绮贞"), ("後來", "后来"),
+        ):
+            with self.subTest(traditional=traditional):
+                self.assertEqual(search_fold(traditional), search_fold(simplified))
 
     def test_variants_match_near_end_of_table_with_index(self):
         self._build()

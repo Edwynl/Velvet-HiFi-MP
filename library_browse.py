@@ -64,79 +64,28 @@ def fetch_artists(
     to_simplified: Callable[[str], str],
     to_traditional: Callable[[str], str],
 ) -> list[dict]:
-    search = (search or "").strip()
-    variants = get_all_variants(search) if search else []
+    """Artists: OpenCC keys, aliases, and pagination after filtering."""
+    from library_search_match import ids_json, match_catalog_ids
 
-    if not search:
-        rows = db.execute(
-            """
-            SELECT ar.*,
+    params: list = []
+    where = ""
+    if search.strip():
+        where = "WHERE ar.id IN (SELECT value FROM json_each(?))"
+        params.append(ids_json(match_catalog_ids(db, "artist", search.strip())))
+    rows = db.execute(
+        f"""SELECT ar.*,
                    COUNT(DISTINCT t.album_id) as album_count,
                    COUNT(DISTINCT ta.track_id) as track_count
             FROM artists ar
-            LEFT JOIN track_artists ta ON ar.id = ta.artist_id
-            LEFT JOIN tracks t ON ta.track_id = t.id
+            LEFT JOIN track_artists ta ON ar.id=ta.artist_id
+            LEFT JOIN tracks t ON t.id=ta.track_id
+            {where}
             GROUP BY ar.id
-            ORDER BY ar.sort_name
-            LIMIT ? OFFSET ?
-            """,
-            (limit, offset),
-        ).fetchall()
-        return _row_dicts(rows)
-
-    like_patterns = [f"%{variant}%" for variant in variants if variant]
-    direct_rows = []
-    if like_patterns:
-        conditions = " OR ".join(["ar.name LIKE ?"] * len(like_patterns))
-        alias_conditions = " OR ".join(["aa.name LIKE ?"] * len(like_patterns))
-        direct_rows = db.execute(
-            f"""
-            SELECT ar.*,
-                   COUNT(DISTINCT t.album_id) as album_count,
-                   COUNT(DISTINCT ta.track_id) as track_count
-            FROM artists ar
-            LEFT JOIN track_artists ta ON ar.id = ta.artist_id
-            LEFT JOIN tracks t ON ta.track_id = t.id
-            WHERE {conditions}
-               OR EXISTS (SELECT 1 FROM artist_aliases aa
-                          WHERE aa.artist_id = ar.id AND ({alias_conditions}))
-            GROUP BY ar.id
-            """,
-            like_patterns * 2,
-        ).fetchall()
-
-    if not _needs_variant_fallback(search, variants, to_simplified, to_traditional):
-        direct_dicts = [dict(row) for row in direct_rows]
-        direct_dicts.sort(key=lambda item: item.get("sort_name", item.get("name", "")))
-        return direct_dicts[offset:offset + limit]
-
-    all_rows = db.execute(
-        """
-        SELECT ar.*,
-               COUNT(DISTINCT t.album_id) as album_count,
-               COUNT(DISTINCT ta.track_id) as track_count
-        FROM artists ar
-        LEFT JOIN track_artists ta ON ar.id = ta.artist_id
-        LEFT JOIN tracks t ON ta.track_id = t.id
-        GROUP BY ar.id
-        """
+            ORDER BY ar.sort_name COLLATE NOCASE, ar.id
+            LIMIT ? OFFSET ?""",
+        (*params, limit, offset),
     ).fetchall()
-
-    matched_ids = {row["id"] for row in direct_rows}
-    for artist in all_rows:
-        if artist["id"] in matched_ids:
-            continue
-        if _matches_variants(
-            [artist["name"]],
-            variants,
-            to_simplified,
-            to_traditional,
-        ):
-            matched_ids.add(artist["id"])
-
-    matched_artists = [dict(row) for row in all_rows if row["id"] in matched_ids]
-    matched_artists.sort(key=lambda item: item.get("sort_name", item.get("name", "")))
-    return matched_artists[offset:offset + limit]
+    return _row_dicts(rows)
 
 
 def fetch_albums(
@@ -150,88 +99,39 @@ def fetch_albums(
     to_simplified: Callable[[str], str],
     to_traditional: Callable[[str], str],
 ) -> list[dict]:
+    """Albums: complete Chinese results before offset/limit and year filters."""
+    from library_search_match import ids_json, match_catalog_ids
+
     sort_map = {
         "title": "al.title",
         "year": "al.year DESC, al.title",
         "artist": "ar.sort_name, al.year DESC",
         "added": "al.created_at DESC",
     }
-    order = sort_map.get(sort, "al.title")
-
-    search = (search or "").strip()
-    variants = get_all_variants(search) if search else []
-    like_patterns = [f"%{variant}%" for variant in variants if variant]
-
     params: list = []
-    where_parts: list[str] = []
-
-    if like_patterns:
-        title_conditions = " OR ".join(["al.title LIKE ?"] * len(like_patterns))
-        artist_conditions = " OR ".join(["ar.name LIKE ?"] * len(like_patterns))
-        where_parts.append(f"({title_conditions} OR {artist_conditions})")
-        params.extend([*like_patterns, *like_patterns])
-
+    clauses = []
+    if search.strip():
+        clauses.append("al.id IN (SELECT value FROM json_each(?))")
+        params.append(ids_json(match_catalog_ids(db, "album", search.strip())))
     if year is not None:
-        where_parts.append("al.year = ?")
+        clauses.append("al.year = ?")
         params.append(year)
-
-    where_clause = f"WHERE {' AND '.join(where_parts)}" if where_parts else ""
-
-    direct_rows = db.execute(
-        f"""
-        SELECT al.*, ar.name as artist_name, COUNT(t.id) as track_count,
-               MAX(CASE WHEN t.sample_rate > 44100 OR t.bit_depth > 16 THEN 1 ELSE 0 END) as is_hires
-        FROM albums al
-        JOIN artists ar ON al.artist_id = ar.id
-        LEFT JOIN tracks t ON t.album_id = al.id
-        {where_clause}
-        GROUP BY al.id
-        ORDER BY {order}
-        """,
-        params,
+    where = "WHERE " + " AND ".join(clauses) if clauses else ""
+    rows = db.execute(
+        f"""SELECT al.*, ar.name AS artist_name,
+                   COUNT(t.id) AS track_count,
+                   MAX(CASE WHEN t.sample_rate > 44100 OR t.bit_depth > 16
+                            THEN 1 ELSE 0 END) AS is_hires
+            FROM albums al
+            JOIN artists ar ON al.artist_id=ar.id
+            LEFT JOIN tracks t ON t.album_id=al.id
+            {where}
+            GROUP BY al.id
+            ORDER BY {sort_map.get(sort, sort_map["title"])}, al.id
+            LIMIT ? OFFSET ?""",
+        (*params, limit, offset),
     ).fetchall()
-
-    if not _needs_variant_fallback(search, variants, to_simplified, to_traditional):
-        return [dict(row) for row in direct_rows[offset:offset + limit]]
-
-    if not search or len(direct_rows) >= limit:
-        return [dict(row) for row in direct_rows[offset:offset + limit]]
-
-    all_rows = db.execute(
-        """
-        SELECT al.*, ar.name as artist_name, COUNT(t.id) as track_count,
-               MAX(CASE WHEN t.sample_rate > 44100 OR t.bit_depth > 16 THEN 1 ELSE 0 END) as is_hires
-        FROM albums al
-        JOIN artists ar ON al.artist_id = ar.id
-        LEFT JOIN tracks t ON t.album_id = al.id
-        GROUP BY al.id
-        """
-    ).fetchall()
-
-    matched_ids = {row["id"] for row in direct_rows}
-    for album in all_rows:
-        if album["id"] in matched_ids:
-            continue
-        if year and album["year"] != year:
-            continue
-        if _matches_variants(
-            [album["title"], album["artist_name"]],
-            variants,
-            to_simplified,
-            to_traditional,
-        ):
-            matched_ids.add(album["id"])
-
-    matched_rows = [dict(row) for row in all_rows if row["id"] in matched_ids]
-    if sort == "year":
-        matched_rows.sort(key=lambda item: (-(item.get("year") or 0), item.get("title", "")))
-    elif sort == "artist":
-        matched_rows.sort(key=lambda item: (item.get("artist_name", ""), -(item.get("year") or 0)))
-    elif sort == "added":
-        matched_rows.sort(key=lambda item: -(item.get("created_at") or 0))
-    else:
-        matched_rows.sort(key=lambda item: item.get("title", ""))
-    return matched_rows[offset:offset + limit]
+    return _row_dicts(rows)
 
 
 def fetch_tracks(
@@ -257,22 +157,17 @@ def fetch_tracks(
     count_params: list = []
 
     if search:
-        like = f"%{search.lower()}%"
+        from library_search_match import ids_json, match_track_ids
+        # Preserve the old genre lookup in addition to Chinese title/credits.
+        search_ids = ids_json(match_track_ids(db, search, reverse=True))
+        # Genre remains a literal substring (not a LIKE wildcard pattern).
+        genre_term = search.casefold()
         where_parts.append(
-            """(
-                LOWER(t.title) LIKE ?
-                OR LOWER(ar.name) LIKE ?
-                OR LOWER(al.title) LIKE ?
-                OR LOWER(COALESCE(al.genre, '')) LIKE ?
-                OR LOWER(COALESCE(t.composer, '')) LIKE ?
-                OR LOWER(COALESCE(t.work_title, '')) LIKE ?
-                OR LOWER(COALESCE(t.performer, '')) LIKE ?
-                OR LOWER(COALESCE(t.conductor, '')) LIKE ?
-                OR LOWER(COALESCE(t.ensemble, '')) LIKE ?
-            )"""
+            "(t.id IN (SELECT value FROM json_each(?)) "
+            "OR instr(LOWER(COALESCE(al.genre,'')), ?) > 0)"
         )
-        params.extend([like, like, like, like, like, like, like, like, like])
-        count_params.extend([like, like, like, like, like, like, like, like, like])
+        params.extend((search_ids, genre_term))
+        count_params.extend((search_ids, genre_term))
 
     if favorites_only:
         where_parts.append("al.is_favorite = 1")

@@ -1,33 +1,11 @@
 from __future__ import annotations
 
-import json
-import re
 import sqlite3
 from typing import Callable, Optional
 
 from fastapi import HTTPException
 
-import chinese_variants
 from artist_aliases import fetch_aliases
-from library_browse import _matches_variants
-from library_search_index import INDEX_SIGNATURE, read_index_meta, search_fold
-
-
-def _needs_variant_fallback(
-    q: str,
-    variants: list[str],
-    to_simplified: Callable[[str], str],
-    to_traditional: Callable[[str], str],
-) -> bool:
-    """Only run Python-side fallback when variant expansion actually differs."""
-    if not q or not variants:
-        return False
-
-    normalized = {q}
-    normalized.update(variants)
-    normalized.add(to_simplified(q))
-    normalized.add(to_traditional(q))
-    return len(normalized) > 1
 
 
 def fetch_artist_detail_summary(db: sqlite3.Connection, artist_id: int) -> dict:
@@ -92,178 +70,6 @@ _TRACK_JOINS = """
     JOIN artists ar_primary ON t.artist_id = ar_primary.id
     JOIN albums al ON t.album_id = al.id
 """
-_FALLBACK_BATCH = 512
-# Up to this many distinct query substrings, reverse candidates come from term
-# lookups (about 1 ms per 1,000); a longer query scans every term instead.
-_MAX_TERM_LOOKUPS = 50_000
-
-
-def _like_conditions(variants: list[str]) -> tuple[str, dict]:
-    conditions = []
-    params = {}
-    for i, variant in enumerate(variants):
-        params[f"like{i}"] = f"%{variant.lower()}%"
-        p = f":like{i}"
-        conditions.extend([
-            f"LOWER(t.title) LIKE {p}",
-            f"""EXISTS (
-                SELECT 1
-                FROM track_artists ta2
-                JOIN artists ar_all ON ar_all.id = ta2.artist_id
-                WHERE ta2.track_id = t.id
-                  AND LOWER(ar_all.name) LIKE {p}
-            )""",
-            f"""EXISTS (
-                SELECT 1
-                FROM track_artists ta3
-                JOIN artist_aliases aa ON aa.artist_id = ta3.artist_id
-                WHERE ta3.track_id = t.id
-                  AND LOWER(aa.name) LIKE {p}
-            )""",
-            f"LOWER(al.title) LIKE {p}",
-            f"LOWER(COALESCE(t.composer, '')) LIKE {p}",
-            f"LOWER(COALESCE(t.work_title, '')) LIKE {p}",
-            f"LOWER(COALESCE(t.performer, '')) LIKE {p}",
-            f"LOWER(COALESCE(t.conductor, '')) LIKE {p}",
-            f"LOWER(COALESCE(t.ensemble, '')) LIKE {p}",
-        ])
-    return " OR ".join(conditions), params
-
-
-def _like_prefilter(variants: list[str], params: dict) -> str:
-    """instr() test that every LIKE match passes (see library_search_index)."""
-    alternatives = []
-    for i, variant in enumerate(variants):
-        pieces = [search_fold(piece) for piece in re.split("[%_]", variant.lower()) if piece]
-        if not pieces:
-            return "1"  # the pattern is only wildcards
-        for j, piece in enumerate(pieces):
-            params[f"piece{i}_{j}"] = piece
-        alternatives.append(" AND ".join(
-            f"instr(s.search_text, :piece{i}_{j}) > 0" for j in range(len(pieces))
-        ))
-    return " OR ".join(f"({alternative})" for alternative in alternatives)
-
-
-def _like_search(db: sqlite3.Connection, q: str, variants: list[str], limit: int,
-                 index_ready: bool) -> list:
-    where_clause, params = _like_conditions(variants)
-    params.update(q=q.lower(), limit=limit)
-    if not index_ready:
-        return db.execute(
-            f"""
-            SELECT {_TRACK_COLUMNS} {_TRACK_JOINS}
-            WHERE {where_clause}
-            ORDER BY (LOWER(t.title) = :q) DESC, LOWER(t.title)
-            LIMIT :limit
-            """,
-            params,
-        ).fetchall()
-
-    prefilter = _like_prefilter(variants, params)
-    # CROSS JOIN keeps the narrow index as the scanned table, so the LIKE
-    # conditions run only for its candidates; queued tracks are checked from
-    # the base tables. Rows no longer arrive in ID order, so the ID that
-    # broke title ties in the scan is now an explicit sort key.
-    return db.execute(
-        f"""
-        SELECT * FROM (
-            SELECT {_TRACK_COLUMNS}
-            FROM track_search_index s
-            CROSS JOIN tracks t
-            JOIN artists ar_primary ON t.artist_id = ar_primary.id
-            JOIN albums al ON t.album_id = al.id
-            WHERE t.id = s.track_id
-              AND ({prefilter})
-              AND s.track_id NOT IN (SELECT track_id FROM track_search_dirty)
-              AND ({where_clause})
-            UNION ALL
-            SELECT {_TRACK_COLUMNS} {_TRACK_JOINS}
-            WHERE t.id IN (SELECT track_id FROM track_search_dirty)
-              AND ({where_clause})
-        )
-        ORDER BY (LOWER(title) = :q) DESC, LOWER(title), id
-        LIMIT :limit
-        """,
-        params,
-    ).fetchall()
-
-
-def _scan_all_tracks(db: sqlite3.Connection):
-    last_id = 0
-    while True:
-        batch = db.execute(
-            f"SELECT {_TRACK_COLUMNS} {_TRACK_JOINS} WHERE t.id > ? ORDER BY t.id LIMIT ?",
-            (last_id, _FALLBACK_BATCH),
-        ).fetchall()
-        if not batch:
-            return
-        last_id = batch[-1]["id"]
-        yield from batch
-
-
-def _query_terms(key: str, max_term_length: int) -> Optional[set[str]]:
-    """Distinct substrings of key that could equal a stored term, or None
-    when there are more than _MAX_TERM_LOOKUPS of them."""
-    substrings = set()
-    for i in range(len(key)):
-        for j in range(i + 1, min(len(key), i + max_term_length) + 1):
-            substrings.add(key[i:j])
-            if len(substrings) > _MAX_TERM_LOOKUPS:
-                return None
-    return substrings
-
-
-def _indexed_fallback_candidates(db: sqlite3.Connection, variants: list[str], max_term_length: int):
-    """Every track that could pass the variant predicate, in ID order."""
-    keys = list(dict.fromkeys(search_fold(variant) for variant in variants))
-    candidate_ids = {row[0] for row in db.execute(
-        "SELECT track_id FROM track_search_index WHERE "
-        + " OR ".join("instr(search_text, ?) > 0" for _ in keys),
-        keys,
-    )}
-    for key in keys:
-        # A reverse match is a whole folded field inside the folded query.
-        substrings = _query_terms(key, max_term_length)
-        if substrings is not None:
-            rows = db.execute(
-                "SELECT track_id FROM track_search_terms "
-                "WHERE term IN (SELECT value FROM json_each(?))",
-                (json.dumps(list(substrings)),),
-            )
-        else:
-            rows = db.execute(
-                "SELECT track_id FROM track_search_terms WHERE instr(?, term) > 0", (key,)
-            )
-        candidate_ids.update(row[0] for row in rows)
-    candidate_ids.update(row[0] for row in db.execute("SELECT track_id FROM track_search_dirty"))
-    return db.execute(
-        f"""
-        SELECT {_TRACK_COLUMNS} {_TRACK_JOINS}
-        WHERE t.id IN (SELECT value FROM json_each(?))
-        ORDER BY t.id
-        """,
-        (json.dumps(sorted(candidate_ids)),),
-    )
-
-
-def _scan_batch_end_id(db: sqlite3.Connection, track_id: int) -> Optional[int]:
-    """Last ID of the _FALLBACK_BATCH-row scan batch that contains track_id.
-
-    The fallback finishes the batch in which it reaches the limit; the
-    indexed path skips non-candidates, so it locates that boundary here.
-    None means the batch runs to the end of the table.
-    """
-    position = db.execute(
-        f"SELECT COUNT(*) {_TRACK_JOINS} WHERE t.id <= ?", (track_id,)
-    ).fetchone()[0]
-    batch_end = -(-position // _FALLBACK_BATCH) * _FALLBACK_BATCH
-    row = db.execute(
-        f"SELECT t.id {_TRACK_JOINS} ORDER BY t.id LIMIT 1 OFFSET ?", (batch_end - 1,)
-    ).fetchone()
-    return row[0] if row else None
-
-
 def search_tracks(
     db: sqlite3.Connection,
     q: str,
@@ -272,61 +78,29 @@ def search_tracks(
     to_simplified: Callable[[str], str],
     to_traditional: Callable[[str], str],
 ) -> dict:
+    """Global search using one OpenCC search key for all query paths.
+
+    The callable arguments are retained for backward API compatibility; all
+    production paths must use the identical converter for index and query.
+    Exact raw spellings are included in the index, preventing loss when a
+    phrase-level conversion changes how a substring is segmented.
+    """
+    from library_search_match import ids_json, match_track_ids
+
     q = (q or "").strip()
-    variants = get_all_variants(q) if q else []
-    if not variants:
+    if not q or limit < 1:
         return {"tracks": []}
-
-    index_meta = read_index_meta(db) or {}
-    index_ready = index_meta.get("signature") == INDEX_SIGNATURE
-    tracks = _like_search(db, q, variants, limit, index_ready)
-
-    matched_track_ids = {row["id"] for row in tracks}
-    use_variant_fallback = _needs_variant_fallback(q, variants, to_simplified, to_traditional)
-
-    if len(tracks) < limit and use_variant_fallback:
-        # Do not sample only the first remaining*3 rows: a match near the end
-        # of a 66k-track library would never be returned. The index keys are
-        # folded with chinese_variants, so other converters scan every track.
-        if (index_ready and to_simplified is chinese_variants.to_simplified
-                and to_traditional is chinese_variants.to_traditional):
-            candidates = _indexed_fallback_candidates(
-                db, variants, int(index_meta.get("max_term_length") or 0),
-            )
-        else:
-            candidates = _scan_all_tracks(db)
-        limit_reached = False
-        batch_end_id = None
-        for track in candidates:
-            if batch_end_id is not None and track["id"] > batch_end_id:
-                break
-            if track["id"] in matched_track_ids:
-                continue
-            if _matches_variants(
-                [track["title"], track["artist_name"], track["album_title"],
-                 track["composer"], track["work_title"], track["performer"],
-                 track["conductor"], track["ensemble"]],
-                variants, to_simplified, to_traditional,
-            ):
-                matched_track_ids.add(track["id"])
-                if len(matched_track_ids) >= limit and not limit_reached:
-                    limit_reached = True
-                    batch_end_id = _scan_batch_end_id(db, track["id"])
-
-        if len(matched_track_ids) > len(tracks):
-            id_placeholders = ",".join("?" * len(matched_track_ids))
-            final_rows = db.execute(
-                f"""
-                SELECT {_TRACK_COLUMNS} {_TRACK_JOINS}
-                WHERE t.id IN ({id_placeholders})
-                ORDER BY (LOWER(t.title) = ?) DESC, LOWER(t.title)
-                LIMIT ?
-                """,
-                (*matched_track_ids, q.lower(), limit),
-            ).fetchall()
-            return {"tracks": [dict(row) for row in final_rows]}
-
-    return {"tracks": [dict(row) for row in tracks]}
+    ids = match_track_ids(db, q, reverse=True)
+    if not ids:
+        return {"tracks": []}
+    rows = db.execute(
+        f"""SELECT {_TRACK_COLUMNS} {_TRACK_JOINS}
+            WHERE t.id IN (SELECT value FROM json_each(?))
+            ORDER BY (LOWER(t.title)=?) DESC, LOWER(t.title), t.id
+            LIMIT ?""",
+        (ids_json(ids), q.lower(), limit),
+    ).fetchall()
+    return {"tracks": [dict(row) for row in rows]}
 
 
 def fetch_genres(db: sqlite3.Connection) -> list[dict]:

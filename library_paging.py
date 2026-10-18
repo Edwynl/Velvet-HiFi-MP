@@ -50,15 +50,10 @@ def fetch_album_page(
     args: list = []
     q = search.strip()
     if q:
-        variants = list(dict.fromkeys(
-            [q, *(get_all_variants(q) if get_all_variants else [])]
-        ))[:12]
-        escape = chr(92)
-        like = ["%" + v.replace(escape, escape + escape).replace("%", escape + "%").replace("_", escape + "_") + "%" for v in variants]
-        terms = " OR ".join("(al.title LIKE ? ESCAPE '\\' OR ar.name LIKE ? ESCAPE '\\')" for _ in like)
-        parts.append(f"({terms})")
-        for item in like:
-            args.extend((item, item))
+        from library_search_match import ids_json, match_catalog_ids
+        matches = match_catalog_ids(db, "album", q)
+        parts.append("al.id IN (SELECT value FROM json_each(?))")
+        args.append(ids_json(matches))
     if genre:
         parts.append("trim(al.genre) = ?")  # same normalization as the offered labels
         args.append(genre)
@@ -108,25 +103,12 @@ def fetch_artist_page(
     if not 1 <= limit <= 200 or offset < 0:
         raise ValueError("Page size must be 1..200 and offset nonnegative")
     q = search.strip()
-    variants = list(dict.fromkeys(
-        [q, *(get_all_variants(q) if get_all_variants and q else [])]
-    ))[:12] if q else []
     params: list[str] = []
     where = ""
-    if variants:
-        backslash = chr(92)
-        params = [
-            "%" + v.replace(backslash, backslash + backslash)
-                   .replace("%", backslash + "%").replace("_", backslash + "_") + "%"
-            for v in variants
-        ]
-        name_match = " OR ".join("ar.name LIKE ? ESCAPE '\\'" for _ in params)
-        alias_match = " OR ".join("aa.name LIKE ? ESCAPE '\\'" for _ in params)
-        where = (
-            f"WHERE {name_match} OR EXISTS (SELECT 1 FROM artist_aliases aa "
-            f"WHERE aa.artist_id = ar.id AND ({alias_match}))"
-        )
-        params = params * 2
+    if q:
+        from library_search_match import ids_json, match_catalog_ids
+        params = [ids_json(match_catalog_ids(db, "artist", q))]
+        where = "WHERE ar.id IN (SELECT value FROM json_each(?))"
     total = db.execute(f"SELECT COUNT(*) FROM artists ar {where}", params).fetchone()[0]
     rows = db.execute(
         f"""
