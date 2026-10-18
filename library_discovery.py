@@ -143,6 +143,49 @@ def _has_title_key(db: sqlite3.Connection) -> bool:
     return _title_key_available
 
 
+def search_library(
+    db: sqlite3.Connection,
+    q: str,
+    limit: int,
+    get_all_variants: Callable[[str], list[str]],
+    to_simplified: Callable[[str], str],
+    to_traditional: Callable[[str], str],
+    *,
+    artist_limit: int = 12,
+    album_limit: int = 24,
+) -> dict:
+    """One offline, server-side search entry point for artists/albums/tracks.
+
+    The existing `tracks` field remains backward compatible with /api/search.
+    Artist and album records are bounded server-side; no complete catalog is
+    transferred to a phone merely to find a matching name or alias.
+    """
+    q = (q or "").strip()
+    if not q:
+        return {
+            "artists": [], "albums": [], "tracks": [],
+            "total_artists": 0, "total_albums": 0,
+        }
+    from library_paging import fetch_album_page, fetch_artist_page
+
+    artists = fetch_artist_page(
+        db, search=q, limit=artist_limit, offset=0,
+    )
+    albums = fetch_album_page(
+        db, search=q, limit=album_limit, offset=0,
+    )
+    tracks = search_tracks(
+        db, q, limit, get_all_variants, to_simplified, to_traditional,
+    )
+    return {
+        "artists": artists["artists"],
+        "albums": albums["albums"],
+        "tracks": tracks["tracks"],
+        "total_artists": artists["total"],
+        "total_albums": albums["total"],
+    }
+
+
 def fetch_genres(db: sqlite3.Connection) -> list[dict]:
     rows = db.execute(
         """

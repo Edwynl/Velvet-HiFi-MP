@@ -72,7 +72,8 @@ from db_schema import init_db
 from library_search_index import refresh_track_search_index
 from library_browse import fetch_albums, fetch_artists, fetch_tracks
 from library_paging import album_catalog_filters, fetch_album_page, fetch_artist_page
-from artist_aliases import fetch_aliases
+from artist_aliases import add_alias, fetch_aliases
+from artist_alias_sync import AliasSyncUnavailable, sync_artist_aliases
 from library_safety import AlbumFileArchive, ArchiveError, list_album_archives, restore_album_files
 from library_discovery import (
     fetch_album_radio,
@@ -82,6 +83,7 @@ from library_discovery import (
     fetch_genres,
     fetch_recently_added,
     search_tracks,
+    search_library,
 )
 from library_detail import (
     fetch_album_credits,
@@ -1092,6 +1094,68 @@ def get_artist(artist_id: int):
     result["primary_genre"] = genre["genre"] if genre else None
     return result
 
+@app.post("/api/artists/{artist_id}/aliases")
+async def create_artist_alias(artist_id: int, request: Request):
+    """Add one explicitly confirmed alternate artist name.
+
+    No automatic assumptions based on romanization: an English stage name
+    needs a verified alias link, not just Traditional/Simplified conversion.
+    """
+    try:
+        body = await request.json()
+    except ValueError:
+        raise HTTPException(422, "Invalid JSON body")
+    name = body.get("name") if isinstance(body, dict) else None
+    if not isinstance(name, str) or not name.strip() or len(name.strip()) > 128:
+        raise HTTPException(422, "Alias must be 1-128 characters")
+    name = name.strip()
+    db = get_db()
+    try:
+        artist = db.execute("SELECT name FROM artists WHERE id=?", (artist_id,)).fetchone()
+        if artist is None:
+            raise HTTPException(404, "Artist not found")
+        if db.execute(
+            "SELECT 1 FROM artists WHERE id != ? AND name=? COLLATE NOCASE",
+            (artist_id, name),
+        ).fetchone():
+            raise HTTPException(409, "This name already belongs to another artist")
+        try:
+            added = add_alias(db, artist_id, name)
+            db.commit()
+        except sqlite3.IntegrityError:
+            db.rollback()
+            raise HTTPException(409, "This alias already belongs to another artist")
+        return {"status": "ok", "added": bool(added),
+                "aliases": fetch_aliases(db, artist_id)}
+    finally:
+        db.close()
+
+
+@app.post("/api/artists/{artist_id}/aliases/sync")
+def sync_musicbrainz_artist_aliases(artist_id: int):
+    """Opt-in MusicBrainz alias import on a dedicated FastAPI worker thread.
+
+    Network awaits never hold a pooled event-loop-thread DB connection while
+    unrelated async requests execute. Search itself never contacts MusicBrainz.
+    """
+    db = get_db()
+    try:
+        try:
+            result = asyncio.run(sync_artist_aliases(db, artist_id))
+        except ValueError:
+            raise HTTPException(404, "Artist not found")
+        except AliasSyncUnavailable as exc:
+            raise HTTPException(502, str(exc))
+        if result["status"] != "ok":
+            # No partial writes on unverified or ambiguous identities.
+            db.rollback()
+            return result
+        db.commit()
+        return result
+    finally:
+        db.close()
+
+
 @app.get("/api/artists/{artist_id}/albums")
 def get_artist_albums(artist_id: int):
     db = get_db()
@@ -1243,7 +1307,7 @@ def search(
     started_at = time.perf_counter()
     db = get_db()
     try:
-        result = search_tracks(
+        result = search_library(
             db,
             q=q,
             limit=limit,

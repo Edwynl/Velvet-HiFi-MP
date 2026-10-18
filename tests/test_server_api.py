@@ -147,6 +147,31 @@ class ServerApiTests(unittest.TestCase):
         conn.execute("INSERT INTO libraries (id, path) VALUES (1, 'C:/ExistingLibrary')")
         conn.commit()
 
+    def test_global_search_returns_artist_album_track_categories(self):
+        result = self.client.get("/api/search?q=Artist%20One")
+        self.assertEqual(result.status_code, 200)
+        payload = result.json()
+        self.assertEqual([a["name"] for a in payload["artists"]], ["Artist One"])
+        self.assertEqual([a["title"] for a in payload["albums"]], ["Album One"])
+        self.assertEqual([t["title"] for t in payload["tracks"]], ["Track One"])
+        self.assertEqual(payload["total_artists"], 1)
+        self.assertEqual(payload["total_albums"], 1)
+
+    def test_alias_post_immediately_updates_global_results(self):
+        response = self.client.post("/api/artists/1/aliases", json={"name": "Stage One"})
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("Stage One", response.json()["aliases"])
+        result = self.client.get("/api/search?q=stage%20one")
+        self.assertEqual(result.status_code, 200)
+        data = result.json()
+        self.assertEqual([a["id"] for a in data["artists"]], [1])
+        self.assertEqual([a["id"] for a in data["albums"]], [1])
+        self.assertEqual([t["id"] for t in data["tracks"]], [1])
+
+    def test_alias_post_refuses_other_artist_primary_name(self):
+        response = self.client.post("/api/artists/1/aliases", json={"name": "Artist Two"})
+        self.assertEqual(response.status_code, 409)
+
     def test_playlist_routes_support_full_crud_flow(self):
         create_resp = self.client.post(
             "/api/playlists",

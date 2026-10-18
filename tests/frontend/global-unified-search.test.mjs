@@ -1,0 +1,124 @@
+import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { JSDOM } from 'jsdom';
+import { inlineFrontendModules } from './inline-modules.mjs';
+
+// Unified global search must render Artists, then Albums, then Tracks from
+// any topbar. The search page does NOT download complete catalogs to clients.
+const artist = { id: 3, name: '徐佳瑩', sort_name: '徐佳瑩', album_count: 1,
+                 aliases: ['LaLa Hsu'] };
+const album = { id: 7, title: '理想人生', artist_id: 3, artist_name: '徐佳瑩',
+                track_count: 1, year: 2012 };
+const track = { id: 30, title: '失落沙洲', album_id: 7,
+                album_title: '理想人生', artist_name: '徐佳瑩', format: 'FLAC' };
+const requests = [];
+const response = data => ({
+  ok: true, status: 200, headers: { get: () => 'application/json' },
+  async json() { return structuredClone(data); },
+  async text() { return JSON.stringify(data); },
+});
+const request = async (url, opts = {}) => {
+  const u = new URL(url, 'http://localhost');
+  requests.push({ url: u, method: opts.method || 'GET' });
+  const q = u.searchParams.get('q') || '';
+  if (u.pathname === '/api/search') {
+    if (/lala hsu|徐佳莹|徐佳瑩/i.test(q)) {
+      return response({ artists: [artist], albums: [album], tracks: [track],
+                        total_artists: 1, total_albums: 1 });
+    }
+    return response({ artists: [], albums: [], tracks: [],
+                      total_artists: 0, total_albums: 0 });
+  }
+  if (u.pathname === '/api/stats') return response({ albums: 1, artists: 1, tracks: 1 });
+  if (u.pathname === '/api/albums/page') return response({
+    albums: [album], total: 1, genres: [], decades: [],
+  });
+  if (u.pathname === '/api/artists/page') return response({ artists: [artist], total: 1 });
+  if (u.pathname === '/api/artists/3') return response(artist);
+  if (u.pathname === '/api/artists/3/albums') return response([album]);
+  if (u.pathname === '/api/artists/3/aliases/sync') {
+    return response({ status: 'ok', aliases: ['LaLa Hsu'], added: ['LaLa Hsu'] });
+  }
+  if (u.pathname === '/api/artists/3/enrich-bio') return response({});
+  if (u.pathname === '/api/recently-added') return response([]);
+  if (u.pathname === '/api/security/status') return response({ enabled: false });
+  if (u.pathname === '/api/dsp/profiles') return response([]);
+  if (u.pathname === '/api/scan/status') return response({ running: false });
+  return response({});
+};
+const html = inlineFrontendModules(readFileSync('static/index.html', 'utf8'))
+  .replace(/<link[^>]+>/g, '');
+const dom = new JSDOM(html, {
+  url: 'http://localhost/#home', runScripts: 'dangerously', pretendToBeVisual: true,
+  beforeParse(window) {
+    window.fetch = request;
+    window.alert = () => {};
+    window.confirm = () => true;
+    window.scrollTo = () => {};
+    window.matchMedia = q => ({
+      media:q, matches:false, addListener(){}, removeListener(){},
+      addEventListener(){}, removeEventListener(){},
+      dispatchEvent(){ return false; },
+    });
+    window.requestAnimationFrame = cb => window.setTimeout(cb,0);
+    window.cancelAnimationFrame = id => window.clearTimeout(id);
+    window.HTMLMediaElement.prototype.play = () => Promise.resolve();
+    window.HTMLMediaElement.prototype.pause = () => {};
+    window.HTMLMediaElement.prototype.load = () => {};
+    window.MediaMetadata = class {};
+    window.navigator.mediaSession = { setActionHandler(){}, metadata:null };
+  },
+});
+const wait = async predicate => {
+  for (let i = 0; i < 170; i++) {
+    if (predicate()) return;
+    await new Promise(resolve => setTimeout(resolve, 20));
+  }
+  throw new Error('Timed out waiting for global search results');
+};
+const searchFromCurrentView = async text => {
+  await wait(() => !!dom.window.document.querySelector('#search-input'));
+  const input = dom.window.document.querySelector('#search-input');
+  input.value = text;
+  input.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
+  await wait(() => dom.window.document.querySelector('#global-search-results')
+    ?.textContent.includes('失落沙洲'));
+};
+await wait(() => dom.window.document.querySelector('#search-input'));
+
+// From HOME: Latin nickname -> Chinese artist and its album/tracks.
+await searchFromCurrentView('Lala Hsu');
+const titles = [...dom.window.document.querySelectorAll(
+  '#global-search-results .result-section-title'
+)].map(el => el.textContent.split(' — ')[0]);
+assert.deepEqual(titles, ['Artists', 'Albums', 'Tracks']);
+assert.equal(dom.window.document.querySelectorAll('.search-artist-grid .artist-card').length, 1);
+assert.equal(dom.window.document.querySelectorAll('.search-albums-grid .card').length, 1);
+assert.equal(dom.window.document.querySelectorAll('.search-track-list .track-item').length, 1);
+
+// From ALBUMS: the same topbar does not restrict search to album-only matches.
+await dom.window.navigate('albums');
+await wait(() => dom.window.document.querySelector('#albums-grid'));
+await searchFromCurrentView('徐佳莹');
+assert.deepEqual([...dom.window.document.querySelectorAll(
+  '#global-search-results .result-section-title'
+)].map(el => el.textContent.split(' — ')[0]), ['Artists', 'Albums', 'Tracks']);
+
+// From ARTISTS: global search can still show albums and songs.
+await dom.window.navigate('artists');
+await wait(() => dom.window.document.querySelector('#artists-grid'));
+await searchFromCurrentView('Lala Hsu');
+
+// Artist cards retain navigation, and the alias control remains on the detail.
+const artistCard = dom.window.document.querySelector('.search-artist-grid .artist-card');
+artistCard.click();
+await wait(() => !!dom.window.document.querySelector('#artist-sync-alias-btn'));
+const syncBtn = dom.window.document.querySelector('#artist-sync-alias-btn');
+syncBtn.click();
+await wait(() => requests.some(item => item.url.pathname === '/api/artists/3/aliases/sync'));
+await wait(() => dom.window.document.querySelector('#artist-aliases-list')?.textContent.includes('LaLa Hsu'));
+
+assert.equal(requests.some(item => item.url.pathname === '/api/search'
+                       && !item.url.searchParams.get('q')), false);
+console.log('frontend_global_unified_search=OK');
+dom.window.close();

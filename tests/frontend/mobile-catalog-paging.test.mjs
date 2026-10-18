@@ -83,7 +83,9 @@ const input=dom.window.document.querySelector('#search-input');
 input.value='137';
 input.dispatchEvent(new dom.window.Event('input',{ bubbles:true }));
 await wait(()=>requests.some(u=>u.pathname==='/api/search' && u.searchParams.get('q')==='137'));
-await wait(()=>dom.window.document.querySelector('#albums-grid')?.textContent.includes('137 Track'));
+await wait(()=>dom.window.document.querySelector('#global-search-results')?.textContent.includes('137 Track'));
+assert.equal(dom.window.document.querySelector('.search-results .result-section-title')?.textContent.startsWith('Tracks'), true,
+             'Global search shows the track section when no artist/album matches');
 assert.equal(requests.some(u=>u.pathname==='/api/search' && !u.searchParams.get('q')), false,
              'Never ask server to search with an empty query');
 console.log('frontend_mobile_catalog_paging_check=OK');

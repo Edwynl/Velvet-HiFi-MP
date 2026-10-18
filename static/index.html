@@ -1799,6 +1799,39 @@ input[type=range]::-webkit-slider-thumb:hover { background: var(--gold); }
   padding-bottom: 8px; border-bottom: 1px solid var(--border);
 }
 
+/* Unified search: artists first, then albums, then playable tracks. */
+.search-results .search-artist-grid,
+.search-results .search-albums-grid {
+  padding: 4px 0 20px;
+  gap: 16px;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+}
+.search-results .search-artist-grid { grid-template-columns: repeat(auto-fill, minmax(128px, 1fr)); }
+.search-results .search-track-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding-bottom: 24px;
+}
+.search-results .search-track-list .track-item { min-width: 0; }
+@media (max-width: 600px) {
+  .search-results .search-artist-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .search-results .search-albums-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+.catalog-filter-input {
+  width: min(360px, 100%);
+  background: var(--s2);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 10px 14px;
+  font: 14px 'DM Sans', sans-serif;
+  color: var(--text);
+  outline: none;
+}
+.catalog-filter-input:focus { border-color: var(--gold); }
+
 /* ─── Back button ─── */
 .back-btn {
   display: inline-flex; align-items: center; gap: 6px;
@@ -7061,58 +7094,13 @@ function showToast(msg, dur = 2200) {
   setTimeout(() => t.classList.remove('show'), dur);
 }
 
-// ─── Chinese Simplified/Traditional Conversion ──────────────────────────────────
-const T2S_MAP = {
-  '傑':'杰','倫':'伦','臺':'台','裡':'里','發':'发','為':'为','與':'与','陳':'陈',
-  '無':'无','來':'来','時':'时','過':'过','說':'说','個':'个','學':'学',
-  '國':'国','們':'们','對':'对','會':'会','這':'这','麼':'么','經':'经',
-  '開':'开','關':'关','現':'现','長':'长','東':'东','車':'车','麵':'面',
-  '網':'网','書':'书','電':'电','錶':'表','選':'选','錯':'错','廣':'广',
-  '廳':'厅','聽':'听','機':'机','號':'号','運':'运','動':'动','場':'场',
-  '結':'结','幣':'币','環':'环','還':'还','產':'产','園':'园','內':'内',
-  '樂':'乐','筆':'笔','記':'记','億':'亿','備':'备','儀':'仪','器':'器',
-  '鍾':'钟','養':'养','几':'几','餘':'余','徵':'征','稅':'税','醜':'丑',
-  '業':'业','務':'务','處':'处','線':'线','纖':'纤','鄉':'乡','綁':'绑',
-  '總':'总','織':'织','糹':'纟','糾':'纠','糧':'粮','給':'给','奧':'奥',
-  '準':'准','淨':'净','凍':'冻','凜':'凛','凱':'凯','鳳':'凤','風':'风'
-};
-
-// Convert text to simplified Chinese
-function toSimplified(text) {
-  if (!text) return '';
-  let result = text;
-  for (const [t, s] of Object.entries(T2S_MAP)) {
-    result = result.split(t).join(s);
-  }
-  return result;
-}
-
-// Check if query matches text (considering simplified/traditional Chinese)
+// Full Chinese/alias matching runs on the Python OpenCC search index.
+// Keep a tiny literal-only filter for already-displayed composer/work/genre
+// cards; use the global topbar for script-agnostic Artists/Albums/Tracks.
 function chineseMatch(text, query) {
   if (!text || !query) return false;
-
-  // Normalize special characters first
-  const normalizedText = text.replace(/^[\[\(【「『（〈《【〔〘〚〖〛〙〕】〞〟〗〉》〕〾〿︰-]+/, '').trim();
-  const normalizedQuery = query.replace(/^[\[\(【「『（〈《【〔〘〚〖〛〙〕】〞〟〗〉》〕〾〿︰-]+/, '').trim();
-
-  const lowerText = normalizedText.toLowerCase();
-  const lowerQuery = normalizedQuery.toLowerCase();
-
-  // Direct match
-  if (lowerText.includes(lowerQuery)) return true;
-
-  // Convert query to simplified and try
-  const querySimplified = toSimplified(lowerQuery);
-  if (lowerText.includes(querySimplified)) return true;
-
-  // Convert text to simplified and try
-  const textSimplified = toSimplified(lowerText);
-  if (textSimplified.includes(lowerQuery)) return true;
-
-  // Both converted
-  if (textSimplified.includes(querySimplified)) return true;
-
-  return false;
+  return String(text).normalize('NFKC').toLocaleLowerCase()
+    .includes(String(query).normalize('NFKC').toLocaleLowerCase());
 }
 
 // ─── Mobile Menu Toggle ──────────────────────────────────────────────────────
@@ -7258,7 +7246,7 @@ async function api(path, opts = {}) {
 
   // 8-second timeout to prevent infinite hangs on server startup
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 8000);
+  const timeoutId = setTimeout(() => controller.abort(), opts.timeoutMs || 8000);
 
   try {
     log(`[VELVET] API Call: ${path}`);
