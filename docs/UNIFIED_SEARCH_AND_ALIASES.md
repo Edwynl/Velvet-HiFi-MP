@@ -39,9 +39,18 @@ filter of displayed cards; full OpenCC conversion is done by the global search.
   is checked against the local name and imported into offline search.
   **Without one**, Velvet attempts release corroboration: at least **two
   distinct, non-generic local album titles** must match release groups
-  credited solely to **one unique** name-matched MusicBrainz artist. A
-  truncated candidate page, a generic title or multiple qualifying artists
-  must **not** be auto-linked. This is cautious evidence, not infallible proof.
+  credited solely to **one unique** name-matched MusicBrainz artist.
+  For identity safety, the server now issues **field-scoped Lucene phrase
+  searches** (`artist:"..."`) for the original, simplified, traditional, and
+  fixed-point OpenCC artist-name variants, escapes Lucene punctuation, and
+  **paginates all matching records**. The broad search's first-page ordering
+  is NEVER used as proof that no other same-named artist exists. A result
+  exceeding 100 name-scoped records, a missing count/offset, an inconsistent
+  page, or more than four exactly named artists requires **human review**.
+  Each candidate's album/EP release groups must also be fully paginated
+  (up to 200 records) to avoid overlooking a namesake with matching albums.
+  If completeness cannot be established, aliases and MBID are left
+  unchanged. This is conservative evidence, not infallible proof.
   Everyone else enters **Review identities** for explicit confirmation.
   The UI shows candidate name, country, type, disambiguation and MBID.
 - **Review identities** on the Artists page lists unconfirmed artists from
@@ -145,13 +154,19 @@ Acceptance cases:
 - Rate pacing is tested at 0.0, 1.25 and 2.50 seconds with a virtual clock,
   plus real-shaped HTTP 429 pause and resumable checkpoints.
 - For artists with two distinctive, separately corroborated MusicBrainz
-  albums, verified English aliases are imported automatically. A single
-  album or ambiguous names must remain `needs_review`. Audit the yield of
-  a real 25-/100-artist batch: imported aliases vs review queue size.
+  albums, verified English aliases are imported automatically **only after
+  the full bounded set of same-name artists and releases has been checked**.
+  A single album, incomplete MusicBrainz pagination or ambiguous names must
+  remain `needs_review`. Audit the yield of a real 25-/100-artist batch:
+  imported aliases vs review queue size.
 - Legacy unproven aliases can be retained/removed explicitly without any
   file tag edits. Single-artist background refresh is also bounded.
 - English alias first present in MusicBrainz candidate #6 is found using the
   second, explicitly requested lookup.
+- The fuzzy name-search tail is never treated as an exhaustive same-name
+  result. Tests cover a **second namesake on the next exact-name page**,
+  malformed offsets, capped results, fixed-point Chinese variants and
+  matching albums on the second release-group page.
 - Batch import performs small committed index refreshes **between artists**,
   drains remaining dirty rows without a long SQLite writer transaction, and
   does not modify cover-art quality.

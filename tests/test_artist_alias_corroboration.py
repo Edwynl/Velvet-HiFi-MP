@@ -38,10 +38,19 @@ def group(title, mbid, *, primary="Album", credited=True):
 
 
 class MusicBrainzFake:
-    def __init__(self, *, candidates=None, release_groups=None, count=None):
+    def __init__(
+        self, *, candidates=None, release_groups=None, count=None,
+        exact_candidates=None, exact_count=None, exact_offset_override=None,
+        release_count_override=None,
+    ):
         self.candidates = candidates if candidates is not None else [
             {"id": A, "name": "徐佳瑩", "sort-name": "Hsu, LaLa"}
         ]
+        self.exact_candidates = (exact_candidates if exact_candidates is not None
+                                 else self.candidates)
+        self.exact_count = exact_count
+        self.exact_offset_override = exact_offset_override
+        self.release_count_override = release_count_override
         self.records = {
             A: {"id": A, "name": "徐佳瑩", "sort-name": "Hsu, LaLa",
                 "aliases": [{"name": "Lala Hsu"}, {"name": "徐佳莹"}]},
@@ -57,12 +66,33 @@ class MusicBrainzFake:
     async def get(self, url, *, params=None, headers=None):
         self.calls.append((url, params or {}))
         if url.rstrip("/").endswith("/artist"):
-            return Response({"artists": self.candidates,
-                             "count": self.count if self.count is not None
-                             else len(self.candidates)})
+            if (params or {}).get("query", "").startswith('artist:"'):
+                offset = (params or {}).get("offset", 0)
+                limit = (params or {}).get("limit", 25)
+                return Response({
+                    "artists": self.exact_candidates[offset:offset + limit],
+                    "count": (self.exact_count if self.exact_count is not None
+                              else len(self.exact_candidates)),
+                    "offset": (self.exact_offset_override
+                               if self.exact_offset_override is not None else offset),
+                })
+            return Response({
+                "artists": self.candidates,
+                "count": self.count if self.count is not None else len(self.candidates),
+            })
         if url.rstrip("/").endswith("/release-group"):
             mbid = (params or {})["artist"]
-            return Response({"release-groups": self.release_groups.get(mbid, [])})
+            all_groups = self.release_groups.get(mbid, [])
+            offset = (params or {}).get("offset", 0)
+            limit = (params or {}).get("limit", 100)
+            return Response({
+                "release-groups": all_groups[offset:offset + limit],
+                "release-group-count": (
+                    self.release_count_override if self.release_count_override is not None
+                    else len(all_groups)
+                ),
+                "release-group-offset": offset,
+            })
         mbid = url.rsplit("/", 1)[-1]
         return Response(self.records[mbid])
 
@@ -121,7 +151,9 @@ class ArtistAliasCorroborationTests(unittest.TestCase):
         self.assertEqual(self.db.execute(
             "SELECT mbid_verified FROM artists WHERE id=1"
         ).fetchone()[0], 1)
-        self.assertEqual(len(fake.calls), 4)  # one search, two browse, one detail
+        # One broad search, two scoped Chinese spelling searches, two
+        # releases browses and one final alias lookup.
+        self.assertEqual(len(fake.calls), 6)
 
     def test_only_one_album_overlap_requires_human_review(self):
         fake = MusicBrainzFake(release_groups={
@@ -163,15 +195,129 @@ class ArtistAliasCorroborationTests(unittest.TestCase):
         self.assertEqual(result["status"], "ok")
         self.assertEqual(result["verification"], "release_corroborated")
 
-    def test_page_still_full_of_namesakes_must_not_autolink(self):
-        # Every hit on a truncated page is same-named: more may follow it.
-        namesakes = [{"id": f"00000000-0000-0000-0000-00000000000{i}", "name": "徐佳瑩"}
-                     for i in range(1, 4)]
-        fake = MusicBrainzFake(count=100, candidates=[
-            {"id": A, "name": "徐佳瑩", "sort-name": "Hsu, LaLa"}, *namesakes,
-        ])
+    def test_incomplete_exact_name_page_fails_closed(self):
+        # A MusicBrainz exact-name field result >100 cannot be exhaustively
+        # checked within our conservative cap. Do NOT trust rank order.
+        fake = MusicBrainzFake(
+            count=2_997_690, exact_count=101,
+            candidates=[
+                {"id": A, "name": "徐佳瑩"},
+                {"id": B, "name": "Some other singer"},
+            ],
+        )
         self.assertEqual(self.run_sync(fake)["status"], "needs_review")
         self.assertFalse(any("release-group" in url for url, _ in fake.calls))
+
+    def test_fuzzy_page_tail_cannot_hide_second_same_named_artist(self):
+        # The formerly unsafe path: a broad query's tenth hit is fuzzy,
+        # while another exact-name artist sits beyond the broad first page.
+        unrelated = [
+            {"id": f"00000000-0000-0000-0000-{i:012d}", "name": f"Other {i}"}
+            for i in range(1, 10)
+        ]
+        fuzzy = [{"id": A, "name": "徐佳瑩"}, *unrelated]
+        # The constrained artist-name result pages completely. Position #26
+        # is a second namesake; it must be checked even after other records.
+        constrained = [
+            {"id": A, "name": "徐佳瑩"}, *unrelated,
+            *[
+                {"id": f"00000000-0000-0000-0000-{i:012d}",
+                 "name": f"Other {i}"}
+                for i in range(10, 25)
+            ],
+            {"id": B, "name": "徐佳瑩"},
+        ]
+        fake = MusicBrainzFake(
+            candidates=fuzzy, count=2_997_690, exact_candidates=constrained,
+            release_groups={
+                A: [group("理想人生", A), group("心里学", A)],
+                B: [group("理想人生", B), group("心里学", B)],
+            },
+        )
+        self.assertEqual(self.run_sync(fake)["status"], "needs_review")
+        exact_queries = [
+            args for url, args in fake.calls
+            if url.rstrip("/").endswith("/artist")
+            and args.get("query", "").startswith('artist:"')
+        ]
+        self.assertTrue(any(args.get("offset") == 25 for args in exact_queries))
+        self.assertEqual(
+            self.db.execute("SELECT COUNT(*) FROM artist_aliases").fetchone()[0], 0
+        )
+        self.assertIsNone(
+            self.db.execute("SELECT mbid FROM artists WHERE id=1").fetchone()[0]
+        )
+
+    def test_inconsistent_page_offset_must_not_autolink(self):
+        fake = MusicBrainzFake(exact_offset_override=999)
+        self.assertEqual(self.run_sync(fake)["status"], "needs_review")
+        self.assertFalse(any("release-group" in url for url, _ in fake.calls))
+
+    def test_truncated_namesake_release_groups_must_not_autolink(self):
+        # A second artist can share the two local albums on a later release
+        # group page. A browse with >200 results cannot prove uniqueness.
+        fake = MusicBrainzFake(
+            exact_candidates=[
+                {"id": A, "name": "徐佳瑩"},
+                {"id": B, "name": "徐佳瑩"},
+            ],
+            release_groups={
+                A: [group("理想人生", A), group("心里学", A)],
+                B: [group("Unrelated Album", B)],
+            },
+            release_count_override=201,
+        )
+        self.assertEqual(self.run_sync(fake)["status"], "needs_review")
+        self.assertEqual(
+            self.db.execute("SELECT COUNT(*) FROM artist_aliases").fetchone()[0], 0
+        )
+
+    def test_exhaustive_release_browse_checks_second_page_for_namesake(self):
+        # Candidate B's two matching albums can be split across page 1 and
+        # page 2. Every candidate's release groups must be checked completely.
+        def large_discography(mbid):
+            return [
+                group("理想人生", mbid),
+                *[group(f"Unrelated Record {i}", mbid) for i in range(99)],
+                group("心里学", mbid),
+            ]
+        fake = MusicBrainzFake(
+            exact_candidates=[
+                {"id": A, "name": "徐佳瑩"},
+                {"id": B, "name": "徐佳瑩"},
+            ],
+            release_groups={A: large_discography(A), B: large_discography(B)},
+        )
+        self.assertEqual(self.run_sync(fake)["status"], "needs_review")
+        second_pages = [
+            params for url, params in fake.calls
+            if url.rstrip("/").endswith("/release-group")
+            and params.get("offset") == 100
+        ]
+        self.assertEqual(len(second_pages), 2)
+        self.assertEqual(self.db.execute(
+            "SELECT COUNT(*) FROM artist_aliases"
+        ).fetchone()[0], 0)
+
+    def test_fixed_point_opencc_name_variants_cannot_hide_namesakes(self):
+        from artist_alias_sync import _complete_exact_name_candidates
+        fake = MusicBrainzFake(exact_candidates=[])
+        with patch("artist_alias_sync.asyncio.sleep", no_wait):
+            self.assertEqual(asyncio.run(
+                _complete_exact_name_candidates("陳昇", fake)
+            ), [])
+        constrained = [
+            params["query"] for url, params in fake.calls
+            if params.get("query", "").startswith('artist:"')
+        ]
+        self.assertIn('artist:"陈升"', constrained)
+
+    def test_constrained_artist_query_escapes_lucene_metacharacters(self):
+        from artist_alias_sync import _artist_field_query
+        self.assertEqual(_artist_field_query('AC/DC'),
+                         'artist:"AC\\/DC"')
+        self.assertEqual(_artist_field_query('A+B "Live"'),
+                         'artist:"A\\+B \\"Live\\""')
 
     def test_generic_albums_cannot_prove_identity(self):
         self.db.execute("UPDATE albums SET title='Greatest Hits' WHERE id=1")

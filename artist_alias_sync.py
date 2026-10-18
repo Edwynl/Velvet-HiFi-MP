@@ -17,7 +17,7 @@ import httpx
 
 from artist_aliases import add_alias, fetch_aliases
 from artist_alias_provenance import mark_alias_source
-from chinese_variants import search_fold
+from chinese_variants import get_all_variants, search_fold
 
 _MUSICBRAINZ = "https://musicbrainz.org/ws/2/artist"
 _HEADERS = {"User-Agent": "VelvetHiFi/3.0 (https://github.com/Edwynl/Velvet-HiFi-MP)"}
@@ -28,6 +28,13 @@ _MAX_CANDIDATES = 10
 _MAX_RESOLVE_LOOKUPS = 5
 _RELEASE_GROUPS = "https://musicbrainz.org/ws/2/release-group"
 _MAX_AUTO_CANDIDATES = 4
+# Search has a hard service maximum of 100 per page. We deliberately check
+# *all* results for the constrained name query, not only its relevance-sorted
+# first page. A name returning more records than our safe cap needs review.
+_EXACT_ARTIST_PAGE_SIZE = 25
+_MAX_EXACT_ARTIST_RESULTS = 100
+_RELEASE_GROUP_PAGE_SIZE = 100
+_MAX_RELEASE_GROUP_RESULTS = 200
 _GENERIC_ALBUMS = frozenset({
     "greatesthits", "bestof", "thebestof", "essential", "live",
     "compilation", "singles", "single", "various", "collection",
@@ -159,54 +166,149 @@ def _release_matches(data: dict, mbid: str, local: dict[str, str]) -> list[str]:
     return sorted(matched)
 
 
+# Lucene phrase-query metacharacters. URL encoding alone does not make a
+# literal artist-field query safe: punctuation must be escaped for Lucene too.
+_LUCENE_SPECIAL = frozenset(r'+-!(){}[]^"~*?:\/|&')
+
+
+def _artist_field_query(name: str) -> str:
+    escaped = "".join("\\" + char if char in _LUCENE_SPECIAL else char
+                      for char in name)
+    return f'artist:"{escaped}"'
+
+
+async def _complete_exact_name_candidates(
+    artist_name: str, client,
+) -> list[str] | None:
+    """Exhaustively page bounded, field-scoped MusicBrainz artist searches.
+
+    A generic MusicBrainz query has millions of fuzzy matches; its relevance
+    rank and fuzzy page tail CANNOT prove the absence of a namesake. Query the
+    documented artist: field with an escaped phrase (plus OpenCC name
+    variants), consume *all* matching pages, then compare authoritative
+    primary names locally. If any query is too broad, malformed or incomplete
+    the identity is unsafe to auto-confirm and must be reviewed by a person.
+    """
+    target = search_fold(artist_name)
+    seen: dict[str, dict] = {}
+    # Fixed-point OpenCC folding is not always a single conversion step
+    # (陳昇 -> 陈昇 -> 陈升). Enumerate both original and folded variants so
+    # an equivalent-script namesake cannot escape the exhaustive search.
+    variants = list(dict.fromkeys(
+        variant.strip()
+        for spelling in (artist_name, search_fold(artist_name))
+        for variant in get_all_variants(spelling)
+        if variant and variant.strip()
+    ))
+    for variant in variants:
+        query = _artist_field_query(variant)
+        offset = 0
+        total = None
+        query_seen: set[str] = set()
+        while total is None or offset < total:
+            await _pace(client, first=False)
+            page = await _json(
+                client, _MUSICBRAINZ + "/",
+                {"query": query, "fmt": "json",
+                 "limit": _EXACT_ARTIST_PAGE_SIZE, "offset": offset},
+            )
+            count = page.get("count")
+            received_offset = page.get("offset")
+            artists = page.get("artists")
+            if (type(count) is not int or count < 0
+                    or count > _MAX_EXACT_ARTIST_RESULTS
+                    or type(received_offset) is not int
+                    or received_offset != offset
+                    or not isinstance(artists, list)
+                    or len(artists) > _EXACT_ARTIST_PAGE_SIZE):
+                return None
+            if total is None:
+                total = count
+            elif total != count:
+                return None
+            if (offset + len(artists) > total
+                    or (offset < total and not artists)):
+                return None
+            for item in artists:
+                if not isinstance(item, dict):
+                    return None
+                mbid = _mbid(item.get("id"))
+                if not mbid or mbid in query_seen:
+                    # Duplicate IDs across pages may mean the index changed
+                    # during pagination. Completeness is not established.
+                    return None
+                query_seen.add(mbid)
+                if search_fold(str(item.get("name") or "")) == target:
+                    seen[mbid] = item
+                    if len(seen) > _MAX_AUTO_CANDIDATES:
+                        return None
+            offset += len(artists)
+    return list(seen)
+
+
+async def _complete_release_groups(
+    mbid: str, client,
+) -> dict | None:
+    """Read all release groups within a bounded window before comparison.
+
+    A second namesake whose matching releases fall after the first 100 must
+    not be silently ignored. Large/incomplete discographies require review.
+    """
+    groups: list[dict] = []
+    offset = 0
+    total = None
+    while total is None or offset < total:
+        await _pace(client, first=False)
+        page = await _json(
+            client, _RELEASE_GROUPS + "/",
+            {"artist": mbid, "type": "album|ep",
+             "limit": _RELEASE_GROUP_PAGE_SIZE, "offset": offset,
+             "inc": "artist-credits", "fmt": "json"},
+        )
+        count = page.get("release-group-count")
+        got_offset = page.get("release-group-offset")
+        batch = page.get("release-groups")
+        if (type(count) is not int or count < 0
+                or count > _MAX_RELEASE_GROUP_RESULTS
+                or type(got_offset) is not int or got_offset != offset
+                or not isinstance(batch, list)
+                or len(batch) > _RELEASE_GROUP_PAGE_SIZE):
+            return None
+        if total is None:
+            total = count
+        elif count != total:
+            return None
+        if offset + len(batch) > total or (offset < total and not batch):
+            return None
+        groups.extend(batch)
+        offset += len(batch)
+    return {"release-groups": groups}
+
+
 async def _corroborate_release_groups(
     db: sqlite3.Connection, artist_id: int, artist_name: str,
     response: dict, client,
 ) -> tuple[str, list[str]] | None:
-    """Identify a *unique* artist from multiple independent release titles.
+    """Use album evidence only after every same-name artist is enumerated.
 
-    No user-confirmed MBID is assumed. A MusicBrainz artist *name* alone, or
-    a single generic/popular album, cannot authorize importing aliases.
+    The broad first-page response is solely for manual-review suggestions;
+    auto-verification must use exhaustive, constrained artist-field search.
     """
     local = _distinctive_local_albums(db, artist_id)
     if len(local) < 2:
         return None
-    raw_candidates = [c for c in (response.get("artists") or [])
-                      if isinstance(c, dict)]
-    eligible = []
-    seen = set()
-    for item in raw_candidates:
-        mbid = _mbid(item.get("id"))
-        if mbid and mbid not in seen and _is_verified(item, artist_name):
-            eligible.append(mbid)
-            seen.add(mbid)
-    if not eligible or len(eligible) > _MAX_AUTO_CANDIDATES:
-        return None
-    # Uniqueness needs every same-named artist on this page. The search
-    # `count` cannot tell: it counts every fuzzy hit (2,997,690 for 陳奕迅,
-    # 7,834 for "Jay Chou"), so it always exceeds the page. Results are
-    # score-ordered and exact-name matches score highest, so the page holds
-    # all of them unless it is truncated while still listing same-named hits.
-    try:
-        total = int(response.get("count", len(raw_candidates)))
-    except (TypeError, ValueError):
-        return None
-    last = raw_candidates[-1] if raw_candidates else {}
-    if total > len(raw_candidates) and _is_verified(last, artist_name):
+    eligible = await _complete_exact_name_candidates(artist_name, client)
+    if not eligible:
         return None
 
-    qualified = []
+    qualified: list[tuple[str, list[str]]] = []
     for mbid in eligible:
-        await _pace(client, first=False)
-        data = await _json(
-            client, _RELEASE_GROUPS + "/",
-            {"artist": mbid, "type": "album|ep", "limit": 100,
-             "inc": "artist-credits", "fmt": "json"},
-        )
+        data = await _complete_release_groups(mbid, client)
+        if data is None:
+            return None  # A namesake might match outside a truncated browse.
         matched = _release_matches(data, mbid, local)
         if len(matched) >= 2:
             qualified.append((mbid, matched))
-    # If two different artists share >=2 titles, we do not guess identity.
     return qualified[0] if len(qualified) == 1 else None
 
 

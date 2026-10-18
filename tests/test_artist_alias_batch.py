@@ -357,18 +357,41 @@ class _MusicBrainzLibrary:
                 library.requests += 1
                 path = url.rstrip("/")
                 if path.endswith("/artist"):
-                    # A lower-scored, differently named hit ends every page.
-                    hits = [*library.search.get(params["query"], []),
+                    query = params["query"]
+                    if query.startswith('artist:"'):
+                        # Scoped, exhaustive primary-name lookups have tiny
+                        # counts even though the broad CJK query is millions.
+                        from artist_alias_sync import _artist_field_query
+                        from chinese_variants import get_all_variants
+                        matching = []
+                        for name, artists in library.search.items():
+                            if query in {_artist_field_query(v)
+                                         for v in get_all_variants(name)}:
+                                matching.extend(artists)
+                        offset = params.get("offset", 0)
+                        limit = params.get("limit", 25)
+                        return _Response({
+                            "artists": matching[offset:offset + limit],
+                            "count": len(matching), "offset": offset,
+                        })
+                    hits = [*library.search.get(query, []),
                             {"id": "ffffffff-0000-0000-0000-000000000000",
                              "name": "Unrelated Performer"}]
                     return _Response({"artists": hits, "count": library.LIVE_COUNT})
                 if path.endswith("/release-group"):
                     mbid = params["artist"]
-                    return _Response({"release-groups": [
+                    groups = [
                         {"title": title, "primary-type": "Album",
                          "artist-credit": [{"artist": {"id": mbid}}]}
                         for title in library.discography.get(mbid, [])
-                    ]})
+                    ]
+                    offset = params.get("offset", 0)
+                    limit = params.get("limit", 100)
+                    return _Response({
+                        "release-groups": groups[offset:offset + limit],
+                        "release-group-count": len(groups),
+                        "release-group-offset": offset,
+                    })
                 return _Response(library.records[path.rsplit("/", 1)[1]])
 
         return Session()
@@ -453,9 +476,9 @@ class EnrichmentYieldAcceptanceTests(unittest.TestCase):
         self.assertEqual(overview["needs_review_artists"], 13)
         self.assertEqual(overview["remaining_artists"], 0)
         self.assertEqual([tuple(row) for row in provenance], [("release_corroborated", 12)])
-        # Each artist costs one search, one release-group browse per checked
-        # same-named candidate, and one lookup when corroborated.
-        self.assertEqual(mb.requests, 25 + (12 + 10) + 12)
+        # One broad search + one exhaustive primary-name field search per
+        # artist, then 22 release-group browses and 12 alias lookups.
+        self.assertEqual(mb.requests, 25 + 25 + (12 + 10) + 12)
 
 
 class BoundedIndexRefreshTests(unittest.TestCase):
