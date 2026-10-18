@@ -586,48 +586,28 @@ async function renderAlbums(vc) {
         </svg>
         <input id="search-input" type="text" maxlength="128" placeholder="Search artists, albums, tracks…">
       </div>
-      <button class="btn btn-ghost" id="favorites-filter-btn" style="padding:6px 10px;color:var(--muted);font-size:12px">♡ Favorites</button>
-      <div class="v-select" id="album-sort-select">
-        <div class="v-select-trigger" style="min-width:80px">
-          <span class="v-select-label">${{title:'A–Z',year:'Year',artist:'Artist',added:'Added'}[currentSort] || 'A–Z'}</span>
-          <svg class="v-select-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"/></svg>
-        </div>
-        <div class="v-select-options">
-          <div class="v-option ${currentSort === 'title' ? 'active' : ''}" data-value="title">A–Z</div>
-          <div class="v-option ${currentSort === 'year' ? 'active' : ''}" data-value="year">Year</div>
-          <div class="v-option ${currentSort === 'artist' ? 'active' : ''}" data-value="artist">Artist</div>
-          <div class="v-option ${currentSort === 'added' ? 'active' : ''}" data-value="added">Added</div>
-        </div>
-      </div>
     </div>
-    <div class="focus-bar">
-      <div class="focus-chip">
-        <span class="focus-chip-label">Genre</span>
-        <div class="v-select" id="album-genre-select">
-          <div class="v-select-trigger">
-            <span class="v-select-label">${currentGenre || 'All genres'}</span>
-            <svg class="v-select-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"/></svg>
-          </div>
-          <div class="v-select-options">
-            <div class="v-option ${!currentGenre ? 'active' : ''}" data-value="">All genres</div>
-            ${genres.map(g => `<div class="v-option ${currentGenre === g ? 'active' : ''}" data-value="${escHtml(g)}">${escHtml(g)}</div>`).join('')}
-          </div>
-        </div>
+    <div class="album-toolbar" role="group" aria-label="Album filters and sorting">
+      <div class="album-toolbar-actions">
+        <button class="btn btn-ghost" id="favorites-filter-btn" aria-pressed="false">♡ Favorites</button>
+        <select class="album-select" id="album-sort-select" aria-label="Sort albums">
+          <option value="title">A–Z</option>
+          <option value="year">Year</option>
+          <option value="artist">Artist</option>
+          <option value="added">Added</option>
+        </select>
+        <button class="btn btn-ghost" id="clear-focus-btn" hidden>Clear filters</button>
       </div>
-      <div class="focus-chip">
-        <span class="focus-chip-label">Decade</span>
-        <div class="v-select" id="album-decade-select">
-          <div class="v-select-trigger">
-            <span class="v-select-label">${currentDecade || 'All decades'}</span>
-            <svg class="v-select-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"/></svg>
-          </div>
-          <div class="v-select-options">
-            <div class="v-option ${!currentDecade ? 'active' : ''}" data-value="">All decades</div>
-            ${decades.map(d => `<div class="v-option ${currentDecade === d ? 'active' : ''}" data-value="${escHtml(d)}">${escHtml(d)}</div>`).join('')}
-          </div>
-        </div>
+      <div class="album-toolbar-filters">
+        <select class="album-select" id="album-genre-select" aria-label="Genre">
+          <option value="">All genres</option>
+          ${genres.map(g => `<option value="${escHtml(g)}">${escHtml(g)}</option>`).join('')}
+        </select>
+        <select class="album-select" id="album-decade-select" aria-label="Decade">
+          <option value="">All decades</option>
+          ${decades.map(d => `<option value="${escHtml(d)}">${escHtml(d)}</option>`).join('')}
+        </select>
       </div>
-      <button class="btn btn-ghost" id="clear-focus-btn">Clear Focus</button>
     </div>
     <div class="section-header" id="albums-header" title="Click to scroll to top">
       <div class="section-title">Albums</div>
@@ -685,7 +665,7 @@ async function renderAlbums(vc) {
     countEl.textContent = showFavoritesOnly
       ? `${totalAlbums} favorite albums · ${totalPages} pages`
       : `${totalAlbums} albums · ${totalPages} pages`;
-    clearFocusBtn.style.opacity = (currentGenre || currentDecade) ? '1' : '0.6';
+    clearFocusBtn.hidden = !(currentGenre || currentDecade);
   }
 
   async function loadPage({ reset = false } = {}) {
@@ -764,67 +744,31 @@ async function renderAlbums(vc) {
   // Favorites filter
   favBtn.addEventListener('click', () => {
     showFavoritesOnly = !showFavoritesOnly;
-    favBtn.style.color = showFavoritesOnly ? '#ff6b6b' : 'var(--muted)';
+    favBtn.setAttribute('aria-pressed', String(showFavoritesOnly));
     favBtn.textContent = showFavoritesOnly ? '♥ Favorites' : '♡ Favorites';
     loadPage({ reset: true });
   });
 
-  // Custom Select Interaction Logic
-  function setupVSelect(el, onSelect) {
-    if (!el) return;
-    const trigger = el.querySelector('.v-select-trigger');
-    const options = el.querySelectorAll('.v-option');
-
-    trigger.onclick = (e) => {
-      e.stopPropagation();
-      const isOpen = el.classList.contains('open');
-      document.querySelectorAll('.v-select').forEach(s => s.classList.remove('open'));
-      if (!isOpen) el.classList.add('open');
-    };
-
-    options.forEach(opt => {
-      opt.onclick = (e) => {
-        e.stopPropagation();
-        options.forEach(o => o.classList.remove('active'));
-        opt.classList.add('active');
-        const val = opt.dataset.value;
-        el.classList.remove('open');
-        onSelect(val);
-      };
-    });
-  }
-
-  setupVSelect(sortSelect, val => {
-    currentSort = val;
+  sortSelect.addEventListener('change', () => {
+    currentSort = sortSelect.value;
     loadPage({ reset: true });
   });
 
-  setupVSelect(genreSelect, val => {
-    currentGenre = val;
+  genreSelect.addEventListener('change', () => {
+    currentGenre = genreSelect.value;
     loadPage({ reset: true });
   });
 
-  setupVSelect(decadeSelect, val => {
-    currentDecade = val;
+  decadeSelect.addEventListener('change', () => {
+    currentDecade = decadeSelect.value;
     loadPage({ reset: true });
   });
-
-  // Global click to close v-selects (use AbortController to prevent listener leak across page navigations)
-  const closeAllVSelects = () => document.querySelectorAll('.v-select').forEach(s => s.classList.remove('open'));
-  const vSelectCloseAc = new AbortController();
-  window.addEventListener('click', closeAllVSelects, { signal: vSelectCloseAc.signal });
-  // Clean up previous instance if navigated back to albums
-  window.__vSelectCloseAc?.abort();
-  window.__vSelectCloseAc = vSelectCloseAc;
 
   clearFocusBtn.addEventListener('click', () => {
     currentGenre = '';
     currentDecade = '';
-    // Reset labels manually since we bypass full render for focus chips sometimes
-    genreSelect.querySelector('.v-select-label').textContent = 'All genres';
-    decadeSelect.querySelector('.v-select-label').textContent = 'All decades';
-    genreSelect.querySelectorAll('.v-option').forEach(o => o.classList.remove('active'));
-    decadeSelect.querySelectorAll('.v-option').forEach(o => o.classList.remove('active'));
+    genreSelect.value = '';
+    decadeSelect.value = '';
     loadPage({ reset: true });
   });
 }

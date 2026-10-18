@@ -428,6 +428,55 @@ html, body {
   color: var(--text);
 }
 
+/* Album controls share one touch target size without nested filter pills. */
+.album-toolbar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  padding: 0 32px 20px;
+}
+.album-toolbar-actions,
+.album-toolbar-filters { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.album-toolbar .btn,
+.album-select {
+  min-height: 44px;
+  box-sizing: border-box;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background-color: var(--s2);
+  color: var(--text);
+  font-family: 'DM Sans', sans-serif;
+  font-size: 13px;
+}
+.album-toolbar .btn { padding: 8px 12px; white-space: nowrap; color: var(--muted); }
+.album-toolbar [hidden] { display: none; }
+.album-select {
+  display: block;
+  width: 160px;
+  min-width: 0;
+  padding: 8px 32px 8px 12px;
+  appearance: none;
+  -webkit-appearance: none;
+  color-scheme: dark;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23888888' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 12px center;
+  text-overflow: ellipsis;
+  cursor: pointer;
+}
+#album-sort-select { width: 96px; }
+.album-toolbar .btn[aria-pressed="true"] { color: var(--gold); border-color: var(--gold); }
+.album-toolbar :is(button, select):focus-visible { outline: 2px solid var(--gold); outline-offset: 2px; }
+#clear-focus-btn { margin-left: auto; padding: 8px; background: transparent; border-color: transparent; }
+@media (max-width: 768px) {
+  .album-toolbar { display: grid; gap: 8px; padding: 0 16px 20px; }
+  .album-toolbar-filters { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .album-toolbar-filters .album-select { width: 100%; }
+  /* Keep native iOS selectors readable without focus zoom. */
+  .album-select { font-size: 16px; }
+}
+
 .discover-hero {
   padding: 0 32px 24px;
   display: flex;

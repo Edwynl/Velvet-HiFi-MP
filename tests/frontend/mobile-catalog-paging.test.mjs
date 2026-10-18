@@ -91,6 +91,39 @@ const next=dom.window.document.querySelector('#next-page-btn');
 next.click();
 await wait(()=>requests.some(u=>u.pathname==='/api/albums/page' && u.searchParams.get('offset')==='60'));
 await wait(()=>dom.window.document.querySelector('#albums-grid .card .card-title')?.textContent==='Album 61');
+// A selected sort/filter must be visible and match the request, including
+// after leaving page 2 and when clearing genre/decade without clearing sort.
+const albumDoc = dom.window.document;
+const lastAlbumRequest = () => requests.filter(u => u.pathname === '/api/albums/page').at(-1);
+async function chooseAlbumOption(id, value, param, label) {
+  const select = albumDoc.getElementById(id);
+  const before = requests.length;
+  select.value = value;
+  select.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
+  await wait(() => requests.length > before && lastAlbumRequest().searchParams.get(param) === value);
+  await wait(() => albumDoc.querySelector('#page-info').textContent === 'Page 1 / 3' && !next.disabled);
+  assert.equal(select.selectedOptions[0].textContent, label);
+  assert.equal(lastAlbumRequest().searchParams.get('offset'), '0');
+}
+for (const [value, label] of [['year', 'Year'], ['artist', 'Artist'], ['added', 'Added'], ['title', 'A–Z']]) {
+  await chooseAlbumOption('album-sort-select', value, 'sort', label);
+}
+await chooseAlbumOption('album-sort-select', 'artist', 'sort', 'Artist');
+assert.equal(albumDoc.querySelector('#clear-focus-btn').hidden, true);
+await chooseAlbumOption('album-genre-select', 'Classical', 'genre', 'Classical');
+await chooseAlbumOption('album-decade-select', '2020s', 'decade', '2020s');
+assert.equal(albumDoc.querySelector('#clear-focus-btn').hidden, false);
+albumDoc.querySelector('#favorites-filter-btn').click();
+await wait(() => lastAlbumRequest().searchParams.get('favorites_only') === 'true' && !next.disabled);
+assert.equal(albumDoc.querySelector('#favorites-filter-btn').getAttribute('aria-pressed'), 'true');
+albumDoc.querySelector('#clear-focus-btn').click();
+await wait(() => albumDoc.querySelector('#clear-focus-btn').hidden);
+assert.equal(albumDoc.querySelector('#album-genre-select').selectedOptions[0].textContent, 'All genres');
+assert.equal(albumDoc.querySelector('#album-decade-select').selectedOptions[0].textContent, 'All decades');
+assert.equal(lastAlbumRequest().searchParams.get('genre'), '');
+assert.equal(lastAlbumRequest().searchParams.get('decade'), '');
+assert.equal(lastAlbumRequest().searchParams.get('sort'), 'artist');
+assert.equal(lastAlbumRequest().searchParams.get('favorites_only'), 'true');
 const input=dom.window.document.querySelector('#search-input');
 input.value='137';
 input.dispatchEvent(new dom.window.Event('input',{ bubbles:true }));
