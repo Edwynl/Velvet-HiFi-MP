@@ -573,13 +573,21 @@ async def resolve_search_alias(
         # unconfirmed one may be a namesake's ID from name-only enrichment.
         # Fold every local name once, not once per candidate record.
         locals_ = []
-        for artist_id, local_name, local_raw in db.execute(
-            "SELECT id,name,CASE WHEN mbid_verified THEN mbid END FROM artists"
+        snapshots: dict[int, tuple[str, object, int]] = {}
+        for artist_id, local_name, local_raw, verified in db.execute(
+            "SELECT id, name, mbid, mbid_verified FROM artists"
         ):
             local_key = search_fold(str(local_name))
-            if local_key:
-                local_mbid = _mbid(local_raw) if local_raw else None
-                locals_.append((int(artist_id), str(local_name), local_mbid, local_key))
+            if not local_key:
+                continue
+            verified = int(verified or 0)
+            # Only a user-confirmed MBID can rule a local artist in or out;
+            # an unconfirmed one may be a namesake's ID from name-only
+            # enrichment. The snapshot is taken here, before any remote
+            # lookup, so the locked store can reject stale local evidence.
+            local_mbid = _mbid(local_raw) if (verified and local_raw) else None
+            locals_.append((int(artist_id), str(local_name), local_mbid, local_key))
+            snapshots[int(artist_id)] = (str(local_name), local_raw, verified)
         query_key = search_fold(query)
         pairs: dict[tuple[int, str], tuple[str, dict]] = {}
         # A phone should wait for no more than five detailed lookups per
@@ -615,6 +623,12 @@ async def resolve_search_alias(
                 db, artist_id, local_name, mbid, record,
                 known_mbid=True, query_alias=query,
                 evidence_method="trusted_mbid",
+                # This path trusts an already verified local ID, so it skips
+                # restoring the MBID and would otherwise stamp `mbid_verified`
+                # onto whatever the row holds. The pre-network snapshot stops
+                # a rename or ID change during the detailed lookups from being
+                # persisted together with aliases fetched for the old record.
+                expected_identity=snapshots.get(artist_id),
             )
         # No trustworthy MBID: return proposal, let the UI explicitly confirm.
         return {

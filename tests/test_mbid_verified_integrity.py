@@ -23,7 +23,7 @@ import enrichment
 import artist_alias_sync
 from artist_alias_batch import _select_candidates
 from artist_aliases import fetch_aliases
-from artist_alias_sync import sync_artist_aliases
+from artist_alias_sync import resolve_search_alias, sync_artist_aliases
 from db_schema import apply_migrations
 from tests.test_artist_alias_corroboration import (
     A,
@@ -402,6 +402,177 @@ class TwoConnectionAtomicityTests(unittest.TestCase):
         # The competing connection can still write, so nothing is still locked.
         self.other.execute("UPDATE artists SET mbid=? WHERE id=1", (A,))
         self.other.commit()
+
+
+class ResolveSearchAliasSnapshotTests(unittest.TestCase):
+    """P2 follow-up: the trusted-ID fallback must validate its snapshot too.
+
+    `resolve_search_alias` trusts an already verified local MBID, so it skips
+    restoring the ID and would stamp `mbid_verified` onto whatever the row
+    holds by the time the locked store runs. It now folds a pre-network
+    snapshot of every local artist and passes it through.
+    """
+
+    def setUp(self):
+        self.db = sqlite3.connect(":memory:")
+        self.db.row_factory = sqlite3.Row
+        self.db.execute("PRAGMA foreign_keys=ON")
+        apply_migrations(self.db)
+        self.db.execute(
+            "INSERT INTO artists(id,name,sort_name,mbid,mbid_verified) "
+            "VALUES(1,'徐佳瑩','徐佳瑩',?,1)", (A,)
+        )
+        self.db.commit()
+
+    def tearDown(self):
+        self.db.close()
+
+    def _mutating_fake(self, mutate):
+        """Mutate during a detailed lookup, i.e. after the snapshot is taken.
+
+        The search endpoint returns last path segment `artist`; the detailed
+        lookups that follow return the MBID, which is where the snapshot has
+        already been captured.
+        """
+
+        class Racing(MusicBrainzFake):
+            async def get(self, url, *, params=None, headers=None):
+                if not getattr(self, "done", False):
+                    if url.rstrip("/").rsplit("/", 1)[-1] != "artist":
+                        self.done = True
+                        mutate()
+                return await super().get(url, params=params, headers=headers)
+
+        return Racing()
+
+    def _resolve(self, fake):
+        with patch("artist_alias_sync.asyncio.sleep", no_wait):
+            return asyncio.run(
+                resolve_search_alias(self.db, "Lala Hsu", client=fake)
+            )
+
+    def test_rename_during_lookup_is_rejected(self):
+        def rename():
+            self.db.execute("UPDATE artists SET name='另一個名字' WHERE id=1")
+            self.db.commit()
+
+        result = self._resolve(self._mutating_fake(rename))
+        self.assertEqual(result["status"], "identity_changed")
+        self.assertEqual(fetch_aliases(self.db, 1), [])
+
+    def test_mbid_change_during_lookup_fails_even_earlier(self):
+        """Repointing the ID makes the trusted path inapplicable, not merely stale.
+
+        The row no longer carries the candidate's verified ID, so the store is
+        never reached and the artist goes back to review with nothing written.
+        """
+        def repoint():
+            self.db.execute("UPDATE artists SET mbid=? WHERE id=1", (B,))
+            self.db.commit()
+
+        result = self._resolve(self._mutating_fake(repoint))
+        self.assertEqual(result["status"], "needs_review")
+        self.assertEqual(fetch_aliases(self.db, 1), [])
+        self.assertEqual(self._stored()["mbid"], B)
+
+    def _stored(self):
+        return self.db.execute(
+            "SELECT mbid, mbid_verified FROM artists WHERE id=1"
+        ).fetchone()
+
+    def test_unverified_row_does_not_use_the_trusted_path(self):
+        """Without a verified flag there is nothing to trust or snapshot."""
+        self.db.execute("UPDATE artists SET mbid_verified=0 WHERE id=1")
+        self.db.commit()
+        result = self._resolve(MusicBrainzFake())
+        self.assertEqual(result["status"], "needs_review")
+        self.assertEqual(fetch_aliases(self.db, 1), [])
+
+    def test_unchanged_row_still_resolves(self):
+        """The new snapshot must not break the path it protects."""
+        result = self._resolve(MusicBrainzFake())
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["verification"], "trusted_mbid")
+        self.assertIn("LaLa Hsu", fetch_aliases(self.db, 1))
+        row = self.db.execute(
+            "SELECT mbid, mbid_verified FROM artists WHERE id=1"
+        ).fetchone()
+        self.assertEqual(row["mbid"], A)
+        self.assertEqual(row["mbid_verified"], 1)
+
+
+class SchemaProbeFailClosedTests(unittest.TestCase):
+    """P2 follow-up: a probe that cannot answer must not disable the guard."""
+
+    class _BrokenConn:
+        def __init__(self, exc):
+            self.exc = exc
+
+        def execute(self, *args, **kwargs):
+            raise self.exc
+
+        def commit(self):
+            pass
+
+        def close(self):
+            pass
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        self.path = Path(self._tmp.name) / "library.db"
+        self.db = sqlite3.connect(self.path)
+        self.db.row_factory = sqlite3.Row
+        apply_migrations(self.db)
+        self.db.execute("INSERT INTO artists(id,name,sort_name,mbid,mbid_verified) "
+                        "VALUES(1,'徐佳瑩','徐佳瑩',?,1)", (A,))
+        self.db.commit()
+
+    def tearDown(self):
+        self.db.close()
+        self._tmp.cleanup()
+
+    def _stored(self):
+        return self.db.execute(
+            "SELECT mbid, mbid_verified FROM artists WHERE id=1"
+        ).fetchone()
+
+    def test_the_swallowing_schema_probe_is_gone(self):
+        """A failed probe used to be indistinguishable from an old schema."""
+        self.assertFalse(
+            hasattr(enrichment, "_has_mbid_verified_column"),
+            "the fail-open probe must not come back",
+        )
+
+    def test_transient_database_error_fails_closed(self):
+        broken = self._BrokenConn(sqlite3.OperationalError("database is locked"))
+        with patch.object(enrichment, "_db", lambda: broken):
+            wrote = enrichment._set_unverified_artist_mbid(B, 1)
+        self.assertFalse(wrote)
+        self.assertEqual(self._stored()["mbid"], A)
+        self.assertEqual(self._stored()["mbid_verified"], 1)
+
+    def test_locked_database_fails_closed(self):
+        broken = self._BrokenConn(sqlite3.OperationalError("cannot start a transaction"))
+        with patch.object(enrichment, "_db", lambda: broken):
+            wrote = enrichment._set_unverified_artist_mbid(B, 1)
+        self.assertFalse(wrote)
+        self.assertEqual(self._stored()["mbid"], A)
+
+    def test_explicit_missing_column_still_falls_back(self):
+        """A pre-schema-15 database has no flag to protect, so the write is safe."""
+        legacy = Path(self._tmp.name) / "legacy.db"
+        conn = sqlite3.connect(legacy)
+        conn.execute("CREATE TABLE artists(id INTEGER PRIMARY KEY, name TEXT, "
+                     "sort_name TEXT, mbid TEXT)")
+        conn.execute("INSERT INTO artists(id,name,sort_name,mbid) "
+                     "VALUES(1,'徐佳瑩','徐佳瑩',?)", (A,))
+        conn.commit()
+        conn.close()
+        with patch.object(enrichment, "DB_PATH", legacy):
+            self.assertTrue(enrichment._set_unverified_artist_mbid(B, 1))
+        conn = sqlite3.connect(legacy)
+        self.assertEqual(conn.execute("SELECT mbid FROM artists WHERE id=1").fetchone()[0], B)
+        conn.close()
 
 
 if __name__ == "__main__":

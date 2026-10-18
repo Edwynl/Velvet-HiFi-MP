@@ -95,12 +95,6 @@ def _exec(sql, params=()):
         except: pass
 
 
-def _has_mbid_verified_column() -> bool:
-    """`artists.mbid_verified` arrives with schema 15; stay usable below it."""
-    rows = _query("SELECT name FROM pragma_table_info('artists') WHERE name='mbid_verified'")
-    return bool(rows)
-
-
 def _set_unverified_artist_mbid(mbid: str, artist_id: int) -> bool:
     """Write an automatic MBID unless this artist already has a verified one.
 
@@ -109,18 +103,37 @@ def _set_unverified_artist_mbid(mbid: str, artist_id: int) -> bool:
     artist, and overwriting a confirmed identity would leave the imported
     aliases and provenance pointing at an artist the row no longer names.
     A verified MBID may only change through explicit identity review.
+
+    The guarded statement is attempted first. Only an explicit
+    "no such column" proves the database predates the verification flag and
+    justifies the legacy unguarded write; every other failure -- including a
+    transient error while introspecting the schema -- fails closed, because a
+    probe that cannot answer must never disable the protection.
     """
-    if _has_mbid_verified_column():
-        sql = "UPDATE artists SET mbid=? WHERE id=? AND COALESCE(mbid_verified,0)=0"
-    else:
-        sql = "UPDATE artists SET mbid=? WHERE id=?"
     conn = _db()
     try:
-        cur = conn.execute(sql, (mbid, artist_id))
+        cur = conn.execute(
+            "UPDATE artists SET mbid=? WHERE id=? AND COALESCE(mbid_verified,0)=0",
+            (mbid, artist_id),
+        )
         conn.commit()
         return cur.rowcount > 0
-    except Exception as e:
-        log.warning(f"DB exec error: {e}")
+    except sqlite3.OperationalError as exc:
+        message = str(exc).lower()
+        if "no such column" not in message or "mbid_verified" not in message:
+            log.warning(
+                "[ENRICH] refusing MBID write for artist %s: %s", artist_id, exc,
+            )
+            return False
+        try:
+            conn.execute("UPDATE artists SET mbid=? WHERE id=?", (mbid, artist_id))
+            conn.commit()
+            return True
+        except sqlite3.Error as inner:
+            log.warning(f"DB exec error: {inner}")
+            return False
+    except sqlite3.Error as exc:
+        log.warning(f"DB exec error: {exc}")
         return False
     finally:
         try: conn.close()
