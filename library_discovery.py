@@ -78,36 +78,44 @@ def search_tracks(
     to_simplified: Callable[[str], str],
     to_traditional: Callable[[str], str],
 ) -> dict:
-    """Global search using one OpenCC search key for all query paths.
+    """Backward compatible track-only callers retain their result envelope."""
+    result = search_tracks_page(
+        db, q, limit, get_all_variants, to_simplified, to_traditional,
+    )
+    return {"tracks": result["tracks"]}
 
-    The callable arguments are retained for backward API compatibility; all
-    production paths must use the identical converter for index and query.
-    Exact raw spellings are included in the index, preventing loss when a
-    phrase-level conversion changes how a substring is segmented.
+
+def search_tracks_page(
+    db: sqlite3.Connection,
+    q: str,
+    limit: int,
+    get_all_variants: Callable[[str], list[str]],
+    to_simplified: Callable[[str], str],
+    to_traditional: Callable[[str], str],
+    *,
+    offset: int = 0,
+) -> dict:
+    """Ranked, paginated tracks with the total BEFORE applying the limit.
+
+    Canonical full-title matches rank first, then literal title prefixes,
+    substrings, and reverse/artist/album metadata matches. Query folding and
+    dirty-index matching use the same OpenCC contract as other categories.
     """
     from library_search_match import (
-        ids_json,
-        match_track_ids,
-        normalize_query,
-        rank_order_by,
-        rank_params,
+        ids_json, match_track_ids, normalize_query, rank_order_by, rank_params,
     )
 
     q = (q or "").strip()
-    if not q or limit < 1:
-        return {"tracks": []}
+    if not q or limit < 1 or offset < 0:
+        return {"tracks": [], "total": 0}
     ids = match_track_ids(db, q, reverse=True)
+    total = len(ids)
     if not ids:
-        return {"tracks": []}
+        return {"tracks": [], "total": 0}
+
     _, folded = normalize_query(q)
-    # Rank on the stored folded title. Sorting by raw LOWER(title) cannot see
-    # that a Simplified query equals a Traditional title, so 愛 (matched only
-    # by the reverse-substring clause) used to outrank the exact match 愛你.
     if _has_title_key(db):
         rank = rank_order_by("ti")
-        # LEFT, not INNER: a track whose index row has not been built yet must
-        # still appear, ranked last. An inner join silently dropped every
-        # unindexed track.
         join_rank = "LEFT JOIN track_search_index ti ON ti.track_id = t.id"
         rank_args = rank_params(folded)
     else:
@@ -118,10 +126,10 @@ def search_tracks(
         f"""SELECT {_TRACK_COLUMNS} {_TRACK_JOINS} {join_rank}
             WHERE t.id IN (SELECT value FROM json_each(?))
             ORDER BY {rank}
-            LIMIT ?""",
-        (ids_json(ids), *rank_args, limit),
+            LIMIT ? OFFSET ?""",
+        (ids_json(ids), *rank_args, limit, offset),
     ).fetchall()
-    return {"tracks": [dict(row) for row in rows]}
+    return {"tracks": [dict(row) for row in rows], "total": total}
 
 
 _title_key_available: bool | None = None
@@ -164,7 +172,7 @@ def search_library(
     if not q:
         return {
             "artists": [], "albums": [], "tracks": [],
-            "total_artists": 0, "total_albums": 0,
+            "total_artists": 0, "total_albums": 0, "total_tracks": 0,
         }
     from library_paging import fetch_album_page, fetch_artist_page
 
@@ -174,7 +182,7 @@ def search_library(
     albums = fetch_album_page(
         db, search=q, limit=album_limit, offset=0,
     )
-    tracks = search_tracks(
+    tracks = search_tracks_page(
         db, q, limit, get_all_variants, to_simplified, to_traditional,
     )
     return {
@@ -183,7 +191,45 @@ def search_library(
         "tracks": tracks["tracks"],
         "total_artists": artists["total"],
         "total_albums": albums["total"],
+        "total_tracks": tracks["total"],
     }
+
+
+def search_library_category(
+    db: sqlite3.Connection,
+    kind: str,
+    q: str,
+    limit: int,
+    offset: int,
+    get_all_variants: Callable[[str], list[str]],
+    to_simplified: Callable[[str], str],
+    to_traditional: Callable[[str], str],
+) -> dict:
+    """Fetch only one bounded category page for the global Search view."""
+    if kind not in ("artists", "albums", "tracks"):
+        raise ValueError("Unsupported search category")
+    if not 1 <= limit <= 200 or offset < 0:
+        raise ValueError("Invalid search page bounds")
+    query = (q or "").strip()
+    if not query:
+        return {"kind": kind, "items": [], "total": 0,
+                "limit": limit, "offset": offset}
+    if kind == "artists":
+        from library_paging import fetch_artist_page
+        page = fetch_artist_page(db, search=query, limit=limit, offset=offset)
+        items, total = page["artists"], page["total"]
+    elif kind == "albums":
+        from library_paging import fetch_album_page
+        page = fetch_album_page(db, search=query, limit=limit, offset=offset)
+        items, total = page["albums"], page["total"]
+    else:
+        page = search_tracks_page(
+            db, query, limit, get_all_variants, to_simplified, to_traditional,
+            offset=offset,
+        )
+        items, total = page["tracks"], page["total"]
+    return {"kind": kind, "items": items, "total": total,
+            "limit": limit, "offset": offset}
 
 
 def fetch_genres(db: sqlite3.Connection) -> list[dict]:

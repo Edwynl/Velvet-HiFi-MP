@@ -12,7 +12,7 @@ import logging
 import sqlite3
 import threading
 import time
-from typing import Callable
+from typing import Callable, Awaitable
 
 import httpx
 
@@ -25,9 +25,12 @@ MAX_BATCH_SIZE = 50
 MAX_ALL_ARTISTS = 20000
 DEFAULT_BATCH_SIZE = 25
 REQUEST_INTERVAL_SECONDS = 1.25
-# Rows indexed in the post-batch refresh. Chosen to stay well inside a single
-# short write transaction even after a whole-library run.
-REFRESH_ROW_BUDGET = 5000
+# No long writer transaction: refresh a small number of dirty rows after each
+# handful of imported artists, then commit every remaining slice separately.
+REFRESH_ROW_BUDGET = 800
+REFRESH_BATCH_SIZE = 200
+INDEX_REFRESH_EVERY_ARTISTS = 5
+MAX_FINAL_REFRESH_PASSES = 150
 
 # New artists are never skipped. Completed artists are excluded from next
 # batches, including those with no verified aliases; retry is explicit.
@@ -35,6 +38,7 @@ _RETRY_STATUSES = (
     "not_found", "ambiguous", "identity_mismatch", "invalid_mbid",
     "unavailable", "error",
 )
+# needs_review is deliberately not retryable. It needs a human identity choice.
 
 
 class RateLimitedMusicBrainzClient:
@@ -42,16 +46,26 @@ class RateLimitedMusicBrainzClient:
 
     rate_limited = True
 
-    def __init__(self, client, *, interval: float = REQUEST_INTERVAL_SECONDS):
+    def __init__(
+        self,
+        client,
+        *,
+        interval: float = REQUEST_INTERVAL_SECONDS,
+        clock: Callable[[], float] = time.monotonic,
+        sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+    ):
         self.client = client
         self.interval = interval
-        self.last_request_at = 0.0
+        self._clock = clock
+        self._sleep = sleep
+        self.last_request_at: float | None = None
 
     async def get(self, url: str, **kwargs):
-        remaining = self.last_request_at + self.interval - time.monotonic()
-        if remaining > 0:
-            await asyncio.sleep(remaining)
-        self.last_request_at = time.monotonic()
+        if self.last_request_at is not None:
+            remaining = self.last_request_at + self.interval - self._clock()
+            if remaining > 0:
+                await self._sleep(remaining)
+        self.last_request_at = self._clock()
         return await self.client.get(url, **kwargs)
 
 
@@ -132,7 +146,12 @@ class ArtistAliasEnrichmentJob:
                  (SELECT COUNT(*) FROM artist_alias_enrichment_state
                   WHERE status!='ok') AS unresolved_artists,
                  (SELECT COALESCE(SUM(aliases_added),0)
-                  FROM artist_alias_enrichment_state) AS aliases_imported"""
+                  FROM artist_alias_enrichment_state) AS aliases_imported,
+                 (SELECT COUNT(*) FROM artist_alias_enrichment_state
+                  WHERE status='needs_review') AS needs_review_artists,
+                 (SELECT COUNT(*) FROM artist_alias_enrichment_state
+                  WHERE status IN ('not_found','ambiguous','identity_mismatch',
+                                   'invalid_mbid','unavailable','error')) AS retryable_artists"""
         ).fetchone()
         result = self.state.snapshot()
         result.update(
@@ -141,9 +160,21 @@ class ArtistAliasEnrichmentJob:
             synced_artists=int(counts[2]),
             unresolved_artists=int(counts[3]),
             aliases_imported=int(counts[4]),
+            needs_review_artists=int(counts[5]),
+            retryable_artists=int(counts[6]),
             remaining_artists=max(0, int(counts[0]) - int(counts[1])),
         )
         return result
+
+    def review_queue(self, db: sqlite3.Connection, *, limit: int = 25) -> list[dict]:
+        """Artists who need explicit MBID selection, not automatic retry."""
+        rows = db.execute(
+            "SELECT a.id, a.name FROM artist_alias_enrichment_state e "
+            "JOIN artists a ON a.id=e.artist_id "
+            "WHERE e.status='needs_review' ORDER BY a.name COLLATE NOCASE "
+            "LIMIT ?", (min(100, max(1, limit)),),
+        ).fetchall()
+        return [{"id": int(row[0]), "name": str(row[1])} for row in rows]
 
     def start(self, db: sqlite3.Connection, *, mode: str = "pending",
               limit: int = DEFAULT_BATCH_SIZE, all_remaining: bool = False) -> dict:
@@ -205,8 +236,40 @@ class ArtistAliasEnrichmentJob:
                 error=current.get("error"),
             )
 
+    def _flush_dirty_keys(self, *, drain: bool = False) -> None:
+        """Keep the dirty index small without monopolizing SQLite writers.
+
+        Each call opens and commits its own short transaction; no connection
+        or lock is held across a MusicBrainz request.
+        """
+        # A single heavily represented singer can dirty tens of thousands
+        # of tracks. Catch up between artists with several SHORT transactions
+        # instead of leaving the whole backlog until the import is finished.
+        for _ in range(MAX_FINAL_REFRESH_PASSES if drain else 6):
+            db = self.db_factory()
+            try:
+                row = db.execute(
+                    "SELECT (SELECT COUNT(*) FROM track_search_dirty) + "
+                    "(SELECT COUNT(*) FROM catalog_search_dirty)"
+                ).fetchone()
+                if not row or row[0] == 0:
+                    return
+                refresh_track_search_index(
+                    db, batch_size=REFRESH_BATCH_SIZE,
+                    max_rows=REFRESH_ROW_BUDGET,
+                )
+                db.commit()
+            except (sqlite3.Error, ValueError):
+                db.rollback()
+                log.exception("Alias search index refresh deferred; dirty values remain searchable")
+                return
+            finally:
+                db.close()
+
     async def _process(self, candidates: list[tuple[int, str]]) -> None:
         # One persistent HTTP session and rate limit across artists.
+        added_since_refresh = 0
+        artists_since_refresh = 0
         async with self.client_factory(timeout=15) as session:
             client = RateLimitedMusicBrainzClient(session)
             for artist_id, name in candidates:
@@ -247,24 +310,19 @@ class ArtistAliasEnrichmentJob:
                 self.state.increment("processed")
                 self.state.increment("aliases_added", added)
                 self.state.increment("synced" if status == "ok" else "unresolved")
+                artists_since_refresh += 1
+                added_since_refresh += added
+                if added or artists_since_refresh >= INDEX_REFRESH_EVERY_ARTISTS:
+                    # Newly verified popular artists may dirty thousands of
+                    # tracks at once. Keep draining even if the next few
+                    # artists require review and do not add more aliases.
+                    self._flush_dirty_keys()
+                    artists_since_refresh = 0
+                    added_since_refresh = 0
                 if self._stop.is_set():
                     break
 
-        # Bounded follow-up index refresh. Without it, a large alias import
-        # leaves huge dirty match candidate sets until the server restarts.
-        # The budget matters: refresh_track_search_index drains its whole queue
-        # when called without one, so "Sync all remaining" would otherwise end
-        # in a single write transaction over tens of thousands of tracks and
-        # block every other writer. Rows left dirty stay searchable -- the live
-        # data path already answers from unindexed values -- and the server
-        # finishes them on its next refresh.
+        # Drain the remaining queue in short transactions. Never wait until
+        # the end of a multi-hour import to perform the *first* refresh.
         if self.state.snapshot().get("aliases_added"):
-            db = self.db_factory()
-            try:
-                refresh_track_search_index(db, batch_size=500, max_rows=REFRESH_ROW_BUDGET)
-                db.commit()
-            except sqlite3.Error:
-                db.rollback()
-                log.exception("Search index refresh deferred; dirty rows remain searchable")
-            finally:
-                db.close()
+            self._flush_dirty_keys(drain=True)

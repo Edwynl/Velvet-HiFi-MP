@@ -13,10 +13,13 @@ const track = { id: 30, title: '失落沙洲', album_id: 7,
                 album_title: '理想人生', artist_name: '徐佳瑩', format: 'FLAC' };
 const requests = [];
 let resolvedUnknownAlias = false;
+let failNextAliasPoll = false;
+let failedAliasPolls = 0;
 let aliasJob = {
   running: false, stopping: false, status: 'idle', mode: 'pending',
   processed: 0, total: 0, synced_artists: 1, remaining_artists: 2,
-  unresolved_artists: 1, aliases_imported: 3,
+  unresolved_artists: 1, retryable_artists: 1, needs_review_artists: 1,
+  aliases_imported: 3,
 };
 const response = data => ({
   ok: true, status: 200, headers: { get: () => 'application/json' },
@@ -28,7 +31,15 @@ const request = async (url, opts = {}) => {
   requests.push({ url: u, method: opts.method || 'GET' });
   const q = u.searchParams.get('q') || '';
   if (u.pathname === '/api/library/artist-aliases/enrichment' && (!opts.method || opts.method === 'GET')) {
+    if (failNextAliasPoll) {
+      failNextAliasPoll = false;
+      failedAliasPolls++;
+      return { ...response({ detail: 'temporary failure' }), ok: false, status: 503 };
+    }
     return response(aliasJob);
+  }
+  if (u.pathname === '/api/library/artist-aliases/enrichment/review') {
+    return response({ artists: [{ id: 3, name: '徐佳瑩' }] });
   }
   if (u.pathname === '/api/library/artist-aliases/enrichment/start') {
     const body = JSON.parse(opts.body);
@@ -43,16 +54,36 @@ const request = async (url, opts = {}) => {
     return response(aliasJob);
   }
   if (u.pathname === '/api/search/resolve-artist-alias') {
+    return response({ status: 'needs_review', artist_id: 3,
+      candidate: { mbid: 'a47ac8f5-6774-4540-842f-f1eb0a19845c',
+                   name: '徐佳瑩', country: 'TW' } });
+  }
+  if (u.pathname === '/api/artists/3/aliases/confirm') {
     resolvedUnknownAlias = true;
-    return response({ status: 'ok', artist_id: 3, added: ['Lala Alias'] });
+    return response({ status: 'ok', artist_id: 3,
+                      aliases: ['LaLa Hsu', 'Lala Alias'], added: ['Lala Alias'] });
+  }
+  if (u.pathname === '/api/search/category') {
+    const kind = u.searchParams.get('kind');
+    const continuation = {
+      artists: [{ ...artist, id: 4, name: 'Another Artist' }],
+      albums: [{ ...album, id: 8, title: 'Another Album' }],
+      tracks: [{ ...track, id: 31, title: 'Another Song' }],
+    };
+    return response({ kind, items: continuation[kind] || [], total: 2,
+                      offset: Number(u.searchParams.get('offset')), limit: 40 });
   }
   if (u.pathname === '/api/search') {
+    if (q === 'paging') {
+      return response({ artists: [artist], albums: [album], tracks: [track],
+                        total_artists: 2, total_albums: 2, total_tracks: 2 });
+    }
     if (/lala hsu|徐佳莹|徐佳瑩/i.test(q) || (q === 'Lala Alias' && resolvedUnknownAlias)) {
       return response({ artists: [artist], albums: [album], tracks: [track],
-                        total_artists: 1, total_albums: 1 });
+                        total_artists: 1, total_albums: 1, total_tracks: 1 });
     }
     return response({ artists: [], albums: [], tracks: [],
-                      total_artists: 0, total_albums: 0 });
+                      total_artists: 0, total_albums: 0, total_tracks: 0 });
   }
   if (u.pathname === '/api/stats') return response({ albums: 1, artists: 1, tracks: 1 });
   if (u.pathname === '/api/albums/page') return response({
@@ -62,7 +93,10 @@ const request = async (url, opts = {}) => {
   if (u.pathname === '/api/artists/3') return response(artist);
   if (u.pathname === '/api/artists/3/albums') return response([album]);
   if (u.pathname === '/api/artists/3/aliases/sync') {
-    return response({ status: 'ok', aliases: ['LaLa Hsu'], added: ['LaLa Hsu'] });
+    return response({ status: 'needs_review', candidates: [{
+      mbid: 'a47ac8f5-6774-4540-842f-f1eb0a19845c',
+      name: '徐佳瑩', type: 'Person', country: 'TW',
+    }] });
   }
   if (u.pathname === '/api/artists/3/enrich-bio') return response({});
   if (u.pathname === '/api/recently-added') return response([]);
@@ -79,6 +113,7 @@ const dom = new JSDOM(html, {
     window.fetch = request;
     window.alert = () => {};
     window.confirm = () => true;
+    window.prompt = () => '1';
     window.scrollTo = () => {};
     window.matchMedia = q => ({
       media:q, matches:false, addListener(){}, removeListener(){},
@@ -148,6 +183,24 @@ dom.window.document.querySelector('#artist-alias-all-batch').click();
 await wait(() => requests.some(r => r.url.pathname === '/api/library/artist-aliases/enrichment/start'
   && r.method === 'POST' && aliasJob.all_remaining === true));
 assert.equal(aliasJob.all_remaining, true, 'Whole-library sync requires an explicit click');
+
+// A temporary Tailscale/HTTP error during a running import must not terminate
+// polling permanently. Force one 503 then recover without leaving Artists.
+failNextAliasPoll = true;
+aliasJob = { ...aliasJob, synced_artists: 9 };
+const waitPoll = async predicate => {
+  for (let i = 0; i < 600; i++) {
+    if (predicate()) return;
+    await new Promise(resolve => setTimeout(resolve, 20));
+  }
+  throw new Error('Timed out waiting for alias status polling recovery');
+};
+await waitPoll(() => failedAliasPolls > 0);
+await waitPoll(() => dom.window.document.querySelector('#artist-enrichment-summary')
+  ?.textContent.includes('9 verified'));
+
+dom.window.document.querySelector('#artist-alias-stop-batch').click();
+await wait(() => aliasJob.running === false);
 await searchFromCurrentView('Lala Hsu');
 
 // Artist cards retain navigation, and the alias control remains on the detail.
@@ -179,6 +232,26 @@ findAlias.click();
 await wait(() => resolvedUnknownAlias);
 await wait(() => dom.window.document.querySelector('.search-artist-grid .artist-card'));
 assert.equal(dom.window.document.querySelectorAll('.search-albums-grid .card').length, 1);
+assert.equal(requests.some(item => item.url.pathname === '/api/artists/3/aliases/confirm'), true,
+             'An unverified identity requires a second explicit approval request');
+
+// Every category supports continuation without navigating to a special menu.
+await dom.window.navigate('home');
+await wait(() => dom.window.document.querySelector('#search-input'));
+await searchFromCurrentView('paging');
+for (const [kind, selector] of [
+  ['artists', '.search-artist-grid .artist-card'],
+  ['albums', '.search-albums-grid .card'],
+  ['tracks', '.search-track-list .track-item'],
+]) {
+  const button = dom.window.document.querySelector(
+    `[data-search-category="${kind}"]`
+  );
+  assert.ok(button, `Missing Load more button for ${kind}`);
+  button.click();
+  await wait(() => dom.window.document.querySelectorAll(selector).length === 2);
+}
+assert.equal(requests.filter(item => item.url.pathname === '/api/search/category').length, 3);
 
 // ── Request ordering on the unified search view ──────────────────────────────
 // The unified search view is now the ONLY place a query is issued, so its

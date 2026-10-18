@@ -188,6 +188,71 @@ class ServerApiTests(unittest.TestCase):
         self.assertEqual(payload["total_artists"], 1)
         self.assertEqual(payload["total_albums"], 1)
 
+    def test_global_search_category_paging_and_total(self):
+        response = self.client.get(
+            "/api/search/category?kind=albums&q=Artist%20One&limit=1&offset=0",
+        )
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["kind"], "albums")
+        self.assertEqual(payload["total"], 1)
+        self.assertEqual(payload["offset"], 0)
+        self.assertEqual([album["title"] for album in payload["items"]], ["Album One"])
+        empty = self.client.get(
+            "/api/search/category?kind=albums&q=Artist%20One&limit=1&offset=1",
+        )
+        self.assertEqual(empty.status_code, 200)
+        self.assertEqual(empty.json()["items"], [])
+        self.assertEqual(empty.json()["total"], 1)
+        self.assertEqual(self.client.get(
+            "/api/search/category?kind=unknown&q=anything",
+        ).status_code, 422)
+
+    def test_artist_identity_review_queue_and_manual_confirmation_checkpoint(self):
+        from artist_aliases import add_alias
+
+        with closing(self._open_connection()) as db:
+            db.execute(
+                "INSERT INTO artist_alias_enrichment_state "
+                "(artist_id,status) VALUES(1,'needs_review')"
+            )
+            db.commit()
+        queue = self.client.get("/api/library/artist-aliases/enrichment/review")
+        self.assertEqual(queue.status_code, 200)
+        self.assertEqual(queue.json()["artists"][0]["name"], "Artist One")
+        self.assertEqual(self.client.post(
+            "/api/artists/1/aliases/confirm", json={},
+        ).status_code, 422)
+
+        async def approved(db, artist_id, *, confirmed_mbid, query_alias):
+            self.assertEqual(artist_id, 1)
+            db.execute(
+                "UPDATE artists SET mbid=? WHERE id=?",
+                (confirmed_mbid, artist_id),
+            )
+            add_alias(db, artist_id, "English Stage One")
+            return {
+                "status": "ok", "artist_id": artist_id,
+                "aliases": ["English Stage One"], "added": ["English Stage One"],
+            }
+
+        with patch.object(server, "sync_artist_aliases", side_effect=approved):
+            response = self.client.post(
+                "/api/artists/1/aliases/confirm",
+                json={"mbid": "a47ac8f5-6774-4540-842f-f1eb0a19845c",
+                      "query_alias": "English Stage One"},
+            )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["status"], "ok")
+        with closing(self._open_connection()) as db:
+            record = db.execute(
+                "SELECT status,aliases_added FROM artist_alias_enrichment_state "
+                "WHERE artist_id=1"
+            ).fetchone()
+            self.assertEqual(tuple(record), ("ok", 1))
+        search = self.client.get("/api/search?q=English%20Stage%20One")
+        self.assertEqual([a["id"] for a in search.json()["artists"]], [1])
+
     def test_alias_post_immediately_updates_global_results(self):
         response = self.client.post("/api/artists/1/aliases", json={"name": "Stage One"})
         self.assertEqual(response.status_code, 200)

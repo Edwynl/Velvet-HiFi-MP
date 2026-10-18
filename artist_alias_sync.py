@@ -1,10 +1,10 @@
-"""Opt-in MusicBrainz artist alias import for Velvet's offline search index.
+"""Verified, opt-in MusicBrainz aliases for the offline Velvet music search.
 
-An artist's displayed local name is never changed. Remote metadata is fetched
-only when the user explicitly selects "Sync aliases" for a specific artist.
-Search itself never makes network requests. The importer first establishes a
-verified MusicBrainz identity, then persists alternate spellings to the
-existing artist_aliases table, whose triggers update track/catalog dirty queues.
+Strong identity evidence is an existing local MusicBrainz artist ID matching
+a detailed MusicBrainz record *and* its locally stored artist name. A plain
+name match in MusicBrainz search results is NOT an identity match: two
+different musicians may share a stage name, and the search result is capped.
+Such candidates always require an explicit human confirmation of their MBID.
 """
 from __future__ import annotations
 
@@ -19,10 +19,11 @@ from chinese_variants import search_fold
 
 _MUSICBRAINZ = "https://musicbrainz.org/ws/2/artist"
 _HEADERS = {"User-Agent": "VelvetHiFi/3.0 (https://github.com/Edwynl/Velvet-HiFi-MP)"}
+_MAX_CANDIDATES = 10
 
 
 def _romanized_sort_name(name: str) -> str:
-    """Convert official sort-name 'Hsu, LaLa' into searchable 'LaLa Hsu'."""
+    """Turn MusicBrainz sort name 'Hsu, LaLa' into 'LaLa Hsu'."""
     if not name or name.count(",") != 1:
         return ""
     family, given = (part.strip() for part in name.split(",", 1))
@@ -30,110 +31,61 @@ def _romanized_sort_name(name: str) -> str:
 
 
 def _identity_names(data: dict) -> list[str]:
-    names = [data.get("name"), data.get("sort-name"),
-             _romanized_sort_name(data.get("sort-name") or "")]
-    names.extend(a.get("name") for a in (data.get("aliases") or [])
-                 if isinstance(a, dict))
-    return [str(n).strip() for n in names if isinstance(n, str) and n.strip()]
+    names = [
+        data.get("name"),
+        data.get("sort-name"),
+        _romanized_sort_name(data.get("sort-name") or ""),
+    ]
+    names.extend(
+        entry.get("name") for entry in (data.get("aliases") or [])
+        if isinstance(entry, dict)
+    )
+    return [name.strip() for name in names if isinstance(name, str) and name.strip()]
 
 
-def _is_verified(data: dict, local_name: str) -> bool:
-    """Never associate an uncertain MusicBrainz search hit with a local artist."""
-    target = search_fold(local_name)
-    return bool(target and any(search_fold(n) == target
-                               for n in _identity_names(data)))
+def _is_verified(data: dict, candidate_name: str) -> bool:
+    value = search_fold(candidate_name)
+    return bool(value and any(search_fold(name) == value for name in _identity_names(data)))
+
+
+def _mbid(value: object) -> str | None:
+    try:
+        return str(uuid.UUID(str(value)))
+    except (ValueError, TypeError, AttributeError):
+        return None
+
+
+def _public_candidate(candidate: dict) -> dict:
+    """Information for a user to explicitly verify; never blindly adopt it."""
+    return {
+        "mbid": _mbid(candidate.get("id")) or "",
+        "name": str(candidate.get("name") or "")[:128],
+        "disambiguation": str(candidate.get("disambiguation") or "")[:200],
+        "country": str(candidate.get("country") or "")[:60],
+        "type": str(candidate.get("type") or "")[:60],
+    }
 
 
 class AliasSyncUnavailable(Exception):
-    """Remote lookup unavailable, without changing local artist records."""
+    """MusicBrainz request unavailable; caller may retry without modifying DB."""
 
 
 async def _json(client: httpx.AsyncClient, url: str, params: dict) -> dict:
     try:
-        resp = await client.get(url, params=params, headers=_HEADERS)
-        resp.raise_for_status()
-        data = resp.json()
-        if not isinstance(data, dict):
+        response = await client.get(url, params=params, headers=_HEADERS)
+        response.raise_for_status()
+        value = response.json()
+        if not isinstance(value, dict):
             raise AliasSyncUnavailable("Invalid MusicBrainz response")
-        return data
+        return value
     except (httpx.HTTPError, ValueError) as exc:
         raise AliasSyncUnavailable("MusicBrainz is unavailable; try again later") from exc
 
 
-async def sync_artist_aliases(
-    db: sqlite3.Connection,
-    artist_id: int,
-    *,
-    client: httpx.AsyncClient | None = None,
-) -> dict:
-    """Import aliases only from a verified MusicBrainz artist.
-
-    This function intentionally does not commit. The API caller commits when
-    everything succeeds; tests can provide a fake HTTP client without network.
-    MusicBrainz recommends no more than one request per second; two-request
-    searches insert a delay. If the artist already has an MBID, only one lookup
-    is made. Existing local aliases are never deleted.
-    """
-    row = db.execute("SELECT id, name, mbid FROM artists WHERE id=?", (artist_id,)).fetchone()
-    if row is None:
-        raise ValueError("Artist not found")
-    artist_name, known_mbid = str(row[1]), row[2]
-    if known_mbid:
-        try:
-            mbid = str(uuid.UUID(str(known_mbid)))
-        except ValueError:
-            return {"status": "invalid_mbid", "added": [], "aliases": fetch_aliases(db, artist_id)}
-    else:
-        mbid = None
-
-    own_client = client is None
-    if own_client:
-        client = httpx.AsyncClient(timeout=15)
-    try:
-        if not mbid:
-            response = await _json(
-                client, _MUSICBRAINZ + "/",
-                {"query": artist_name, "fmt": "json", "limit": 10},
-            )
-            candidates = [
-                candidate for candidate in response.get("artists", [])
-                if isinstance(candidate, dict) and candidate.get("id")
-                and _is_verified(candidate, artist_name)
-            ]
-            ids = {candidate["id"] for candidate in candidates}
-            if len(ids) != 1:
-                return {
-                    "status": "ambiguous" if ids else "not_found",
-                    "added": [], "aliases": fetch_aliases(db, artist_id),
-                }
-            try:
-                mbid = str(uuid.UUID(str(next(iter(ids)))))
-            except ValueError:
-                return {"status": "invalid_mbid", "added": [],
-                        "aliases": fetch_aliases(db, artist_id)}
-            # Bulk runner owns the pacing for every request in the session.
-            if not getattr(client, "rate_limited", False):
-                await asyncio.sleep(1.1)
-
-        record = await _json(
-            client, f"{_MUSICBRAINZ}/{mbid}",
-            {"inc": "aliases", "fmt": "json"},
-        )
-        if str(record.get("id") or "").lower() != mbid.lower():
-            return {"status": "identity_mismatch", "added": [],
-                    "aliases": fetch_aliases(db, artist_id)}
-        # An MBID alone may be stale or incorrectly tagged in a music file.
-        # Require the artist's actual local name to appear on the verified
-        # MusicBrainz record even when an MBID is already stored.
-        if not _is_verified(record, artist_name):
-            return {"status": "identity_mismatch", "added": [],
-                    "aliases": fetch_aliases(db, artist_id)}
-
-        return _store_verified_aliases(db, artist_id, artist_name, mbid, record,
-                                       known_mbid=bool(known_mbid))
-    finally:
-        if own_client:
-            await client.aclose()
+async def _detailed(client, mbid: str) -> dict:
+    return await _json(
+        client, f"{_MUSICBRAINZ}/{mbid}", {"inc": "aliases", "fmt": "json"},
+    )
 
 
 def _store_verified_aliases(
@@ -146,11 +98,11 @@ def _store_verified_aliases(
     known_mbid: bool,
     query_alias: str = "",
 ) -> dict:
-    """Persist only verified names, respecting collisions with other artists."""
-    current = {a.casefold() for a in fetch_aliases(db, artist_id)}
+    """Save only names from the verified record; never change display names."""
+    current = {value.casefold() for value in fetch_aliases(db, artist_id)}
     added = []
     conflicts = []
-    choices = [*_identity_names(record)]
+    choices = _identity_names(record)
     if query_alias and _is_verified(record, query_alias):
         choices.append(query_alias.strip())
     for name in dict.fromkeys(choices):
@@ -158,11 +110,11 @@ def _store_verified_aliases(
             continue
         if name.casefold() in current:
             continue
-        other = db.execute(
+        collision = db.execute(
             "SELECT id FROM artists WHERE id != ? AND name = ? COLLATE NOCASE",
             (artist_id, name),
         ).fetchone()
-        if other:
+        if collision:
             conflicts.append(name)
             continue
         if add_alias(db, artist_id, name):
@@ -174,9 +126,103 @@ def _store_verified_aliases(
         db.execute("UPDATE artists SET mbid=? WHERE id=?", (mbid, artist_id))
     return {
         "status": "ok", "artist_id": artist_id, "mbid": mbid,
-        "added": added, "conflicts": conflicts,
         "aliases": fetch_aliases(db, artist_id),
+        "added": added, "conflicts": conflicts,
     }
+
+
+async def sync_artist_aliases(
+    db: sqlite3.Connection,
+    artist_id: int,
+    *,
+    client: httpx.AsyncClient | None = None,
+    confirmed_mbid: str | None = None,
+    query_alias: str = "",
+) -> dict:
+    """Import aliases if identity is trusted or explicitly confirmed.
+
+    Without a local MBID, the *first* call returns a human-review candidate
+    shortlist; it never persists a search-result-only identity. A subsequent
+    explicit-confirmation call with that MBID fetches the detailed record again
+    and validates its name. Callers own the transaction.
+    """
+    row = db.execute(
+        "SELECT id, name, mbid FROM artists WHERE id=?", (artist_id,),
+    ).fetchone()
+    if row is None:
+        raise ValueError("Artist not found")
+    artist_name, local_raw = str(row[1]), row[2]
+    local_mbid = _mbid(local_raw) if local_raw else None
+    if local_raw and not local_mbid:
+        return {"status": "invalid_mbid", "added": [], "aliases": fetch_aliases(db, artist_id)}
+    confirmed = _mbid(confirmed_mbid) if confirmed_mbid else None
+    if confirmed_mbid and not confirmed:
+        return {"status": "invalid_mbid", "added": [], "aliases": fetch_aliases(db, artist_id)}
+    if confirmed and local_mbid and confirmed != local_mbid:
+        return {"status": "identity_mismatch", "added": [],
+                "aliases": fetch_aliases(db, artist_id)}
+    mbid = local_mbid or confirmed
+
+    own_client = client is None
+    if own_client:
+        client = httpx.AsyncClient(timeout=15)
+    try:
+        if not mbid:
+            result = await _json(
+                client, _MUSICBRAINZ + "/",
+                {"query": artist_name, "fmt": "json", "limit": _MAX_CANDIDATES},
+            )
+            candidates = []
+            seen = set()
+            for candidate in result.get("artists") or []:
+                if not isinstance(candidate, dict):
+                    continue
+                proposed = _public_candidate(candidate)
+                if not proposed["mbid"] or proposed["mbid"] in seen:
+                    continue
+                # A short search response is not a complete identity record.
+                # Even one exact-name candidate requires human confirmation.
+                seen.add(proposed["mbid"])
+                candidates.append(proposed)
+            return {
+                "status": "needs_review" if candidates else "not_found",
+                "artist_id": artist_id,
+                "candidates": candidates,
+                "added": [], "aliases": fetch_aliases(db, artist_id),
+            }
+
+        record = await _detailed(client, mbid)
+        if _mbid(record.get("id")) != mbid:
+            return {"status": "identity_mismatch", "added": [],
+                    "aliases": fetch_aliases(db, artist_id)}
+        if not _is_verified(record, artist_name):
+            return {"status": "identity_mismatch", "added": [],
+                    "aliases": fetch_aliases(db, artist_id)}
+        if query_alias and not _is_verified(record, query_alias):
+            return {"status": "identity_mismatch", "added": [],
+                    "aliases": fetch_aliases(db, artist_id)}
+        # Reject another local artist already carrying this MusicBrainz ID.
+        duplicate = db.execute(
+            "SELECT id FROM artists WHERE id!=? AND mbid=?",
+            (artist_id, mbid),
+        ).fetchone()
+        if duplicate:
+            return {"status": "identity_mismatch", "added": [],
+                    "aliases": fetch_aliases(db, artist_id)}
+        return _store_verified_aliases(
+            db, artist_id, artist_name, mbid, record,
+            known_mbid=bool(local_mbid), query_alias=query_alias,
+        )
+    finally:
+        if own_client:
+            await client.aclose()
+
+
+async def _pace(client, *, first: bool) -> None:
+    # The batch client owns its own >=1.25s pacing; single lookup has two or
+    # more requests and must not issue them faster than MusicBrainz allows.
+    if not first and not getattr(client, "rate_limited", False):
+        await asyncio.sleep(1.1)
 
 
 async def resolve_search_alias(
@@ -185,11 +231,11 @@ async def resolve_search_alias(
     *,
     client: httpx.AsyncClient | None = None,
 ) -> dict:
-    """Explicit one-click fallback when an English stage name is not indexed.
+    """Explicit opt-in lookup for a Latin name absent from local search.
 
-    Search MusicBrainz for the typed alias; link it to an existing local artist
-    only if both the remote alias and the remote/local artist identity verify.
-    Never create/merge artists, and never query remotely while typing.
+    Search candidate snippets may omit aliases. Fetch each detailed candidate
+    first, then verify both the typed name and local artist. Never auto-bind
+    a candidate based on a shared primary artist name alone.
     """
     query = (query or "").strip()
     if not 1 <= len(query) <= 128:
@@ -198,54 +244,55 @@ async def resolve_search_alias(
     if own_client:
         client = httpx.AsyncClient(timeout=15)
     try:
-        response = await _json(
+        hits = await _json(
             client, _MUSICBRAINZ + "/",
-            {"query": query, "fmt": "json", "limit": 10},
+            {"query": query, "fmt": "json", "limit": _MAX_CANDIDATES},
         )
-        candidates = [
-            candidate for candidate in response.get("artists", [])
-            if isinstance(candidate, dict) and candidate.get("id")
-            and _is_verified(candidate, query)
-        ]
+        candidates = []
+        seen = set()
+        for candidate in hits.get("artists") or []:
+            if not isinstance(candidate, dict):
+                continue
+            mbid = _mbid(candidate.get("id"))
+            if mbid and mbid not in seen:
+                seen.add(mbid)
+                candidates.append((mbid, candidate))
         if not candidates:
             return {"status": "not_found"}
-        local_artists = db.execute("SELECT id,name,mbid FROM artists").fetchall()
-        pairs = {}
-        for candidate in candidates:
-            try:
-                mbid = str(uuid.UUID(str(candidate["id"])))
-            except ValueError:
+
+        locals_ = db.execute("SELECT id,name,mbid FROM artists").fetchall()
+        pairs: dict[tuple[int, str], tuple[str, dict]] = {}
+        for position, (mbid, hit) in enumerate(candidates):
+            await _pace(client, first=False)
+            record = await _detailed(client, mbid)
+            if _mbid(record.get("id")) != mbid or not _is_verified(record, query):
                 continue
-            candidate_name = candidate.get("name") or ""
-            for row in local_artists:
-                # An existing MBID is the strongest identity link. Otherwise
-                # require the same canonical primary artist name, not a guess.
-                if (row[2] and str(row[2]).lower() == mbid.lower()) or (
-                    candidate_name and search_fold(candidate_name) == search_fold(str(row[1]))
-                ):
-                    pairs[(int(row[0]), mbid)] = str(row[1])
+            for row in locals_:
+                artist_id, local_name, local_raw = int(row[0]), str(row[1]), row[2]
+                local_mbid = _mbid(local_raw) if local_raw else None
+                if local_mbid and local_mbid != mbid:
+                    continue
+                if not _is_verified(record, local_name):
+                    continue
+                pairs[(artist_id, mbid)] = (local_name, record)
+
+        if not pairs:
+            return {"status": "not_in_library"}
         if len(pairs) != 1:
-            return {"status": "ambiguous" if pairs else "not_in_library"}
-        (artist_id, mbid), artist_name = next(iter(pairs.items()))
-        await asyncio.sleep(1.1)
-        record = await _json(client, f"{_MUSICBRAINZ}/{mbid}",
-                             {"inc": "aliases", "fmt": "json"})
-        if str(record.get("id") or "").lower() != mbid.lower():
-            return {"status": "identity_mismatch"}
-        if not _is_verified(record, query) or (
-            not _is_verified(record, artist_name)
-            and not db.execute("SELECT 1 FROM artists WHERE id=? AND mbid=?",
-                               (artist_id, mbid)).fetchone()
-        ):
-            return {"status": "identity_mismatch"}
-        known_mbid = db.execute(
-            "SELECT mbid FROM artists WHERE id=?", (artist_id,)
-        ).fetchone()[0]
-        result = _store_verified_aliases(
-            db, artist_id, artist_name, mbid, record,
-            known_mbid=bool(known_mbid), query_alias=query,
-        )
-        return result
+            return {"status": "ambiguous"}
+        (artist_id, mbid), (local_name, record) = next(iter(pairs.items()))
+        local = db.execute("SELECT mbid FROM artists WHERE id=?", (artist_id,)).fetchone()
+        if local is not None and _mbid(local[0]) == mbid:
+            return _store_verified_aliases(
+                db, artist_id, local_name, mbid, record,
+                known_mbid=True, query_alias=query,
+            )
+        # No trustworthy MBID: return proposal, let the UI explicitly confirm.
+        return {
+            "status": "needs_review", "artist_id": artist_id,
+            "query_alias": query,
+            "candidate": _public_candidate(record),
+        }
     finally:
         if own_client:
             await client.aclose()

@@ -89,6 +89,7 @@ from library_discovery import (
     fetch_recently_added,
     search_tracks,
     search_library,
+    search_library_category,
 )
 from library_detail import (
     fetch_album_credits,
@@ -1402,6 +1403,16 @@ def artist_alias_enrichment_status():
         db.close()
 
 
+@app.get("/api/library/artist-aliases/enrichment/review")
+def artist_alias_enrichment_review_queue(limit: int = Query(25, ge=1, le=100)):
+    """List artists requiring human confirmation of MusicBrainz identity."""
+    db = get_db()
+    try:
+        return {"artists": _alias_enrichment_job.review_queue(db, limit=limit)}
+    finally:
+        db.close()
+
+
 @app.post("/api/library/artist-aliases/enrichment/start", status_code=202)
 def start_artist_alias_enrichment(body: dict):
     """Start a bounded, opt-in MusicBrainz lookup batch; never run at startup."""
@@ -1457,6 +1468,53 @@ def sync_musicbrainz_artist_aliases(artist_id: int):
             # No partial writes on unverified or ambiguous identities.
             db.rollback()
             return result
+        db.commit()
+        return result
+    finally:
+        db.close()
+
+
+@app.post("/api/artists/{artist_id}/aliases/confirm")
+def confirm_musicbrainz_artist_identity(artist_id: int, body: dict):
+    """Only an explicit, named user selection may link a name-only MBID.
+
+    MusicBrainz detail is re-fetched after confirmation; both the local
+    artist and optional query alias must appear on the authoritative record.
+    """
+    if _alias_enrichment_job.state.is_running():
+        raise HTTPException(409, "Stop bulk alias import before confirming an identity")
+    mbid = body.get("mbid")
+    alias = body.get("query_alias") or ""
+    if not isinstance(mbid, str) or not mbid or not isinstance(alias, str) or len(alias) > 128:
+        raise HTTPException(422, "Expected mbid and optional query_alias (max 128 chars)")
+    db = get_db()
+    try:
+        try:
+            result = asyncio.run(
+                sync_artist_aliases(
+                    db, artist_id, confirmed_mbid=mbid, query_alias=alias,
+                )
+            )
+        except ValueError:
+            raise HTTPException(404, "Artist not found")
+        except AliasSyncUnavailable as exc:
+            db.rollback()
+            raise HTTPException(502, str(exc))
+        if result.get("status") != "ok":
+            db.rollback()
+            return result
+        # The MBID update trigger invalidates the previous needs_review row.
+        # Re-establish a successful checkpoint so a resumed bulk job skips it.
+        db.execute(
+            """INSERT INTO artist_alias_enrichment_state
+               (artist_id,status,aliases_added,attempted_at,error)
+               VALUES (?, 'ok', ?, strftime('%s','now'), '')
+               ON CONFLICT(artist_id) DO UPDATE SET
+                 status='ok',
+                 aliases_added=artist_alias_enrichment_state.aliases_added+excluded.aliases_added,
+                 attempted_at=excluded.attempted_at, error=''""",
+            (artist_id, len(result.get("added") or [])),
+        )
         db.commit()
         return result
     finally:
@@ -1628,6 +1686,24 @@ def resolve_unrecognized_artist_alias(
         else:
             db.rollback()
         return result
+    finally:
+        db.close()
+
+
+@app.get("/api/search/category")
+def search_one_category(
+    kind: str = Query(..., pattern="^(artists|albums|tracks)$"),
+    q: str = Query(..., min_length=1, max_length=MAX_SEARCH_QUERY_LENGTH),
+    limit: int = Query(24, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+):
+    """Bounded continuation for Artists, Albums or Tracks in global search."""
+    db = get_db()
+    try:
+        return search_library_category(
+            db, kind, q, limit, offset,
+            get_all_variants, to_simplified, to_traditional,
+        )
     finally:
         db.close()
 

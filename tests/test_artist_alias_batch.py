@@ -197,16 +197,108 @@ class ArtistAliasBatchTests(unittest.TestCase):
             self.assertEqual(job.overview(db)["remaining_artists"], 2)
         self.assertEqual(job.state.snapshot()["status"], "stopped")
 
-    def test_request_pacing_wrapper_delegates(self):
+    def test_request_pacing_wrapper_enforces_spacing_without_wall_clock_sleep(self):
+        # Use a controllable clock to test the *real* >=1.25s invariant.
+        now = [0.0]
+        sent = []
+        slept = []
+        class TimedSession(DummySession):
+            async def get(self, url, **kwargs):
+                sent.append(now[0])
+                return await super().get(url, **kwargs)
+
+        async def advance(seconds):
+            slept.append(seconds)
+            now[0] += seconds
+
         async def check():
-            fake = DummySession()
-            paced = RateLimitedMusicBrainzClient(fake, interval=0)
-            await paced.get("https://musicbrainz.org/ws/2/artist/1", params={"a": "b"})
-            await paced.get("https://musicbrainz.org/ws/2/artist/2")
-            self.assertEqual(len(fake.requests), 2)
-            self.assertEqual(fake.requests[0][1]["params"], {"a": "b"})
-            self.assertTrue(paced.rate_limited)
+            session = TimedSession()
+            client = RateLimitedMusicBrainzClient(
+                session, interval=1.25,
+                clock=lambda: now[0], sleep=advance,
+            )
+            for index in range(3):
+                await client.get(f"https://musicbrainz.org/ws/2/artist/{index}")
+            self.assertTrue(client.rate_limited)
         asyncio.run(check())
+        self.assertEqual(sent, [0.0, 1.25, 2.5])
+        self.assertEqual(slept, [1.25, 1.25])
+
+    def test_real_http_429_pauses_batch_without_retry_storm(self):
+        import httpx
+
+        requests = []
+        class RateLimitedSession(DummySession):
+            async def get(self, url, **kwargs):
+                requests.append(url)
+                return httpx.Response(429, request=httpx.Request("GET", url))
+        job = ArtistAliasEnrichmentJob(
+            self.connect, client_factory=RateLimitedSession,
+        )
+        with self.connection() as db:
+            initial = job.start(db, all_remaining=True)
+        self.assertTrue(initial["running"])
+        job._thread.join(timeout=10)
+        self.assertFalse(job._thread.is_alive())
+        self.assertEqual(job.state.snapshot()["status"], "paused_error")
+        self.assertEqual(len(requests), 1)
+        with self.connection() as db:
+            self.assertEqual(job.overview(db)["remaining_artists"], 2)
+            self.assertEqual(job.overview(db)["unresolved_artists"], 1)
+            self.assertEqual(
+                [x[0] for x in _select_candidates(db, "retry", 25)], [3],
+            )
+
+    def test_name_only_candidates_require_review_not_retry(self):
+        async def unverified(db, artist_id, *, client):
+            return {"status": "needs_review", "added": [], "candidates": []}
+        job = self.job()
+        outcome = self.run_batch(job, unverified, limit=2)
+        self.assertEqual(outcome["processed"], 2)
+        with self.connection() as db:
+            status = job.overview(db)
+            self.assertEqual(status["needs_review_artists"], 2)
+            self.assertEqual(status["retryable_artists"], 0)
+            self.assertEqual(len(job.review_queue(db)), 2)
+            self.assertEqual(_select_candidates(db, "retry", 25), [])
+
+    def test_mid_batch_dirty_refresh_happens_before_sixth_artist(self):
+        from library_search_index import refresh_track_search_index
+        with self.connection() as db:
+            db.executemany(
+                "INSERT INTO artists(id,name,sort_name) VALUES(?,?,?)",
+                [(i, f"artist {i}", f"artist {i}") for i in range(4, 7)],
+            )
+            db.executemany(
+                "INSERT INTO albums(id,artist_id,title) VALUES(?,?,?)",
+                [(i, i, f"album {i}") for i in range(1, 7)],
+            )
+            db.executemany(
+                "INSERT INTO tracks(id,album_id,artist_id,title,file_path) "
+                "VALUES(?,?,?,?,?)",
+                [(i, i, i, f"track {i}", f"C:/m/{i}.flac") for i in range(1, 7)],
+            )
+            refresh_track_search_index(db)
+            db.commit()
+        dirty_before_sixth = []
+        positions = []
+        async def sync(db, artist_id, *, client):
+            positions.append(artist_id)
+            if len(positions) == 6:
+                dirty_before_sixth.append(db.execute(
+                    "SELECT COUNT(*) FROM track_search_dirty"
+                ).fetchone()[0])
+            add_alias(db, artist_id, f"alias {artist_id}")
+            return {"status": "ok", "added": [f"alias {artist_id}"]}
+        job = self.job()
+        state = self.run_batch(job, sync, all_remaining=True)
+        self.assertEqual(state["processed"], 6)
+        self.assertEqual(dirty_before_sixth, [0],
+                         "five-artist checkpoint should have refreshed dirty keys")
+        with self.connection() as db:
+            self.assertEqual(db.execute(
+                "SELECT COUNT(*) FROM track_search_dirty"
+            ).fetchone()[0], 0)
 
     def test_validation_and_empty_job(self):
         with self.connection() as db:

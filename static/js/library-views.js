@@ -859,6 +859,7 @@ async function renderArtists(vc) {
         <button class="btn btn-ghost" id="artist-alias-next-batch" disabled>Sync next 25</button>
         <button class="btn btn-ghost" id="artist-alias-all-batch" disabled>Sync all remaining</button>
         <button class="btn btn-ghost" id="artist-alias-retry-batch" disabled>Retry unresolved</button>
+        <button class="btn btn-ghost" id="artist-alias-review-batch" disabled>Review identities</button>
         <button class="btn btn-ghost" id="artist-alias-stop-batch" disabled>Stop</button>
       </div>
       <div class="artist-enrichment-note">
@@ -963,24 +964,34 @@ async function renderArtists(vc) {
   const nextAliasBtn = UI['artist-alias-next-batch'];
   const allAliasBtn = UI['artist-alias-all-batch'];
   const retryAliasBtn = UI['artist-alias-retry-batch'];
+  const reviewAliasBtn = UI['artist-alias-review-batch'];
   const stopAliasBtn = UI['artist-alias-stop-batch'];
   let aliasTimer = null;
   let aliasPollInFlight = false;
 
+  let aliasPollFailures = 0;
+  let aliasLastRunning = false;
   async function updateAliasProgress() {
     if (!aliasPanel?.isConnected || state.view !== 'artists' || aliasPollInFlight) return;
     aliasPollInFlight = true;
-    let status;
+    let status = null;
     try {
       status = await api('/library/artist-aliases/enrichment');
-      if (!aliasPanel.isConnected || state.view !== 'artists' || !status) return;
+      if (!aliasPanel.isConnected || state.view !== 'artists') return;
+      if (!status) {
+        aliasPollFailures++;
+        return;
+      }
+      aliasPollFailures = 0;
+      aliasLastRunning = Boolean(status.running);
       const summary = UI['artist-enrichment-summary'];
       const current = UI['artist-enrichment-current'];
       const progress = UI['artist-enrichment-progress'];
-      const running = Boolean(status.running);
+      const running = aliasLastRunning;
       if (summary) {
         summary.textContent =
           `${status.synced_artists || 0} verified · ${status.remaining_artists || 0} remaining` +
+          ` · ${status.needs_review_artists || 0} require review` +
           ` · ${status.unresolved_artists || 0} unresolved` +
           ` · ${status.aliases_imported || 0} aliases imported`;
       }
@@ -999,13 +1010,22 @@ async function renderArtists(vc) {
       }
       if (nextAliasBtn) nextAliasBtn.disabled = running || !status.remaining_artists;
       if (allAliasBtn) allAliasBtn.disabled = running || !status.remaining_artists;
-      if (retryAliasBtn) retryAliasBtn.disabled = running || !status.unresolved_artists;
+      if (retryAliasBtn) retryAliasBtn.disabled = running || !status.retryable_artists;
+      if (reviewAliasBtn) reviewAliasBtn.disabled = running || !status.needs_review_artists;
       if (stopAliasBtn) stopAliasBtn.disabled = !running || status.stopping;
+    } catch (err) {
+      aliasPollFailures++;
     } finally {
       aliasPollInFlight = false;
       clearTimeout(aliasTimer);
-      if (aliasPanel?.isConnected && state.view === 'artists' && status?.running) {
-        aliasTimer = setTimeout(updateAliasProgress, 1800);
+      // A brief Wi-Fi/Tailscale outage must not permanently strand the panel.
+      // Retry with a bounded backoff even if api() returned null on failure.
+      if (aliasPanel?.isConnected && state.view === 'artists'
+          && (aliasLastRunning || aliasPollFailures > 0)) {
+        const wait = aliasPollFailures
+          ? Math.min(30000, 1500 * (2 ** Math.min(aliasPollFailures, 5)))
+          : 1800;
+        aliasTimer = setTimeout(updateAliasProgress, wait);
       }
     }
   }
@@ -1037,6 +1057,23 @@ async function renderArtists(vc) {
     }
   });
   retryAliasBtn?.addEventListener('click', () => startAliasBatch('retry'));
+  reviewAliasBtn?.addEventListener('click', async () => {
+    const data = await api('/library/artist-aliases/enrichment/review?limit=50');
+    const artists = data?.artists || [];
+    if (!artists.length) {
+      showToast('No artist identities require review');
+      await updateAliasProgress();
+      return;
+    }
+    const answer = prompt(
+      'Artists needing identity confirmation. Choose an artist number to open Sync Names:\\n' +
+      artists.map((item, i) => `${i + 1}. ${item.name}`).join('\\n'), ''
+    );
+    const choice = Number(answer);
+    if (!answer || !Number.isInteger(choice) || choice < 1 || choice > artists.length) return;
+    await navigate('artist', { id: artists[choice - 1].id });
+    showToast('Press Sync Names, inspect the candidates, then confirm a matching identity');
+  });
   stopAliasBtn?.addEventListener('click', async () => {
     stopAliasBtn.disabled = true;
     await api('/library/artist-aliases/enrichment/stop', { method: 'POST' });
@@ -2221,8 +2258,21 @@ async function renderArtist(vc, { id }) {
       if (result.status === 'ok') {
         refreshAliasNames(result.aliases);
         showToast(`MusicBrainz names synced · ${result.added?.length || 0} added`);
+      } else if (result.status === 'needs_review') {
+        const selected = chooseMusicBrainzIdentity(result.candidates, artist.name);
+        if (!selected) return;
+        const approved = await api(`/artists/${id}/aliases/confirm`, {
+          method: 'POST', timeoutMs: 35000,
+          body: JSON.stringify({ mbid: selected.mbid }),
+        });
+        if (approved?.status === 'ok') {
+          refreshAliasNames(approved.aliases);
+          showToast(`Artist identity confirmed · ${approved.added?.length || 0} aliases added`);
+        } else if (approved) {
+          showToast('MusicBrainz identity could not be verified; no aliases were linked');
+        }
       } else {
-        showToast('Unable to verify a unique MusicBrainz artist. Use + Alias to link a confirmed name.', 5500);
+        showToast('No verified identity found. Use + Alias if you know a correct stage name.', 5500);
       }
     } finally {
       if (btn) btn.disabled = false;
@@ -2673,6 +2723,27 @@ async function renderAlbum(vc, { id }) {
   if (state.currentTrack) highlightPlaying(state.currentTrack.id);
 }
 
+function chooseMusicBrainzIdentity(candidates, localName) {
+  // No implicit first-result matching. The user must select the exact
+  // MusicBrainz entry, including available type, country and disambiguation.
+  if (!Array.isArray(candidates) || !candidates.length) return null;
+  const visible = candidates.filter(item => item?.mbid).slice(0, 10);
+  if (!visible.length) return null;
+  const options = visible.map((item, i) => {
+    const details = [item.type, item.country, item.disambiguation]
+      .filter(Boolean).join(' · ');
+    return `${i + 1}. ${item.name || 'Unknown'}${details ? ' — ' + details : ''} [${item.mbid}]`;
+  });
+  const answer = prompt(
+    `Confirm the MusicBrainz identity for "${localName}".\\n` +
+    'Different musicians can have the same name. Verify before linking.\\n' +
+    'Enter the correct number, or Cancel to skip:\\n' + options.join('\\n'), ''
+  );
+  const choice = Number(answer);
+  if (!answer || !Number.isInteger(choice) || choice < 1 || choice > visible.length) return null;
+  return visible[choice - 1];
+}
+
 // ── Search ────────────────────────────────────────────────────────────────────
 
 // A response to an older IME/input query must never replace newer results.
@@ -2681,7 +2752,6 @@ let globalSearchRenderSerial = 0;
 async function renderSearch(vc, { q } = {}) {
   const serial = ++globalSearchRenderSerial;
   const query = String(q || '').trim().slice(0, 128);
-  // Empty queries never fetch or transfer a full music catalog to mobile.
   const results = query
     ? (await api(`/search?q=${encodeURIComponent(query)}&limit=80`) || {})
     : { artists: [], albums: [], tracks: [] };
@@ -2694,6 +2764,7 @@ async function renderSearch(vc, { q } = {}) {
   const tracks = results.tracks || [];
   const totalArtists = Number(results.total_artists ?? artists.length);
   const totalAlbums = Number(results.total_albums ?? albums.length);
+  const totalTracks = Number(results.total_tracks ?? tracks.length);
 
   vc.innerHTML = `
     <div class="topbar">
@@ -2723,29 +2794,39 @@ async function renderSearch(vc, { q } = {}) {
         No artists, albums, or tracks found in your library.
       </div>
       <button class="btn btn-ghost" id="search-resolve-alias-btn"
-              title="Check MusicBrainz once and link a verified alternative artist name">
+              title="Check MusicBrainz once and verify another artist name">
         Find artist by another name
       </button>
       <div class="section-sub" style="padding:10px 0">
-        This checks MusicBrainz only when clicked. Your music stays local.
+        MusicBrainz is contacted only if you click. You must confirm uncertain identities.
       </div>`;
     const lookupButton = UI['search-resolve-alias-btn'];
     lookupButton?.addEventListener('click', async () => {
       lookupButton.disabled = true;
       lookupButton.textContent = 'Checking MusicBrainz…';
       try {
-        const result = await api(
+        let result = await api(
           `/search/resolve-artist-alias?q=${encodeURIComponent(query)}`,
           { method: 'POST', timeoutMs: 35000 },
         );
+        if (result?.status === 'needs_review') {
+          const selected = chooseMusicBrainzIdentity(
+            result.candidate ? [result.candidate] : [], query
+          );
+          if (!selected) return;
+          result = await api(`/artists/${result.artist_id}/aliases/confirm`, {
+            method: 'POST', timeoutMs: 35000,
+            body: JSON.stringify({ mbid: selected.mbid, query_alias: query }),
+          });
+        }
         if (result?.status === 'ok') {
-          showToast('Verified artist name added to your library');
-          // A slow remote lookup must not replace a later typed query or page.
+          showToast('Verified artist name added to the local library');
+          // A slow remote lookup must not replace a newer typed query/view.
           if (state.view === 'search' && state.viewParams?.q === query) {
             await renderSearch(vc, { q: query });
           }
         } else if (result) {
-          showToast('No unique verified artist in your library. Search by the primary name, then use + Alias.', 6000);
+          showToast('No confirmed matching artist. Search its primary name and use + Alias.', 6000);
         }
       } finally {
         if (lookupButton.isConnected) {
@@ -2757,31 +2838,13 @@ async function renderSearch(vc, { q } = {}) {
     return;
   }
 
-  // Stable and explicit ordering: Artists first, Albums second, Tracks third.
-  const addSection = (heading, count, items, createCard, classes) => {
-    if (!items.length) return;
-    const headingEl = document.createElement('div');
-    headingEl.className = 'result-section-title search-section-header';
-    headingEl.textContent = `${heading} — ${count} ${count === 1 ? 'result' : 'results'}`;
-    container.appendChild(headingEl);
-
-    const listEl = document.createElement('div');
-    listEl.className = classes;
-    const fragment = document.createDocumentFragment();
-    items.forEach((item, i) => fragment.appendChild(createCard(item, i)));
-    listEl.appendChild(fragment);
-    container.appendChild(listEl);
-  };
-
-  addSection('Artists', totalArtists, artists, makeArtistCard,
-             'grid artist-grid search-artist-grid');
-  addSection('Albums', totalAlbums, albums, makeAlbumCard,
-             'grid search-albums-grid');
-  addSection('Tracks', tracks.length, tracks, (t, i) => {
+  // Keep the currently displayed track set mutable: Load more can extend the
+  // queue without changing the play gesture or the correct selected index.
+  const visibleTracks = [...tracks];
+  const makeSearchTrackRow = (t, i) => {
     const el = makeTrackRow(t, i + 1, true);
     el.addEventListener('click', () => {
-      // Play on the gesture: do not delay mobile audio behind navigation.
-      playTrack(t, tracks, i);
+      playTrack(t, visibleTracks, i);
       if (!t.album_id) return;
       (async () => {
         await navigate('album', { id: t.album_id });
@@ -2803,7 +2866,73 @@ async function renderSearch(vc, { q } = {}) {
       })();
     });
     return el;
-  }, 'search-track-list');
+  };
+
+  // Artists are always above Albums, which are always above Tracks.
+  const addSection = (kind, heading, count, items, createCard, classes) => {
+    if (!items.length) return;
+    const titleEl = document.createElement('div');
+    titleEl.className = 'result-section-title search-section-header';
+    titleEl.textContent = `${heading} — ${count} ${count === 1 ? 'result' : 'results'}`;
+    container.appendChild(titleEl);
+
+    const listEl = document.createElement('div');
+    listEl.className = classes;
+    const visible = kind === 'tracks' ? visibleTracks : [...items];
+    const append = (batch, startingIndex) => {
+      const fragment = document.createDocumentFragment();
+      batch.forEach((item, index) => fragment.appendChild(createCard(item, startingIndex + index)));
+      listEl.appendChild(fragment);
+    };
+    append(items, 0);
+    container.appendChild(listEl);
+
+    if (visible.length >= count) return;
+    const more = document.createElement('button');
+    more.type = 'button';
+    more.className = 'btn btn-ghost search-load-more';
+    more.dataset.searchCategory = kind;
+    more.textContent = `Load more ${heading.toLowerCase()} (${count - visible.length} remaining)`;
+    container.appendChild(more);
+    more.addEventListener('click', async () => {
+      if (more.disabled) return;
+      const offset = visible.length;
+      more.disabled = true;
+      more.textContent = 'Loading…';
+      try {
+        const page = await api(
+          `/search/category?kind=${kind}&q=${encodeURIComponent(query)}&offset=${offset}&limit=40`
+        );
+        if (serial !== globalSearchRenderSerial || state.view !== 'search'
+            || state.viewParams?.q !== query || !more.isConnected) return;
+        if (!page || !Array.isArray(page.items)) {
+          more.textContent = 'Retry loading more';
+          return;
+        }
+        if (!page.items.length) {
+          more.remove();
+          return;
+        }
+        const startIndex = visible.length;
+        visible.push(...page.items);
+        append(page.items, startIndex);
+        if (visible.length >= count) {
+          more.remove();
+        } else {
+          more.textContent = `Load more ${heading.toLowerCase()} (${count - visible.length} remaining)`;
+        }
+      } finally {
+        if (more.isConnected) more.disabled = false;
+      }
+    });
+  };
+
+  addSection('artists', 'Artists', totalArtists, artists, makeArtistCard,
+             'grid artist-grid search-artist-grid');
+  addSection('albums', 'Albums', totalAlbums, albums, makeAlbumCard,
+             'grid search-albums-grid');
+  addSection('tracks', 'Tracks', totalTracks, tracks, makeSearchTrackRow,
+             'search-track-list');
 }
 
 // ── Settings ──────────────────────────────────────────────────────────────────
