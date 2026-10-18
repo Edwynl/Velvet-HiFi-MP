@@ -2919,7 +2919,10 @@ let globalSearchRenderSerial = 0;
 
 async function renderSearch(vc, { q } = {}) {
   const serial = ++globalSearchRenderSerial;
-  const query = String(q || '').trim().slice(0, 128);
+  const draft = String(q || '').slice(0, 128);
+  const query = draft.trim();
+  const sourceInput = vc.querySelector('#search-input');
+  const preserveDraft = sourceInput?.value.trim() === query;
   const results = query
     ? (await api(`/search?q=${encodeURIComponent(query)}&limit=80`) || {})
     : { artists: [], albums: [], tracks: [] };
@@ -2934,14 +2937,40 @@ async function renderSearch(vc, { q } = {}) {
   const totalAlbums = Number(results.total_albums ?? albums.length);
   const totalTracks = Number(results.total_tracks ?? tracks.length);
 
-  vc.innerHTML = `
+  // A space typed while this request was in flight still belongs to the draft.
+  const currentInput = vc.querySelector('#search-input');
+  const inputValue = preserveDraft && currentInput === sourceInput ? currentInput.value : draft;
+  const existingResults = vc.querySelector('#global-search-results');
+
+  if (currentInput && currentInput.closest('.topbar')?.parentElement === vc) {
+    // Updating results must not detach the active editor, lose its caret, or
+    // close a mobile keyboard between words (including IME composition).
+    if (currentInput.value !== inputValue) currentInput.value = inputValue;
+    const topbar = currentInput.closest('.topbar');
+    for (const node of [...vc.childNodes]) {
+      if (node !== topbar && node !== existingResults) node.remove();
+    }
+    const resultContainer = existingResults || document.createElement('div');
+    if (!existingResults) {
+      resultContainer.id = 'global-search-results';
+      resultContainer.className = 'search-results';
+      resultContainer.setAttribute('aria-label', 'Music library search results');
+      vc.appendChild(resultContainer);
+    }
+    resultContainer.innerHTML = '<div id="global-search-groups"></div>';
+    if (!preserveDraft) {
+      currentInput.focus({ preventScroll: true });
+      currentInput.setSelectionRange(inputValue.length, inputValue.length);
+    }
+  } else {
+    vc.innerHTML = `
     <div class="topbar">
       ${getTopNavHtml('search')}
       <div class="search-wrap">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
           <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
         </svg>
-        <input id="search-input" type="text" maxlength="128" placeholder="Search artists, albums, tracks…" value="${escHtml(query)}">
+        <input id="search-input" type="text" maxlength="128" placeholder="Search artists, albums, tracks…" value="${escHtml(inputValue)}">
       </div>
     </div>
     <div class="search-results" id="global-search-results"
@@ -2949,7 +2978,8 @@ async function renderSearch(vc, { q } = {}) {
       <div id="global-search-groups"></div>
     </div>
   `;
-  setupSearch();
+    setupSearch();
+  }
 
   const container = UI['global-search-groups'];
   if (!query) {
