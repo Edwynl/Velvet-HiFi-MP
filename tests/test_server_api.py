@@ -1075,6 +1075,35 @@ class ServerApiTests(unittest.TestCase):
         self.assertTrue(results["b"]["success"])
         self.assertEqual(results["a"], {"success": False, "superseded": True})
 
+    def test_a_superseded_cast_keeps_its_result_when_its_lookup_fails_later(self):
+        self._allow_music_root()
+        release, entered = threading.Event(), threading.Event()
+
+        def failing_resolve(*args):
+            entered.set()
+            self.assertTrue(release.wait(10))
+            raise server.HTTPException(404, "Track not found")
+
+        results = {}
+
+        def post():
+            results["a"] = self.client.post("/api/cast/renderer-first",
+                                            json={"track_id": 1, "request_id": "first-a"})
+
+        with patch.object(server, "_resolve_cast_stream", side_effect=failing_resolve), \
+                patch.object(upnp_server, "cast_control", return_value=True), \
+                patch.object(upnp_server, "cast_track", side_effect=AssertionError("must not cast")):
+            a = threading.Thread(target=post)
+            a.start()
+            self.assertTrue(entered.wait(10))
+            self.assertTrue(self.client.post("/api/cast/control/renderer-first/Stop").json()["success"])
+            superseded = {"done": True, "success": False, "superseded": True}
+            self.assertEqual(self.client.get("/api/cast/result/renderer-first/first-a").json(), superseded)
+            release.set()  # A's lookup now fails
+            a.join(10)
+        self.assertEqual(results["a"].status_code, 404)
+        self.assertEqual(self.client.get("/api/cast/result/renderer-first/first-a").json(), superseded)
+
     def test_a_cast_that_fails_or_is_cancelled_while_resolving_is_recorded(self):
         self._allow_music_root()
         with patch.object(server, "_resolve_cast_stream", side_effect=RuntimeError("disk gone")), \

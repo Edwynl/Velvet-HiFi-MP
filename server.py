@@ -1095,11 +1095,13 @@ def _register_cast_request(device_udn: str, request_id: str | None) -> None:
 
 
 def _record_cast_result(device_udn: str, request_id: str | None, response: dict) -> None:
+    """Publish a cast's terminal outcome; the first one stays (a superseded
+    cast whose lookup fails later is still reported as superseded)."""
     if not request_id:
         return
     with _cast_state_lock:
         results = _cast_results.get(device_udn, {})
-        if request_id in results:
+        if request_id in results and results[request_id] is None:
             results[request_id] = response
 
 

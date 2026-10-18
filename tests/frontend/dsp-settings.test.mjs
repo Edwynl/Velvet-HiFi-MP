@@ -960,6 +960,52 @@ async function main() {
     castControl.heldStatus = [];
     castControl.transportState = 'PLAYING';
     castControl.statusPosition = 5;
+
+    // Track A is ending, the user picks B, and B's cast is still unanswered:
+    // a poll in that window sees A's STOPPED 119/120 and must not skip B.
+    dom.window.eval('window.__playNextCalls = 0; playNext = () => { window.__playNextCalls += 1; };');
+    castControl.transportState = 'STOPPED';
+    castControl.statusPosition = 119;
+    castControl.hold = true;
+    castControl.held = [];
+    const statusPolls = () => harness.requests.filter(request => request.path.startsWith('/api/cast/status/')).length;
+    dom.window.eval("state.currentTrack = { id: 3, title: 'Track B', duration: 200 };"
+      + ' castTo(state.currentTrack, state.castDevice); startCastPolling();'); // as playTrack does
+    await waitFor(() => castControl.held.length === 1);
+    const pollsBefore = statusPolls();
+    await new Promise(resolve => setTimeout(resolve, 1700)); // one poll interval
+    assert.equal(statusPolls(), pollsBefore, 'no status is taken while B is unconfirmed');
+    assert.equal(dom.window.eval('window.__playNextCalls'), 0, 'B must not be skipped');
+    assert.equal(dom.window.eval('state.currentTrack.id'), 3);
+    castControl.transportState = 'PLAYING';
+    castControl.statusPosition = 5;
+    castControl.hold = false;
+    castControl.held[0]();
+    await waitFor(() => dom.window.eval('state.castConfirmedTrackId') === 3);
+    dom.window.eval('stopCastPolling(); playNext = window.__originalPlayNext;');
+
+    // A status snapshot taken before a Play/Pause must not undo it when it
+    // answers late (poll and on-demand refresh alike).
+    for (const [snapshot, before] of [['PAUSED_PLAYBACK', false], ['PLAYING', true]]) {
+      for (const source of ['poll', 'refresh']) {
+        castControl.transportState = snapshot;
+        castControl.holdStatus = true;
+        castControl.heldStatus = [];
+        dom.window.eval(`stopCastPolling(); state.playing = ${before};`);
+        dom.window.eval(source === 'poll' ? 'startCastPolling();' : 'refreshCastTransport(state.castDevice);');
+        await waitFor(() => castControl.heldStatus.length === 1, { timeoutMs: 4000 });
+        dom.window.eval('stopCastPolling();');
+        await dom.window.eval('togglePlayAction()'); // acknowledged at once
+        assert.equal(dom.window.eval('state.playing'), !before);
+        castControl.heldStatus[0](); // the older snapshot answers now
+        await tick();
+        assert.equal(dom.window.eval('state.playing'), !before,
+          `${source}: a ${snapshot} snapshot must not undo the acknowledged ${before ? 'Pause' : 'Play'}`);
+      }
+    }
+    castControl.holdStatus = false;
+    castControl.heldStatus = [];
+    castControl.transportState = 'PLAYING';
     await dom.window.activateZone(browserZone, false);
     dom.window.eval('stopCastPolling(); state.currentTrack = null;');
     dom.window.setReplayGainMode('off');
