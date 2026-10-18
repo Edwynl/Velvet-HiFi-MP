@@ -57,6 +57,26 @@ VALID_CREDIT_FIELDS = {
 }
 
 
+def fetch_artist_albums(db: sqlite3.Connection, artist_id: int) -> list[dict]:
+    """Include owned releases even when track credits omit the album artist."""
+    rows = db.execute(
+        """SELECT al.*, owner.name AS artist_name,
+                  CASE WHEN al.artist_id = ? THEN 'primary' ELSE 'collaboration' END AS artist_role,
+                  COUNT(t.id) AS track_count, COALESCE(SUM(t.duration), 0) AS total_duration,
+                  MAX(CASE WHEN t.sample_rate > 44100 OR t.bit_depth > 16 THEN 1 ELSE 0 END) AS is_hires
+           FROM albums al
+           LEFT JOIN artists owner ON owner.id = al.artist_id
+           LEFT JOIN tracks t ON t.album_id = al.id
+           WHERE al.artist_id = ? OR al.id IN (
+               SELECT credited.album_id FROM track_artists ta
+               JOIN tracks credited ON credited.id = ta.track_id WHERE ta.artist_id = ?
+           )
+           GROUP BY al.id ORDER BY al.year DESC, al.title, al.id""",
+        (artist_id, artist_id, artist_id),
+    ).fetchall()
+    return [dict(row) for row in rows]
+
+
 def _resolve_credit_field(role: str) -> str:
     field = (role or "").strip().lower()
     if field not in VALID_CREDIT_FIELDS:

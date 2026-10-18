@@ -41,6 +41,18 @@ from db_schema import apply_migrations
 
 
 class ServerApiTests(unittest.TestCase):
+    def test_artist_region_facets_filter_and_reject_unknown_values(self):
+        with self._connect() as conn:
+            conn.execute("UPDATE artists SET name='BIGBANG' WHERE id=1")
+            conn.commit()
+        response = self.client.get('/api/artists/page?region=korea&limit=1&sort=popular')
+        self.assertEqual(response.status_code, 200)
+        page = response.json()
+        self.assertEqual(page['total'], 1)
+        self.assertEqual(page['artists'][0]['id'], 1)
+        self.assertEqual(sum(region['count'] for region in page['regions']), page['all_total'])
+        self.assertEqual(self.client.get('/api/artists/page?region=invalid').status_code, 400)
+
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
         self.root = Path(self.temp_dir.name)

@@ -19,8 +19,14 @@ const request = async (url, options = {}) => {
   const q = u.searchParams.get('q') || '';
   if (u.pathname === '/api/artists/page') {
     const offset = Number(u.searchParams.get('offset') || 0);
-    const items = Array.from({ length: 75 }, (_, i) => ({ id: i + 1, name: 'Artist ' + (i + 1), album_count: 2 }));
-    return response({ artists: items.slice(offset, offset + 60), total: items.length });
+    const region = u.searchParams.get('region') || '';
+    const search = u.searchParams.get('search') || '';
+    const all = Array.from({ length: 75 }, (_, i) => ({ id: i + 1, name: 'Artist ' + (i + 1), album_count: 2, region: i < 65 ? 'korea' : 'unknown' }))
+      .filter(item => item.name.includes(search));
+    const items = all.filter(item => !region || item.region === region);
+    return response({ artists: items.slice(offset, offset + 60), total: items.length, all_total: all.length,
+      regions: [{ region: 'korea', label: 'Korea', count: all.filter(a=>a.region==='korea').length },
+                { region: 'unknown', label: 'Other', count: all.filter(a=>a.region==='unknown').length }] });
   }
   if (u.pathname === '/api/albums/page') {
     if (u.searchParams.get('search')) {
@@ -99,5 +105,21 @@ dom.window.document.querySelector('#next-page-btn').click();
 await wait(() => dom.window.document.querySelectorAll('#artists-grid .card').length === 15);
 assert.equal(requests.filter(u => u.pathname === '/api/artists/page').at(-1).searchParams.get('sort'), 'popular');
 assert.equal(dom.window.document.querySelector('#artist-sort-select'), null, 'Hide the redundant Popular selector');
+const document = dom.window.document;
+assert.equal(document.querySelector('[data-region=""]').getAttribute('aria-pressed'), 'true');
+document.querySelector('[data-region="korea"]').click();
+await wait(() => document.querySelectorAll('#artists-grid .card').length === 60 && document.querySelector('#page-info').textContent === 'Page 1 / 2');
+assert.equal(requests.filter(u=>u.pathname==='/api/artists/page').at(-1).searchParams.get('region'), 'korea');
+document.querySelector('#next-page-btn').click();
+await wait(() => document.querySelectorAll('#artists-grid .card').length === 5);
+const artistSearch=document.querySelector('#search-input');
+artistSearch.value='Artist 75';
+artistSearch.dispatchEvent(new dom.window.Event('input', { bubbles:true }));
+await wait(() => document.querySelector('#artists-grid').textContent.includes('No artists found'));
+assert.equal(document.querySelector('[data-region="korea"]').getAttribute('aria-pressed'), 'true');
+document.querySelector('[data-region=""]').click();
+await wait(() => document.querySelectorAll('#artists-grid .card').length === 1);
+assert.ok(document.querySelector('#artists-grid').textContent.includes('Artist 75'));
+assert.equal(document.querySelector('#page-info').textContent, 'Page 1 / 1');
 console.log('frontend_mobile_catalog_paging_check=OK');
 dom.window.close();
