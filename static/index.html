@@ -7037,6 +7037,9 @@ async function activateZone(zone, transferPlayback = true) {
   state.castConfirmedTrackId = null;
   state.castConfirmedTrack = null;
   state.castConfirmedQueue = null;
+  state.castPlaybackUnverified = false;
+  state.castMismatchNotified = false;
+  state.castAutoNextArmed = false;
   state.castPending = false;
   restoreZoneDspSelection();
   updatePlayerUI(state.currentTrack || {});
@@ -7890,6 +7893,8 @@ const state = {
   castConfirmedTrack: null, // that track itself, to go back to when a newer cast fails
   castConfirmedQueue: null, // { queue, idx } that track was playing from
   castAutoNextArmed: false, // a STOPPED-at-the-end status may start the next track
+  castPlaybackUnverified: false, // URI not reconciled after an uncertain/failed cast
+  castMismatchNotified: false, // report a renderer's unexpected track once
   isComposing: false,
   mobilePlayerDismissed: false,
 };
@@ -8657,12 +8662,40 @@ async function playTrack(track, queue, idx) {
   // Mobile player auto-open is handled above for first-touch playback only.
 }
 
+// A transport state and time alone cannot identify what a DLNA renderer is
+// actually playing. After a failed cast the renderer may have accepted the
+// new URI despite an HTTP/SOAP error, or Stop may have ended the old one.
+// GetPositionInfo's TrackURI is reduced to a ticket-free track_id by the
+// server; only a matching identity can restore progress/auto-next authority.
+// Devices that omit TrackURI remain in a safe unverified state until a new
+// confirmed cast (regular, uninterrupted casts continue working as before).
+function castStatusBelongsToConfirmed(status) {
+  if (status.track_id !== null && status.track_id !== undefined) {
+    if (String(status.track_id) !== String(state.castConfirmedTrackId)) {
+      state.castPlaybackUnverified = true;
+      state.castAutoNextArmed = false;
+      state.playing = false;
+      updatePlayBtnUI();
+      if (!state.castMismatchNotified) {
+        showToast('Renderer is on another track; select a song to resync');
+        state.castMismatchNotified = true;
+      }
+      return false;
+    }
+    state.castPlaybackUnverified = false;
+    state.castMismatchNotified = false;
+    return true;
+  }
+  return !state.castPlaybackUnverified;
+}
+
 // Take the play/pause state from the renderer itself (after a failed or
 // overtaken control or cast), unless a newer Play/Pause is still unanswered.
 async function refreshCastTransport(device) {
   const isCurrent = castStatusGuard();
   const status = await api(`/cast/status/${device.udn}`);
-  if (!status || !isCurrent() || !isCastZone() || state.castDevice?.udn !== device.udn) return;
+  if (!status || !isCurrent() || !isCastZone() || state.castDevice?.udn !== device.udn
+      || !castStatusBelongsToConfirmed(status)) return;
   if (status.state === 'PLAYING') state.playing = true;
   else if (['PAUSED_PLAYBACK', 'STOPPED', 'NO_MEDIA_PRESENT'].includes(status.state)) state.playing = false;
   updatePlayBtnUI();
@@ -8693,7 +8726,7 @@ function startCastPolling() {
     if (!isCurrent()) return;
     try {
       const status = await api(`/cast/status/${state.castDevice.udn}`);
-      if (!status || !isCurrent()) return;
+      if (!status || !isCurrent() || !castStatusBelongsToConfirmed(status)) return;
       if (status.state === 'PLAYING') {
         state.playing = true;
         state.castAutoNextArmed = true;
@@ -8823,6 +8856,8 @@ function applyCastResult(res, { track, device, dspProfile, startSeconds, control
   state.castConfirmedTrackId = track?.id ?? null;
   state.castConfirmedTrack = track || null;
   state.castConfirmedQueue = { queue: state.queue, idx: state.queueIdx };
+  state.castPlaybackUnverified = false;
+  state.castMismatchNotified = false;
   state.castAutoNextArmed = true;
   state.castStartOffset = Number(res.start_offset) || 0;
   // A direct stream that could not seek restarts from the beginning.
@@ -8861,7 +8896,17 @@ function applyCastResult(res, { track, device, dspProfile, startSeconds, control
 // restored track, or null when there is nothing to go back to.
 function restoreConfirmedCastTrack(failedTrack) {
   const confirmed = state.castConfirmedTrack;
-  if (!confirmed || confirmed.id === failedTrack?.id) return null;
+  if (!confirmed) return null;
+  state.castPlaybackUnverified = true;
+  state.castMismatchNotified = false;
+  state.castAutoNextArmed = false;
+  state.playing = false;
+  // A failed DSP/ReplayGain recast of the same song can also have stopped
+  // its stream; do not leave the old auto-next armed in that case.
+  if (confirmed.id === failedTrack?.id) {
+    updatePlayBtnUI();
+    return confirmed;
+  }
   state.currentTrack = confirmed;
   const context = state.castConfirmedQueue;
   if (context) {
