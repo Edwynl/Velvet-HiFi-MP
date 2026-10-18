@@ -2001,7 +2001,7 @@ async function renderPlaylist(vc, { id }) {
 
   vc.innerHTML = `
     <div class="topbar playlist-toolbar">
-      <button class="btn btn-ghost playlist-back-btn" onclick="handleHistoryBack('playlists')">
+      <button class="btn btn-ghost back-btn playlist-back-btn" onclick="handleHistoryBack('playlists')">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
           <polyline points="15 18 9 12 15 6"/>
         </svg>

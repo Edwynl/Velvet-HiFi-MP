@@ -1836,19 +1836,20 @@ input[type=range]::-webkit-slider-thumb:hover { background: var(--gold); }
 
 /* ─── Back button ─── */
 .back-btn {
-  display: inline-flex; align-items: center; gap: 6px;
-  background: none; border: none; cursor: pointer;
+  display: inline-flex; align-items: center; justify-content: center; gap: 7px;
+  width: 84px; min-height: 34px; flex-shrink: 0;
+  background: transparent; border: 1px solid var(--border); border-radius: var(--radius); cursor: pointer;
   color: var(--muted); font-size: 12px;
   font-family: 'DM Sans', sans-serif;
-  padding: 6px 0; margin-bottom: 8px;
-  transition: color 0.15s;
+  font-weight: 500; letter-spacing: 0.05em;
+  padding: 8px 12px; margin: 0;
+  transition: border-color 0.15s, color 0.15s;
 }
-.back-btn:hover { color: var(--text); }
+.back-btn:hover { border-color: var(--muted); color: var(--text); }
 .back-btn svg { width: 14px; height: 14px; }
 
 .playlist-toolbar-actions { margin-left: auto; display: flex; gap: 8px; }
 .playlist-toolbar .btn { width: 84px; min-height: 34px; padding: 8px 12px; justify-content: center; flex-shrink: 0; }
-.playlist-back-btn svg { width: 14px; height: 14px; }
 .track-swipe-row { position: relative; overflow: hidden; border-radius: var(--radius); }
 .track-swipe-row .track-item {
   position: relative; z-index: 1; background-color: var(--bg);
