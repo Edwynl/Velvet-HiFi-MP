@@ -4,7 +4,7 @@ import sqlite3
 from dsp_engine import FACTORY_DSP_PRESETS, legacy_eq_bands_to_filters
 
 
-LATEST_SCHEMA_VERSION = 11
+LATEST_SCHEMA_VERSION = 13
 
 
 def _table_columns(conn: sqlite3.Connection, table_name: str) -> set[str]:
@@ -442,6 +442,136 @@ def migration_011_artist_aliases(conn: sqlite3.Connection) -> None:
     )
 
 
+
+def migration_012_opencc_catalog_search(conn: sqlite3.Connection) -> None:
+    """Dirty-queued OpenCC keys for Artists and Albums, including artist aliases.
+
+    SQLite triggers only enqueue IDs; OpenCC conversion always happens in
+    Python during refresh. Old names and track IDs remain untouched.
+    """
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS catalog_search_index (
+            kind         TEXT NOT NULL CHECK(kind IN ('artist','album')),
+            entity_id    INTEGER NOT NULL,
+            search_text  TEXT NOT NULL,
+            PRIMARY KEY(kind,entity_id)
+        ) WITHOUT ROWID;
+        CREATE TABLE IF NOT EXISTS catalog_search_dirty (
+            kind         TEXT NOT NULL CHECK(kind IN ('artist','album')),
+            entity_id    INTEGER NOT NULL,
+            PRIMARY KEY(kind,entity_id)
+        ) WITHOUT ROWID;
+        INSERT OR IGNORE INTO catalog_search_dirty(kind,entity_id)
+            SELECT 'artist',id FROM artists;
+        INSERT OR IGNORE INTO catalog_search_dirty(kind,entity_id)
+            SELECT 'album',id FROM albums;
+
+        CREATE TRIGGER IF NOT EXISTS trg_v2_artist_insert AFTER INSERT ON artists
+        BEGIN
+            INSERT OR IGNORE INTO catalog_search_dirty VALUES('artist',NEW.id);
+        END;
+        CREATE TRIGGER IF NOT EXISTS trg_v2_artist_update
+        AFTER UPDATE OF id,name ON artists
+        BEGIN
+            INSERT OR IGNORE INTO catalog_search_dirty VALUES('artist',OLD.id);
+            INSERT OR IGNORE INTO catalog_search_dirty VALUES('artist',NEW.id);
+            INSERT OR IGNORE INTO catalog_search_dirty(kind,entity_id)
+                SELECT 'album',id FROM albums WHERE artist_id IN (OLD.id,NEW.id);
+        END;
+        CREATE TRIGGER IF NOT EXISTS trg_v2_artist_delete AFTER DELETE ON artists
+        BEGIN
+            DELETE FROM catalog_search_index WHERE kind='artist' AND entity_id=OLD.id;
+            DELETE FROM catalog_search_dirty WHERE kind='artist' AND entity_id=OLD.id;
+        END;
+        CREATE TRIGGER IF NOT EXISTS trg_v2_album_insert AFTER INSERT ON albums
+        BEGIN
+            INSERT OR IGNORE INTO catalog_search_dirty VALUES('album',NEW.id);
+        END;
+        CREATE TRIGGER IF NOT EXISTS trg_v2_album_update
+        AFTER UPDATE OF id,title,artist_id ON albums
+        BEGIN
+            INSERT OR IGNORE INTO catalog_search_dirty VALUES('album',OLD.id);
+            INSERT OR IGNORE INTO catalog_search_dirty VALUES('album',NEW.id);
+        END;
+        CREATE TRIGGER IF NOT EXISTS trg_v2_album_delete AFTER DELETE ON albums
+        BEGIN
+            DELETE FROM catalog_search_index WHERE kind='album' AND entity_id=OLD.id;
+            DELETE FROM catalog_search_dirty WHERE kind='album' AND entity_id=OLD.id;
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS trg_v2_alias_insert AFTER INSERT ON artist_aliases
+        BEGIN
+            INSERT OR IGNORE INTO catalog_search_dirty VALUES('artist',NEW.artist_id);
+            INSERT OR IGNORE INTO catalog_search_dirty(kind,entity_id)
+                SELECT 'album',id FROM albums WHERE artist_id=NEW.artist_id;
+            INSERT OR IGNORE INTO track_search_dirty(track_id)
+                SELECT id FROM tracks WHERE artist_id=NEW.artist_id;
+        END;
+        CREATE TRIGGER IF NOT EXISTS trg_v2_alias_update AFTER UPDATE ON artist_aliases
+        BEGIN
+            INSERT OR IGNORE INTO catalog_search_dirty VALUES('artist',OLD.artist_id);
+            INSERT OR IGNORE INTO catalog_search_dirty VALUES('artist',NEW.artist_id);
+            INSERT OR IGNORE INTO catalog_search_dirty(kind,entity_id)
+                SELECT 'album',id FROM albums WHERE artist_id IN (OLD.artist_id,NEW.artist_id);
+            INSERT OR IGNORE INTO track_search_dirty(track_id)
+                SELECT id FROM tracks WHERE artist_id IN (OLD.artist_id,NEW.artist_id);
+        END;
+        CREATE TRIGGER IF NOT EXISTS trg_v2_alias_delete AFTER DELETE ON artist_aliases
+        BEGIN
+            INSERT OR IGNORE INTO catalog_search_dirty VALUES('artist',OLD.artist_id);
+            INSERT OR IGNORE INTO catalog_search_dirty(kind,entity_id)
+                SELECT 'album',id FROM albums WHERE artist_id=OLD.artist_id;
+            INSERT OR IGNORE INTO track_search_dirty(track_id)
+                SELECT id FROM tracks WHERE artist_id=OLD.artist_id;
+        END;
+        """
+    )
+
+
+def migration_013_track_title_key(conn: sqlite3.Connection) -> None:
+    """Add the folded track title and album genre to the search index.
+
+    Without a normalized title column, ORDER BY can only compare the raw
+    `LOWER(title)`, which cannot see that a Simplified query matches a
+    Traditional title exactly. A query for 爱你 therefore ranked 愛 (matched
+    only by the reverse-substring clause) above 愛你 (the exact match).
+
+    genre_key keeps album *search* results unchanged while letting the track
+    browse match a Simplified genre query against a Traditional stored label.
+    """
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(track_search_index)")}
+    if "title_key" not in columns:
+        conn.execute("ALTER TABLE track_search_index ADD COLUMN title_key TEXT")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_track_search_title_key "
+        "ON track_search_index(title_key)"
+    )
+
+    # Genre is stored separately from search_text so that making genre matching
+    # script-aware does not start letting album *search* match on genre, which
+    # would change artist/album search results.
+    catalog_columns = {
+        row[1] for row in conn.execute("PRAGMA table_info(catalog_search_index)")
+    }
+    if catalog_columns and "genre_key" not in catalog_columns:
+        conn.execute("ALTER TABLE catalog_search_index ADD COLUMN genre_key TEXT")
+
+    # genre_key only stays current if a genre edit re-queues the album.
+    # Migration 12's trigger watched id/title/artist_id but not genre.
+    conn.executescript(
+        """
+        DROP TRIGGER IF EXISTS trg_v2_album_update;
+        CREATE TRIGGER trg_v2_album_update
+        AFTER UPDATE OF id,title,artist_id,genre ON albums
+        BEGIN
+            INSERT OR IGNORE INTO catalog_search_dirty VALUES('album',OLD.id);
+            INSERT OR IGNORE INTO catalog_search_dirty VALUES('album',NEW.id);
+        END;
+        """
+    )
+
+
 MIGRATIONS = (
     (1, "create_base_schema", migration_001_create_base_schema),
     (2, "align_album_columns", migration_002_add_album_favorites),
@@ -454,6 +584,8 @@ MIGRATIONS = (
     (9, "track_file_state_and_query_indexes", migration_009_track_file_state_and_query_indexes),
     (10, "track_search_index", migration_010_track_search_index),
     (11, "artist_aliases", migration_011_artist_aliases),
+    (12, "opencc_catalog_search", migration_012_opencc_catalog_search),
+    (13, "track_title_key", migration_013_track_title_key),
 )
 
 
