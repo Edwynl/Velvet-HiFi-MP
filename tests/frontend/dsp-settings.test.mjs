@@ -526,6 +526,7 @@ async function main() {
     await dom.window.activateZone(renderer, false);
     assert.equal(dom.window.eval('state.dspProfile'), '', 'a renderer never chosen for starts Off');
     assert.equal(dspSelect.value, '');
+    assert.equal(document.querySelector('#mobile-top-dsp-label').textContent.trim(), 'Off');
     assert.equal(dom.window.eval('isDspExplicitlyOff()'), true);
     chooseDsp('3');
     assert.equal(zoneMap()['cast:uuid:renderer'], '3');

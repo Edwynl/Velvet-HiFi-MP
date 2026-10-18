@@ -8255,10 +8255,11 @@ function startCastPolling() {
       }
       updatePlayBtnUI();
 
+      // A resumed DSP stream starts castStartOffset seconds into the track.
+      // Tracked even when a renderer reports no duration for a transcode.
+      const offset = state.castStartOffset || 0;
+      state.castPosition = offset + status.position;
       if (status.duration > 0) {
-        // A resumed DSP stream starts castStartOffset seconds into the track.
-        const offset = state.castStartOffset || 0;
-        state.castPosition = offset + status.position;
         const pct = (state.castPosition / (offset + status.duration)) * 100;
         UI['progress-fill'].style.width = pct + '%';
         UI['progress-fill'].style.setProperty('--prog', pct + '%');
