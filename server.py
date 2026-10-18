@@ -46,6 +46,7 @@ from dsp_engine import (
     MIN_PREAMP_DB,
     DspValidationError,
     build_dsp_filter_chain,
+    dsp_effective_status,
     resolve_dsp_plan,
     validate_dsp_filters,
     validate_dsp_headroom,
@@ -812,39 +813,66 @@ async def cast_to_device(device_udn: str, request: Request):
 
     Renderers cannot send API headers, so the URLs handed to them carry
     tickets scoped to this track/cover that expire after the track length.
+
+    With an active DSP preset the renderer gets the same server-side DSP
+    transcode as the browser (24-bit FLAC at the source rate, EQ-1 headroom
+    guard at that rate); otherwise the direct source file. `start_seconds`
+    resumes the track there: the transcode starts at that offset, a direct
+    stream is seeked by the renderer after Play.
     """
     data = await request.json()
     track_id = data.get("track_id")
     if not track_id:
         raise HTTPException(400, "Missing track_id")
-        
+    requested_dsp = data.get("dsp_profile_id") or None
+    if requested_dsp is not None and (isinstance(requested_dsp, bool) or not isinstance(requested_dsp, int)):
+        raise HTTPException(422, "dsp_profile_id must be an integer")
+    start = data.get("start_seconds") or 0
+    if (isinstance(start, bool) or not isinstance(start, (int, float))
+            or not 0 <= start <= TRANSCODE_MAX_SECONDS):
+        raise HTTPException(422, f"start_seconds must be 0-{TRANSCODE_MAX_SECONDS}")
+    start = round(float(start), 3)
+
     db = get_db()
     track = db.execute(
         "SELECT t.*, ar.name as artist_name, al.title as album_title "
         "FROM tracks t JOIN artists ar ON t.artist_id=ar.id "
         "JOIN albums al ON t.album_id=al.id WHERE t.id=?", (track_id,)
     ).fetchone()
+    dsp_profile = None
+    if requested_dsp:
+        dsp_profile = db.execute("SELECT * FROM dsp_profiles WHERE id=?", (requested_dsp,)).fetchone()
     db.close()
-    
+
     if not track:
         raise HTTPException(404, "Track not found")
-        
+    if requested_dsp and not dsp_profile:
+        # Fail closed, as /api/stream does: never play unprocessed audio for a requested preset.
+        raise HTTPException(404, "DSP profile not found")
+
     track = dict(track)
-    stream_url, _ = upnp_server.media_urls(track)
+    dsp_status = dsp_effective_status(requested_dsp, dict(dsp_profile) if dsp_profile else None,
+                                      track["sample_rate"])
+    transcoded = dsp_status["status"] == "applied"
+    stream_query = ""
+    if transcoded:
+        stream_query = f"&dsp={requested_dsp}" + (f"&start={start:g}" if start else "")
+    dsp_status["stream"] = "dsp_transcode" if transcoded else "direct"
+    stream_url, _ = upnp_server.media_urls(track, stream_query=stream_query)
     # Use upnp_server's DIDL-Lite builder for rich metadata (important for some hi-fi players)
-    meta = upnp_server._didl_wrap(upnp_server.track_xml(track, "0"))
+    meta = upnp_server._didl_wrap(upnp_server.track_xml(
+        track, "0", stream_query=stream_query, start_seconds=start if transcoded else 0))
 
     # cast_track performs blocking SOAP calls and sleeps; keep the event loop free.
     success = await asyncio.to_thread(upnp_server.cast_track, device_udn, stream_url, meta)
-    # Renderers receive the direct source URL: VELVET DSP is not applied, so
-    # report a requested preset as bypassed instead of implying it is active.
-    requested_dsp = data.get("dsp_profile_id") or None
-    dsp_status = {"requested_profile_id": requested_dsp, "effective_profile_id": None,
-                  "status": "bypassed" if requested_dsp else "off",
-                  "reason": ("DSP not applied on this renderer (direct source stream)"
-                             if requested_dsp else "VELVET DSP off"),
-                  "disabled_filters": []}
-    return {"success": success, "dsp": dsp_status}
+    start_offset = start if transcoded else 0
+    if success and start and not transcoded:
+        # Renderer positions on a direct stream are absolute once it seeks;
+        # if it cannot seek, the track plays from the start.
+        if not await asyncio.to_thread(upnp_server.seek, device_udn, start):
+            log.warning("[CAST] Renderer did not seek to %.1fs; playing from the start", start)
+    # Renderer positions are relative to the stream: the UI adds start_offset.
+    return {"success": success, "dsp": dsp_status, "start_offset": start_offset}
 
 @app.post("/api/cast/control/{device_udn}/{action}")
 async def cast_control(device_udn: str, action: str):
@@ -2100,8 +2128,15 @@ async def _acquire_transcode_slot() -> StreamLease:
     return lease
 
 
+def _ffmpeg_input_args(file_path: str, start_seconds: float = 0) -> list[str]:
+    # -ss before -i: seek in the demuxer, then decode exactly from there.
+    seek = ["-ss", f"{start_seconds:g}"] if start_seconds else []
+    return [*seek, "-i", filesystem_path(file_path)]
+
+
 async def _stream_upsampled(file_path: str, target_rate: str, quality: str = "high",
-                           timeout_seconds: int = 3600, dsp_filter: str = ""):
+                           timeout_seconds: int = 3600, dsp_filter: str = "",
+                           start_seconds: float = 0):
     """
     Upsample via FFmpeg + SoXR resampler, stream as WAV.
 
@@ -2114,6 +2149,7 @@ async def _stream_upsampled(file_path: str, target_rate: str, quality: str = "hi
         quality: standard, high, extreme (libsoxr precision presets)
         timeout_seconds: Wall-clock cap for the response
         dsp_filter: Additional DSP filter chain to apply
+        start_seconds: Start this far into the track
     """
     if not await asyncio.to_thread(ffmpeg_supports_soxr):
         raise HTTPException(503, "PCM upsampling requires FFmpeg with libsoxr. Install a full build and restart VELVET.")
@@ -2134,7 +2170,7 @@ async def _stream_upsampled(file_path: str, target_rate: str, quality: str = "hi
     # 2. output without compression for lower latency
     # 3. Use 32-bit integer for maximum precision in pipeline
     cmd = [
-        "ffmpeg", "-nostdin", "-i", filesystem_path(file_path),
+        "ffmpeg", "-nostdin", *_ffmpeg_input_args(file_path, start_seconds),
         "-af", filter_chain,
         "-c:a", "pcm_s32le",      # 32-bit integer for best precision
         "-f", "wav",
@@ -2157,7 +2193,8 @@ async def _stream_upsampled(file_path: str, target_rate: str, quality: str = "hi
     )
 
 
-async def _stream_with_dsp(file_path: str, dsp_filter: str, timeout_seconds: int = 3600):
+async def _stream_with_dsp(file_path: str, dsp_filter: str, timeout_seconds: int = 3600,
+                           start_seconds: float = 0):
     """
     Stream audio with DSP processing only (no upsampling).
 
@@ -2165,10 +2202,11 @@ async def _stream_with_dsp(file_path: str, dsp_filter: str, timeout_seconds: int
         file_path: Path to the source audio file
         dsp_filter: FFmpeg filter chain to apply
         timeout_seconds: Wall-clock cap for the response
+        start_seconds: Start this far into the track (DLNA re-cast resume)
     """
     lease = await _acquire_transcode_slot()
     cmd = [
-        "ffmpeg", "-nostdin", "-i", filesystem_path(file_path),
+        "ffmpeg", "-nostdin", *_ffmpeg_input_args(file_path, start_seconds),
         "-af", dsp_filter,
         "-c:a", "flac",
         "-compression_level", "0",
@@ -2231,6 +2269,8 @@ async def stream_track(
     quality: str = Query("high", description="standard|high|extreme - upsampling quality"),
     dop: str = Query("none", description="none|dsd64|dsd128|dsd256 - DSD over PCM output"),
     dsp: int = Query(None, description="DSP profile ID to apply"),
+    start: float = Query(0, ge=0, le=TRANSCODE_MAX_SECONDS,
+                         description="Start offset in seconds (transcoded streams only)"),
     timeout_minutes: int | None = Query(
         None, ge=5, le=720,
         description="Transcode time limit in minutes (default: VELVET_STREAM_TIMEOUT_MINUTES); "
@@ -2245,6 +2285,8 @@ async def stream_track(
     - quality: SoXR quality preset (standard=quick, high=balanced, extreme=best)
     - dop: DSD over PCM output (none, dsd64, dsd128, dsd256)
     - dsp: DSP profile ID to apply (parametric EQ, volume, etc.)
+    - start: Start offset for a transcoded (DSP/upsampled) stream; direct
+      streams seek with HTTP Range instead
     - timeout_minutes: Minimum transcode time limit; long tracks get their full length
     """
     db = get_db()
@@ -2308,18 +2350,20 @@ async def stream_track(
         raise HTTPException(422, str(exc))
     if target_rate and quality not in UPSAMPLE_QUALITY:
         raise HTTPException(422, "Unsupported upsampling quality")
+    if start and not (target_rate or dsp_filter):
+        raise HTTPException(422, "start applies only to transcoded (DSP or upsampled) streams")
     if request.method == "HEAD" and (target_rate or dsp_filter):
         # Describe the transcoded stream without starting FFmpeg.
         return Response(media_type="audio/wav" if target_rate else "audio/flac",
                         headers={"Cache-Control": "no-cache"})
     if target_rate:
         limit = _transcode_time_limit_seconds(track["duration"], timeout_minutes)
-        return await _stream_upsampled(fp, target_rate, quality, limit, dsp_filter)
+        return await _stream_upsampled(fp, target_rate, quality, limit, dsp_filter, start_seconds=start)
 
     # Handle DSP-only (no upsampling)
     if dsp_filter:
         limit = _transcode_time_limit_seconds(track["duration"], timeout_minutes)
-        return await _stream_with_dsp(fp, dsp_filter, limit)
+        return await _stream_with_dsp(fp, dsp_filter, limit, start_seconds=start)
 
     return _stream_file_direct(fp, request, track["format"] or "")
 

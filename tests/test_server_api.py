@@ -453,7 +453,7 @@ class ServerApiTests(unittest.TestCase):
         self.assertEqual(created.status_code, 200)
         captured = {}
 
-        async def fake_stream(fp, dsp_filter, limit):
+        async def fake_stream(fp, dsp_filter, limit, **kwargs):
             captured["chain"] = dsp_filter
             return server.Response(b"", media_type="audio/flac")
 
@@ -471,18 +471,118 @@ class ServerApiTests(unittest.TestCase):
                     self.assertEqual(resp.status_code, 404)
         self.assertIn("DSP profile not found", resp.json()["detail"])
 
-    def test_cast_reports_dsp_as_bypassed_on_dlna_renderers(self):
+    def _cast(self, body):
+        sent = {}
+
+        def fake_cast(udn, url, meta):
+            sent.update(udn=udn, url=url, meta=meta)
+            return True
+
+        with patch.object(upnp_server, "cast_track", side_effect=fake_cast), \
+             patch.object(upnp_server, "seek", return_value=True) as seek:
+            response = self.client.post("/api/cast/renderer-1", json=body)
+        return response, sent, seek
+
+    def _hot_profile_at_44k(self):
         self._allow_music_root()
-        with patch.object(upnp_server, "cast_track", return_value=True):
-            with_dsp = self.client.post("/api/cast/renderer-1",
-                                        json={"track_id": 1, "dsp_profile_id": 2}).json()
-            without_dsp = self.client.post("/api/cast/renderer-1", json={"track_id": 1}).json()
-        self.assertTrue(with_dsp["success"])
-        self.assertEqual(with_dsp["dsp"]["requested_profile_id"], 2)
-        self.assertIsNone(with_dsp["dsp"]["effective_profile_id"])
-        self.assertEqual(with_dsp["dsp"]["status"], "bypassed")
-        self.assertIn("not applied", with_dsp["dsp"]["reason"])
-        self.assertEqual(without_dsp["dsp"]["status"], "off")
+        with self._connect() as conn:
+            conn.execute("UPDATE tracks SET sample_rate=44100, bit_depth=16, file_size=1234 WHERE id=1")
+            conn.commit()
+        created = self.client.post("/api/dsp/profiles", json={
+            "name": "Hot", "preamp_db": 0,
+            "filters": [{"type": "peaking", "freq": 1000, "gain": 12, "q": 1.0, "enabled": True}],
+        })
+        self.assertEqual(created.status_code, 200)
+        return created.json()["id"]
+
+    def test_cast_applies_dsp_through_the_guarded_server_transcode(self):
+        # EQ-3: a renderer gets the same DSP transcode as the browser, guarded
+        # at the source rate, and its metadata describes that transcode.
+        profile_id = self._hot_profile_at_44k()
+        response, sent, seek = self._cast({"track_id": 1, "dsp_profile_id": profile_id})
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertTrue(body["success"])
+        self.assertEqual(body["dsp"]["status"], "applied")
+        self.assertEqual(body["dsp"]["effective_profile_id"], profile_id)
+        self.assertEqual(body["dsp"]["stream"], "dsp_transcode")
+        self.assertLess(body["dsp"]["headroom_guard_db"], 0)
+        self.assertEqual(body["start_offset"], 0)
+        self.assertIn(f"&dsp={profile_id}", sent["url"])
+        self.assertNotIn("start=", sent["url"])
+        self.assertIn("http-get:*:audio/flac:DLNA.ORG_PN=FLAC;DLNA.ORG_OP=00;DLNA.ORG_CI=1", sent["meta"])
+        self.assertIn('bitsPerSample="24"', sent["meta"])
+        self.assertNotIn('size="1234"', sent["meta"])
+        seek.assert_not_called()
+
+        captured = {}
+
+        async def fake_stream(fp, dsp_filter, limit, start_seconds=0):
+            captured.update(chain=dsp_filter, start=start_seconds)
+            return server.Response(b"", media_type="audio/flac")
+
+        path = sent["url"].split(f":{upnp_server.MAIN_PORT}", 1)[1]
+        with patch.object(server, "_stream_with_dsp", side_effect=fake_stream):
+            self.assertEqual(self.client.get(path).status_code, 200)
+        self.assertTrue(captured["chain"].startswith("volume=-13.0dB"), captured["chain"])
+        self.assertEqual(captured["start"], 0)
+
+    def test_cast_resumes_a_dsp_transcode_at_the_requested_position(self):
+        profile_id = self._hot_profile_at_44k()
+        response, sent, seek = self._cast({"track_id": 1, "dsp_profile_id": profile_id,
+                                           "start_seconds": 42.5})
+        self.assertEqual(response.json()["start_offset"], 42.5)
+        self.assertIn(f"&dsp={profile_id}&start=42.5", sent["url"])
+        self.assertIn('duration="0:02:17.500"', sent["meta"])  # 180 s track, remaining part
+        seek.assert_not_called()
+
+        captured = {}
+
+        async def fake_stream(fp, dsp_filter, limit, start_seconds=0):
+            captured["start"] = start_seconds
+            return server.Response(b"", media_type="audio/flac")
+
+        path = sent["url"].split(f":{upnp_server.MAIN_PORT}", 1)[1]
+        with patch.object(server, "_stream_with_dsp", side_effect=fake_stream):
+            self.assertEqual(self.client.get(path).status_code, 200)
+        self.assertEqual(captured["start"], 42.5)
+
+    def test_cast_without_active_dsp_streams_the_direct_source(self):
+        self._allow_music_root()
+        empty = self.client.post("/api/dsp/profiles", json={"name": "Empty", "preamp_db": 0, "filters": []})
+        self.assertEqual(empty.status_code, 200)
+        for body, status in (({"track_id": 1, "dsp_profile_id": empty.json()["id"]}, "bypassed"),
+                             ({"track_id": 1}, "off")):
+            with self.subTest(status=status):
+                response, sent, seek = self._cast({**body, "start_seconds": 30})
+                result = response.json()
+                self.assertEqual(result["dsp"]["status"], status)
+                self.assertIsNone(result["dsp"]["effective_profile_id"])
+                self.assertEqual(result["dsp"]["stream"], "direct")
+                self.assertNotIn("dsp=", sent["url"])
+                self.assertNotIn("start=", sent["url"])
+                self.assertNotIn("DLNA.ORG_CI=1", sent["meta"])
+                # A direct stream resumes by seeking the renderer; positions stay absolute.
+                seek.assert_called_once_with("renderer-1", 30.0)
+                self.assertEqual(result["start_offset"], 0)
+
+    def test_cast_with_unknown_or_invalid_dsp_fails_closed(self):
+        self._allow_music_root()
+        with patch.object(upnp_server, "cast_track",
+                          side_effect=AssertionError("must not cast")):
+            missing = self.client.post("/api/cast/renderer-1", json={"track_id": 1, "dsp_profile_id": 9999})
+            self.assertEqual(missing.status_code, 404)
+            self.assertIn("DSP profile not found", missing.json()["detail"])
+            for body in ({"dsp_profile_id": "2"}, {"dsp_profile_id": True}, {"start_seconds": -1},
+                         {"start_seconds": "10"}, {"start_seconds": True}):
+                with self.subTest(body=body):
+                    response = self.client.post("/api/cast/renderer-1", json={"track_id": 1, **body})
+                    self.assertEqual(response.status_code, 422)
+
+    def test_stream_start_offset_requires_a_transcode(self):
+        self._allow_music_root()
+        self.assertEqual(self.client.get("/api/stream/1?start=5").status_code, 422)
+        self.assertEqual(self.client.get("/api/stream/1?start=-1").status_code, 422)
 
     def test_factory_dsp_profile_can_be_cloned_but_not_updated_or_deleted(self):
         update_resp = self.client.put(

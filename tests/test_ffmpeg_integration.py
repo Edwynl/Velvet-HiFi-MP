@@ -51,6 +51,31 @@ class FFmpegIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(response.media_type, "audio/flac")
                 self.assertEqual(data[:4], b"fLaC")
 
+    async def test_dsp_stream_for_a_renderer_resumes_as_24_bit_flac(self):
+        # EQ-3: what a DLNA renderer receives (and its DIDL claims): 24-bit
+        # FLAC at the source rate, starting at the re-cast position.
+        with tempfile.TemporaryDirectory() as folder:
+            source = Path(folder) / "source.flac"
+            subprocess.run(["ffmpeg", "-v", "error", "-f", "lavfi", "-i",
+                            "sine=frequency=1000:sample_rate=44100:duration=2",
+                            "-c:a", "flac", "-sample_fmt", "s16", str(source)],
+                           check=True, capture_output=True)
+            dsp = build_dsp_filter_chain({"preamp_db": -3, "filter_chain_json":
+                '[{"type":"peaking","freq":1000,"gain":-2,"q":1}]'}, 44100)
+            response = await server._stream_with_dsp(str(source), dsp, start_seconds=1.5)
+            output = Path(folder) / "output.flac"
+            output.write_bytes(b"".join([block async for block in response.body_iterator]))
+            probe = subprocess.run(["ffprobe", "-v", "error", "-show_streams",
+                                    "-of", "json", str(output)], check=True, capture_output=True)
+            stream = json.loads(probe.stdout)["streams"][0]
+            self.assertEqual(int(stream["sample_rate"]), 44100)
+            self.assertEqual(int(stream["bits_per_raw_sample"]),
+                             server.upnp_server.TRANSCODED_BITS_PER_SAMPLE)
+            # A piped FLAC header carries no length: count the decoded samples.
+            pcm = subprocess.run(["ffmpeg", "-v", "error", "-i", str(output), "-f", "s16le",
+                                  "-ac", "1", "pipe:1"], check=True, capture_output=True).stdout
+            self.assertAlmostEqual(len(pcm) / 2 / 44100, 0.5, delta=0.02)
+
 
 class DisconnectIntegrationTests(unittest.IsolatedAsyncioTestCase):
     async def test_missing_soxr_fails_before_http_stream_starts(self):
