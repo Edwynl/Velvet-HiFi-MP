@@ -47,7 +47,8 @@ function createHarness() {
   let nextProfileId = 100;
   const requests = [];
   const castControl = { paused: false, seekOk: true, replaygainDb: -7.1, hold: false, held: [],
-    fail: false, controlFail: false, payloads: {}, serverResults: {} };
+    fail: false, controlFail: false, payloads: {}, serverResults: {},
+    holdControls: false, heldControls: [], transportState: 'PLAYING' };
   const dspProfiles = [
     {
       id: 2,
@@ -239,8 +240,10 @@ function createHarness() {
     }
 
     if (parsedUrl.pathname.startsWith('/api/cast/control/') && method === 'POST') {
-      return castControl.controlFail ? makeJsonResponse({ detail: 'SOAP error' }, 500)
+      const answer = castControl.controlFail ? makeJsonResponse({ detail: 'SOAP error' }, 500)
         : makeJsonResponse({ success: true });
+      if (!castControl.holdControls) return answer;
+      return new Promise(resolve => castControl.heldControls.push(() => resolve(answer)));
     }
 
     // What the server reports for a cast whose client request timed out.
@@ -250,7 +253,8 @@ function createHarness() {
     }
 
     if (parsedUrl.pathname.startsWith('/api/cast/status/') && method === 'GET') {
-      return makeJsonResponse({ state: 'PLAYING', position: 5, duration: 120, is_playing: true });
+      return makeJsonResponse({ state: castControl.transportState, position: 5, duration: 120,
+        is_playing: castControl.transportState === 'PLAYING' });
     }
 
     // Mirrors server.cast_to_device: an active preset or a ReplayGain gain
@@ -779,18 +783,67 @@ async function main() {
     assert.equal(dom.window.eval('state.playing'), true);
     castControl.controlFail = false;
 
-    // Leaving the zone while a re-cast is in flight: its answer is dropped.
+    // Two quick clicks ask for Pause then Play, never Pause twice; only the
+    // newest answer sets the player state.
+    const controlsSince = before => harness.requests.slice(before)
+      .filter(request => request.path.startsWith('/api/cast/control/')).map(request => request.path.split('/').at(-1));
+    castControl.holdControls = true;
+    castControl.heldControls = [];
+    dom.window.eval('stopCastPolling(); state.playing = true;');
+    requestsBefore = harness.requests.length;
+    dom.window.eval('togglePlayAction(); togglePlayAction();');
+    await waitFor(() => castControl.heldControls.length === 2);
+    assert.deepEqual(controlsSince(requestsBefore), ['Pause', 'Play']);
+    castControl.heldControls.forEach(release => release());
+    await waitFor(() => dom.window.eval('state.castControlPending') === null);
+    assert.equal(dom.window.eval('state.playing'), true);
+
+    // A Pause answered only after a re-cast finished: the answer is not a
+    // toggle, and the renderer's own state decides (it is paused here).
+    castControl.heldControls = [];
+    dom.window.eval('stopCastPolling(); state.playing = true; state.castPosition = 42;');
+    dom.window.eval('togglePlayAction();');
+    await waitFor(() => castControl.heldControls.length === 1);
+    castControl.paused = true; // the server ran the Pause first: the re-cast only loads
+    castControl.transportState = 'PAUSED_PLAYBACK';
+    dom.window.setReplayGainMode('off'); // the renderer still has the album gain
+    await waitFor(() => dom.window.eval('state.castDsp?.replaygain?.mode') === 'off');
+    assert.equal(dom.window.eval('state.playing'), false);
+    castControl.heldControls[0]();
+    await waitFor(() => dom.window.eval('state.castControlPending') === null);
+    await tick();
+    assert.equal(dom.window.eval('state.playing'), false, 'a late Pause answer must not resume the UI');
+    castControl.paused = false;
+    castControl.transportState = 'PLAYING';
+    castControl.heldControls = [];
+
+    // Leaving the zone with a re-cast, a Pause and the Stop all unanswered:
+    // switching does not wait for the renderer, and the late answers are dropped.
+    dom.window.eval('stopCastPolling(); state.playing = true;');
+    dom.window.eval('togglePlayAction();');
+    await waitFor(() => castControl.heldControls.length === 1);
     castControl.hold = true;
     castControl.held = [];
-    dom.window.setReplayGainMode('off'); // the renderer still has the album gain
+    dom.window.setReplayGainMode('album');
     await waitFor(() => castControl.held.length === 1);
-    await dom.window.activateZone(browserZone, false);
+    requestsBefore = harness.requests.length;
+    const switched = await Promise.race([
+      dom.window.activateZone(browserZone, false).then(() => 'switched'),
+      new Promise(resolve => setTimeout(() => resolve('blocked by Stop'), 1000)),
+    ]);
+    assert.equal(switched, 'switched');
+    assert.deepEqual(controlsSince(requestsBefore), ['Stop']);
+    assert.equal(dom.window.eval('state.outputMode'), 'browser');
+    const playingAfterSwitch = dom.window.eval('state.playing');
     castControl.hold = false;
+    castControl.holdControls = false;
     castControl.held[0]();
+    castControl.heldControls.forEach(release => release());
     await tick();
     assert.equal(dom.window.eval('state.castDsp'), null);
     assert.equal(dom.window.eval('state.castStartOffset'), 0);
     assert.equal(dom.window.eval('state.outputMode'), 'browser');
+    assert.equal(dom.window.eval('state.playing'), playingAfterSwitch, 'late Pause answer ignored');
     dom.window.eval('stopCastPolling(); state.currentTrack = null;');
     dom.window.setReplayGainMode('off');
   } finally {
