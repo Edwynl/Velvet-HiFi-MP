@@ -14,16 +14,6 @@ const track = { id: 30, title: '失落沙洲', album_id: 7,
 const requests = [];
 let resolvedUnknownAlias = false;
 let resolvedLateAlias = false;
-let promptAnswers = [];
-let legacyAliases = [{ artist_id: 3, artist_name: '徐佳瑩', alias: 'Legacy English' }];
-let failNextAliasPoll = false;
-let failedAliasPolls = 0;
-let aliasJob = {
-  running: false, stopping: false, status: 'idle', mode: 'pending',
-  processed: 0, total: 0, synced_artists: 1, remaining_artists: 2,
-  unresolved_artists: 1, retryable_artists: 1, needs_review_artists: 1,
-  aliases_imported: 3,
-};
 const response = data => ({
   ok: true, status: 200, headers: { get: () => 'application/json' },
   async json() { return structuredClone(data); },
@@ -33,37 +23,6 @@ const request = async (url, opts = {}) => {
   const u = new URL(url, 'http://localhost');
   requests.push({ url: u, method: opts.method || 'GET' });
   const q = u.searchParams.get('q') || '';
-  if (u.pathname === '/api/library/artist-aliases/enrichment' && (!opts.method || opts.method === 'GET')) {
-    if (failNextAliasPoll) {
-      failNextAliasPoll = false;
-      failedAliasPolls++;
-      return { ...response({ detail: 'temporary failure' }), ok: false, status: 503 };
-    }
-    return response(aliasJob);
-  }
-  if (u.pathname === '/api/library/artist-aliases/audit') {
-    return response({ aliases: legacyAliases, total: legacyAliases.length, limit: 25, offset: 0 });
-  }
-  if (u.pathname === '/api/artists/3/aliases/audit') {
-    const body = JSON.parse(opts.body);
-    legacyAliases = legacyAliases.filter(item => item.alias !== body.name);
-    return response({ status: 'ok', action: body.action, alias: body.name });
-  }
-  if (u.pathname === '/api/library/artist-aliases/enrichment/review') {
-    return response({ artists: [{ id: 3, name: '徐佳瑩' }] });
-  }
-  if (u.pathname === '/api/library/artist-aliases/enrichment/start') {
-    const body = JSON.parse(opts.body);
-    aliasJob = { ...aliasJob, running:true, stopping:false, status:'running',
-                 mode:body.mode, all_remaining:body.all_remaining,
-                 total:body.all_remaining ? 2 : 1, processed:0 };
-    return response(aliasJob);
-  }
-  if (u.pathname === '/api/library/artist-aliases/enrichment/stop') {
-    aliasJob = { ...aliasJob, running:false, stopping:false, status:'stopped',
-                 processed:aliasJob.total };
-    return response(aliasJob);
-  }
   if (u.pathname === '/api/search/resolve-artist-alias') {
     if (q === 'Late Alias' && u.searchParams.get('detail_offset') !== '5') {
       return response({ status: 'more_candidates', next_offset: 5, remaining: 1 });
@@ -110,12 +69,6 @@ const request = async (url, opts = {}) => {
   if (u.pathname === '/api/artists/page') return response({ artists: [artist], total: 1 });
   if (u.pathname === '/api/artists/3') return response(artist);
   if (u.pathname === '/api/artists/3/albums') return response([album]);
-  if (u.pathname === '/api/artists/3/aliases/sync') {
-    return response({ status: 'needs_review', candidates: [{
-      mbid: 'a47ac8f5-6774-4540-842f-f1eb0a19845c',
-      name: '徐佳瑩', type: 'Person', country: 'TW',
-    }] });
-  }
   if (u.pathname === '/api/artists/3/enrich-bio') return response({});
   if (u.pathname === '/api/recently-added') return response([]);
   if (u.pathname === '/api/security/status') return response({ enabled: false });
@@ -131,7 +84,7 @@ const dom = new JSDOM(html, {
     window.fetch = request;
     window.alert = () => {};
     window.confirm = () => true;
-    window.prompt = () => promptAnswers.length ? promptAnswers.shift() : '1';
+    window.prompt = () => '1';
     window.scrollTo = () => {};
     window.matchMedia = q => ({
       media:q, matches:false, addListener(){}, removeListener(){},
@@ -185,53 +138,20 @@ assert.deepEqual([...dom.window.document.querySelectorAll(
 // From ARTISTS: global search can still show albums and songs.
 await dom.window.navigate('artists');
 await wait(() => dom.window.document.querySelector('#artists-grid'));
-await wait(() => dom.window.document.querySelector('#artist-enrichment-summary')
-  ?.textContent.includes('2 remaining'));
-assert.equal(dom.window.document.querySelector('#artist-alias-next-batch').disabled, false,
-             'Batch sync must be explicitly user-initiated');
-dom.window.document.querySelector('#artist-alias-next-batch').click();
-await wait(() => requests.some(r => r.url.pathname === '/api/library/artist-aliases/enrichment/start'));
-assert.equal(aliasJob.running, true);
-assert.equal(aliasJob.all_remaining, false);
-await wait(() => dom.window.document.querySelector('#artist-alias-stop-batch').disabled === false);
-dom.window.document.querySelector('#artist-alias-stop-batch').click();
-await wait(() => aliasJob.running === false);
-await wait(() => dom.window.document.querySelector('#artist-alias-all-batch').disabled === false);
-promptAnswers.push('1', 'KEEP');
-dom.window.document.querySelector('#artist-alias-audit-legacy').click();
-await wait(() => requests.some(item => item.url.pathname === '/api/artists/3/aliases/audit'));
-assert.equal(legacyAliases.length, 0, 'User-approved legacy alias is no longer pending audit');
-dom.window.document.querySelector('#artist-alias-all-batch').click();
-await wait(() => requests.some(r => r.url.pathname === '/api/library/artist-aliases/enrichment/start'
-  && r.method === 'POST' && aliasJob.all_remaining === true));
-assert.equal(aliasJob.all_remaining, true, 'Whole-library sync requires an explicit click');
-
-// A temporary Tailscale/HTTP error during a running import must not terminate
-// polling permanently. Force one 503 then recover without leaving Artists.
-failNextAliasPoll = true;
-aliasJob = { ...aliasJob, synced_artists: 9 };
-const waitPoll = async predicate => {
-  for (let i = 0; i < 600; i++) {
-    if (predicate()) return;
-    await new Promise(resolve => setTimeout(resolve, 20));
-  }
-  throw new Error('Timed out waiting for alias status polling recovery');
-};
-await waitPoll(() => failedAliasPolls > 0);
-await waitPoll(() => dom.window.document.querySelector('#artist-enrichment-summary')
-  ?.textContent.includes('9 verified'));
-
-dom.window.document.querySelector('#artist-alias-stop-batch').click();
-await wait(() => aliasJob.running === false);
+// MusicBrainz enrichment is withdrawn. The Artists view must neither render the
+// panel nor poll a background enrichment job it no longer offers.
+assert.equal(dom.window.document.querySelector('#artist-enrichment-panel'), null,
+             'MusicBrainz enrichment is not part of this release');
+assert.equal(requests.some(item => item.url.pathname.includes('/artist-aliases/enrichment')),
+             false, 'The Artists view must not poll an enrichment job');
 await searchFromCurrentView('Lala Hsu');
 
-// Artist cards retain navigation, and the alias control remains on the detail.
+// Artist cards retain navigation, and the manual alias control remains.
 const artistCard = dom.window.document.querySelector('.search-artist-grid .artist-card');
 artistCard.click();
-await wait(() => !!dom.window.document.querySelector('#artist-sync-alias-btn'));
-const syncBtn = dom.window.document.querySelector('#artist-sync-alias-btn');
-syncBtn.click();
-await wait(() => requests.some(item => item.url.pathname === '/api/artists/3/aliases/sync'));
+await wait(() => !!dom.window.document.querySelector('#artist-add-alias-btn'));
+assert.equal(dom.window.document.querySelector('#artist-sync-alias-btn'), null,
+             'Sync Names has been withdrawn from the artist page');
 await wait(() => dom.window.document.querySelector('#artist-aliases-list')?.textContent.includes('LaLa Hsu'));
 
 assert.equal(requests.some(item => item.url.pathname === '/api/search'
@@ -239,16 +159,6 @@ assert.equal(requests.some(item => item.url.pathname === '/api/search'
 
 // No automatic remote network lookup on keystrokes. The user explicitly opts in
 // when searching a stage name not yet known to the local library.
-// No automatic remote network lookup on keystrokes. The user explicitly opts in
-// when searching a stage name not yet known to the local library.
-// The artist-detail "Sync Names" flow above also confirms an identity through
-// /api/artists/3/aliases/confirm, and the mock treats that as importing the
-// alias. That request is still in flight when this step begins -- the alias list
-// renders from the artist's cached names before the confirmation returns -- so
-// wait for it to land before clearing the flag. Resetting first would let it
-// flip back to true, the query would be answered from the local library, and the
-// opt-in empty state would never render.
-await wait(() => requests.some(item => item.url.pathname === '/api/artists/3/aliases/confirm'));
 resolvedUnknownAlias = false;
 await dom.window.navigate('home');
 await wait(() => dom.window.document.querySelector('#search-input'));
