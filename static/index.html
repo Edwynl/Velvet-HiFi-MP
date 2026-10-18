@@ -5834,6 +5834,74 @@ input[type=range]::-webkit-slider-thumb:hover { background: var(--gold); }
   }
 }
 
+
+/* iPhone portrait viewport + menu alignment:
+   Min-content grid tracks previously let album cards widen the page,
+   appearing as a zoomed/cropped view. Keep the menu above the status-bar
+   safe area. Landscape, iPad, and desktop layouts are unchanged. */
+@media (max-width: 768px) and (orientation: portrait) {
+  html, body {
+    width: 100%;
+    max-width: 100%;
+  }
+
+  #app {
+    width: 100%;
+    min-width: 0;
+    max-width: 100%;
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr) auto;
+  }
+
+  #main {
+    min-width: 0;
+    min-height: 0;
+    overflow-x: hidden;
+    padding-top: env(safe-area-inset-top, 0px);
+  }
+
+  #view-container {
+    width: 100%;
+    min-width: 0;
+    max-width: 100%;
+  }
+
+  .grid,
+  .artist-grid {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+
+  .mobile-menu-btn {
+    position: fixed;
+    top: calc(env(safe-area-inset-top, 0px) + 10px);
+    left: 12px;
+    z-index: 46; /* above sticky header, below sidebar */
+    width: 44px;
+    height: 44px;
+    margin: 0;
+    padding: 10px;
+    border-radius: 12px;
+    background: rgba(19, 19, 22, 0.94);
+    touch-action: manipulation;
+  }
+
+  .topbar {
+    top: env(safe-area-inset-top, 0px);
+    padding-left: 68px;
+    min-width: 0;
+  }
+
+  #player {
+    min-width: 0;
+    max-width: 100%;
+  }
+
+  #sidebar {
+    padding-top: env(safe-area-inset-top, 0px);
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+  }
+}
+
 </style>
 </head>
 <body>
