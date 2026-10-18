@@ -42,6 +42,8 @@ import uvicorn
 import upnp_server
 import remote_access
 import security
+import admin_security
+import listener_access
 from cover_art import find_folder_cover as find_folder_cover_bytes, save_cover_bytes
 from dsp_engine import (
     MAX_PREAMP_DB,
@@ -4003,9 +4005,30 @@ def _is_loopback_client_ip(client_ip: str) -> bool:
 
 
 @app.get("/api/security/status")
-def get_security_status():
+def get_security_status(request: Request):
     """Get security configuration status."""
-    return security.get_security_status()
+    manager = admin_security.get_admin_security()
+    return {**security.get_security_status(),
+            'admin_protected': manager.is_configured(),
+            'admin_unlocked': manager.session_valid(request.cookies.get(admin_security.COOKIE)),
+            'passwordless_listening': listener_access.is_passwordless_listener(request, get_client_ip(request))}
+
+
+@app.post('/api/security/admin-login')
+async def unlock_admin(request: Request, body: dict):
+    manager = admin_security.get_admin_security()
+    if not manager.is_configured():
+        return JSONResponse(status_code=403, content={'code': 'admin_setup_required',
+                            'error': 'Set a password on the server PC first.'}, headers={'Cache-Control': 'no-store'})
+    token, error = await asyncio.to_thread(manager.unlock, body.get('password'), get_client_ip(request))
+    if not token:
+        return JSONResponse(status_code=403, content={'code': 'admin_password_invalid', 'error': error},
+                            headers={'Cache-Control': 'no-store'})
+    response = JSONResponse({'success': True}, headers={'Cache-Control': 'no-store'})
+    # No Max-Age: this is a browser-session cookie, never a persisted password.
+    response.set_cookie(admin_security.COOKIE, token, path='/api', httponly=True,
+                        samesite='strict', secure=listener_access.request_origin(request).startswith('https://'))
+    return response
 
 
 @app.post("/api/security/setup-password")
@@ -4036,7 +4059,7 @@ def _credential_response(request: Request, api_key: str):
     for cookie_path in ("/api/covers", "/api/artists"):
         response.set_cookie("velvet_cover_key", api_key, path=cookie_path,
                             httponly=True, samesite="strict",
-                            secure=request.url.scheme == "https")
+                            secure=listener_access.request_origin(request).startswith('https://'))
     return response
 
 
@@ -4144,6 +4167,18 @@ async def auth_middleware(request: Request, call_next):
     client_ip = get_client_ip(request)
     path = request.url.path
     auth_enabled = security.is_auth_enabled()
+    admin_manager = admin_security.get_admin_security()
+    admin_active = admin_manager.is_configured()
+    admin_unlocked = admin_manager.session_valid(request.cookies.get(admin_security.COOKIE))
+    passwordless_listener = await asyncio.to_thread(listener_access.is_passwordless_listener, request, client_ip)
+    admin_required = admin_active and admin_security.requires_admin(request.method, path)
+    if (admin_required or path == '/api/security/admin-login' or
+            (passwordless_listener and request.method not in {'GET', 'HEAD', 'OPTIONS'})):
+        origin = request.headers.get('origin')
+        if ((origin and origin != listener_access.request_origin(request, passwordless_listener)) or
+                request.headers.get('sec-fetch-site') == 'cross-site'):
+            return JSONResponse(status_code=403, content={'code': 'admin_origin_invalid',
+                                'error': 'Use this server directly for this operation.'})
 
     # CORS preflight carries no credentials and must reach CORSMiddleware.
     if request.method == "OPTIONS" and request.headers.get("Access-Control-Request-Method"):
@@ -4165,7 +4200,8 @@ async def auth_middleware(request: Request, call_next):
 
     # Before protection is enabled, a network guest must not be able to claim
     # ownership by setting the first password. Bootstrap locally on the host.
-    if not auth_enabled and path.startswith("/api/security/") and path != "/api/security/status":
+    if not auth_enabled and not admin_unlocked and path.startswith("/api/security/") and path not in {
+            '/api/security/status', '/api/security/admin-login'}:
         if path != "/api/security/setup-password":
             return JSONResponse(
                 status_code=403,
@@ -4186,7 +4222,8 @@ async def auth_middleware(request: Request, call_next):
     # When no password has been configured, do not expose the music library,
     # destructive APIs, or local playback control over LAN/Tailscale.
     # Users can initialize security at http://localhost:8765 on the host PC.
-    if not auth_enabled and not _is_loopback_client_ip(client_ip):
+    if (not auth_enabled and not _is_loopback_client_ip(client_ip)
+            and not (admin_active and (passwordless_listener or admin_unlocked))):
         setup_visible = request.method == "GET" and (
             path in {
                 "/", "/api/security/status", "/api/health",
@@ -4215,6 +4252,11 @@ async def auth_middleware(request: Request, call_next):
         path in public_get_paths or path in PUBLIC_FRONTEND_JS_PATHS
         or path.startswith("/docs/")
     )
+    if path == '/api/security/admin-login':
+        should_skip = True  # The endpoint verifies only the admin password itself.
+    if admin_unlocked or (passwordless_listener and
+                          (not path.startswith('/api/security/') or admin_required)):
+        should_skip = True
     sensitive_security_route = (
         (path.startswith("/api/security/") and path != "/api/security/status")
         or path.startswith("/api/dlna/")
@@ -4255,6 +4297,12 @@ async def auth_middleware(request: Request, call_next):
                 status_code=401,
                 content={"error": auth_result["error"]},
             )
+
+    if admin_required and not admin_unlocked:
+        return JSONResponse(status_code=403,
+                            content={'code': 'admin_password_required',
+                                     'error': 'Unlock administrator access for this session.'},
+                            headers={'Cache-Control': 'no-store'})
 
     response = await call_next(request)
     if path.startswith("/api/security/"):
@@ -4435,5 +4483,6 @@ if __name__ == "__main__":
         host=settings.host,
         port=PORT,
         log_level="warning",
-        reload=False
+        reload=False,
+        proxy_headers=False,
     )

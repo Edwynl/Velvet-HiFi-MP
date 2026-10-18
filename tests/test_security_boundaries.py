@@ -1,5 +1,7 @@
 """Regression tests for authentication boundaries and audio configuration."""
 import unittest
+import tempfile
+from pathlib import Path
 from unittest.mock import patch
 
 from fastapi.testclient import TestClient
@@ -10,10 +12,18 @@ from settings import ScanConstants
 
 class SecurityBoundaryTests(unittest.TestCase):
     def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.config_patch = patch.object(server.security, 'CONFIG_FILE', Path(self.temp_dir.name)/'security.json')
+        self.config_patch.start()
+        self.manager_patch = patch.object(server.security, '_security_manager', server.security.SecurityManager())
+        self.manager_patch.start()
         self.client = TestClient(server.app, base_url="http://localhost:8765")
 
     def tearDown(self):
         self.client.close()
+        self.manager_patch.stop()
+        self.config_patch.stop()
+        self.temp_dir.cleanup()
 
     def test_security_management_requires_auth_even_when_status_is_public(self):
         with patch.object(server.security, "is_auth_enabled", return_value=True), \

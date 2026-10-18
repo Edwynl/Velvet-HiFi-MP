@@ -150,7 +150,7 @@ async function renderRemote(vc) {
             <div class="settings-title" style="font-size:16px">Security Protection</div>
             <div class="settings-desc" style="margin-top:4px">
               ${securityEnabled
-                ? 'Password protection is enabled. Remote access requires authentication.'
+                ? 'Verified Tailscale devices can browse and play without a password. Settings and sensitive changes require one administrator unlock per browser session.'
                 : 'No password set. Anyone on Tailscale can access your library.'}
             </div>
           </div>

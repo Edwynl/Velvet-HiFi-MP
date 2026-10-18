@@ -114,6 +114,9 @@ function createHarness() {
     const parsedUrl = new URL(url, 'http://localhost');
     const body = opts.body ? JSON.parse(opts.body) : null;
     requests.push({ method, path: parsedUrl.pathname, body });
+    if (parsedUrl.pathname === '/api/security/status') {
+      return makeJsonResponse({enabled: false, admin_protected: false});
+    }
 
     if (parsedUrl.pathname === '/api/stats' && method === 'GET') {
       return makeJsonResponse({ artists: 0, albums: 0, tracks: 0, duration: 0 });

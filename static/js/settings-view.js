@@ -301,7 +301,7 @@ async function renderSettings(vc) {
           <code style="color:var(--gold);font-family:'DM Mono',monospace;font-size:12px">
             http://[your-PC-IP]:8765
           </code><br><br>
-          Set a password on this PC first, then connect from your phone, tablet or another authorized device. For remote access use Tailscale.
+          Verified Tailscale devices can browse and play without a library password. Settings, cover changes and deletions require the administrator password once per browser session.
         </div>
       </div>
 

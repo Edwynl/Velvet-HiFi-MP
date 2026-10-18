@@ -2686,7 +2686,8 @@ async function renderAlbum(vc, { id }) {
   UI['enrich-btn'].addEventListener('click', async () => {
     showToast('Searching all sources (Netease, QQ, Apple Music…)…');
     try {
-      const res = await fetch(`/api/albums/${album.id}/fetch-cover`, { method: 'POST' });
+      const res = await managementFetch(`/api/albums/${album.id}/fetch-cover`, { method: 'POST' });
+      if (res.adminCancelled) return;
       const data = await res.json();
       if (data.success) {
         showToast(`Cover found from ${data.source || 'web'}!`);
@@ -2756,10 +2757,11 @@ async function renderAlbum(vc, { id }) {
       formData.append('file', input.files[0]);
       showToast('Uploading cover…');
       try {
-        const res = await fetch(`/api/albums/${album.id}/cover`, {
+        const res = await managementFetch(`/api/albums/${album.id}/cover`, {
           method: 'POST',
           body: formData
         });
+        if (res.adminCancelled) return;
         if (res.ok) {
           showToast('Cover updated!');
           // Force refresh after upload with timestamp to bust CDN/browser cache

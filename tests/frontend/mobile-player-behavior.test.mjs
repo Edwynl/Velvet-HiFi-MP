@@ -538,7 +538,31 @@ async function testFullscreenLibraryNavigation() {
   } finally { dom.window.close(); }
 }
 
+async function testVuModalControlsStayClickableAndDismiss() {
+  const dom = await createHarness().createDom();
+  try {
+    const {window} = dom;
+    const document = window.document;
+    window.toggleMobilePlayer(true);
+    window.toggleVUMeters(true);
+    const overlay = document.querySelector('#mobile-vu-meters');
+    assert.equal(overlay.parentElement, document.body, 'VU escapes the transformed player container');
+    assert.equal(window.getComputedStyle(overlay).pointerEvents, 'auto');
+    document.querySelector('#vu-style-2').click();
+    assert.ok(overlay.classList.contains('style-2'));
+    document.querySelector('#mobile-vu-close').click();
+    assert.ok(!overlay.classList.contains('open'));
+    window.toggleVUMeters(true);
+    document.dispatchEvent(new window.KeyboardEvent('keydown',{key:'Escape'}));
+    assert.ok(!overlay.classList.contains('open'));
+    window.toggleVUMeters(true);
+    window.toggleMobilePlayer(false);
+    assert.ok(!overlay.classList.contains('open'), 'Dismissing the player also closes its VU modal');
+  } finally { dom.window.close(); }
+}
+
 async function main() {
+  await testVuModalControlsStayClickableAndDismiss();
   await testFullscreenLibraryNavigation();
   await testAutoOpenOnlyBeforeDismiss();
   await testBottomBarPauseDoesNotOpenFullscreen();

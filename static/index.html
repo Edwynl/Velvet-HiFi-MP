@@ -5917,6 +5917,32 @@ input[type=range]::-webkit-slider-thumb:hover { background: var(--gold); }
   .mobile-vu-meter-options { gap: 7px 9px; }
   .mobile-vu-mode-btn, .mobile-vu-alignment select { padding: 5px 6px; }
 }
+/* VU is a viewport modal; keep touch controls below the iPhone status area. */
+#mobile-vu-meters {
+  --vu-safe-top: max(env(safe-area-inset-top, 0px), 12px);
+  position: fixed; inset: 0; z-index: 3000; pointer-events: auto;
+  padding-top: calc(var(--vu-safe-top) + 68px) !important;
+  padding-bottom: calc(env(safe-area-inset-bottom, 0px) + 18px) !important;
+  overflow-y: auto !important; overscroll-behavior: contain;
+}
+#mobile-vu-meters .mobile-vu-style-toggle {
+  position: fixed; top: calc(var(--vu-safe-top) + 10px) !important;
+  left: max(env(safe-area-inset-left, 0px), 16px) !important;
+  min-height: 44px; align-items: center; z-index: 20; pointer-events: auto;
+}
+#mobile-vu-meters .mobile-vu-style-btn { min-height: 44px; touch-action: manipulation; }
+#mobile-vu-meters .mobile-vu-close {
+  position: fixed; top: calc(var(--vu-safe-top) + 10px) !important;
+  right: max(env(safe-area-inset-right, 0px), 16px) !important;
+  width: 44px !important; height: 44px !important;
+  z-index: 21; pointer-events: auto; touch-action: manipulation;
+  transition: background-color .2s, color .2s;
+}
+@media (max-width: 900px) and (orientation: portrait) {
+  #mobile-vu-meters { --vu-safe-top: max(env(safe-area-inset-top, 0px), 48px); justify-content: flex-start !important; }
+  #mobile-vu-meters .mobile-vu-container { margin-top: 16px; }
+}
+
 /* iOS Home Screen PWA: some WebKit versions measure 100dvh without the
    bottom ~59pt occupied by the browser's standalone viewport. Use 100vh
    only for installed iOS web apps. Normal Safari, Android and desktop keep
@@ -6535,7 +6561,7 @@ input[type=range]::-webkit-slider-thumb:hover { background: var(--gold); }
   </header>
 
   <!-- VU Meter Overlay -->
-  <div id="mobile-vu-meters" class="mobile-vu-overlay">
+  <div id="mobile-vu-meters" class="mobile-vu-overlay" role="dialog" aria-label="VU Meters">
     <div class="mobile-vu-bg-glow"></div>
     <div class="mobile-vu-container">
       <!-- Left VU Meter -->
@@ -6631,7 +6657,7 @@ input[type=range]::-webkit-slider-thumb:hover { background: var(--gold); }
         </select>
       </label>
     </div>
-    <button class="mobile-vu-close" id="mobile-vu-close">
+    <button class="mobile-vu-close" id="mobile-vu-close" type="button" aria-label="Close VU Meters">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
     </button>
   </div>
@@ -7072,6 +7098,7 @@ async function castStopSettled(device) {
 }
 
 async function activateZone(zone, transferPlayback = true) {
+  if ((zone.type !== 'browser' || getActiveZone().type !== 'browser') && !await ensureAdminSession()) return;
   $('cast-menu')?.classList.remove('open');
   const previousZone = getActiveZone();
   if (previousZone.type === zone.type && String(previousZone.id) === String(zone.id)) {
@@ -7618,6 +7645,127 @@ let authState = {
   apiKey: localStorage.getItem('velvet_api_key') || ''
 };
 
+// Admin sessions use an HttpOnly cookie; never retain the administrator password.
+let adminDialogActive = false;
+let adminUnlockPromise = null;
+async function ensureAdminSession() {
+  if (adminUnlockPromise) return adminUnlockPromise;
+  adminUnlockPromise = (async () => {
+    try {
+      const statusResponse = await fetch('/api/security/status', { cache: 'no-store' });
+      if (!statusResponse.ok) return false;
+      const status = await statusResponse.json();
+      if (!status.admin_protected || status.admin_unlocked) return true;
+      const approved = await showAdminVerification(password => fetch('/api/security/admin-login', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ password }), credentials: 'same-origin',
+      }));
+      return !!approved?.ok;
+    } catch { showToast('Unable to verify administrator access. Try again.'); return false; }
+  })();
+  try { return await adminUnlockPromise; } finally { adminUnlockPromise = null; }
+}
+
+async function managementFetch(url, opts = {}, timeoutMs = 30000) {
+  const headers = { ...(opts.headers || {}) };
+  if (authState.apiKey) headers['X-API-Key'] = authState.apiKey;
+  const send = async () => {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try { return await fetch(url, { ...opts, headers, signal: controller.signal }); }
+    finally { clearTimeout(timer); }
+  };
+  let response = await send();
+  if (response.status === 403) {
+    const body = await response.clone().json().catch(() => ({}));
+    if (body.code === 'admin_password_required') {
+      if (await ensureAdminSession()) response = await send();
+      else response.adminCancelled = true;
+    }
+  }
+  return response;
+}
+
+function showAdminVerification(submit, setupRequired = false) {
+  if (adminDialogActive) return Promise.resolve(null);
+  adminDialogActive = true;
+  const previousFocus = document.activeElement;
+  const dialog = document.createElement('div');
+  dialog.id = 'admin-verification';
+  dialog.style.cssText = 'position:fixed;inset:0;z-index:12000;background:#000b;display:grid;place-items:center;padding:20px';
+  dialog.innerHTML = `
+    <form role="dialog" aria-modal="true" aria-labelledby="admin-verification-title" style="width:min(100%,400px);padding:28px;border-radius:16px;background:var(--s2);border:1px solid var(--border)">
+      <h2 id="admin-verification-title" style="font-size:20px;margin:0 0 12px">Administrator verification</h2>
+      <p style="font-size:13px;color:var(--muted);line-height:1.6">${setupRequired
+        ? 'Set a password on the server PC first.'
+        : 'Enter your administrator password once to unlock Settings and management for this browser session.'}</p>
+      ${setupRequired ? '' : '<label for="admin-verification-password">Administrator password</label><input id="admin-verification-password" type="password" autocomplete="off" required maxlength="1024" class="settings-input" style="width:100%;margin:10px 0" />'}
+      <p id="admin-verification-error" role="alert" style="color:#ff8d8d;font-size:13px;min-height:20px"></p>
+      <div style="display:flex;gap:10px;justify-content:flex-end">
+        <button type="button" id="admin-verification-cancel" class="btn btn-ghost">Cancel</button>
+        <button type="submit" id="admin-verification-submit" class="btn btn-gold">${setupRequired ? 'Close' : 'Unlock'}</button>
+      </div>
+    </form>`;
+  document.body.appendChild(dialog);
+  return new Promise(resolve => {
+    let busy = false;
+    const field = dialog.querySelector('input');
+    const button = dialog.querySelector('#admin-verification-submit');
+    const cancel = dialog.querySelector('#admin-verification-cancel');
+    const error = dialog.querySelector('[role="alert"]');
+    const close = result => {
+      if (field) field.value = '';
+      dialog.remove();
+      adminDialogActive = false;
+      if (previousFocus?.isConnected) previousFocus.focus();
+      resolve(result);
+    };
+    cancel.onclick = () => { if (!busy) close(null); };
+    dialog.addEventListener('keydown', event => {
+      if (event.key === 'Escape') { event.preventDefault(); if (!busy) close(null); }
+      if (event.key === 'Tab') {
+        const controls = [...dialog.querySelectorAll('input,button')].filter(item => !item.disabled);
+        if (event.shiftKey && document.activeElement === controls[0]) {
+          event.preventDefault(); controls.at(-1).focus();
+        } else if (!event.shiftKey && document.activeElement === controls.at(-1)) {
+          event.preventDefault(); controls[0].focus();
+        }
+      }
+    });
+    dialog.querySelector('form').onsubmit = async event => {
+      event.preventDefault();
+      if (busy) return;
+      if (setupRequired) { close(null); return; }
+      if (!field.value) { field.focus(); return; }
+      busy = true; button.disabled = true; cancel.disabled = true; error.textContent = '';
+      // Clear the input before the request, and release the password after it.
+      let password = field.value;
+      field.value = '';
+      try {
+        const response = await submit(password);
+        password = '';
+        if (response.status === 403 || response.status === 429) {
+          const body = await response.clone().json().catch(() => ({}));
+          if (body.code?.startsWith('admin_')) {
+            error.textContent = body.error || 'Administrator verification failed.';
+            if (body.code === 'admin_locked') button.dataset.locked = 'true';
+            return;
+          }
+        }
+        close(response);
+      } catch {
+        error.textContent = 'Request failed. Check the connection before trying again.';
+      } finally {
+        password = '';
+        busy = false; cancel.disabled = false; button.disabled = button.dataset.locked === 'true';
+        if (field.isConnected) field.focus();
+      }
+    };
+    (field || cancel).focus();
+  });
+}
+
+
 // Views kept alive across back/forward: going back re-attaches their DOM
 // (listeners, filters, page) and scroll position instead of refetching the
 // whole library. Any mutating API call drops them so nothing stale returns.
@@ -7641,13 +7789,11 @@ async function api(path, opts = {}) {
   }
 
   // 8-second timeout to prevent infinite hangs on server startup
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
   try {
     log(`[VELVET] API Call: ${path}`);
-    const r = await fetch('/api' + path, { ...opts, headers, signal: controller.signal });
-    clearTimeout(timeoutId);
+    const r = await managementFetch('/api' + path, { ...opts, headers }, timeoutMs);
+    if (r.adminCancelled) return null;
 
     // Handle 401 - need to authenticate
     if (r.status === 401) {
@@ -7690,7 +7836,6 @@ async function api(path, opts = {}) {
       return {};
     }
   } catch (e) {
-    clearTimeout(timeoutId);
     if (e.name === 'AbortError') {
       console.warn(`API ${path} timed out`);
       if (timeoutResult !== undefined) return timeoutResult;
@@ -9583,6 +9728,9 @@ function toggleVUMeters(show) {
   if (show === undefined) show = !vuMeterOpen;
 
   if (show) {
+    // Keep the modal outside the fullscreen player's transformed, potentially
+    // pointer-disabled container. Its close and style controls stay clickable.
+    if (overlay.parentElement !== document.body) document.body.appendChild(overlay);
     overlay.classList.add('open');
     if (btn) btn.classList.add('active');
     if (topBtn) topBtn.classList.add('active');
@@ -9698,6 +9846,9 @@ UI['mobile-vu-meters'].addEventListener('pointerdown', event => {
 
 UI['mobile-btn-vu'].addEventListener('click', () => toggleVUMeters());
 UI['mobile-vu-close'].addEventListener('click', () => toggleVUMeters(false));
+document.addEventListener('keydown', event => {
+  if (event.key === 'Escape' && vuMeterOpen) toggleVUMeters(false);
+});
 
 // VU style toggle
 function setVUStyle(style) {
@@ -9801,6 +9952,7 @@ function toggleMobilePlayer(show, { source = 'manual' } = {}) {
     return;
   }
   overlay.classList.remove('open');
+  if (vuMeterOpen) toggleVUMeters(false);
   if (source === 'dismiss') {
     state.mobilePlayerDismissed = true;
   }
@@ -10214,6 +10366,10 @@ $$('.player-info').forEach(el => {
 
 async function render({ restore = false } = {}) {
   log('[VELVET] render() started');
+  if (['settings', 'remote'].includes(state.view) && !await ensureAdminSession()) {
+    await navigate('home', {}, false);
+    return;
+  }
   const vc = UI['view-container'];
   if (!vc) {
     console.error('[VELVET] Critical Error: #view-container not found in DOM');
@@ -10983,7 +11139,13 @@ window.addEventListener('DOMContentLoaded', async () => {
   // Refresh the cover-only HttpOnly cookie for clients with a saved API key.
   // Startup session refresh: also delivers the stream ticket before the first
   // navigation renders anything the user can tap.
-  if (authState.apiKey) adoptStreamTicket(await api('/security/login', { method: 'POST' }));
+  if (authState.apiKey) {
+    // A saved listening key must not bring the old access-password dialog
+    // back on a verified tailnet connection after it is rotated elsewhere.
+    const status = await fetch('/api/security/status', { cache: 'no-store' })
+      .then(response => response.json()).catch(() => ({}));
+    if (!status.passwordless_listening) adoptStreamTicket(await api('/security/login', { method: 'POST' }));
+  }
   maintainStreamTicket();
   log('[VELVET] DOM ready, performing initial navigation...');
   // EQ Controls

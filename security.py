@@ -136,30 +136,7 @@ class SecurityManager:
         if not self._config.enabled or not self._config.password_hash:
             return True  # No security = allow all
 
-        if BCRYPT_AVAILABLE and self._config.password_hash.startswith("$2"):
-            # Use bcrypt for verification
-            try:
-                return bcrypt.checkpw(password.encode("utf-8"), self._config.password_hash.encode("utf-8"))
-            except Exception as e:
-                log.error(f"bcrypt verification failed: {e}")
-                return False
-        if self._config.password_hash.startswith("pbkdf2_sha256$"):
-            try:
-                _, rounds, salt_hex, digest_hex = self._config.password_hash.split("$", 3)
-                expected = bytes.fromhex(digest_hex)
-                actual = hashlib.pbkdf2_hmac(
-                    "sha256", password.encode("utf-8"),
-                    bytes.fromhex(salt_hex), int(rounds),
-                )
-                return secrets.compare_digest(actual, expected)
-            except (ValueError, TypeError):
-                return False
-        # Existing SHA-256 records are accepted ONLY for backwards
-        # compatibility; new passwords never use unsalted SHA-256.
-        if len(self._config.password_hash) == 64:
-            candidate = hashlib.sha256(password.encode("utf-8")).hexdigest()
-            return secrets.compare_digest(candidate, self._config.password_hash)
-        return False
+        return password_hash_matches(password, self._config.password_hash)
 
     def generate_api_key(self) -> str:
         """Generate a new API key"""
@@ -410,3 +387,33 @@ def disable_security() -> dict:
     manager = get_security_manager()
     manager.disable()
     return {"success": True, "message": "Security disabled (use only on trusted networks)"}
+
+
+def password_hash_matches(password: str, password_hash: str) -> bool:
+    """Verify a stored hash without the listening-auth enabled bypass."""
+    if not isinstance(password, str) or not password or not password_hash:
+        return False
+    if BCRYPT_AVAILABLE and password_hash.startswith("$2"):
+        # Use bcrypt for verification
+        try:
+            return bcrypt.checkpw(password.encode("utf-8"), password_hash.encode("utf-8"))
+        except Exception as e:
+            log.error(f"bcrypt verification failed: {e}")
+            return False
+    if password_hash.startswith("pbkdf2_sha256$"):
+        try:
+            _, rounds, salt_hex, digest_hex = password_hash.split("$", 3)
+            expected = bytes.fromhex(digest_hex)
+            actual = hashlib.pbkdf2_hmac(
+                "sha256", password.encode("utf-8"),
+                bytes.fromhex(salt_hex), int(rounds),
+            )
+            return secrets.compare_digest(actual, expected)
+        except (ValueError, TypeError):
+            return False
+    # Existing SHA-256 records are accepted ONLY for backwards
+    # compatibility; new passwords never use unsalted SHA-256.
+    if len(password_hash) == 64:
+        candidate = hashlib.sha256(password.encode("utf-8")).hexdigest()
+        return secrets.compare_digest(candidate, password_hash)
+    return False
