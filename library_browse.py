@@ -114,6 +114,7 @@ def fetch_tracks(
     if search:
         from library_search_match import (
             _catalog_has_genre_key_index,
+            dirty_album_ids_matching,
             ids_json,
             match_track_ids,
             normalize_query,
@@ -127,17 +128,26 @@ def fetch_tracks(
                 " LEFT JOIN catalog_search_index csi "
                 "ON csi.kind='album' AND csi.entity_id=al.id"
             )
+            # csi still holds the previous genre for albums awaiting a refresh,
+            # so it is only trusted for clean records; pending ones are matched
+            # against the authoritative albums.genre computed in Python.
+            pending = ids_json(dirty_album_ids_matching(db, folded))
             where_parts.append(
                 "(t.id IN (SELECT value FROM json_each(?)) "
-                "OR instr(COALESCE(csi.genre_key,''), ?) > 0)"
+                "OR (instr(COALESCE(csi.genre_key,''), ?) > 0 "
+                "    AND NOT EXISTS (SELECT 1 FROM catalog_search_dirty d "
+                "                     WHERE d.kind='album' AND d.entity_id=al.id)) "
+                "OR al.id IN (SELECT value FROM json_each(?)))"
             )
+            params.extend((search_ids, folded, pending))
+            count_params.extend((search_ids, folded, pending))
         else:
             where_parts.append(
                 "(t.id IN (SELECT value FROM json_each(?)) "
                 "OR instr(LOWER(COALESCE(al.genre,'')), ?) > 0)"
             )
-        params.extend((search_ids, folded))
-        count_params.extend((search_ids, folded))
+            params.extend((search_ids, folded))
+            count_params.extend((search_ids, folded))
 
         # Answer the query first; an explicit UI sort still breaks the tie.
         from library_discovery import _has_title_key

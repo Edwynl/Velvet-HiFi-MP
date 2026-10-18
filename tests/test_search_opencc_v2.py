@@ -7,6 +7,7 @@ from db_schema import LATEST_SCHEMA_VERSION, apply_migrations
 from library_search_index import refresh_track_search_index
 from library_search_match import (
     _MAX_QUERY_LENGTH,
+    _ready,
     match_track_ids,
     match_catalog_ids,
     normalize_query,
@@ -139,11 +140,26 @@ class ReverseMatchParityTests(unittest.TestCase):
         self.db.close()
 
     def _both_paths(self, query):
+        """Compare the indexed and exact-scan answers for ONE query.
+
+        The exact path is reached by invalidating the index signature. That
+        change must be undone every time: leaving it stale makes every later
+        call take the exact path too, so the comparison silently degrades into
+        exact-versus-exact and stops testing anything.
+        """
+        self.assertTrue(_ready(self.db), "index must be live before the indexed run")
         indexed = match_track_ids(self.db, query, reverse=True)
-        self.db.execute(
-            "UPDATE search_index_meta SET value='stale' WHERE key='signature'")
-        self.db.commit()
-        exact = match_track_ids(self.db, query, reverse=True)
+        try:
+            self.db.execute(
+                "UPDATE search_index_meta SET value='stale' WHERE key='signature'")
+            self.db.commit()
+            self.assertFalse(_ready(self.db),
+                             "exact path must be active for the unindexed run")
+            exact = match_track_ids(self.db, query, reverse=True)
+        finally:
+            refresh_track_search_index(self.db)
+            self.db.commit()
+        self.assertTrue(_ready(self.db), "index must be restored after each probe")
         return indexed, exact
 
     def test_terms_include_credited_artists_and_aliases(self):
@@ -181,8 +197,13 @@ class FoldIdempotenceTests(unittest.TestCase):
     """
 
     def test_known_non_idempotent_input_reaches_fixed_point(self):
-        self.assertEqual(search_fold("陳昇"), search_fold("陳昇"))
+        # A single OpenCC pass turns 陳昇 into 陈昇, which a second pass would
+        # take further to 陈升. Folding to a fixed point must land on the final
+        # canonical spelling, so assert that value rather than comparing the
+        # call with itself.
+        self.assertEqual(search_fold("陳昇"), "陈升")
         self.assertEqual(search_fold(search_fold("陳昇")), search_fold("陳昇"))
+        self.assertEqual(literal_fold("陳昇"), "陳昇")
 
     def test_simplified_query_reaches_the_same_key_as_stored_text(self):
         # A user typing the mainland spelling must still find the record.
@@ -285,6 +306,134 @@ class GenreFoldingTests(unittest.TestCase):
 
     def test_album_search_does_not_start_matching_on_genre(self):
         self.assertNotIn(1, match_catalog_ids(self.db, "album", "摇滚"))
+
+    def test_genre_edit_is_visible_before_a_refresh(self):
+        """A pending genre must answer from albums.genre, not the stale key.
+
+        The catalog row keeps the previous genre until the next refresh, so
+        reading it unconditionally made 摇滚 still match and 金属 miss after
+        the edit.
+        """
+        self.db.execute("UPDATE albums SET genre='金屬' WHERE id=1")
+        self.db.commit()
+        pending = [row[0] for row in self.db.execute(
+            "SELECT entity_id FROM catalog_search_dirty WHERE kind='album'")]
+        self.assertEqual(pending, [1])
+
+        before = fetch_tracks(self.db, 10, 0, "摇滚", "title", False)["total"]
+        after = fetch_tracks(self.db, 10, 0, "金属", "title", False)["total"]
+        self.assertEqual(before, 0)
+        self.assertEqual(after, 1)
+
+        refresh_track_search_index(self.db)
+        self.db.commit()
+        self.assertEqual(fetch_tracks(self.db, 10, 0, "摇滚", "title", False)["total"], 0)
+        self.assertEqual(fetch_tracks(self.db, 10, 0, "金属", "title", False)["total"], 1)
+
+    def test_new_album_is_searchable_by_genre_before_a_refresh(self):
+        """A freshly inserted album has no catalog index row yet."""
+        self.db.execute(
+            "INSERT INTO albums(id,artist_id,title,genre) VALUES(2,1,'新輯','金屬')")
+        self.db.execute(
+            "INSERT INTO tracks(id,album_id,artist_id,title,file_path) "
+            "VALUES(2,2,1,'新歌','C:/music/2.flac')")
+        self.db.commit()
+        self.assertEqual(fetch_tracks(self.db, 10, 0, "金属", "title", False)["total"], 1)
+
+    def test_deleted_album_drops_out_of_genre_search(self):
+        self.db.execute("DELETE FROM tracks WHERE id=1")
+        self.db.execute("DELETE FROM albums WHERE id=1")
+        self.db.commit()
+        self.assertEqual(fetch_tracks(self.db, 10, 0, "摇滚", "title", False)["total"], 0)
+        self.assertEqual(fetch_tracks(self.db, 10, 0, "金屬", "title", False)["total"], 0)
+
+    def test_genre_search_counts_match_the_page(self):
+        """`total` and the returned rows must agree while a genre is pending."""
+        self.db.execute("UPDATE albums SET genre='金屬' WHERE id=1")
+        self.db.commit()
+        result = fetch_tracks(self.db, 10, 0, "金属", "title", False)
+        self.assertEqual(result["total"], len(result["tracks"]))
+        self.assertTrue(all(t["genre"] == "金屬" for t in result["tracks"]))
+
+    def test_genre_search_respects_favorites_filter(self):
+        """The favorites filter must sit on top of the fold, not bypass it.
+
+        Both spellings have to agree in both directions, otherwise a
+        non-favorite album stays reachable through the other script.
+        """
+        self.db.execute("UPDATE albums SET genre='金屬' WHERE id=1")
+        self.db.execute("UPDATE albums SET is_favorite=1 WHERE id=1")
+        self.db.commit()
+        for spelling in ("金属", "金屬"):
+            self.assertEqual(
+                fetch_tracks(self.db, 10, 0, spelling, "title", True)["total"], 1,
+                f"favorited album must match {spelling}")
+
+        self.db.execute("UPDATE albums SET is_favorite=0 WHERE id=1")
+        self.db.commit()
+        for spelling in ("金属", "金屬"):
+            self.assertEqual(
+                fetch_tracks(self.db, 10, 0, spelling, "title", True)["total"], 0,
+                f"non-favorite album must not match {spelling}")
+
+
+class PunctuationRankingTests(unittest.TestCase):
+    """A user's % and _ are literals, never SQL wildcards.
+
+    `LIKE ? || '%'` without an ESCAPE clause lets a query such as `a_b` match
+    the unrelated title `aXb`, promoting a track that only entered the match
+    set through its artist name above the literal title match.
+    """
+
+    def setUp(self):
+        self.db = sqlite3.connect(":memory:")
+        self.db.row_factory = sqlite3.Row
+        apply_migrations(self.db)
+        self.db.execute("INSERT INTO artists(id,name,sort_name) VALUES(1,'a_b','a_b')")
+        self.db.execute("INSERT INTO artists(id,name,sort_name) VALUES(2,'Someone','Someone')")
+        self.db.execute("INSERT INTO albums(id,artist_id,title) VALUES(1,2,'Album')")
+        self.db.execute(
+            "INSERT INTO tracks(id,album_id,artist_id,title,file_path) "
+            "VALUES(1,1,1,'aXb','C:/music/1.flac')")
+        self.db.execute(
+            "INSERT INTO tracks(id,album_id,artist_id,title,file_path) "
+            "VALUES(2,1,2,'za_b','C:/music/2.flac')")
+        self.db.execute("INSERT INTO track_artists(track_id,artist_id) VALUES(1,1),(2,2)")
+        self.db.commit()
+        refresh_track_search_index(self.db)
+        self.db.commit()
+
+    def tearDown(self):
+        self.db.close()
+
+    def test_underscore_query_does_not_promote_a_wildcard_title(self):
+        titles = [t["title"] for t in
+                  search_tracks(self.db, "a_b", 5, None, None, None)["tracks"]]
+        self.assertEqual(titles, ["za_b", "aXb"])
+
+    def test_prefix_rank_uses_literal_instr(self):
+        row = self.db.execute(
+            "SELECT instr(COALESCE(title_key,''), ?) FROM track_search_index "
+            "WHERE track_id=1", ("a_b",)).fetchone()[0]
+        self.assertEqual(row, 0)
+        like = self.db.execute(
+            "SELECT ? LIKE ? || '%'", ("axb", "a_b")).fetchone()[0]
+        self.assertEqual(like, 1, "the wildcard behaviour this test guards against")
+
+    def test_percent_query_is_literal(self):
+        self.db.execute(
+            "INSERT INTO tracks(id,album_id,artist_id,title,file_path) "
+            "VALUES(3,1,2,'100% FLAC','C:/music/3.flac')")
+        self.db.commit()
+        refresh_track_search_index(self.db)
+        self.db.commit()
+        titles = [t["title"] for t in
+                  search_tracks(self.db, "100%", 5, None, None, None)["tracks"]]
+        self.assertEqual(titles, ["100% FLAC"])
+        self.assertEqual(
+            [t["title"] for t in
+             fetch_tracks(self.db, 5, 0, "100%", "title", False)["tracks"]],
+            ["100% FLAC"])
 
 
 class QueryBoundsTests(unittest.TestCase):

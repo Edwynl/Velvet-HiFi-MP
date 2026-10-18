@@ -151,16 +151,21 @@ def rank_order_by(alias: str = "ti") -> str:
     """ORDER BY fragment ranking tracks by how well they answer the query.
 
     Consumes exactly three bound parameters, all the folded query key: an exact
-    canonical title, then a prefix, then any substring. Ranking uses the stored
-    `title_key` because a raw `LOWER(title)` cannot tell that a Simplified
-    query equals a Traditional title exactly -- which is what let 愛 outrank
-    愛你 for the query 爱你.
+    canonical title, then a literal prefix, then any literal substring.
+
+    The prefix test is `instr(...) = 1`, never `LIKE ? || '%'`: without an ESCAPE
+    clause LIKE treats the *query's* own `%` and `_` as wildcards, so the query
+    `a_b` would promote the unrelated title `aXb` above the literal match `za_b`.
+
+    Ranking uses the stored `title_key` because a raw `LOWER(title)` cannot tell
+    that a Simplified query equals a Traditional title exactly -- which is what
+    let 愛 outrank 愛你 for the query 爱你.
     """
     return (
         "CASE"
         f" WHEN {alias}.title_key = ? THEN 0"
-        f" WHEN {alias}.title_key LIKE ? || '%' THEN 1"
-        f" WHEN instr({alias}.title_key, ?) > 0 THEN 2"
+        f" WHEN instr(COALESCE({alias}.title_key,''), ?) = 1 THEN 1"
+        f" WHEN instr(COALESCE({alias}.title_key,''), ?) > 0 THEN 2"
         " ELSE 3 END,"
         " LOWER(t.title), t.id"
     )
@@ -168,7 +173,28 @@ def rank_order_by(alias: str = "ti") -> str:
 
 def rank_params(folded: str) -> tuple[str, str, str]:
     """The three parameters consumed by `rank_order_by`."""
-    return folded, folded + "%", folded
+    return folded, folded, folded
+
+
+def dirty_album_ids_matching(db: sqlite3.Connection, folded: str) -> set[int]:
+    """Albums whose genre changed since the catalog index was last refreshed.
+
+    The stored `catalog_search_index.genre_key` still holds the previous genre
+    for these albums, so it would answer the query with a stale label: after
+    搖滾 -> 金屬, the query 摇滚 would still match and 金属 would not, until the
+    next refresh. Newly inserted albums have no index row at all. Fold the
+    authoritative `albums.genre` for exactly those pending rows so search stays
+    correct between refreshes, which is the same contract the dirty queue gives
+    the title and credit fields.
+    """
+    if not folded or not _existing(db, "catalog_search_dirty"):
+        return set()
+    rows = db.execute(
+        "SELECT a.id, a.genre FROM albums a "
+        "JOIN catalog_search_dirty d ON d.kind='album' AND d.entity_id=a.id "
+        "WHERE a.genre IS NOT NULL AND a.genre != ''"
+    ).fetchall()
+    return {int(row[0]) for row in rows if folded in search_fold(str(row[1]))}
 
 
 def match_track_ids(db: sqlite3.Connection, query: str, *, reverse: bool = True) -> set[int]:
