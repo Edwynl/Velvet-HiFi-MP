@@ -79,9 +79,7 @@ from library_browse import fetch_albums, fetch_artists, fetch_tracks
 from library_paging import album_catalog_filters, fetch_album_page, fetch_artist_page
 from home_recommendations import fetch_home_shelves, parse_home_ids
 from artist_aliases import add_alias, fetch_aliases
-from artist_alias_sync import AliasSyncUnavailable, sync_artist_aliases, resolve_search_alias
 from artist_alias_provenance import mark_alias_source, audit_legacy_aliases, resolve_legacy_alias
-from artist_alias_batch import ArtistAliasEnrichmentJob, DEFAULT_BATCH_SIZE, MAX_BATCH_SIZE
 from library_safety import AlbumFileArchive, ArchiveError, list_album_archives, restore_album_files
 from library_discovery import (
     fetch_album_radio,
@@ -108,7 +106,6 @@ from library_detail import (
 from library_jobs import JobState, ScanJobState, create_bio_job_state, create_fingerprint_job_state
 from library_duplicates import find_exact_duplicates
 from maintenance_service import (
-    enrich_missing_album_covers,
     refresh_album_from_files,
     refresh_artist_from_files,
     rescan_local_album_covers,
@@ -398,7 +395,6 @@ app.add_middleware(CORSMiddleware, allow_origins=ALLOWED_ORIGINS,
 # Global scan state
 _scan_job = ScanJobState(MUSIC_DIR)
 _duplicate_job = JobState({"running": False, "progress": 0, "total": 0, "current_file": "", "groups": [], "error": None, "finished_at": None})
-_alias_enrichment_job = ArtistAliasEnrichmentJob(get_db)
 # One library job at a time: scans, folder refreshes and duplicate hashing all
 # commit per file, and a commit from one job between another job's per-file
 # read and write fails that file with "database is locked" (BUSY_SNAPSHOT).
@@ -735,20 +731,6 @@ def scan_libraries(music_dirs: list[str], *, already_started: bool = False):
     finally:
         db.close()
         _scan_job.finish()
-
-# ─── MusicBrainz / Cover Art Enrichment ────────────────────────────────────────
-
-async def enrich_album_covers():
-    """Background task: fetch missing covers from MusicBrainz Cover Art Archive."""
-    await enrich_missing_album_covers(
-        get_db=get_db,
-        http_client_factory=lambda: httpx.AsyncClient(
-            headers={"User-Agent": "MusicIQ/1.0 (personal-music-server)"},
-            timeout=15,
-        ),
-        save_cover=save_cover,
-        logger=log,
-    )
 
 # ─── DLNA / Casting ───────────────────────────────────────────────────────────
 
@@ -1376,7 +1358,7 @@ def _refresh_alias_search_keys() -> None:
     for _ in range(160):  # covers >100k dirty tracks on a 66k-song library
         if (_album_mutation_active or _scan_job.is_running()
                 or _duplicate_job.is_running()
-                or _alias_enrichment_job.state.is_running()):
+):
             return
         db = get_db()
         try:
@@ -1476,139 +1458,6 @@ def review_legacy_artist_alias(
         db.close()
 
 
-@app.get("/api/library/artist-aliases/enrichment")
-def artist_alias_enrichment_status():
-    """Progress plus persisted overall coverage; safe to poll from any view."""
-    db = get_db()
-    try:
-        return _alias_enrichment_job.overview(db)
-    finally:
-        db.close()
-
-
-@app.get("/api/library/artist-aliases/enrichment/review")
-def artist_alias_enrichment_review_queue(limit: int = Query(25, ge=1, le=100)):
-    """List artists requiring human confirmation of MusicBrainz identity."""
-    db = get_db()
-    try:
-        return {"artists": _alias_enrichment_job.review_queue(db, limit=limit)}
-    finally:
-        db.close()
-
-
-@app.post("/api/library/artist-aliases/enrichment/start", status_code=202)
-def start_artist_alias_enrichment(body: dict):
-    """Start a bounded, opt-in MusicBrainz lookup batch; never run at startup."""
-    mode = body.get("mode", "pending")
-    limit = body.get("limit", DEFAULT_BATCH_SIZE)
-    all_remaining = body.get("all_remaining", False)
-    if type(all_remaining) is not bool:
-        raise HTTPException(422, "all_remaining must be a boolean")
-    if mode not in ("pending", "retry"):
-        raise HTTPException(422, "mode must be pending or retry")
-    if type(limit) is not int or not 1 <= limit <= MAX_BATCH_SIZE:
-        raise HTTPException(422, "limit must be an integer between 1 and 50")
-    db = get_db()
-    try:
-        with _library_task_lock:
-            if _album_mutation_active or _scan_job.is_running() or _duplicate_job.is_running():
-                raise HTTPException(409, "Wait for library maintenance or scanning to finish")
-            try:
-                result = _alias_enrichment_job.start(
-                    db, mode=mode, limit=limit, all_remaining=all_remaining,
-                )
-            except RuntimeError as exc:
-                raise HTTPException(409, str(exc))
-        return result
-    finally:
-        db.close()
-
-
-@app.post("/api/library/artist-aliases/enrichment/stop")
-def stop_artist_alias_enrichment():
-    """Cooperatively stop after the in-flight artist; progress is persistent."""
-    return _alias_enrichment_job.stop()
-
-
-@app.post("/api/artists/{artist_id}/aliases/sync")
-def sync_musicbrainz_artist_aliases(artist_id: int, background_tasks: BackgroundTasks):
-    """Opt-in MusicBrainz alias import on a dedicated FastAPI worker thread.
-
-    Network awaits never hold a pooled event-loop-thread DB connection while
-    unrelated async requests execute. Search itself never contacts MusicBrainz.
-    """
-    if _alias_enrichment_job.state.is_running():
-        raise HTTPException(409, "Wait for bulk alias enrichment or stop it before a manual MusicBrainz sync")
-    db = get_db()
-    try:
-        try:
-            result = asyncio.run(sync_artist_aliases(db, artist_id))
-        except ValueError:
-            raise HTTPException(404, "Artist not found")
-        except AliasSyncUnavailable as exc:
-            raise HTTPException(502, str(exc))
-        if result["status"] != "ok":
-            # No partial writes on unverified or ambiguous identities.
-            db.rollback()
-            return result
-        db.commit()
-        if result.get("added"):
-            background_tasks.add_task(_refresh_alias_search_keys)
-        return result
-    finally:
-        db.close()
-
-
-@app.post("/api/artists/{artist_id}/aliases/confirm")
-def confirm_musicbrainz_artist_identity(artist_id: int, body: dict,
-                                        background_tasks: BackgroundTasks):
-    """Only an explicit, named user selection may link a name-only MBID.
-
-    MusicBrainz detail is re-fetched after confirmation; both the local
-    artist and optional query alias must appear on the authoritative record.
-    """
-    if _alias_enrichment_job.state.is_running():
-        raise HTTPException(409, "Stop bulk alias import before confirming an identity")
-    mbid = body.get("mbid")
-    alias = body.get("query_alias") or ""
-    if not isinstance(mbid, str) or not mbid or not isinstance(alias, str) or len(alias) > 128:
-        raise HTTPException(422, "Expected mbid and optional query_alias (max 128 chars)")
-    db = get_db()
-    try:
-        try:
-            result = asyncio.run(
-                sync_artist_aliases(
-                    db, artist_id, confirmed_mbid=mbid, query_alias=alias,
-                )
-            )
-        except ValueError:
-            raise HTTPException(404, "Artist not found")
-        except AliasSyncUnavailable as exc:
-            db.rollback()
-            raise HTTPException(502, str(exc))
-        if result.get("status") != "ok":
-            db.rollback()
-            return result
-        # The MBID update trigger invalidates the previous needs_review row.
-        # Re-establish a successful checkpoint so a resumed bulk job skips it.
-        db.execute(
-            """INSERT INTO artist_alias_enrichment_state
-               (artist_id,status,aliases_added,attempted_at,error)
-               VALUES (?, 'ok', ?, strftime('%s','now'), '')
-               ON CONFLICT(artist_id) DO UPDATE SET
-                 status='ok',
-                 aliases_added=artist_alias_enrichment_state.aliases_added+excluded.aliases_added,
-                 attempted_at=excluded.attempted_at, error=''""",
-            (artist_id, len(result.get("added") or [])),
-        )
-        db.commit()
-        if result.get("added"):
-            background_tasks.add_task(_refresh_alias_search_keys)
-        return result
-    finally:
-        db.close()
-
-
 @app.get("/api/artists/{artist_id}/albums")
 def get_artist_albums(artist_id: int):
     db = get_db()
@@ -1680,9 +1529,6 @@ def get_album(album_id: int, background_tasks: BackgroundTasks):
     finally:
         db.close()
 
-    if not result["cover_path"]:
-        background_tasks.add_task(enrich_album_covers)
-
     return result
 
 
@@ -1741,35 +1587,6 @@ async def get_artist_details(artist_id: int):
         result["bio_fetched"] = True
 
     return result
-
-@app.post("/api/search/resolve-artist-alias")
-def resolve_unrecognized_artist_alias(
-    background_tasks: BackgroundTasks,
-    q: str = Query(..., min_length=1, max_length=MAX_SEARCH_QUERY_LENGTH),
-    detail_offset: int = Query(0, ge=0, le=9),
-):
-    """Opt-in lookup only, never called as part of typing into search."""
-    if _alias_enrichment_job.state.is_running():
-        raise HTTPException(409, "Wait for bulk alias enrichment or stop it before a manual MusicBrainz lookup")
-    db = get_db()
-    try:
-        try:
-            result = asyncio.run(
-                resolve_search_alias(db, q, detail_offset=detail_offset)
-            )
-        except AliasSyncUnavailable as exc:
-            db.rollback()
-            raise HTTPException(502, str(exc))
-        if result.get("status") == "ok":
-            db.commit()
-            if result.get("added"):
-                background_tasks.add_task(_refresh_alias_search_keys)
-        else:
-            db.rollback()
-        return result
-    finally:
-        db.close()
-
 
 @app.get("/api/search/category")
 def search_one_category(
@@ -2346,7 +2163,7 @@ def delete_album(album_id: int, delete_files: bool = Query(False)):
     # Hold the task reservation throughout filesystem staging and DB commit.
     with _library_task_lock:
         if (_album_mutation_active or _scan_job.is_running() or _duplicate_job.is_running()
-                or _alias_enrichment_job.state.is_running()):
+):
             raise HTTPException(409, "Library maintenance is busy; try again when scans finish")
         _album_mutation_active = True
     db = None
@@ -2441,7 +2258,7 @@ def restore_library_trash(token: str):
     global _album_mutation_active
     with _library_task_lock:
         if (_album_mutation_active or _scan_job.is_running() or _duplicate_job.is_running()
-                or _alias_enrichment_job.state.is_running()):
+):
             raise HTTPException(409, "Library maintenance is busy; retry when scans finish")
         _album_mutation_active = True
     try:
@@ -2998,8 +2815,6 @@ def _claim_library_scan(begin) -> str | None:
             return "Album file maintenance in progress"
         if _scan_job.is_running():
             return "Scan already in progress"
-        if _alias_enrichment_job.state.is_running():
-            return "Stop artist name enrichment before scanning the music library"
         if _duplicate_job.is_running():
             return "Duplicate check in progress; scan again when it finishes"
         begin()
@@ -3170,8 +2985,6 @@ def start_duplicate_scan(background_tasks: BackgroundTasks):
             raise HTTPException(409, "Finish the library scan before checking duplicates")
         if _duplicate_job.is_running():
             raise HTTPException(409, "Duplicate scan already running")
-        if _alias_enrichment_job.state.is_running():
-            raise HTTPException(409, "Stop artist name enrichment before duplicate scanning")
         _duplicate_job.mark_running(
             progress=0, total=0, current_file="", groups=[], error=None,
             finished_at=None, candidate_files=0, files_examined=0,
@@ -3206,13 +3019,6 @@ def scan_status():
         artists_added=max(0, library_artists - int(state.get("artists_before") or 0)),
     )
     return state
-
-@app.post("/api/scan/enrich-covers")
-async def enrich_covers(background_tasks: BackgroundTasks):
-    """Fetch missing covers from MusicBrainz (runs in background)."""
-    background_tasks.add_task(enrich_album_covers)
-    return {"message": "Cover enrichment started (MusicBrainz)"}
-
 
 @app.post("/api/scan/rescan-covers")
 def rescan_local_covers():
