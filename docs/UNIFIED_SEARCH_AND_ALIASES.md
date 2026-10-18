@@ -44,13 +44,69 @@ filter of displayed cards; full OpenCC conversion is done by the global search.
 - When a search finds nothing, the empty state points to **+ Alias**. Search
   never contacts any remote service.
 
-### Deferred: automatic MusicBrainz aliases
+## MusicBrainz alias identity (verified, opt-in)
 
-Automatic alias import from MusicBrainz (Sync Names, bulk enrichment, release
-corroboration, identity review, alias provenance audit) was removed from this
-PR to ship search first. The full implementation, including schema
-migrations 14–16, is preserved on branch `feat/musicbrainz-aliases`.
-When it returns it needs new migration numbers above the ones merged by then.
+This is the MusicBrainz / MBID half split out of the original #17; it builds on
+the search system merged in #25.
+
+Artist detail offers **Sync Names** (opt-in MusicBrainz) next to **+ Alias**. The
+global search empty state offers **Find artist by another name**. Each click
+examines at most five detailed MusicBrainz candidates; if the correct alias sits
+in candidates 6–10, **Check more MusicBrainz candidates** offers an explicit
+second lookup. **No network request occurs while typing.**
+
+- If an artist has an independently verified MBID, its detailed record is checked
+  against the local name and imported into offline search. **Without one**, Velvet
+  attempts release corroboration: at least **two distinct, non-generic local album
+  titles** must match release groups credited solely to **one unique**
+  name-matched MusicBrainz artist.
+- For identity safety the server issues **field-scoped Lucene phrase searches**
+  (`artist:"..."`) for the original, simplified, traditional and fixed-point
+  OpenCC name variants, escapes Lucene punctuation, and **paginates all matching
+  records**. The broad search's first-page ordering is NEVER used as proof that
+  no other same-named artist exists. A result exceeding 100 name-scoped records, a
+  missing count/offset, an inconsistent page, or more than four exactly named
+  artists requires **human review**. Each candidate's album/EP release groups are
+  fully paginated too (up to 200 records) so a namesake with matching albums
+  cannot be overlooked. If completeness cannot be established, aliases and MBID
+  are left unchanged. Everyone else enters **Review identities**.
+- Confirming a candidate re-fetches the authoritative MusicBrainz record and
+  verifies the local artist name and any submitted query alias, then persists its
+  other spellings including a sort name like `Hsu, LaLa`. **No FLAC/ID3 tags or
+  artist display names are changed.**
+- Existing primary artist names and aliases cannot silently be hijacked:
+  conflicting aliases are skipped and wrong MBIDs are rejected.
+- Internet is accessed **only when Sync Names is clicked**. Every subsequent
+  search is fully local/offline.
+- Explicit **+ Alias** remains available for stage names absent from MusicBrainz.
+
+## Batch alias enrichment (Artists page)
+
+The Artists page has a user-controlled MusicBrainz enrichment panel:
+
+- **Sync next 25** — fetch a small batch of unprocessed local artists.
+- **Sync all remaining** — explicitly confirm a potentially hours-long task, paced
+  at least 1.25 s between MusicBrainz requests, capped at 20,000 artist records.
+- **Retry unresolved** — recheck network failures and genuinely unresolved
+  non-review outcomes. Artists marked `needs_review` are not blindly retried.
+- **Review identities** — browse name-only candidates and explicitly verify their
+  MusicBrainz identity on the artist detail page.
+- **Audit old aliases** — inspect unknown-origin aliases from previous versions
+  and explicitly KEEP or REMOVE one entry at a time.
+- **Stop** — cooperative, after the currently active remote lookup. No audio file
+  is changed.
+
+Migration 14 records per-artist checkpoints; migration 15 marks existing MBIDs
+unverified; migration **16** adds alias provenance (`manual`, `user_confirmed`,
+`trusted_mbid`, `release_corroborated`, `reviewed_legacy`). Historical aliases
+without provenance are retained and explicitly listed for audit — never silently
+declared correct or deleted. Every artist is committed separately, so the next
+batch resumes the unprocessed set even after a server restart.
+
+No MusicBrainz calls happen on application startup or ordinary searches. Results
+may be incomplete for artists with no verifiable MusicBrainz identity, including
+artists with common names. Never guess or merge artists. An outage pauses the
+batch to avoid hammering MusicBrainz.
 
 ## API
 
@@ -66,6 +122,10 @@ When it returns it needs new migration numbers above the ones merged by then.
   artist/album keys and alias triggers.
 - Migration **13**: `track_search_index.title_key` for ranking and
   `catalog_search_index.genre_key` for script-aware genre matching.
+- Migration **14**: `artist_alias_enrichment_state` per-artist batch checkpoints.
+- Migration **15**: `artists.mbid_verified` + a trigger clearing it on MBID change.
+- Migration **16**: `artist_alias_provenance` (source, mbid, evidence) with the
+  legacy-unknown audit path. `LATEST_SCHEMA_VERSION` is 16.
 
 ## Review / local Windows checks
 
