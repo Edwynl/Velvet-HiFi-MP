@@ -278,6 +278,8 @@ html, body {
 }
 #search-input:focus { border-color: var(--gold); }
 #search-input::placeholder { color: var(--dim); font-size: 14px; }
+/* Reuse the live search editor without showing the origin page's filters. */
+.view-search .topbar > :not(.search-wrap):not(.top-nav-group) { display: none; }
 
 .sort-select { display: none !important; }
 
@@ -10317,8 +10319,12 @@ async function navigate(view, params = {}, push = true) {
     // Read the offset first: removing the content clamps it to 0.
     const scrollTop = getScrollRoot()?.scrollTop || 0;
     const nodes = document.createDocumentFragment();
-    nodes.append(...vc.childNodes);
-    _keptViews.set(prevView, { nodes, scrollTop, savedAt: Date.now() });
+    // Keep the editor connected while entering search so the mobile keyboard
+    // remains open. Save its original value with the kept album controls.
+    const topbar = view === 'search' ? vc.querySelector(':scope > .topbar') : null;
+    const searchValue = topbar?.querySelector('#search-input')?.value;
+    nodes.append(...[...vc.childNodes].filter(node => node !== topbar));
+    _keptViews.set(prevView, { nodes, topbar, searchValue, scrollTop, savedAt: Date.now() });
   } else if (prevView && vc.innerHTML) {
     _cachePage(prevView, vc.innerHTML);
   }
@@ -10459,7 +10465,10 @@ async function render({ restore = false } = {}) {
   const kept = _keptViews.get(state.view);
   _keptViews.delete(state.view);
   if (kept && restore && Date.now() - kept.savedAt < _DATA_CACHE_TTL_MS) {
-    vc.replaceChildren(kept.nodes);
+    vc.replaceChildren(...(kept.topbar ? [kept.topbar] : []), kept.nodes);
+    if (kept.topbar && kept.searchValue !== undefined) {
+      kept.topbar.querySelector('#search-input').value = kept.searchValue;
+    }
     vc.style.opacity = '1';
     const root = getScrollRoot();
     if (root) root.scrollTop = kept.scrollTop;
@@ -10580,11 +10589,16 @@ function setupSearch({ autoFocus = state.view === 'search' } = {}) {
   input.addEventListener('input', () => {
     if (state.isComposing) return;
     clearTimeout(searchTimer);
-    const q = input.value.trim();
-    if (q.length < 1) {
+    const q = input.value;
+    if (!q.length) {
       exitSearch();
       return;
     }
+    // Whitespace is part of the editor's draft, not a request to leave search.
+    // Adding a word separator must not rebuild the focused input/keyboard.
+    const query = q.trim();
+    if (!query || (state.view === 'search'
+        && query === String(state.viewParams?.q || '').trim())) return;
     searchTimer = setTimeout(() => {
       navigate('search', { q });
     }, 350);

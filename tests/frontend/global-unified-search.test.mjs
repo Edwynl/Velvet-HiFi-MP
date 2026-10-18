@@ -345,6 +345,59 @@ const racePayload = title => ({
   albums: [], tracks: [], total_artists: 1, total_albums: 0,
 });
 
+// Every global search entry keeps spaces, the focused editor, and its caret.
+for (const origin of ['home', 'albums', 'artists', 'discover', 'tracks']) {
+  const h = await createRaceHarness();
+  try {
+    if (origin !== 'home') await h.dom.window.navigate(origin);
+    const document = h.dom.window.document;
+    await raceWait(() => document.querySelector('#search-input'));
+    const originalInput = document.querySelector('#search-input');
+    originalInput.focus();
+    h.type('Lala ');
+    await raceWait(() => h.pending.length === 1);
+    assert.equal(h.pending[0].query, 'Lala', 'Only the API query should be trimmed');
+    // A separator typed during a slow response must survive the first render.
+    h.type('Lala  ');
+    h.pending[0].resolve(racePayload('FirstArtist'));
+    await raceWait(() => document.querySelector('#global-search-groups')
+      ?.textContent.includes('FirstArtist'));
+    const input = document.querySelector('#search-input');
+    assert.equal(input, originalInput, origin + ' must keep the keyboard editor connected');
+    assert.equal(input.value, 'Lala  ', origin + ' must preserve trailing spaces');
+    assert.equal(document.activeElement, input);
+    const historyLength = h.dom.window.history.length;
+    h.type('Lala   ');
+    await new Promise(resolve => setTimeout(resolve, 400));
+    assert.equal(h.pending.length, 1, 'A separator must not refetch the same query');
+    assert.equal(document.querySelector('#search-input'), input);
+    assert.equal(document.activeElement, input);
+    assert.equal(h.dom.window.history.length, historyLength);
+
+    h.type('Lala Hsu');
+    await raceWait(() => h.pending.length === 2);
+    input.setSelectionRange(4, 4);
+    h.pending[1].resolve(racePayload('SecondArtist'));
+    await raceWait(() => document.querySelector('#global-search-groups')
+      ?.textContent.includes('SecondArtist'));
+    assert.equal(h.pending[1].query, 'Lala Hsu');
+    assert.equal(document.querySelector('#search-input'), input,
+      'Result updates must keep the live input node');
+    assert.equal(document.activeElement, input);
+    assert.equal(input.selectionStart, 4, 'Result updates must not move the caret');
+
+    h.type(' ');
+    await new Promise(resolve => setTimeout(resolve, 400));
+    assert.equal(h.dom.window.eval('state.view'), 'search', 'Space alone must not exit search');
+    assert.equal(document.activeElement, input);
+    assert.equal(h.pending.length, 2, 'Whitespace must not request the whole catalog');
+    h.type('');
+    await raceWait(() => h.dom.window.eval('state.view') === origin
+      && document.querySelector('#view-container').style.opacity === '1'
+      && document.querySelector('#search-input'));
+  } finally { h.dom.window.close(); }
+}
+
 // A slow older query must never overwrite a newer one.
 {
   const h = await createRaceHarness();
