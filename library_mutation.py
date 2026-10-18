@@ -21,14 +21,26 @@ def fetch_playlists(db: sqlite3.Connection) -> list[dict]:
     rows = db.execute(
         """
         SELECT p.*,
-               COUNT(pt.track_id) as track_count
+               COUNT(pt.track_id) as track_count,
+               (SELECT group_concat(album_id) FROM (
+                   SELECT COALESCE(t.album_id, 0) AS album_id
+                   FROM playlist_tracks first
+                   JOIN tracks t ON t.id = first.track_id
+                   WHERE first.playlist_id = p.id
+                   ORDER BY first.position, first.track_id LIMIT 4
+               )) AS cover_album_ids
         FROM playlists p
         LEFT JOIN playlist_tracks pt ON p.id = pt.playlist_id
         GROUP BY p.id
         ORDER BY p.updated_at DESC
         """
     ).fetchall()
-    return [dict(row) for row in rows]
+    playlists = []
+    for row in rows:
+        playlist = dict(row)
+        playlist['cover_album_ids'] = [int(id) for id in (playlist['cover_album_ids'] or '').split(',') if id]
+        playlists.append(playlist)
+    return playlists
 
 
 def create_playlist(db: sqlite3.Connection, name: str, description: str) -> dict:

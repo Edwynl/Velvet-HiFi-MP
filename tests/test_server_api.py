@@ -328,6 +328,9 @@ class ServerApiTests(unittest.TestCase):
         self.assertEqual(add_resp.status_code, 200)
         self.assertEqual(add_resp.json(), {"success": True})
 
+        listed = self.client.get('/api/playlists').json()
+        self.assertEqual(next(item for item in listed if item['id'] == playlist_id)['cover_album_ids'], [1])
+
         detail_resp = self.client.get(f"/api/playlists/{playlist_id}")
         self.assertEqual(detail_resp.status_code, 200)
         self.assertEqual(detail_resp.json()["tracks"][0]["title"], "Track One")

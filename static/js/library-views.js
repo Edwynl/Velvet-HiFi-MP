@@ -1975,15 +1975,17 @@ async function renderPlaylist(vc, { id }) {
   }
 
   vc.innerHTML = `
-    <div class="topbar">
-      <button class="back-btn" onclick="handleHistoryBack('playlists')">
+    <div class="topbar playlist-toolbar">
+      <button class="btn btn-ghost back-btn playlist-back-btn" onclick="handleHistoryBack('playlists')">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
           <polyline points="15 18 9 12 15 6"/>
         </svg>
         Back
       </button>
-      <button class="btn btn-ghost" id="rename-playlist-btn">Rename</button>
-      <button class="btn btn-ghost" id="delete-playlist-btn">Delete</button>
+      <div class="playlist-toolbar-actions">
+        <button class="btn btn-ghost" id="rename-playlist-btn">Rename</button>
+        <button class="btn btn-ghost" id="delete-playlist-btn">Delete</button>
+      </div>
     </div>
     <div class="section-header">
       <div class="section-title">${escHtml(playlist.name)}</div>
@@ -2025,27 +2027,101 @@ async function renderPlaylist(vc, { id }) {
   const fragment = document.createDocumentFragment();
   playlist.tracks.forEach((track, index) => {
     const row = makeTrackRow(track, index + 1, true);
-    row.addEventListener('click', () => playTrack(track, playlist.tracks, index));
-
-    const removeBtn = row.querySelector('.track-add-btn');
-    if (removeBtn) {
-      const deleteBtn = removeBtn.cloneNode(true);
-      deleteBtn.innerHTML = '−';
-      deleteBtn.title = 'Remove from playlist';
-      removeBtn.replaceWith(deleteBtn);
-      deleteBtn.addEventListener('click', async e => {
-        e.stopPropagation();
-        const result = await api(`/playlists/${id}/tracks/${track.id}`, { method: 'DELETE' });
-        if (result?.success) {
-          showToast('Removed from playlist');
-          renderPlaylist(vc, { id });
-        }
+    row.querySelector('.track-add-btn')?.remove();
+    const swipe = makeTrackSwipeRow(row, () => playTrack(track, playlist.tracks, index), () => {
+      showConfirm({
+        title: 'Remove from playlist?',
+        body: `Remove “${escHtml(track.title)}” from “${escHtml(playlist.name)}”?`,
+        confirmText: 'Confirm',
+        onConfirm: async () => {
+          const button = swipe.querySelector('.playlist-track-delete');
+          if (button.disabled) return;
+          button.disabled = true;
+          try {
+            const result = await api(`/playlists/${id}/tracks/${track.id}`, { method: 'DELETE' });
+            if (result?.success) {
+              showToast('Removed from playlist');
+              if (swipe.isConnected) await renderPlaylist(vc, { id });
+            } else showToast('Unable to remove track. Try again.');
+          } catch { showToast('Unable to remove track. Try again.'); }
+          finally { button.disabled = false; }
+        },
       });
-    }
-
-    fragment.appendChild(row);
+    });
+    swipe.querySelector('.playlist-track-delete').setAttribute('aria-label', `Remove ${track.title} from playlist`);
+    fragment.appendChild(swipe);
   });
   list.appendChild(fragment);
+}
+
+function makeTrackSwipeRow(row, play, action, { add = false } = {}) {
+  const wrapper = document.createElement('div');
+  wrapper.className = 'track-swipe-row ' + (add ? 'album-swipe-row' : 'playlist-swipe-row');
+  const label = add ? 'Add to playlist' : 'Remove from playlist';
+  const icon = add ? 'M3 6h8M3 11h8M3 16h5M16 17V5l5-1v11M16 17a2 2 0 1 1-2-2h2M21 15a2 2 0 1 1-2-2h2'
+    : 'M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7M14 10v7';
+  wrapper.innerHTML = `<button type="button" class="track-swipe-action ${add ? 'album-track-add' : 'playlist-track-delete'}" title="${label}" aria-label="${label}">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
+      <path d="${icon}"/>
+    </svg></button>`;
+  wrapper.appendChild(row);
+  const button = wrapper.querySelector('button');
+  let gesture = null;
+  let suppressUntil = 0;
+  const setOpen = open => {
+    if (open) wrapper.parentElement?.querySelectorAll('.track-swipe-row.is-open').forEach(other => {
+      if (other !== wrapper) other.classList.remove('is-open');
+    });
+    wrapper.classList.toggle('is-open', open);
+  };
+  row.tabIndex = 0;
+  row.setAttribute('role', 'button');
+  row.setAttribute('aria-description', `Swipe left or press Left Arrow to reveal ${label}.`);
+  row.addEventListener('pointerdown', event => {
+    if (event.isPrimary === false || event.button !== 0) return;
+    gesture = { id: event.pointerId, x: event.clientX, y: event.clientY,
+      base: wrapper.classList.contains('is-open') ? -72 : 0, offset: 0, dragging: false };
+  });
+  row.addEventListener('pointermove', event => {
+    if (!gesture || gesture.id !== event.pointerId) return;
+    const dx = event.clientX - gesture.x, dy = event.clientY - gesture.y;
+    if (!gesture.dragging) {
+      if (Math.abs(dy) > 10 && Math.abs(dy) >= Math.abs(dx)) { gesture = null; return; }
+      if (Math.abs(dx) < 10) return;
+      gesture.dragging = true;
+      row.setPointerCapture?.(event.pointerId);
+      wrapper.classList.add('is-dragging');
+    }
+    gesture.offset = Math.max(-72, Math.min(0, gesture.base + dx));
+    row.style.transform = `translateX(${gesture.offset}px)`;
+  });
+  const finish = (event, cancelled = false) => {
+    if (!gesture || gesture.id !== event.pointerId) return;
+    if (gesture.dragging) {
+      setOpen(cancelled ? gesture.base < 0 : gesture.offset < -36);
+      suppressUntil = performance.now() + 400;
+    }
+    row.style.removeProperty('transform');
+    wrapper.classList.remove('is-dragging');
+    gesture = null;
+  };
+  row.addEventListener('pointerup', event => finish(event));
+  row.addEventListener('pointercancel', event => finish(event, true));
+  row.addEventListener('click', event => {
+    if (performance.now() < suppressUntil) { event.preventDefault(); return; }
+    if (wrapper.classList.contains('is-open')) { setOpen(false); return; }
+    play();
+  });
+  row.addEventListener('keydown', event => {
+    if (event.key === 'ArrowLeft') { event.preventDefault(); setOpen(true); button.focus(); }
+    if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); row.click(); }
+    if (event.key === 'Escape' || event.key === 'ArrowRight') { event.preventDefault(); setOpen(false); }
+  });
+  button.addEventListener('click', event => { event.stopPropagation(); action(); });
+  button.addEventListener('keydown', event => {
+    if (event.key === 'Escape') { setOpen(false); row.focus(); }
+  });
+  return wrapper;
 }
 
 async function renderZones(vc, { refresh = false } = {}) {
@@ -2535,7 +2611,7 @@ async function renderAlbum(vc, { id }) {
     <div class="track-list">
       <div class="track-list-header">
         <div>#</div><div>Title</div>
-        <div>Format</div><div>Quality</div><div>Duration</div><div></div>
+        <div>Format</div><div>Quality</div><div>Duration</div>
       </div>
       <div id="tracks-container"></div>
     </div>
@@ -2608,18 +2684,15 @@ async function renderAlbum(vc, { id }) {
   const container = UI['tracks-container'];
   const fragment = document.createDocumentFragment();
   tracks.forEach((t, i) => {
-    const el = makeTrackRow(t, i + 1);
-    const trackIndex = i;
-    el.addEventListener('click', () => {
+    const row = makeTrackRow(t, i + 1);
+    row.querySelector('.track-add-btn')?.remove();
+    const trackWithInfo = { ...t, artist_name: t.artist_name || album.artist_name, album_title: album.title };
+    const swipe = makeTrackSwipeRow(row, () => {
       state.prevAlbumQueue = tracks;
-      const trackWithInfo = {
-        ...t,
-        artist_name: album.artist_name,
-        album_title: album.title
-      };
-      playTrack(trackWithInfo, tracks, trackIndex);
-    });
-    fragment.appendChild(el);
+      playTrack(trackWithInfo, tracks, i);
+    }, () => showPlaylistPicker(trackWithInfo), { add: true });
+    swipe.querySelector('.album-track-add').setAttribute('aria-label', `Add ${t.title} to playlist`);
+    fragment.appendChild(swipe);
   });
   container.appendChild(fragment);
 
