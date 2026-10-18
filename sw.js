@@ -1,5 +1,5 @@
 // VELVET - Service Worker for PWA
-const CACHE_NAME = 'velvet-v8';
+const CACHE_NAME = 'velvet-v10';
 const STATIC_ASSETS = [
   '/static/index.html',
   '/static/manifest.json',

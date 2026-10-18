@@ -75,6 +75,7 @@ from db_schema import init_db
 from library_search_index import refresh_track_search_index
 from library_browse import fetch_albums, fetch_artists, fetch_tracks
 from library_paging import album_catalog_filters, fetch_album_page, fetch_artist_page
+from home_recommendations import fetch_home_shelves, parse_home_ids
 from artist_aliases import fetch_aliases
 from library_safety import AlbumFileArchive, ArchiveError, list_album_archives, restore_album_files
 from library_discovery import (
@@ -1284,14 +1285,14 @@ async def set_album_cover(album_id: int, request: Request):
 @app.get("/api/artists/page")
 def get_artist_page(
     limit: int = Query(60, ge=1, le=200), offset: int = Query(0, ge=0),
-    search: str = "",
+    search: str = "", sort: str = "name",
 ):
     """Serve one artist page instead of all 5000 artist records to a phone."""
     started = time.perf_counter()
     db = get_db()
     try:
         result = fetch_artist_page(
-            db, search=search, limit=limit, offset=offset,
+            db, search=search, limit=limit, offset=offset, sort=sort,
             get_all_variants=get_all_variants,
         )
         _log_baseline_metric("artist_page", started, limit=limit, offset=offset,
@@ -1604,6 +1605,16 @@ def get_discover(limit: int = 12):
     db = get_db()
     try:
         return fetch_discover(db, limit)
+    finally:
+        db.close()
+
+
+@app.get("/api/home")
+def get_home_shelves(album_ids: str = Query("", max_length=512),
+                     artist_ids: str = Query("", max_length=512)):
+    db = get_db()
+    try:
+        return fetch_home_shelves(db, parse_home_ids(album_ids, 12), parse_home_ids(artist_ids))
     finally:
         db.close()
 

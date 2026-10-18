@@ -149,6 +149,15 @@ class ServerApiTests(unittest.TestCase):
         conn.execute("INSERT INTO libraries (id, path) VALUES (1, 'C:/ExistingLibrary')")
         conn.commit()
 
+    def test_home_shelves_resolve_only_current_library_ids(self):
+        response = self.client.get('/api/home?album_ids=2,999,1&artist_ids=2,1')
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual([a['id'] for a in data['recently_opened']], [2, 1])
+        self.assertEqual([a['id'] for a in data['frequent_artists']], [2, 1])
+        self.assertNotIn('recent_tracks', data)
+        self.assertEqual(self.client.get('/api/home?album_ids=' + '1' * 513).status_code, 422)
+
     def test_playlist_routes_support_full_crud_flow(self):
         create_resp = self.client.post(
             "/api/playlists",
