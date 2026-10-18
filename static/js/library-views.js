@@ -313,8 +313,8 @@ async function renderHome(vc) {
     <div class="topbar">
       ${getTopNavHtml('home')}
       <div class="search-wrap">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-        <input id="search-input" type="text" aria-label="Search your library" placeholder="Search artists, albums, tracks…">
+<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+        <input id="search-input" type="text" aria-label="Search your library" maxlength="128" placeholder="Search artists, albums, tracks…">
       </div>
     </div>
     <div class="home-hero home-listening-room">
@@ -432,7 +432,7 @@ async function renderDiscover(vc) {
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
           <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
         </svg>
-        <input id="search-input" type="text" placeholder="Search and jump anywhere…">
+        <input id="search-input" type="text" maxlength="128" placeholder="Search and jump anywhere…">
       </div>
     </div>
 
@@ -573,12 +573,8 @@ async function renderAlbums(vc) {
   let showFavoritesOnly = false;
   let currentSort = 'title';
   let currentPage = 1;
-  let searchQuery = '';
   let currentGenre = '';
   let currentDecade = '';
-  let searchMode = false;  // Track search mode
-  let searchResults = [];   // Matching tracks
-  let searchAlbums = [];    // Matching albums
   let allTracks = [];
 
   vc.innerHTML = `
@@ -588,7 +584,7 @@ async function renderAlbums(vc) {
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
           <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
         </svg>
-        <input id="search-input" type="text" placeholder="Search albums or tracks…" value="${escHtml(searchQuery)}">
+        <input id="search-input" type="text" maxlength="128" placeholder="Search artists, albums, tracks…">
       </div>
       <button class="btn btn-ghost" id="favorites-filter-btn" style="padding:6px 10px;color:var(--muted);font-size:12px">♡ Favorites</button>
       <div class="v-select" id="album-sort-select">
@@ -646,7 +642,6 @@ async function renderAlbums(vc) {
     </div>
   `;
 
-  const input = UI['search-input'];
   const grid = UI['albums-grid'];
   const countEl = UI['albums-count'];
   const headerEl = UI['albums-header'];
@@ -708,7 +703,7 @@ async function renderAlbums(vc) {
     nextBtn.disabled = true;
     try {
       const page = await api('/albums/page?' + params.toString());
-      if (serial !== pageRequestSerial || state.view !== 'albums' || searchMode) return;
+      if (serial !== pageRequestSerial || state.view !== 'albums') return;
       totalAlbums = Number(page.total || 0);
       allAlbums = page.albums || [];
       renderedPage = currentPage;
@@ -722,83 +717,9 @@ async function renderAlbums(vc) {
     }
   }
 
-  // Make a track row for search results (links to album)
-  function makeSearchRow(track) {
-    const el = document.createElement('div');
-    el.className = 'history-item';
-    el.innerHTML = `
-      <div class="history-cover">
-        <img src="/api/covers/${track.album_id}/thumb?size=small" onerror="this.style.display='none'" loading="lazy">
-      </div>
-      <div class="history-info">
-        <div class="history-title">${escHtml(track.title)}</div>
-        <div class="history-sub">${escHtml(track.artist_name || '')} · ${escHtml(track.album_title || '')}</div>
-      </div>
-    `;
-    el.addEventListener('click', () => {
-      navigate('album', { id: track.album_id });
-    });
-    return el;
-  }
-
-  // Render search results (albums + tracks)
-  function renderSearchResults() {
-    grid._velvetCardObserver?.disconnect();
-    grid.innerHTML = '';
-    grid.classList.remove('grid');
-    grid.classList.remove('tracks-list');
-    grid.style.cssText = '';
-
-    const fragment = document.createDocumentFragment();
-
-    // Section 1: Matching albums (as grid)
-    if (searchAlbums.length > 0) {
-      const albumsHeader = document.createElement('div');
-      albumsHeader.className = 'search-section-header';
-      albumsHeader.textContent = `Albums (${searchAlbums.length})`;
-      fragment.appendChild(albumsHeader);
-
-      const albumsGrid = document.createElement('div');
-      albumsGrid.className = 'search-albums-grid';
-      const albumsFragment = document.createDocumentFragment();
-      searchAlbums.forEach(album => albumsFragment.appendChild(makeAlbumCard(album)));
-      albumsGrid.appendChild(albumsFragment);
-      fragment.appendChild(albumsGrid);
-    }
-
-    // Section 2: Matching tracks (as list)
-    if (searchResults.length > 0) {
-      const tracksHeader = document.createElement('div');
-      tracksHeader.className = 'search-section-header';
-      tracksHeader.textContent = searchAlbums.length > 0 ? `Tracks (${searchResults.length})` : `Tracks (${searchResults.length})`;
-      fragment.appendChild(tracksHeader);
-
-      const tracksList = document.createElement('div');
-      tracksList.className = 'tracks-list';
-      tracksList.style.cssText = 'display:flex;flex-direction:column;gap:4px;padding:0 12px 16px;';
-      const tracksFragment = document.createDocumentFragment();
-      searchResults.forEach(track => tracksFragment.appendChild(makeSearchRow(track)));
-      tracksList.appendChild(tracksFragment);
-      fragment.appendChild(tracksList);
-    }
-
-    // No results
-    if (!searchAlbums.length && !searchResults.length) {
-      grid.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:16px;text-align:center">No results found.</div>';
-      return;
-    }
-
-    grid.appendChild(fragment);
-  }
-
   // Render albums grid
   function renderGrid() {
     grid._velvetCardObserver?.disconnect();
-    if (searchMode) {
-      renderSearchResults();
-      return;
-    }
-
     grid.classList.add('grid');
     grid.classList.remove('tracks-list');
     grid.style.cssText = '';
@@ -820,75 +741,18 @@ async function renderAlbums(vc) {
 
   renderGrid();
 
-  // Search the actual query server-side; never fetch an empty search as a library dump.
-  let searchTimer;
-  let searchSerial = 0;
-  async function performSearch(q) {
-    const serial = ++searchSerial;
-    q = q.trim();
-    if (!q) {
-      searchMode = false;
-      searchResults = [];
-      searchAlbums = [];
-      sectionTitle.textContent = 'Albums';
-      pagination.style.display = 'flex';
-      await loadPage({ reset: true });
-      return;
-    }
-    try {
-      const [tracksResponse, albumsResponse] = await Promise.all([
-        api('/search?q=' + encodeURIComponent(q) + '&limit=80'),
-        api('/albums/page?search=' + encodeURIComponent(q) + '&limit=60&offset=0'),
-      ]);
-      if (serial !== searchSerial || state.view !== 'albums' || input.value.trim() !== q) return;
-      searchResults = tracksResponse?.tracks || [];
-      searchAlbums = albumsResponse?.albums || [];
-      searchMode = true;
-      sectionTitle.textContent = searchAlbums.length ? 'Albums' : 'Tracks';
-      countEl.textContent = `${albumsResponse?.total || 0} albums, ${searchResults.length} tracks found`;
-      pagination.style.display = 'none';
-      scrollToTop();
-      renderGrid();
-    } catch (err) {
-      if (serial === searchSerial) showToast('Search unavailable. Try again.');
-    }
-  }
-
-  // Input event handler
-  let isComposing = false;
-  input.addEventListener('compositionstart', () => { isComposing = true; });
-  input.addEventListener('compositionend', () => {
-    isComposing = false;
-    input.dispatchEvent(new Event('input'));
-  });
-
-  input.addEventListener('input', () => {
-    if (isComposing) return;
-    searchQuery = input.value;
-    clearTimeout(searchTimer);
-    searchTimer = setTimeout(() => performSearch(searchQuery), 300);
-  });
-
-  // Clear search and go back when input is emptied
-  input.addEventListener('keydown', (e) => {
-    if (e.key === 'Backspace' && input.value.length === 0) {
-      history.back();
-    }
-  });
-
-  // Search fields on library pages only focus after an explicit user tap.
-  input.blur();
+  // Every topbar search is now global: Artists -> Albums -> Tracks.
+  setupSearch({ autoFocus: false });
 
   // Pagination buttons (disabled in search mode)
   prevBtn.addEventListener('click', () => {
-    if (searchMode || currentPage <= 1) return;
+    if (currentPage <= 1) return;
     currentPage--;
     scrollToTop();
     loadPage();
   });
 
   nextBtn.addEventListener('click', () => {
-    if (searchMode) return;
     const totalPages = Math.max(1, Math.ceil(totalAlbums / ALBUMS_PER_PAGE));
     if (currentPage < totalPages) {
       currentPage++;
@@ -899,7 +763,6 @@ async function renderAlbums(vc) {
 
   // Favorites filter
   favBtn.addEventListener('click', () => {
-    if (searchMode) return;
     showFavoritesOnly = !showFavoritesOnly;
     favBtn.style.color = showFavoritesOnly ? '#ff6b6b' : 'var(--muted)';
     favBtn.textContent = showFavoritesOnly ? '♥ Favorites' : '♡ Favorites';
@@ -932,19 +795,16 @@ async function renderAlbums(vc) {
   }
 
   setupVSelect(sortSelect, val => {
-    if (searchMode) return;
     currentSort = val;
     loadPage({ reset: true });
   });
 
   setupVSelect(genreSelect, val => {
-    if (searchMode) return;
     currentGenre = val;
     loadPage({ reset: true });
   });
 
   setupVSelect(decadeSelect, val => {
-    if (searchMode) return;
     currentDecade = val;
     loadPage({ reset: true });
   });
@@ -958,7 +818,6 @@ async function renderAlbums(vc) {
   window.__vSelectCloseAc = vSelectCloseAc;
 
   clearFocusBtn.addEventListener('click', () => {
-    if (searchMode) return;
     currentGenre = '';
     currentDecade = '';
     // Reset labels manually since we bypass full render for focus chips sometimes
@@ -978,6 +837,7 @@ async function renderArtists(vc) {
   const first = await api('/artists/page?sort=popular&limit=' + ARTISTS_PER_PAGE + '&offset=0');
   let allArtists = first.artists || [];
   let totalArtists = Number(first.total || 0);
+  // main's region facets (a353624); searchQuery stays for loadPage's rollback.
   let regionFacets = first.regions || [];
   let allTotal = Number(first.all_total ?? first.total ?? 0);
   let searchQuery = '';
@@ -992,7 +852,7 @@ async function renderArtists(vc) {
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
           <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
         </svg>
-        <input id="search-input" type="text" placeholder="Search artists…" value="${escHtml(searchQuery)}">
+        <input id="search-input" type="text" maxlength="128" placeholder="Search artists, albums, tracks…">
       </div>
     </div>
     <div class="section-header" id="artists-header" title="Click to scroll to top">
@@ -1065,9 +925,7 @@ async function renderArtists(vc) {
   function updatePagination() {
     const pages = Math.max(1, Math.ceil(totalArtists / ARTISTS_PER_PAGE));
     pageInfo.textContent = `Page ${currentPage} / ${pages}`;
-    countEl.textContent = searchQuery.trim()
-      ? `${totalArtists} artists found`
-      : `${totalArtists} artists · ${pages} pages`;
+    countEl.textContent = `${totalArtists} artists · ${pages} pages`;
     prevBtn.disabled = currentPage <= 1;
     nextBtn.disabled = currentPage >= pages;
   }
@@ -1090,7 +948,6 @@ async function renderArtists(vc) {
     const params = new URLSearchParams({
       limit: String(ARTISTS_PER_PAGE),
       offset: String((currentPage - 1) * ARTISTS_PER_PAGE),
-      search: searchQuery.trim(),
       sort: currentSort,
       region: currentRegion,
     });
@@ -1124,32 +981,13 @@ async function renderArtists(vc) {
     }
   }
 
-  let searchTimer;
+  // main's region/query rollback state (a353624). The sort select was
+  // removed from this page by 37ab8e6, so only its sort param remains.
   let renderedRegion = '';
   let renderedQuery = '';
-  let isComposing = false;
-  input.addEventListener('compositionstart', () => { isComposing = true; });
-  input.addEventListener('compositionend', () => {
-    isComposing = false;
-    input.dispatchEvent(new Event('input'));
-  });
-  input.addEventListener('input', () => {
-    if (isComposing) return;
-    ++serial; // Invalidate older responses during the debounce interval too.
-    searchQuery = input.value;
-    clearTimeout(searchTimer);
-    searchTimer = setTimeout(() => loadPage({ reset: true }), 300);
-  });
-
-  // Backspace to previous page when empty
-  input.addEventListener('keydown', (e) => {
-    if (e.key === 'Backspace' && input.value.length === 0) {
-      history.back();
-    }
-  });
-
-  // Search fields on library pages only focus after an explicit user tap.
-  input.blur();
+  // Global catalog search from any tab; local page controls remain available.
+  // setupSearch owns #search-input, so this view must not also bind it.
+  setupSearch({ autoFocus: false });
 
   prevBtn.addEventListener('click', () => {
     if (currentPage <= 1) return;
@@ -1180,13 +1018,14 @@ async function renderComposers(vc) {
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
           <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
         </svg>
-        <input id="search-input" type="text" placeholder="Search composers…">
+        <input id="search-input" type="text" maxlength="128" placeholder="Search artists, albums, tracks…">
       </div>
     </div>
     <div class="section-header">
       <div class="section-title">Composers</div>
       <div class="section-sub" id="composers-count">${allComposers.length} composers</div>
     </div>
+    <div class="focus-bar"><input id="composer-filter" type="search" aria-label="Filter composers" placeholder="Filter composers…" maxlength="128" class="catalog-filter-input"></div>
     <div class="grid artist-grid" id="composers-grid"></div>
   `;
 
@@ -1196,8 +1035,7 @@ async function renderComposers(vc) {
 
   function getFiltered() {
     const q = searchQuery.trim();
-    if (!q) return allComposers;
-    return allComposers.filter(item => chineseMatch(item.composer || '', q));
+    return q ? allComposers.filter(item => chineseMatch(item.composer || '', q)) : allComposers;
   }
 
   function renderGrid() {
@@ -1213,16 +1051,14 @@ async function renderComposers(vc) {
     grid.appendChild(fragment);
   }
 
-  let searchTimer;
-  input.addEventListener('input', () => {
-    clearTimeout(searchTimer);
-    searchTimer = setTimeout(() => {
-      searchQuery = input.value.trim();
-      renderGrid();
-    }, 200);
+  setupSearch({ autoFocus: false });
+  const filter = UI['composer-filter'];
+  filter?.addEventListener('input', () => {
+    searchQuery = filter.value.trim();
+    renderGrid();
   });
-
   renderGrid();
+
 }
 
 async function renderComposer(vc, { id }) {
@@ -1336,13 +1172,14 @@ async function renderWorks(vc) {
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
           <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
         </svg>
-        <input id="search-input" type="text" placeholder="Search works, composers, conductors…">
+        <input id="search-input" type="text" maxlength="128" placeholder="Search artists, albums, tracks…">
       </div>
     </div>
     <div class="section-header">
       <div class="section-title">Works</div>
       <div class="section-sub" id="works-count">${allWorks.length} works</div>
     </div>
+    <div class="focus-bar"><input id="works-filter" type="search" aria-label="Filter works" placeholder="Filter works and composers…" maxlength="128" class="catalog-filter-input"></div>
     <div class="credits-grid" id="works-grid"></div>
   `;
 
@@ -1350,12 +1187,10 @@ async function renderWorks(vc) {
   const countEl = UI['works-count'];
 
   const filterWorks = () => {
-    const q = (UI['search-input']?.value || '').trim().toLowerCase();
-    if (!q) return allWorks;
-    return allWorks.filter(item =>
-      chineseMatch(item.work_title || '', q) ||
-      chineseMatch(item.composer || '', q)
-    );
+    const q = (UI['works-filter']?.value || '').trim();
+    return q ? allWorks.filter(item =>
+      chineseMatch(item.work_title || '', q) || chineseMatch(item.composer || '', q)
+    ) : allWorks;
   };
 
   const renderGrid = () => {
@@ -1371,7 +1206,8 @@ async function renderWorks(vc) {
     grid.appendChild(fragment);
   };
 
-  UI['search-input']?.addEventListener('input', renderGrid);
+  setupSearch({ autoFocus: false });
+  UI['works-filter']?.addEventListener('input', renderGrid);
   renderGrid();
 }
 
@@ -1583,13 +1419,14 @@ async function renderCredits(vc) {
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
           <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
         </svg>
-        <input id="search-input" type="text" placeholder="Search performers, conductors, ensembles…">
+        <input id="search-input" type="text" maxlength="128" placeholder="Search artists, albums, tracks…">
       </div>
     </div>
     <div class="section-header">
       <div class="section-title">Credits</div>
       <div class="section-sub">Browse your library by performers, conductors, and ensembles.</div>
     </div>
+    <div class="focus-bar"><input id="credits-filter" type="search" aria-label="Filter credits" placeholder="Filter performers, conductors, ensembles…" maxlength="128" class="catalog-filter-input"></div>
     <div class="discover-section">
       <div class="discover-section-head">
         <div class="discover-section-copy">
@@ -1620,12 +1457,12 @@ async function renderCredits(vc) {
   `;
 
   function renderBucket(role, label) {
-    const query = ((UI['search-input']?.value || '').trim().toLowerCase());
+    const query = (UI['credits-filter']?.value || '').trim();
     const countEl = UI[`${role}s-count`];
     const grid = UI[`${role}s-grid`];
-    const items = !query
-      ? buckets[role]
-      : buckets[role].filter(item => chineseMatch(item.name || '', query));
+    const items = query
+      ? buckets[role].filter(item => chineseMatch(item.name || '', query))
+      : buckets[role];
 
     if (countEl) countEl.textContent = `${items.length} ${label.toLowerCase()}${items.length === 1 ? '' : 's'}`;
     if (!grid) return;
@@ -1645,7 +1482,8 @@ async function renderCredits(vc) {
     renderBucket('ensemble', 'Ensemble');
   };
 
-  UI['search-input']?.addEventListener('input', rerender);
+  setupSearch({ autoFocus: false });
+  UI['credits-filter']?.addEventListener('input', rerender);
   rerender();
 }
 
@@ -1758,7 +1596,6 @@ async function renderCreditEntity(vc, { id }) {
 // ── Tracks ────────────────────────────────────────────────────────────────────
 
 async function renderTracks(vc) {
-  let searchQuery = '';
   let currentPage = 1;
   let currentSort = 'title';
   let pageRequestSerial = 0;
@@ -1772,7 +1609,7 @@ async function renderTracks(vc) {
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
           <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
         </svg>
-        <input id="search-input" type="text" placeholder="Search tracks, artists, works, composers, conductors…">
+        <input id="search-input" type="text" maxlength="128" placeholder="Search artists, albums, tracks…">
       </div>
       <select class="sort-select" id="track-sort">
         <option value="title">Track</option>
@@ -1808,11 +1645,10 @@ async function renderTracks(vc) {
     if (state.view !== 'tracks' || !list.isConnected) return;
     const serial = ++pageRequestSerial;
     const page = currentPage;
-    const query = searchQuery;
     const offset = (page - 1) * PAGE_SIZE;
-    const data = await api(`/tracks?limit=${PAGE_SIZE}&offset=${offset}&sort=${encodeURIComponent(currentSort)}&search=${encodeURIComponent(query)}`);
-    // Search, sorting and paging share one latest-request boundary. A response
-    // from a previous view instance must not update even its detached DOM.
+    const data = await api(`/tracks?limit=${PAGE_SIZE}&offset=${offset}&sort=${encodeURIComponent(currentSort)}`);
+    // Sorting and paging share one latest-request boundary. A response from a
+    // previous view instance must not update even its detached DOM.
     if (serial !== pageRequestSerial || state.view !== 'tracks' || !list.isConnected) return;
     const tracks = data?.tracks || [];
     const total = data?.total || 0;
@@ -1831,22 +1667,16 @@ async function renderTracks(vc) {
       list.appendChild(fragment);
     }
 
-    countEl.textContent = query
-      ? `${total.toLocaleString()} track matches`
-      : `${total.toLocaleString()} tracks`;
+    countEl.textContent = `${total.toLocaleString()} tracks`;
     pageInfo.textContent = `Page ${page} / ${totalPages}`;
     prevBtn.disabled = page <= 1;
     nextBtn.disabled = page >= totalPages;
   }
 
-  input.addEventListener('input', () => {
-    // Invalidate in-flight work immediately, including the debounce window.
-    pageRequestSerial++;
-    clearTimeout(searchTimer);
-    searchQuery = input.value.trim();
-    currentPage = 1;
-    searchTimer = setTimeout(renderPage, 250);
-  });
+  // Typing in the shared topbar navigates to the unified Artists -> Albums ->
+  // Tracks search view, so this view must not bind its own listener to the
+  // same #search-input element.
+  setupSearch({ autoFocus: false });
 
   sortSelect.addEventListener('change', e => {
     currentSort = e.target.value;
@@ -1880,13 +1710,14 @@ async function renderGenres(vc) {
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
           <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
         </svg>
-        <input id="search-input" type="text" placeholder="Filter genres…">
+        <input id="search-input" type="text" maxlength="128" placeholder="Search artists, albums, tracks…">
       </div>
     </div>
     <div class="section-header">
       <div class="section-title">Genres</div>
       <div class="section-sub" id="genres-count">${genres.length} genres</div>
     </div>
+    <div class="focus-bar"><input id="genres-filter" type="search" aria-label="Filter genres" placeholder="Filter genres…" maxlength="128" class="catalog-filter-input"></div>
     <div class="grid" id="genres-grid"></div>
   `;
 
@@ -1918,11 +1749,11 @@ async function renderGenres(vc) {
     grid.appendChild(fragment);
   }
 
-  input.addEventListener('input', () => {
-    const query = input.value.trim().toLowerCase();
-    draw(genres.filter(item => item.genre.toLowerCase().includes(query)));
+  setupSearch({ autoFocus: false });
+  UI['genres-filter']?.addEventListener('input', e => {
+    const q = (e.target.value || '').trim().toLowerCase();
+    draw(genres.filter(item => item.genre.toLowerCase().includes(q)));
   });
-
   draw(genres);
 }
 
@@ -2337,13 +2168,17 @@ async function renderArtist(vc, { id }) {
       </div>
       <div class="artist-hero-info">
         <div class="section-title">${escHtml(artist.name)}</div>
-        ${(artist.aliases || []).length ? `<div class="section-sub artist-aliases">Also known as ${escHtml(artist.aliases.join(' · '))}</div>` : ''}
+        <div class="section-sub artist-aliases" id="artist-aliases-list"
+             style="${(artist.aliases || []).length ? '' : 'display:none;'}">
+          Also known as ${escHtml((artist.aliases || []).join(' · '))}
+        </div>
         <div class="section-sub">${primaryAlbums.length} albums · ${primaryAlbums.reduce((s, a) => s + (a.track_count || 0), 0)} tracks${collaborations.length ? ` · ${collaborations.length} collaborations` : ''}</div>
       </div>
     </div>
     <div class="artist-bio" id="artist-bio"><div class="bio-loading">Loading artist bio…</div></div>
     <div style="padding: 0 24px; margin-bottom: 16px;">
       <button class="btn btn-gold" id="artist-radio-btn">Artist Radio</button>
+      <button class="btn btn-ghost" id="artist-add-alias-btn" title="Add a stage name, translated name, or romanized alias">+ Alias</button>
       <button class="btn btn-ghost" id="refresh-artist-btn" title="Re-read artist name and all album metadata from files">🔄 Re-read Tags</button>
     </div>
     <section aria-label="Albums">
@@ -2369,6 +2204,35 @@ async function renderArtist(vc, { id }) {
   if (collaborationGrid) renderCardsOnDemand(collaborationGrid, collaborations, makeAlbumCard);
 
   UI['artist-radio-btn']?.addEventListener('click', () => startRadio('artist', id));
+
+  // Both automatic and user-confirmed aliases persist locally. Search will
+  // pick up dirty artist/album/track keys immediately, even before reindex.
+  const refreshAliasNames = aliases => {
+    artist.aliases = aliases || [];
+    _cacheData(cacheKey, { artist, albums });
+    const label = UI['artist-aliases-list'];
+    if (label) {
+      label.style.display = artist.aliases.length ? '' : 'none';
+      label.textContent = artist.aliases.length
+        ? 'Also known as ' + artist.aliases.join(' · ') : '';
+    }
+  };
+
+  UI['artist-add-alias-btn']?.addEventListener('click', async () => {
+    const value = prompt('Add an alternate name for ' + artist.name + '\\nFor example: a stage name or romanization', '');
+    const name = (value || '').trim();
+    if (!name) return;
+    if (name.length > 128) {
+      showToast('Artist aliases must be 128 characters or fewer');
+      return;
+    }
+    const result = await api(`/artists/${id}/aliases`, {
+      method: 'POST', body: JSON.stringify({ name }),
+    });
+    if (!result || result.status !== 'ok') return;
+    refreshAliasNames(result.aliases);
+    showToast('Artist alias saved. All search tabs will now recognize it.');
+  });
 
   // Refresh artist metadata
   UI['refresh-artist-btn']?.addEventListener('click', async () => {
@@ -2815,72 +2679,154 @@ async function renderAlbum(vc, { id }) {
 
 // ── Search ────────────────────────────────────────────────────────────────────
 
-async function renderSearch(vc, { q }) {
-  const results = await api(`/search?q=${encodeURIComponent(q)}`);
+// A response to an older IME/input query must never replace newer results.
+let globalSearchRenderSerial = 0;
+
+async function renderSearch(vc, { q } = {}) {
+  const serial = ++globalSearchRenderSerial;
+  const query = String(q || '').trim().slice(0, 128);
+  const results = query
+    ? (await api(`/search?q=${encodeURIComponent(query)}&limit=80`) || {})
+    : { artists: [], albums: [], tracks: [] };
+
+  if (serial !== globalSearchRenderSerial || state.view !== 'search'
+      || String(state.viewParams?.q || '').trim().slice(0, 128) !== query) return;
+
+  const artists = results.artists || [];
+  const albums = results.albums || [];
   const tracks = results.tracks || [];
-  const containerId = 'search-tracks';
-  const existingContainer = UI[containerId];
+  const totalArtists = Number(results.total_artists ?? artists.length);
+  const totalAlbums = Number(results.total_albums ?? albums.length);
+  const totalTracks = Number(results.total_tracks ?? tracks.length);
 
-  if (!existingContainer) {
-    vc.innerHTML = `
-      <div class="topbar">
-        ${getTopNavHtml('search')}
-        <div class="search-wrap">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
-            <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
-          </svg>
-          <input id="search-input" type="text" placeholder="Search…" value="${escHtml(q)}">
-        </div>
+  vc.innerHTML = `
+    <div class="topbar">
+      ${getTopNavHtml('search')}
+      <div class="search-wrap">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+          <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+        </svg>
+        <input id="search-input" type="text" maxlength="128" placeholder="Search artists, albums, tracks…" value="${escHtml(query)}">
       </div>
-      <div class="search-results">
-        <div class="result-section-title" id="search-results-title">Tracks — ${tracks.length} results</div>
-        <div id="${containerId}"></div>
-      </div>
-    `;
-    setupSearch();
-  } else {
-    UI['search-results-title'].textContent = `Tracks — ${tracks.length} result${tracks.length !== 1 ? 's' : ''}`;
+    </div>
+    <div class="search-results" id="global-search-results"
+         aria-label="Music library search results">
+      <div id="global-search-groups"></div>
+    </div>
+  `;
+  setupSearch();
+
+  const container = UI['global-search-groups'];
+  if (!query) {
+    container.innerHTML = '<div class="empty-state-sub" style="padding:24px 0">Search artists, albums, and tracks from any page.</div>';
+    return;
   }
-
-  const container = UI[containerId];
-  container.innerHTML = '';
-  if (!tracks.length) {
-    container.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:16px 0">No results found.</div>';
+  if (!artists.length && !albums.length && !tracks.length) {
+    container.innerHTML = `
+      <div class="empty-state-sub" style="padding:24px 0 16px">
+        No artists, albums, or tracks found in your library.
+      </div>
+      <div class="section-sub" style="padding:10px 0">
+        Looking for an artist by another name? Open the artist and use + Alias.
+      </div>`;
     return;
   }
 
-  // Use DocumentFragment for better performance
-  const fragment = document.createDocumentFragment();
-  tracks.forEach((t, i) => {
+  // Keep the currently displayed track set mutable: Load more can extend the
+  // queue without changing the play gesture or the correct selected index.
+  const visibleTracks = [...tracks];
+  const makeSearchTrackRow = (t, i) => {
     const el = makeTrackRow(t, i + 1, true);
-    const trackIndex = i;
     el.addEventListener('click', () => {
-      // Keep mobile user-gesture playback chain intact: play immediately, then
-      // load richer album context asynchronously.
-      playTrack(t, tracks, trackIndex);
+      playTrack(t, visibleTracks, i);
       if (!t.album_id) return;
       (async () => {
         await navigate('album', { id: t.album_id });
         try {
           const albumData = await api(`/albums/${t.album_id}`);
-          const albumTracks = albumData.tracks || [];
+          const albumTracks = albumData?.tracks || [];
           const trackIdx = albumTracks.findIndex(tr => tr.id === t.id);
-          if (trackIdx === -1) return;
-          if (!state.currentTrack || String(state.currentTrack.id) !== String(t.id)) return;
+          if (trackIdx === -1 || !state.currentTrack
+              || String(state.currentTrack.id) !== String(t.id)) return;
           state.queue = albumTracks;
           state.queueIdx = trackIdx;
           state.currentTrack = { ...state.currentTrack, ...albumTracks[trackIdx] };
           updatePlayerUI(state.currentTrack);
-          if (state.currentTrack) highlightPlaying(state.currentTrack.id);
+          highlightPlaying(state.currentTrack.id);
           if (UI['queue-panel']?.classList.contains('open')) renderQueue();
-        } catch (e) {
-          console.warn('Failed to sync search playback queue:', e);
+        } catch (error) {
+          console.warn('Failed to sync search playback queue:', error);
         }
       })();
     });
-    fragment.appendChild(el);
-  });
-  container.appendChild(fragment);
+    return el;
+  };
+
+  // Artists are always above Albums, which are always above Tracks.
+  const addSection = (kind, heading, count, items, createCard, classes) => {
+    if (!items.length) return;
+    const titleEl = document.createElement('div');
+    titleEl.className = 'result-section-title search-section-header';
+    titleEl.textContent = `${heading} — ${count} ${count === 1 ? 'result' : 'results'}`;
+    container.appendChild(titleEl);
+
+    const listEl = document.createElement('div');
+    listEl.className = classes;
+    const visible = kind === 'tracks' ? visibleTracks : [...items];
+    const append = (batch, startingIndex) => {
+      const fragment = document.createDocumentFragment();
+      batch.forEach((item, index) => fragment.appendChild(createCard(item, startingIndex + index)));
+      listEl.appendChild(fragment);
+    };
+    append(items, 0);
+    container.appendChild(listEl);
+
+    if (visible.length >= count) return;
+    const more = document.createElement('button');
+    more.type = 'button';
+    more.className = 'btn btn-ghost search-load-more';
+    more.dataset.searchCategory = kind;
+    more.textContent = `Load more ${heading.toLowerCase()} (${count - visible.length} remaining)`;
+    container.appendChild(more);
+    more.addEventListener('click', async () => {
+      if (more.disabled) return;
+      const offset = visible.length;
+      more.disabled = true;
+      more.textContent = 'Loading…';
+      try {
+        const page = await api(
+          `/search/category?kind=${kind}&q=${encodeURIComponent(query)}&offset=${offset}&limit=40`
+        );
+        if (serial !== globalSearchRenderSerial || state.view !== 'search'
+            || state.viewParams?.q !== query || !more.isConnected) return;
+        if (!page || !Array.isArray(page.items)) {
+          more.textContent = 'Retry loading more';
+          return;
+        }
+        if (!page.items.length) {
+          more.remove();
+          return;
+        }
+        const startIndex = visible.length;
+        visible.push(...page.items);
+        append(page.items, startIndex);
+        if (visible.length >= count) {
+          more.remove();
+        } else {
+          more.textContent = `Load more ${heading.toLowerCase()} (${count - visible.length} remaining)`;
+        }
+      } finally {
+        if (more.isConnected) more.disabled = false;
+      }
+    });
+  };
+
+  addSection('artists', 'Artists', totalArtists, artists, makeArtistCard,
+             'grid artist-grid search-artist-grid');
+  addSection('albums', 'Albums', totalAlbums, albums, makeAlbumCard,
+             'grid search-albums-grid');
+  addSection('tracks', 'Tracks', totalTracks, tracks, makeSearchTrackRow,
+             'search-track-list');
 }
 
 // ── Settings ──────────────────────────────────────────────────────────────────

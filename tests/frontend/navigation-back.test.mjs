@@ -537,7 +537,7 @@ async function testTabletMenuNavigationDoesNotFocusSearch() {
 
     document.querySelector('.nav-item[data-view="albums"]').click();
     await waitFor(() => dom.window.eval('state.view') === 'albums');
-    const albumSearch = await waitFor(() => document.querySelector('#search-input[placeholder="Search albums or tracks…"]'));
+    const albumSearch = await waitFor(() => document.querySelector('#search-input[placeholder="Search artists, albums, tracks…"]'));
     assert.notEqual(
       document.activeElement,
       albumSearch,
@@ -548,7 +548,7 @@ async function testTabletMenuNavigationDoesNotFocusSearch() {
     document.querySelector('#mobile-menu-btn').click();
     document.querySelector('.nav-item[data-view="artists"]').click();
     await waitFor(() => dom.window.eval('state.view') === 'artists');
-    const artistSearch = await waitFor(() => document.querySelector('#search-input[placeholder="Search artists…"]'));
+    const artistSearch = await waitFor(() => document.querySelector('#search-input[placeholder="Search artists, albums, tracks…"]'));
     assert.notEqual(document.activeElement, artistSearch, 'artist menu navigation must not focus search');
 
     artistSearch.focus();

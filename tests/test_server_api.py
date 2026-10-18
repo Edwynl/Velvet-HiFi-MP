@@ -161,6 +161,93 @@ class ServerApiTests(unittest.TestCase):
         conn.execute("INSERT INTO libraries (id, path) VALUES (1, 'C:/ExistingLibrary')")
         conn.commit()
 
+    def test_global_search_returns_artist_album_track_categories(self):
+        result = self.client.get("/api/search?q=Artist%20One")
+        self.assertEqual(result.status_code, 200)
+        payload = result.json()
+        self.assertEqual([a["name"] for a in payload["artists"]], ["Artist One"])
+        self.assertEqual([a["title"] for a in payload["albums"]], ["Album One"])
+        self.assertEqual([t["title"] for t in payload["tracks"]], ["Track One"])
+        self.assertEqual(payload["total_artists"], 1)
+        self.assertEqual(payload["total_albums"], 1)
+
+    def test_global_search_category_paging_and_total(self):
+        response = self.client.get(
+            "/api/search/category?kind=albums&q=Artist%20One&limit=1&offset=0",
+        )
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["kind"], "albums")
+        self.assertEqual(payload["total"], 1)
+        self.assertEqual(payload["offset"], 0)
+        self.assertEqual([album["title"] for album in payload["items"]], ["Album One"])
+        empty = self.client.get(
+            "/api/search/category?kind=albums&q=Artist%20One&limit=1&offset=1",
+        )
+        self.assertEqual(empty.status_code, 200)
+        self.assertEqual(empty.json()["items"], [])
+        self.assertEqual(empty.json()["total"], 1)
+        self.assertEqual(self.client.get(
+            "/api/search/category?kind=unknown&q=anything",
+        ).status_code, 422)
+
+    def test_alias_post_immediately_updates_global_results(self):
+        response = self.client.post("/api/artists/1/aliases", json={"name": "Stage One"})
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("Stage One", response.json()["aliases"])
+        result = self.client.get("/api/search?q=stage%20one")
+        self.assertEqual(result.status_code, 200)
+        data = result.json()
+        self.assertEqual([a["id"] for a in data["artists"]], [1])
+        self.assertEqual([a["id"] for a in data["albums"]], [1])
+        self.assertEqual([t["id"] for t in data["tracks"]], [1])
+
+    def test_single_artist_alias_refresh_is_bounded(self):
+        original = server.refresh_track_search_index
+        with patch.object(server._scan_job, "is_running", return_value=False), \
+             patch.object(server, "refresh_track_search_index", wraps=original) as index:
+            response = self.client.post(
+                "/api/artists/1/aliases", json={"name": "Stage One"},
+            )
+        self.assertEqual(response.status_code, 200)
+        self.assertGreater(index.call_count, 0)
+        self.assertTrue(all(
+            call.kwargs.get("max_rows") == 800
+            and call.kwargs.get("batch_size") == 200
+            for call in index.call_args_list
+        ))
+
+    def test_alias_post_refuses_other_artist_primary_name(self):
+        response = self.client.post("/api/artists/1/aliases", json={"name": "Artist Two"})
+        self.assertEqual(response.status_code, 409)
+
+    def test_alias_post_rejects_a_body_that_is_not_an_object(self):
+        for body in (["Stage One"], "Stage One", {"name": 7}):
+            with self.subTest(body=body):
+                response = self.client.post("/api/artists/1/aliases", json=body)
+                self.assertEqual(response.status_code, 422)
+
+    def _queued_search_rows(self):
+        with closing(self._open_connection()) as db:
+            return (db.execute("SELECT COUNT(*) FROM track_search_dirty").fetchone()[0]
+                    + db.execute("SELECT COUNT(*) FROM catalog_search_dirty").fetchone()[0])
+
+    def test_alias_post_indexes_the_tracks_it_queued(self):
+        # Otherwise every later search re-folds all of the artist's tracks.
+        with patch.object(server._scan_job, "is_running", return_value=False):
+            response = self.client.post("/api/artists/1/aliases", json={"name": "Stage One"})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(self._queued_search_rows(), 0)
+        result = self.client.get("/api/search?q=stage%20one").json()
+        self.assertEqual([t["id"] for t in result["tracks"]], [1])
+
+    def test_alias_post_leaves_the_queue_to_a_running_scan(self):
+        # setUp marks a scan running; the scan refreshes when it finishes, and
+        # a commit between its per-file read and write would fail that file.
+        response = self.client.post("/api/artists/1/aliases", json={"name": "Stage One"})
+        self.assertEqual(response.status_code, 200)
+        self.assertGreater(self._queued_search_rows(), 0)
+
     def test_home_shelves_resolve_only_current_library_ids(self):
         response = self.client.get('/api/home?album_ids=2,999,1&artist_ids=2,1')
         self.assertEqual(response.status_code, 200)
@@ -1980,6 +2067,7 @@ class ServerApiTests(unittest.TestCase):
         self.assertTrue(audio.exists())
         with self._connect() as db:
             self.assertIsNotNone(db.execute("SELECT id FROM albums WHERE id=1").fetchone())
+
 
 
 class CastDispatcherTests(unittest.TestCase):

@@ -57,59 +57,24 @@ async function createHarness() {
   await waitFor(() => pending.length === 1);
   pending[0].resolve(payload('Initial', 600));
   await navigation;
-  const search = value => {
-    const input = doc.getElementById('search-input');
-    input.value = value;
-    input.dispatchEvent(new window.Event('input', { bubbles: true }));
+  // Sorting and paging are the only per-page request triggers left: the shared
+  // topbar owns searching, so typing navigates to the unified search view.
+  const sort = (value) => {
+    const el = doc.getElementById('track-sort');
+    el.value = value;
+    el.dispatchEvent(new window.Event('change', { bubbles: true }));
   };
-  return { dom, window, doc, pending, search };
-}
-
-async function testLatestSearchWins() {
-  const h = await createHarness();
-  try {
-    h.search('slow');
-    await waitFor(() => h.pending.length === 2);
-    h.search('latest');
-    await waitFor(() => h.pending.length === 3);
-    assert.equal(h.pending[2].params.get('search'), 'latest');
-    h.pending[2].resolve(payload('Latest result'));
-    await waitFor(() => h.doc.getElementById('tracks-list').textContent.includes('Latest result'));
-    h.pending[1].resolve(payload('Stale result', 1000));
-    await new Promise(resolve => setTimeout(resolve, 0));
-    assert.ok(!h.doc.getElementById('tracks-list').textContent.includes('Stale result'));
-    assert.equal(h.doc.getElementById('tracks-count').textContent, '1 track matches');
-    assert.equal(h.doc.getElementById('tracks-page-info').textContent, 'Page 1 / 1');
-    assert.equal(h.doc.getElementById('tracks-prev-btn').disabled, true);
-    assert.equal(h.doc.getElementById('tracks-next-btn').disabled, true);
-  } finally { h.dom.window.close(); }
-}
-
-async function testTypingInvalidatesBeforeDebounce() {
-  const h = await createHarness();
-  try {
-    h.search('old');
-    await waitFor(() => h.pending.length === 2);
-    h.search('new');
-    h.pending[1].resolve(payload('Old response during debounce'));
-    await new Promise(resolve => setTimeout(resolve, 0));
-    assert.ok(!h.doc.getElementById('tracks-list').textContent.includes('Old response during debounce'),
-      'Invalidate as soon as the input changes, before the next request starts');
-    await waitFor(() => h.pending.length === 3);
-    h.pending[2].resolve(payload('New response'));
-    await waitFor(() => h.doc.getElementById('tracks-list').textContent.includes('New response'));
-  } finally { h.dom.window.close(); }
+  const nextPage = () => doc.getElementById('tracks-next-btn').click();
+  return { dom, window, doc, pending, sort, nextPage };
 }
 
 async function testSortAndPageShareRequestOrdering() {
   const h = await createHarness();
   try {
-    h.doc.getElementById('tracks-next-btn').click();
+    h.nextPage();
     await waitFor(() => h.pending.length === 2);
     assert.equal(h.pending[1].params.get('offset'), '200');
-    const sort = h.doc.getElementById('track-sort');
-    sort.value = 'artist';
-    sort.dispatchEvent(new h.window.Event('change', { bubbles: true }));
+    h.sort('artist');
     await waitFor(() => h.pending.length === 3);
     assert.equal(h.pending[2].params.get('offset'), '0');
     assert.equal(h.pending[2].params.get('sort'), 'artist');
@@ -123,10 +88,26 @@ async function testSortAndPageShareRequestOrdering() {
   } finally { h.dom.window.close(); }
 }
 
+async function testSortDuringPageKeepsLatestOrdering() {
+  const h = await createHarness();
+  try {
+    h.nextPage();
+    await waitFor(() => h.pending.length === 2);
+    h.sort('recent');
+    await waitFor(() => h.pending.length === 3);
+    assert.equal(h.pending[2].params.get('sort'), 'recent');
+    assert.equal(h.pending[2].params.get('offset'), '0');
+    h.pending[2].resolve(payload('Recent result', 40));
+    await waitFor(() => h.doc.getElementById('tracks-list').textContent.includes('Recent result'));
+    await new Promise(resolve => setTimeout(resolve, 300));
+    assert.equal(h.pending.length, 3, 'A sort must not queue a duplicate request');
+  } finally { h.dom.window.close(); }
+}
+
 async function testNavigationDiscardsPendingWork() {
   const h = await createHarness();
   try {
-    h.search('pending');
+    h.sort('composer');
     await waitFor(() => h.pending.length === 2);
     const oldList = h.doc.getElementById('tracks-list');
     await h.window.navigate('home');
@@ -138,34 +119,28 @@ async function testNavigationDiscardsPendingWork() {
     await new Promise(resolve => setTimeout(resolve, 0));
     assert.ok(!oldList.textContent.includes('Detached response'), 'Discard responses for detached view instances');
     assert.ok(h.doc.getElementById('tracks-list').textContent.includes('Fresh Tracks view'));
-
-    h.search('debounced');
-    await h.window.navigate('home');
-    await new Promise(resolve => setTimeout(resolve, 300));
-    assert.equal(h.pending.length, 3, 'A detached view must not start a debounced request');
   } finally { h.dom.window.close(); }
 }
 
-async function testSortDuringDebounceUsesLatestQuery() {
+async function testTracksPageHasNoLocalSearchRequest() {
   const h = await createHarness();
   try {
-    h.search('new query');
-    const sort = h.doc.getElementById('track-sort');
-    sort.value = 'recent';
-    sort.dispatchEvent(new h.window.Event('change', { bubbles: true }));
-    await waitFor(() => h.pending.length === 2);
-    assert.equal(h.pending[1].params.get('search'), 'new query');
-    assert.equal(h.pending[1].params.get('sort'), 'recent');
-    h.pending[1].resolve(payload('Recent query result'));
-    await waitFor(() => h.doc.getElementById('tracks-list').textContent.includes('Recent query result'));
-    await new Promise(resolve => setTimeout(resolve, 300));
-    assert.equal(h.pending.length, 2, 'Sorting consumes the pending debounce without a duplicate request');
+    // The topbar input is shared. Typing must not fire a /tracks?search= call,
+    // because that request form no longer exists on this page.
+    const input = h.doc.getElementById('search-input');
+    assert.ok(input, 'Tracks page keeps the shared topbar search field');
+    input.value = 'local filter';
+    input.dispatchEvent(new h.window.Event('input', { bubbles: true }));
+    await waitFor(() => h.doc.querySelector('#global-search-results'));
+    await new Promise(resolve => setTimeout(resolve, 250));
+    assert.equal(h.pending.length, 1, 'Typing must not issue a local Tracks search request');
+    assert.ok(!h.doc.getElementById('tracks-list'),
+      'Typing routes to the unified search view instead of filtering this page');
   } finally { h.dom.window.close(); }
 }
 
-await testLatestSearchWins();
-await testTypingInvalidatesBeforeDebounce();
 await testSortAndPageShareRequestOrdering();
+await testSortDuringPageKeepsLatestOrdering();
 await testNavigationDiscardsPendingWork();
-await testSortDuringDebounceUsesLatestQuery();
+await testTracksPageHasNoLocalSearchRequest();
 console.log('frontend_tracks_request_order_check=OK');
