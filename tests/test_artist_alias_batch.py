@@ -570,35 +570,37 @@ class BoundedIndexRefreshTests(unittest.TestCase):
             db.close()
 
 
-class EnrichmentUiRecoveryTests(unittest.TestCase):
-    """A refused start must leave the panel usable.
+class EnrichmentUiRemovedTests(unittest.TestCase):
+    """The MusicBrainz enrichment panel is withdrawn from the Artists view.
 
-    The three start buttons are disabled before the request. Only
-    updateAliasProgress puts them back, and it schedules no follow-up poll when
-    nothing started -- so a failed start used to strand the panel until the
-    user navigated away and back.
+    These regressions used to parse `library-views.js` and assert that a failed
+    batch start restored the start buttons. With the panel gone there is no such
+    code path left to protect, so the guard is inverted: the frontend must not
+    contain the panel, its controls, or the batch endpoint at all.
     """
 
     SOURCE = (Path(__file__).resolve().parents[1]
               / "static" / "js" / "library-views.js").read_text(encoding="utf-8")
+    MARKUP = (Path(__file__).resolve().parents[1]
+              / "static" / "index.html").read_text(encoding="utf-8")
 
-    def _body(self, name):
-        start = self.SOURCE.index(f"async function {name}(")
-        depth, i = 0, self.SOURCE.index("{", start)
-        for pos in range(i, len(self.SOURCE)):
-            if self.SOURCE[pos] == "{":
-                depth += 1
-            elif self.SOURCE[pos] == "}":
-                depth -= 1
-                if depth == 0:
-                    return self.SOURCE[start:pos + 1]
-        raise AssertionError("unbalanced braces")
+    def test_panel_markup_and_logic_are_gone(self):
+        for token in ("artist-enrichment-panel", "updateAliasProgress",
+                      "startAliasBatch", "artist-alias-next-batch",
+                      "artist-alias-all-batch", "artist-alias-retry-batch",
+                      "artist-alias-review-batch", "artist-alias-audit-legacy",
+                      "artist-alias-stop-batch"):
+            self.assertNotIn(token, self.SOURCE, f"{token} was removed with the panel")
 
-    def test_failed_start_re_enables_buttons(self):
-        body = self._body("startAliasBatch")
-        catch = body[body.index("catch"):]
-        self.assertIn("updateAliasProgress", catch,
-                      "the failure path must refresh state so the buttons recover")
+    def test_artist_page_no_longer_offers_musicbrainz_sync(self):
+        self.assertNotIn("artist-sync-alias-btn", self.SOURCE)
+
+    def test_panel_css_is_gone(self):
+        self.assertNotIn("artist-enrichment-panel", self.MARKUP)
+
+    def test_manual_alias_control_survives(self):
+        """Curated aliases remain the supported path, so + Alias must stay."""
+        self.assertIn("artist-add-alias-btn", self.SOURCE)
 
 
 if __name__ == "__main__":
