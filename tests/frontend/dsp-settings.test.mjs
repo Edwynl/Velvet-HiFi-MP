@@ -1151,6 +1151,17 @@ async function main() {
     castControl.statusPosition = 8;
     await onePoll();
     assert.equal(dom.window.eval('state.castPosition'), 8, 'matching B updates normally');
+    // A renderer that keeps naming another track (another client cast to it)
+    // is reported and stops driving this player instead of freezing silently.
+    castControl.statusTrackId = 4;
+    for (let i = 0; i < 3; i += 1) await onePoll();
+    assert.equal(dom.window.eval('state.castPlaybackUnverified'), true);
+    assert.equal(dom.window.eval('state.castAutoNextArmed'), false);
+    assert.match(toastText(), /another track/);
+    castControl.statusTrackId = 3;
+    await onePoll();
+    assert.equal(dom.window.eval('state.castPlaybackUnverified'), false, 'a matching URI reconciles it');
+    assert.equal(dom.window.eval('state.castAutoNextArmed && state.playing'), true);
     // Duration 0 is not a known natural completion (including FLAC transcodes).
     castControl.transportState = 'STOPPED';
     castControl.statusPosition = 5;
@@ -1172,6 +1183,7 @@ async function main() {
     assert.equal(dom.window.eval('state.castAutoNextArmed'), false);
     assert.equal(dom.window.eval('state.playing'), false);
     castControl.fail = false;
+    castControl.transportState = 'PLAYING';
     dom.window.eval('startCastPolling();');
     await waitFor(() => dom.window.eval('state.castAutoNextArmed && state.playing') === true);
     assert.equal(dom.window.eval('state.castDspUnverified'), true,

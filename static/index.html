@@ -7040,6 +7040,7 @@ async function activateZone(zone, transferPlayback = true) {
   state.castPlaybackUnverified = false;
   state.castDspUnverified = false;
   state.castMismatchNotified = false;
+  state.castMismatchPolls = 0;
   state.castAutoNextArmed = false;
   state.castPending = false;
   restoreZoneDspSelection();
@@ -7908,6 +7909,7 @@ const state = {
   castPlaybackUnverified: false, // URI not reconciled after an uncertain/failed cast
   castDspUnverified: false, // failed DSP/ReplayGain re-cast: processing path is unknown
   castMismatchNotified: false, // report a renderer's unexpected track once
+  castMismatchPolls: 0, // consecutive statuses naming another track
   isComposing: false,
   mobilePlayerDismissed: false,
 };
@@ -8682,6 +8684,7 @@ async function playTrack(track, queue, idx) {
 // server; only a matching identity can restore progress/auto-next authority.
 // Devices that omit TrackURI remain in a safe unverified state until a new
 // confirmed cast (regular, uninterrupted casts continue working as before).
+const CAST_MISMATCH_POLLS = 3;
 function castStatusBelongsToConfirmed(status) {
   // A lagging TrackURI is possible just after a successful cast. Ignore
   // explicit evidence for ANOTHER VELVET track rather than using its progress
@@ -8690,6 +8693,10 @@ function castStatusBelongsToConfirmed(status) {
   const hasTrackId = status.track_id !== null && status.track_id !== undefined;
   const mismatch = hasTrackId && String(status.track_id) !== String(state.castConfirmedTrackId);
   if (mismatch) {
+    // One lagging sample is ignored, but a renderer that keeps naming another
+    // track (e.g. another VELVET client cast to it) must not freeze silently.
+    state.castMismatchPolls = (state.castMismatchPolls || 0) + 1;
+    if (state.castMismatchPolls >= CAST_MISMATCH_POLLS) state.castPlaybackUnverified = true;
     if (state.castPlaybackUnverified) {
       state.castAutoNextArmed = false;
       state.playing = false;
@@ -8701,6 +8708,7 @@ function castStatusBelongsToConfirmed(status) {
     }
     return false;
   }
+  state.castMismatchPolls = 0;
   if (!state.castPlaybackUnverified) return true;
   if (hasTrackId) {
     state.castPlaybackUnverified = false;
@@ -8883,6 +8891,7 @@ function applyCastResult(res, { track, device, dspProfile, startSeconds, control
   state.castPlaybackUnverified = false;
   state.castDspUnverified = false;
   state.castMismatchNotified = false;
+  state.castMismatchPolls = 0;
   state.castAutoNextArmed = true;
   state.castStartOffset = Number(res.start_offset) || 0;
   // A direct stream that could not seek restarts from the beginning.
