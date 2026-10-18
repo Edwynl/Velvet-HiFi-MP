@@ -14,7 +14,7 @@ assert.match(rules, /@media\s*\(max-width:\s*768px\)\s*and\s*\(orientation:\s*po
   'the adjustments stay scoped to phone portrait, not tablet/landscape/desktop');
 assert.match(rules, /#app\s*\{[^}]*width:\s*100%;[^}]*min-width:\s*0;[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\);[^}]*grid-template-rows:\s*minmax\(0,\s*1fr\)\s+auto;/s,
   'root grid cannot widen beyond the phone viewport');
-assert.match(rules, /#main\s*\{[^}]*min-width:\s*0;[^}]*overflow-x:\s*hidden;[^}]*padding-top:\s*env\(safe-area-inset-top,\s*0px\);/s,
+assert.match(rules, /#main\s*\{[^}]*min-width:\s*0;[^}]*overflow-x:\s*hidden;[^}]*padding-top:\s*var\(--velvet-phone-safe-top\);/s,
   'scrollable content clips horizontal overflow and respects the status bar');
 assert.match(rules, /#view-container\s*\{[^}]*width:\s*100%;[^}]*min-width:\s*0;[^}]*max-width:\s*100%;/s,
   'view content does not force a wide min-content grid');
@@ -24,16 +24,23 @@ assert.match(rules, /\.grid,\s*\.artist-grid\s*\{\s*grid-template-columns:\s*rep
 const menu = rules.match(/\.mobile-menu-btn\s*\{([^}]*)\}/)?.[1];
 assert.ok(menu, 'mobile menu has a phone-specific rule');
 assert.match(menu, /position:\s*fixed;/);
-assert.match(menu, /top:\s*calc\(env\(safe-area-inset-top,\s*0px\)\s*\+\s*10px\);/);
+assert.match(menu, /top:\s*calc\(var\(--velvet-phone-safe-top\)\s*\+\s*10px\);/);
 assert.match(menu, /left:\s*12px;/);
 assert.match(menu, /width:\s*44px;/);
 assert.match(menu, /height:\s*44px;/);
 assert.match(menu, /z-index:\s*46;/);
 assert.match(rules, /\.topbar\s*\{[^}]*top:\s*0;[^}]*padding-left:\s*68px;/s,
   'sticky search header is not shifted by the safe area twice');
-assert.match(rules, /#sidebar\s*\{[^}]*padding-top:\s*env\(safe-area-inset-top,\s*0px\);/s);
+assert.match(rules, /#sidebar\s*\{[^}]*padding-top:\s*var\(--velvet-phone-safe-top\);/s);
 
-assert.match(html, /<button class="mobile-menu-btn" id="mobile-menu-btn">/);
+assert.match(html, /<button class="mobile-menu-btn" id="mobile-menu-btn" type="button" aria-label="Open navigation menu" aria-controls="sidebar" aria-expanded="false">/);
+assert.ok(html.indexOf('id="mobile-menu-btn"') < html.indexOf('<main id="main">'),
+  'fixed menu lives outside the scrollable main to avoid WebKit clipping');
+assert.match(html, /menuBtn\.setAttribute\('aria-expanded', 'true'\)/);
+assert.match(html, /menuBtn\.setAttribute\('aria-expanded', 'false'\)/);
+assert.match(rules, /--velvet-phone-safe-top:\s*env\(safe-area-inset-top, 0px\);/);
+assert.match(rules, /@media \(display-mode: standalone\) and \(max-width: 768px\) and \(orientation: portrait\)[\s\S]*?--velvet-phone-safe-top:\s*max\(59px, env\(safe-area-inset-top, 0px\)\);/,
+  'standalone gets nonzero top safe area on iOS with zero inset');
 assert.match(html, /menuBtn\.addEventListener\('click',\s*openMenu\)/);
 assert.match(html, /\.sidebar-overlay\s*\{[^}]*z-index:\s*45;/s,
   'menu hit target is above the closed-overlay stacking level');
