@@ -6,7 +6,7 @@ from pathlib import Path
 
 from artist_aliases import add_alias, fetch_aliases, merge_artists, rename_artist, resolve_alias
 from chinese_variants import get_all_variants, to_simplified, to_traditional
-from db_schema import MIGRATIONS, apply_migrations
+from db_schema import LATEST_SCHEMA_VERSION, MIGRATIONS, apply_migrations
 from library_browse import fetch_artists
 from library_discovery import fetch_artist_detail_summary, search_tracks
 from library_paging import fetch_artist_page
@@ -38,7 +38,7 @@ class ArtistAliasMigrationTests(unittest.TestCase):
             conn.execute("INSERT INTO artists (id, name) VALUES (1, 'Sammi Cheng')")
             conn.commit()
 
-            self.assertEqual(apply_migrations(conn), 11)
+            self.assertEqual(apply_migrations(conn), LATEST_SCHEMA_VERSION)
             columns = {row["name"] for row in conn.execute("PRAGMA table_info(artist_aliases)")}
             artist = conn.execute("SELECT name FROM artists WHERE id = 1").fetchone()
 

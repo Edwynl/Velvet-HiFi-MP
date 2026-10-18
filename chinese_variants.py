@@ -14,6 +14,10 @@ from opencc import OpenCC
 _T2S = OpenCC("t2s.json")
 _S2T = OpenCC("s2t.json")
 
+# Folding stops at a fixed point; the cap only guards against a future
+# dictionary with a cycle. Two passes cover every case seen in the library.
+_MAX_FOLD_PASSES = 4
+
 
 def literal_fold(text: str | None) -> str:
     """Case-insensitive, Unicode-normalized representation of original text."""
@@ -40,9 +44,20 @@ def to_traditional(text: str) -> str:
 
 
 def search_fold(text: str | None) -> str:
-    """Shared canonical key for queries and all music search indexes."""
-    original = literal_fold(text)
-    return literal_fold(to_simplified(original))
+    """Shared canonical key for queries and all music search indexes.
+
+    OpenCC rewrites whole phrases, so a single pass is not a fixed point: the
+    Taiwan singer 陳昇 folds to 陈昇, and 陈昇 folds again to 陈升. Stored keys
+    and query keys are compared with `instr`, so a key that changes on a second
+    pass can never match itself. Fold until stable instead.
+    """
+    folded = literal_fold(to_simplified(literal_fold(text)))
+    for _ in range(_MAX_FOLD_PASSES):
+        again = literal_fold(to_simplified(folded))
+        if again == folded:
+            break
+        folded = again
+    return folded
 
 
 def get_all_variants(text: str) -> list[str]:

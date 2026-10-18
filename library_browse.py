@@ -8,53 +8,6 @@ def _row_dicts(rows) -> list[dict]:
     return [dict(row) for row in rows]
 
 
-def _matches_variants(
-    values: list[str],
-    variants: list[str],
-    to_simplified: Callable[[str], str],
-    to_traditional: Callable[[str], str],
-) -> bool:
-    for raw_value in values:
-        if not raw_value:
-            continue
-
-        field = str(raw_value)
-        field_simp = to_simplified(field)
-        field_trad = to_traditional(field)
-
-        for variant in variants:
-            v_simp = to_simplified(variant)
-            v_trad = to_traditional(variant)
-            if (
-                variant in field
-                or v_simp in field
-                or v_trad in field
-                or field in variant
-                or field_simp in variant
-                or field_trad in variant
-            ):
-                return True
-
-    return False
-
-
-def _needs_variant_fallback(
-    search: str,
-    variants: list[str],
-    to_simplified: Callable[[str], str],
-    to_traditional: Callable[[str], str],
-) -> bool:
-    """Only run expensive Python-side matching when variant expansion diverges."""
-    if not search or not variants:
-        return False
-
-    normalized = {search}
-    normalized.update(variants)
-    normalized.add(to_simplified(search))
-    normalized.add(to_traditional(search))
-    return len(normalized) > 1
-
-
 def fetch_artists(
     db: sqlite3.Connection,
     search: str,

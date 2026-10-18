@@ -100,5 +100,98 @@ class OpenCCSearchV2Tests(unittest.TestCase):
         self.assertNotIn(3,match_catalog_ids(self.db,"album","后来的爱"))
 
 
+class ReverseMatchParityTests(unittest.TestCase):
+    """The index must never return fewer ids than an exact scan.
+
+    ``match_track_ids(reverse=True)`` also matches when a stored name is a
+    substring of the query. The reverse direction is served by
+    ``track_search_terms``, so every value that goes into ``search_text`` must
+    also produce terms. Credited artists and aliases used to be left out, which
+    silently dropped them from reverse matches: a real library query "A-lin"
+    lost a track whose credited name folded to "i".
+    """
+
+    def setUp(self):
+        self.db = sqlite3.connect(":memory:")
+        self.db.row_factory = sqlite3.Row
+        self.db.execute("PRAGMA foreign_keys=ON")
+        apply_migrations(self.db)
+        self.db.execute("INSERT INTO artists(id,name,sort_name) VALUES(1,'Primary','Primary')")
+        self.db.execute("INSERT INTO artists(id,name,sort_name) VALUES(2,'Guest','Guest')")
+        self.db.execute("INSERT INTO albums(id,artist_id,title) VALUES(1,1,'Album')")
+        self.db.execute(
+            "INSERT INTO tracks(id,album_id,artist_id,title,file_path) "
+            "VALUES(1,1,1,'Song','C:/music/1.flac')")
+        # Track 1 is credited to artist 2, who is not the primary artist.
+        self.db.execute("INSERT INTO track_artists(track_id,artist_id) VALUES(1,1),(1,2)")
+        self.db.execute("INSERT INTO artist_aliases(artist_id,name) VALUES(2,'AB')")
+        self.db.commit()
+        refresh_track_search_index(self.db)
+        self.db.commit()
+
+    def tearDown(self):
+        self.db.close()
+
+    def _both_paths(self, query):
+        indexed = match_track_ids(self.db, query, reverse=True)
+        self.db.execute(
+            "UPDATE search_index_meta SET value='stale' WHERE key='signature'")
+        self.db.commit()
+        exact = match_track_ids(self.db, query, reverse=True)
+        return indexed, exact
+
+    def test_terms_include_credited_artists_and_aliases(self):
+        terms = {
+            row[0] for row in self.db.execute(
+                "SELECT term FROM track_search_terms WHERE track_id=1")
+        }
+        self.assertIn("guest", terms)
+        self.assertIn("ab", terms)
+
+    def test_reverse_match_on_alias_matches_indexed_and_exact(self):
+        # Each query contains the alias "ab" or the credited name "guest", so
+        # only the reverse direction can match.
+        for query in ("zabz", "xxabyy", "zz ab zz", "a guest b"):
+            with self.subTest(query=query):
+                indexed, exact = self._both_paths(query)
+                self.assertEqual(indexed, exact)
+                self.assertIn(1, exact)
+
+    def test_reverse_match_on_credited_artist_name(self):
+        for query in ("the guest", "xguestx"):
+            with self.subTest(query=query):
+                indexed, exact = self._both_paths(query)
+                self.assertEqual(indexed, exact)
+                self.assertIn(1, exact)
+
+
+class FoldIdempotenceTests(unittest.TestCase):
+    """``search_fold`` must be a fixed point.
+
+    OpenCC converts phrases, so one pass can leave text that a second pass
+    still changes (陳昇 -> 陈昇 -> 陈升). Stored keys are compared with
+    ``instr`` against folded query keys, so a key that moves on a second pass
+    cannot match itself.
+    """
+
+    def test_known_non_idempotent_input_reaches_fixed_point(self):
+        self.assertEqual(search_fold("陳昇"), search_fold("陳昇"))
+        self.assertEqual(search_fold(search_fold("陳昇")), search_fold("陳昇"))
+
+    def test_simplified_query_reaches_the_same_key_as_stored_text(self):
+        # A user typing the mainland spelling must still find the record.
+        self.assertEqual(search_fold("陳昇"), search_fold("陈升"))
+
+    def test_fold_is_idempotent_over_a_mixed_sample(self):
+        sample = [
+            "陳昇", "周杰倫", "陳綺貞", "頭髮與發展", "後來的愛", "聽海",
+            "快樂生活", "鄧紫棋", "A-lin", "100%_", "陳昇的專輯", "昇華",
+        ]
+        for text in sample:
+            with self.subTest(text=text):
+                once = search_fold(text)
+                self.assertEqual(search_fold(once), once)
+
+
 if __name__ == "__main__":
     unittest.main()

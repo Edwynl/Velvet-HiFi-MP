@@ -14,7 +14,8 @@ from chinese_variants import literal_fold, search_fold
 from library_search_match import indexed_text, _catalog_fields
 
 # A changed dictionary, fold algorithm, or on-disk format MUST invalidate keys.
-_INDEX_FORMAT = 2
+# 3: terms also carry credited artist and alias names (reverse-match parity).
+_INDEX_FORMAT = 3
 INDEX_SIGNATURE = f"{_INDEX_FORMAT}:opencc-{package_version('OpenCC')}:t2s-nfkc-casefold:dual-keys"
 
 
@@ -58,11 +59,16 @@ def _build_rows(db: sqlite3.Connection, track_ids: list[int]):
             LEFT JOIN albums al ON al.id=t.album_id
             WHERE t.id IN ({marks})""", track_ids
     ):
-        index_rows.append((track_id, indexed_text([*fields, *credited.get(track_id, [])])))
+        values = [*fields, *credited.get(track_id, [])]
+        index_rows.append((track_id, indexed_text(values)))
         # Reverse-substring compatibility with the original search. The index
         # stores complete field keys; never allow a substring across fields.
+        # Credited artists and aliases must be listed here too: search_text is
+        # built from the same values, so omitting them made the reverse
+        # direction (stored name contained in the query) lose every credited
+        # artist and alias while the exact-scan path still matched them.
         terms = set()
-        for value in fields:
+        for value in values:
             if value:
                 terms.update((literal_fold(str(value)), search_fold(str(value))))
         term_rows.extend((term, track_id) for term in terms if term)
