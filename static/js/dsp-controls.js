@@ -519,6 +519,17 @@ function eqRenderEditor() {
   updateEQHeadroomNote();
 }
 
+// A change from Settings also updates an open editor. Keep edited curves
+// and the B comparison intact; only a clean A slot follows playback.
+function syncEQEditorFromOutput() {
+  if (!$('eq-overlay')?.classList.contains('active')) return;
+  if (eqEditor.bypassedProfileId !== null) return;
+  if (eqEditor.active === 'A' && !eqActiveDraft().edited) {
+    eqEditor.slots.A = eqSourceDraft(state.dspProfile);
+  }
+  eqRenderEditor();
+}
+
 function applyEqProfileToPlayer(profileId) {
   const normalizedId = String(profileId || '');
   state.dspProfile = normalizedId;
@@ -694,10 +705,6 @@ window.saveEQDraft = async function() {
   }
   const source = dspProfileById(draft.sourceId);
   const overwrite = source && !source.is_factory && !draft.converted ? source : null;
-  if (!draft.filters.length && !overwrite) {
-    showToast('No EQ changes to save');
-    return;
-  }
   if (btn) btn.textContent = 'Saving...';
   try {
     // api() already offers the administrator unlock and repeats the write,
@@ -883,7 +890,7 @@ window.openGraphicEQ = async function() {
   if (!state.dspProfiles?.length) {
     await loadDspProfiles();
   }
-  const activeProfileId = state.dspProfile || state.lastEqProfile || '';
+  const activeProfileId = state.dspProfile || '';
   const hasProfile = activeProfileId
     ? visibleDspProfiles(state.dspProfiles).some(profile => String(profile.id) === String(activeProfileId))
     : false;

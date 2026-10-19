@@ -14,6 +14,9 @@ function syncMobileLandscapeControls() {
     const selected = $('dsp-select')?.selectedOptions?.[0]?.textContent?.trim();
     dspEl.textContent = state.dspProfile ? (selected || 'DSP') : 'Off';
   }
+  const eqButton = $('mobile-top-eq');
+  eqButton?.classList.toggle('active', Boolean(state.dspProfile));
+  eqButton?.setAttribute('aria-label', `Equalizer: ${dspEl?.textContent || 'Off'}`);
   castEl?.classList.toggle('active', isCastZone() || isNativeZone());
 }
 
@@ -112,10 +115,6 @@ function showMobileSelectPicker(selectId, title) {
 
 function openMobileUpsamplePicker() {
   showMobileSelectPicker('upsample-select', 'Output Rate');
-}
-
-function openMobileDspPicker() {
-  showMobileSelectPicker('dsp-select', 'Sound Preset');
 }
 
 function getPlayerThumbUrl(albumId) {

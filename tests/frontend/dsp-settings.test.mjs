@@ -328,7 +328,7 @@ function createHarness() {
     castControl,
     get refuseWrites() { return refuseWrites; },
     set refuseWrites(value) { refuseWrites = !!value; },
-    async createDom() {
+    async createDom({ storage = {} } = {}) {
       const html = inlineFrontendModules(readFileSync(HTML_PATH, 'utf8'))
         .replace(/<link[^>]+>/g, '');
       const dom = new JSDOM(html, {
@@ -336,6 +336,7 @@ function createHarness() {
         runScripts: 'dangerously',
         pretendToBeVisual: true,
         beforeParse(window) {
+          Object.entries(storage).forEach(([key, value]) => window.localStorage.setItem(key, value));
           // Honours AbortController like a real fetch (api() request timeouts).
           window.fetch = (url, opts) => new Promise((resolve, reject) => {
             opts?.signal?.addEventListener('abort', () => reject(new window.DOMException('Aborted', 'AbortError')));
@@ -427,9 +428,10 @@ async function main() {
     await waitFor(() => document.querySelector('#upsample-select').value === '4x');
     assert.equal(document.querySelector('#mobile-top-upsample-label').textContent.trim(), '4×');
 
-    document.querySelector('#mobile-top-dsp').click();
+    assert.equal(document.querySelector('#mobile-top-dsp'), null, 'phone has a single EQ entry');
+    document.querySelector('#mobile-top-eq').click();
     const blackBackgroundButton = await waitFor(() =>
-      Array.from(document.querySelectorAll('.mobile-select-picker-option'))
+      Array.from(document.querySelectorAll('.eq-preset-btn'))
         .find(button => button.textContent?.trim() === 'Black')
     );
     blackBackgroundButton.click();
@@ -437,6 +439,7 @@ async function main() {
     assert.equal(document.querySelector('#mobile-top-dsp-label').textContent.trim(), 'Black');
     assert.equal(dom.window.localStorage.getItem('velvet:dsp-profile-id'), '2');
     assert.equal(dom.window.localStorage.getItem('velvet:dsp-last-profile-id'), '2');
+    document.querySelector('#eq-close-btn').click();
 
     // Simulate a transient runtime fallback that clears active DSP only;
     // load should restore from the last selected DSP preference.
@@ -1600,6 +1603,26 @@ async function eqPresetAppliesImmediatelyChecks() {
     assert.equal(status(), 'Applied');
     assert.equal(railActive(), 'Off');
 
+    // Reopening after an explicit Off must not show the previous preset.
+    dom.window.closeGraphicEQ();
+    await dom.window.openGraphicEQ();
+    assert.equal(document.querySelector('#eq-current-name').textContent, 'Off');
+    assert.equal(status(), 'Applied');
+
+    // Settings changes mirror into the open editor, including direct calls
+    // to the shared apply route (not just native select change events).
+    dom.window.applyDspProfileToOutput('3');
+    assert.equal(document.querySelector('#dsp-select').value, '3');
+    assert.equal(document.querySelector('#eq-current-name').textContent, 'Vocal Forward Warm');
+    assert.equal(railActive(), 'Vocal Warm');
+    assert.equal(status(), 'Applied');
+    dom.window.handleEQSliderInput(0, '2');
+    dom.window.applyDspProfileToOutput('2');
+    assert.equal(dom.window.eval('eqActiveDraft().edited'), true, 'external choice keeps unsaved edits');
+    assert.equal(dom.window.eval('eqActiveDraft().gains[0]'), 2);
+    assert.equal(railActive(), 'Black');
+    assert.equal(status(), 'Preview (not yet applied)');
+
     // The comparison slot stays a draft: comparing must not apply it.
     await dom.window.selectEQPreset('2');
     document.querySelector('#eq-btn-ab').click();
@@ -1624,6 +1647,35 @@ async function eqPresetAppliesImmediatelyChecks() {
       'a refused write must not reach the library'
     );
     harness.refuseWrites = false;
+
+    // Retry keeps the draft, stores it, applies it and restores the saved
+    // filters when reopening. A flat edited curve is a valid saved choice.
+    await dom.window.saveEQDraft();
+    const savedId = dom.window.eval('state.dspProfile');
+    assert.equal(dom.window.localStorage.getItem('velvet:dsp-profile-id'), savedId);
+    await dom.window.openGraphicEQ();
+    assert.equal(status(), 'Applied');
+    assert.equal(dom.window.eval('eqActiveDraft().sourceId'), savedId);
+    assert.equal(dom.window.eval('eqActiveDraft().gains[0]'), 2);
+    const restarted = await harness.createDom({ storage: { ...dom.window.localStorage } });
+    try {
+      await restarted.window.loadDspProfiles();
+      await restarted.window.openGraphicEQ();
+      assert.equal(restarted.window.eval('state.dspProfile'), savedId, 'saved selection survives an app restart');
+      assert.equal(restarted.window.eval('eqActiveDraft().gains[0]'), 2, 'saved curve survives an app restart');
+    } finally {
+      restarted.window.close();
+    }
+    await dom.window.selectEQPreset('');
+    dom.window.handleEQSliderInput(0, '0');
+    await dom.window.saveEQDraft();
+    const flatId = dom.window.eval('state.dspProfile');
+    assert.ok(flatId, 'flat edited EQ can be saved as a custom preset');
+    assert.deepEqual(JSON.parse(harness.dspProfiles.find(p => String(p.id) === flatId).filter_chain_json), []);
+    await dom.window.loadDspProfiles();
+    await dom.window.openGraphicEQ();
+    assert.equal(dom.window.eval('eqActiveDraft().sourceId'), flatId);
+    assert.equal(status(), 'Applied');
   } finally {
     dom.window.close();
   }

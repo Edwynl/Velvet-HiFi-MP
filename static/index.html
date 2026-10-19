@@ -5568,9 +5568,11 @@ input[type=range]::-webkit-slider-thumb:hover { background: var(--gold); }
         position: static !important;
       }
     }
-    @media (max-width: 768px), (orientation: portrait) and (min-width: 769px) and (max-width: 900px) {
+    @media (max-width: 768px), (orientation: portrait) and (min-width: 769px) and (max-width: 900px), (orientation: landscape) and (max-height: 500px) {
       .eq-overlay {
         padding: calc(env(safe-area-inset-top, 0px) + 14px) 14px 0;
+        padding-left: max(14px, env(safe-area-inset-left, 0px));
+        padding-right: max(14px, env(safe-area-inset-right, 0px));
       }
       .eq-header {
         padding: 10px 0 12px;
@@ -5687,9 +5689,14 @@ input[type=range]::-webkit-slider-thumb:hover { background: var(--gold); }
         margin: 0;
         border-radius: 18px 18px 0 0;
         padding: 12px 16px calc(env(safe-area-inset-bottom, 0px) + 12px);
+        padding-left: max(16px, env(safe-area-inset-left, 0px));
+        padding-right: max(16px, env(safe-area-inset-right, 0px));
         flex-wrap: nowrap;
         background: rgba(14, 14, 16, 0.96);
         backdrop-filter: blur(16px);
+      }
+      .eq-btn-save {
+        min-height: 44px;
       }
     }
 
@@ -7230,6 +7237,7 @@ input[type=range]::-webkit-slider-thumb:hover { background: var(--gold); }
     <div class="mobile-player-header-actions">
       <button class="mobile-player-pill" id="mobile-top-eq" type="button" title="Equalizer">
         <span class="mobile-player-pill-label">EQ</span>
+        <span class="mobile-player-pill-label" id="mobile-top-dsp-label">Off</span>
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 21v-7 M4 10V3 M12 21v-9 M12 8V3 M20 21v-5 M20 12V3 M1 14h6 M9 8h6 M17 12h6"/></svg>
       </button>
       <button class="mobile-player-pill" id="mobile-top-vu" type="button" title="VU Meters (pre-DSP level)">
@@ -7239,10 +7247,6 @@ input[type=range]::-webkit-slider-thumb:hover { background: var(--gold); }
       <button class="mobile-player-pill" id="mobile-top-upsample" type="button">
         <span class="mobile-player-pill-label" id="mobile-top-upsample-label">Source</span>
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><polyline points="6 9 12 15 18 9"/></svg>
-      </button>
-      <button class="mobile-player-pill" id="mobile-top-dsp" type="button">
-        <span class="mobile-player-pill-label" id="mobile-top-dsp-label">DSP</span>
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 21v-7"/><path d="M4 10V3"/><path d="M12 21v-9"/><path d="M12 8V3"/><path d="M20 21v-5"/><path d="M20 12V3"/><line x1="2" y1="14" x2="6" y2="14"/><line x1="10" y1="8" x2="14" y2="8"/><line x1="18" y1="12" x2="22" y2="12"/></svg>
       </button>
       <button class="mobile-player-icon-pill" id="mobile-top-cast" type="button" title="Connect">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M2 16.1A5 5 0 015.9 20"/><path d="M2 12.05A9 9 0 019.95 20"/><path d="M2 8V6a2 2 0 012-2h16a2 2 0 012 2v12a2 2 0 01-2 2h-6"/><path d="M2 20h.01"/></svg>
@@ -10324,10 +10328,6 @@ UI['mobile-top-upsample'].addEventListener('click', (e) => {
   e.stopPropagation();
   openMobileUpsamplePicker();
 });
-UI['mobile-top-dsp'].addEventListener('click', (e) => {
-  e.stopPropagation();
-  openMobileDspPicker();
-});
 UI['mobile-btn-add-playlist'].addEventListener('click', () => {
   if (!state.currentTrack) {
     showToast('No track playing');
@@ -10786,6 +10786,8 @@ function setReplayGainMode(mode) {
 function applyDspProfileToOutput(profileId) {
   const value = String(profileId || '');
   state.dspProfile = value;
+  const select = UI['dsp-select'];
+  if (select) select.value = value;
   resetDspErrorStreak();
   if (value) {
     state.lastEqProfile = value;
@@ -10797,6 +10799,7 @@ function applyDspProfileToOutput(profileId) {
     showToast(selected ? `DSP: ${selected.name}` : 'DSP: Off');
   }
   syncDspPresetCards();
+  syncEQEditorFromOutput();
 
   if (state.currentTrack) {
     if (isCastZone()) {
