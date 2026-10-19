@@ -2018,23 +2018,62 @@ async function renderGenres(vc, params = {}) {
    so the panel is never tucked up underneath it.
 
    (An earlier version never scrolled at all: it guarded the call behind "was
-   this tile closed?", which setActive had already answered on the line above.) */
-function revealGenrePanel(panel, viewRoot) {
-  if (!panel) return;
+   this tile closed?", which setActive had already answered on the line above.)
 
-  panel.classList.remove('is-revealed');
-  void panel.offsetWidth;              // restart the flash when re-tapping
-  panel.classList.add('is-revealed');
+   A panel that is already on screen is left alone: on a desktop window the
+   shelf and its panel share the viewport, and scrolling on every tap leaves
+   the page still drifting under the next click. */
+  function revealGenrePanel(panel, viewRoot) {
+    if (!panel) return;
 
-  const topbar = viewRoot?.querySelector('.topbar');
-  const safeTop = Math.ceil((topbar?.getBoundingClientRect().bottom || 0) + 10);
-  panel.style.scrollMarginTop = `${safeTop}px`;
-  panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
-}
+    panel.classList.remove('is-revealed');
+    void panel.offsetWidth;              // restart the flash when re-tapping
+    panel.classList.add('is-revealed');
 
-gridEl.addEventListener('click', e => {
+    const topbar = viewRoot?.querySelector('.topbar');
+    const safeTop = Math.ceil((topbar?.getBoundingClientRect().bottom || 0) + 10);
+
+    const box = panel.getBoundingClientRect();
+    const viewport = window.innerHeight || document.documentElement.clientHeight;
+    if (box.height > 0 && box.top >= safeTop && box.bottom <= viewport - 8) return;
+
+    panel.style.scrollMarginTop = `${safeTop}px`;
+    panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+
+  /* A press has to reach the tile no matter what the shelf is doing underneath
+     the cursor. Pointer capture pins the whole press — down, up, and the
+     compatibility click that follows — to the tile that took it, so a page still
+     sliding from the previous tap can no longer swallow the next one.
+
+     Capture also reports the tile even when the pointer ended up somewhere else
+     by the time it was released, so the press origin decides tap from drag.
+     Keyboard activation sends no pointer events and is unaffected.
+
+     `press` dies on pointerup but `dragged` stays latched until the click that
+     follows consumes it: the two events are separated by mouseup, so clearing
+     the origin early would erase the very move that made it a drag. */
+  let press = null;
+  let dragged = false;
+
+  gridEl.addEventListener('pointerdown', e => {
+    const tile = e.target.closest('.gnr-tile');
+    if (!tile || tile.classList.contains('is-empty')) { press = null; return; }
+    press = { tile, x: e.clientX, y: e.clientY };
+    try { tile.setPointerCapture(e.pointerId); } catch { /* capture is best-effort */ }
+  });
+
+  gridEl.addEventListener('pointermove', e => {
+    if (press && (Math.abs(e.clientX - press.x) > 8 || Math.abs(e.clientY - press.y) > 8)) dragged = true;
+  });
+
+  gridEl.addEventListener('pointerup', () => { press = null; });
+  gridEl.addEventListener('pointercancel', () => { press = null; dragged = false; });
+
+  gridEl.addEventListener('click', e => {
     const tile = e.target.closest('.gnr-tile');
     if (!tile || tile.classList.contains('is-empty')) return;
+    if (dragged) { dragged = false; return; }
     const id = tile.dataset.family;
     setActive(id);
     revealGenrePanel(panelsEl.querySelector(`.gnr-panel[data-family="${id}"]`), vc);
@@ -2102,24 +2141,29 @@ gridEl.addEventListener('click', e => {
 function genreTileHtml(fam, index, biggest) {
   const width = Math.max(6, Math.round(fam.albums / biggest * 100));
   const styles = `${fam.items.length} style${fam.items.length === 1 ? '' : 's'}`;
+  // The button is a stationary hit target; the card inside it owns the tilt and
+  // the lift, so hovering can never slide the press target out from under the
+  // cursor. Keep every painted layer inside the card.
   return `
     <button type="button" class="gnr-tile" role="tab" data-family="${fam.id}"
             aria-selected="false" tabindex="-1"
             style="--h:${fam.hue};--s:${fam.sat ?? 48};--delay:${index * 32}ms">
-      <span class="gnr-tile-art" aria-hidden="true">
-        <img src="/static/img/genres/${fam.id}.jpg" alt="" loading="lazy" decoding="async" onerror="this.remove()">
-      </span>
-      <span class="gnr-tile-veil" aria-hidden="true"></span>
-      <span class="gnr-tile-sheen" aria-hidden="true"></span>
-      <span class="gnr-tile-body">
-        <span class="gnr-tile-kicker">${styles}</span>
-        <span class="gnr-tile-label">${escHtml(fam.label)}</span>
-        <span class="gnr-tile-blurb">${escHtml(fam.blurb)}</span>
-        <span class="gnr-tile-foot">
-          <span class="gnr-tile-count">${fam.albums.toLocaleString()}</span>
-          <span class="gnr-tile-unit">albums</span>
+      <span class="gnr-tile-card">
+        <span class="gnr-tile-art" aria-hidden="true">
+          <img src="/static/img/genres/${fam.id}.jpg" alt="" loading="lazy" decoding="async" onerror="this.remove()">
         </span>
-        <span class="gnr-tile-meter" aria-hidden="true"><span class="gnr-tile-fill" style="width:${width}%"></span></span>
+        <span class="gnr-tile-veil" aria-hidden="true"></span>
+        <span class="gnr-tile-sheen" aria-hidden="true"></span>
+        <span class="gnr-tile-body">
+          <span class="gnr-tile-kicker">${styles}</span>
+          <span class="gnr-tile-label">${escHtml(fam.label)}</span>
+          <span class="gnr-tile-blurb">${escHtml(fam.blurb)}</span>
+          <span class="gnr-tile-foot">
+            <span class="gnr-tile-count">${fam.albums.toLocaleString()}</span>
+            <span class="gnr-tile-unit">albums</span>
+          </span>
+          <span class="gnr-tile-meter" aria-hidden="true"><span class="gnr-tile-fill" style="width:${width}%"></span></span>
+        </span>
       </span>
     </button>`;
 }
@@ -2157,11 +2201,23 @@ function genreChipHtml(item, biggest) {
 
 /* Pointer-driven depth. Tiles lean toward the cursor and the sheen tracks it, so
    the grid reads as a shallow 3D shelf rather than a flat list. Everything is
-   skipped for coarse pointers and for reduced-motion users. */
+   skipped for coarse pointers and for reduced-motion users.
+
+   Two details keep the lean from fighting the user:
+
+   - The rotation is driven by the button, which never transforms, so its box is
+     the hit target and the cursor can no longer fall off a tile that just moved.
+   - The rotation reads a normalised cursor position with the outer 18% of each
+     edge clamped flat. Near an edge the old per-pixel angle swung the card's near
+     rim away from the cursor, hover reset, the rim swung back — a visible
+     flicker that also swallowed presses. The bloom still tracks the real cursor. */
 function attachGenreTilt(root) {
   const fine = window.matchMedia?.('(hover: hover) and (pointer: fine)');
   const calm = window.matchMedia?.('(prefers-reduced-motion: reduce)');
   if (!fine?.matches || calm?.matches) return;
+
+  const EDGE = 0.18;
+  const flatten = v => (v < EDGE ? EDGE : v > 1 - EDGE ? 1 - EDGE : v);
 
   for (const tile of root.querySelectorAll('.gnr-tile')) {
     let frame = 0;
@@ -2174,21 +2230,24 @@ function attachGenreTilt(root) {
       tile.style.setProperty('--mx', mx.toFixed(1) + '%');
       tile.style.setProperty('--my', my.toFixed(1) + '%');
     };
+    const schedule = () => { if (!frame) frame = requestAnimationFrame(paint); };
 
     tile.addEventListener('pointermove', e => {
       const box = tile.getBoundingClientRect();
+      if (!box.width || !box.height) return;
       const nx = (e.clientX - box.left) / box.width;
       const ny = (e.clientY - box.top) / box.height;
       mx = nx * 100;
       my = ny * 100;
-      ry = (nx - 0.5) * 13;
-      rx = (0.5 - ny) * 10;
-      if (!frame) frame = requestAnimationFrame(paint);
+      const fx = flatten(nx), fy = flatten(ny);
+      ry = (fx - 0.5) * 13;
+      rx = (0.5 - fy) * 10;
+      schedule();
     });
 
     tile.addEventListener('pointerleave', () => {
       rx = 0; ry = 0; mx = 50; my = 50;
-      if (!frame) frame = requestAnimationFrame(paint);
+      schedule();
     });
   }
 }
