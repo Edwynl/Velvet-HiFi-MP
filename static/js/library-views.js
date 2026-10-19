@@ -1644,8 +1644,282 @@ async function renderTracks(vc) {
 
 // ── Genres ────────────────────────────────────────────────────────────────────
 
-async function renderGenres(vc) {
+/* Genre strings come from a multi-value retail taxonomy, so they land in the
+   library as comma-joined labels ("Musiques du monde, Asie, Japon, J-pop",
+   "Pop, Rock, Metal", "粤语流行"). A flat list of those is unreadable, so we
+   fold them into browsable families. Rules are ordered most-specific first and
+   the first match wins, which lets the leading tag decide the family; the last
+   family has no `match` and acts as the catch-all. A family may carry either a
+   `match` regex or a `test` predicate, never both. */
+const GENRE_FAMILIES = [
+  {
+    id: 'film', label: 'Film & Score', blurb: 'Soundtracks, TV themes & game scores', hue: 258,
+    match: /film|bandes\s+originales|sound[\s-]?track|anime|jeux\s+vidéo|séries\s+tv|comédies\s+musicales/i,
+  },
+  {
+    id: 'classical', label: 'Classical', blurb: 'Orchestral, chamber & instrumental', hue: 44,
+    match: /classique|classical|symphonique|concertante|concertos?|musique\s+de\s+chambre|profane|instrumental/i,
+  },
+  {
+    id: 'asianpop', label: 'Asian Pop', blurb: 'C-pop, J-pop & K-pop', hue: 348,
+    match: /j-?pop|k-?pop|mandopop|cantopop|国语|粤語|粤语|華語|华语|広東|ポップ/i,
+  },
+  {
+    id: 'electronic', label: 'Electronic', blurb: 'Club, techno & downtempo', hue: 180,
+    match: /électronique|electronic|techno|house|drum\s*&\s*bass|d\.?n\.?b|lounge|downtempo|trance|\bdance\b/i,
+  },
+  {
+    id: 'jazz', label: 'Jazz & Blues', blurb: 'Standards, vocal, fusion & blues', hue: 28,
+    match: /jazz|blues|gospel|be\s?bop/i,
+  },
+  {
+    id: 'hiphop', label: 'Hip-Hop, Soul & R&B', blurb: 'Rap, funk, disco & modern soul', hue: 288,
+    match: /hip-?hop|\brap\b|soul|funk|r&b|disco/i,
+  },
+  {
+    id: 'indie', label: 'Indie & Alternative', blurb: 'Alternative, singer-songwriter & new wave', hue: 96,
+    match: /ind[eé]|alternative|alternativa|singer-?songwriter/i,
+  },
+  {
+    id: 'folk', label: 'Folk & Country', blurb: 'Roots, acoustic & traditional', hue: 70,
+    match: /country|folk|roots|bluegrass|celtic/i,
+  },
+  {
+    id: 'rock', label: 'Rock & Metal', blurb: 'Hard rock, punk, metal & prog', hue: 8,
+    // Two opt-outs keep the mainstream tags out of Rock while leaving the real
+    // ones in: a bare "Pop, Rock" / "Rock, Pop" umbrella tag is pop-chart
+    // vocabulary, and "Variété internationale" is a pop-chart marker — but
+    // "Pop, Rock, Hard Rock" and "Pop, Rock, Punk - New Wave" are genuinely
+    // Rock. `rock\b` is what keeps Reggae's "Rocksteady" out.
+    test: s => /rock\b|metal|punk|new\s*wave|nouvelle\s*vague/i.test(s)
+      && !/variété/i.test(s)
+      && !/^\s*(pop\s*,\s*rock|rock\s*,\s*pop)\s*$/i.test(s),
+  },
+  {
+    id: 'pop', label: 'Pop & Mainstream', blurb: 'Chart pop, rock-pop & variety', hue: 322,
+    match: /\bpop\b|variété/i,
+  },
+  {
+    id: 'world', label: 'World & Regional', blurb: 'Asia, Latin, Africa & Europe', hue: 202,
+    match: /monde|asie|asia|afrique|europe|latin|reggae|reggaeton|bossa|indienne|indien|corée|kraut|\bdub\b/i,
+  },
+  {
+    id: 'mood', label: 'Mood & Scene', blurb: 'Ambient, holiday, spoken & uncategorised', hue: 45, sat: 16,
+  },
+];
+
+function genreFamilyOf(name) {
+  const raw = String(name || '');
+  for (const fam of GENRE_FAMILIES) {
+    if (fam.match ? fam.match.test(raw) : fam.test?.(raw)) return fam;
+  }
+  return GENRE_FAMILIES[GENRE_FAMILIES.length - 1];
+}
+
+/* Display names only — the raw string stays the key the /genres and
+   /genres/<id>/albums endpoints are called with, so translating this never
+   changes what a chip filters to. The library mixes French retail labels,
+   English ones and CJK titles in the same list ("Musiques du monde, Asie",
+   "Pop", "粤语流行"), so this maps one comma-separated segment at a time and
+   passes anything unknown through untouched. */
+const GENRE_SEGMENT_LABELS = {
+  // world / regional
+  'musiques du monde': 'World Music',
+  'musique du monde': 'World Music',
+  'asie': 'Asia',
+  'asia': 'Asia',
+  'international/far east & asia': 'International / Far East & Asia',
+  'japon': 'Japan',
+  'corée': 'Korea',
+  'coree': 'Korea',
+  'afrique': 'Africa',
+  'europe': 'Europe',
+  'amérique latine': 'Latin America',
+  'amerique latine': 'Latin America',
+  'brésil': 'Brazil',
+  'bresil': 'Brazil',
+  'allemagne': 'Germany',
+  'italie': 'Italy',
+  'musique indienne': 'Indian Music',
+  'chanson française': 'French Chanson',
+  'chanson francaise': 'French Chanson',
+  'reggae': 'Reggae',
+  'dub': 'Dub',
+  'ska & rocksteady': 'Ska & Rocksteady',
+  'afrobeat': 'Afrobeat',
+  'reggaeton': 'Reggaeton',
+  'urban latino': 'Urban Latino',
+  'bossa nova': 'Bossa Nova',
+  // pop / rock
+  'pop': 'Pop',
+  'rock': 'Rock',
+  'hard rock': 'Hard Rock',
+  'metal': 'Metal',
+  'punk - new wave': 'Punk – New Wave',
+  'rock progressif': 'Progressive Rock',
+  'rock en español': 'Rock en Español',
+  'variété internationale': 'International Pop',
+  'variete internationale': 'International Pop',
+  'alternatif et indé': 'Alternative & Indie',
+  'alternatif et inde': 'Alternative & Indie',
+  'indie pop': 'Indie Pop',
+  'alternative': 'Alternative',
+  'alternativa': 'Alternative',
+  'singer-songwriter': 'Singer-Songwriter',
+  // hip-hop / soul / r&b
+  'rap': 'Rap',
+  'hip-hop': 'Hip-Hop',
+  'hip-hop/rap': 'Hip-Hop / Rap',
+  'soul': 'Soul',
+  'funk': 'Funk',
+  'disco': 'Disco',
+  'r&b': 'R&B',
+  'r&b/disco funk': 'R&B / Disco Funk',
+  'r&b/pop': 'R&B / Pop',
+  'contemporary r&b': 'Contemporary R&B',
+  // jazz / blues / folk
+  'jazz': 'Jazz',
+  'jazz vocal': 'Vocal Jazz',
+  'jazz fusion & jazz rock': 'Jazz Fusion & Jazz-Rock',
+  'jazz contemporain': 'Contemporary Jazz',
+  'be bop': 'Be Bop',
+  'gospel': 'Gospel',
+  'blues': 'Blues',
+  'country': 'Country',
+  'country & folk': 'Country & Folk',
+  'folk': 'Folk',
+  // electronic
+  'électronique': 'Electronic',
+  'electronique': 'Electronic',
+  'dance': 'Dance',
+  'house': 'House',
+  'techno': 'Techno',
+  'drum & bass': 'Drum & Bass',
+  'lounge': 'Lounge',
+  'downtempo': 'Downtempo',
+  // classical
+  'classique': 'Classical',
+  'classical': 'Classical',
+  'musique concertante': 'Concert Music',
+  'concertos pour violoncelle': 'Cello Concertos',
+  'musique de chambre': 'Chamber Music',
+  'trios': 'Trios',
+  'musique symphonique': 'Symphonic Music',
+  'musique vocale (profane et sacrée)': 'Vocal Music (Secular & Sacred)',
+  'instrumental': 'Instrumental',
+  // film
+  'film': 'Film',
+  'bandes originales de films': 'Film Soundtracks',
+  'film soundtracks': 'Film Soundtracks',
+  'soundtrack': 'Soundtrack',
+  'anime': 'Anime',
+  'jeux vidéo': 'Video Games',
+  'jeux video': 'Video Games',
+  'séries tv': 'TV Series',
+  'series tv': 'TV Series',
+  'comédies musicales': 'Musical Comedies',
+  'comedies musicales': 'Musical Comedies',
+  // mood / misc
+  'ambiance': 'Ambient',
+  'musiques de noël': 'Christmas Music',
+  'musiques de noel': 'Christmas Music',
+  'diction': 'Spoken Word',
+  'humour': 'Humor',
+  'enfants': "Children's",
+  'divers': 'Variety',
+  // asia-pop
+  'j-pop': 'J-Pop',
+  'k-pop': 'K-Pop',
+  'mandopop': 'Mandopop',
+  'cantopop': 'Cantopop',
+  '国语流行': 'Mandarin Pop',
+  '粤語流行': 'Cantonese Pop',
+  '粤语流行': 'Cantonese Pop',
+  '広東ポップ': 'Cantonese Pop',
+  'ポップ': 'J-Pop',
+  '华语流行乐': 'Chinese Pop',
+  '華語流行樂': 'Chinese Pop',
+  '华语组合': 'Chinese Groups',
+  '華語組合': 'Chinese Groups',
+  'コンテンポラリー r&b': 'Contemporary R&B',
+  'alternativa y rock en español': 'Alternative & Spanish Rock',
+};
+
+function genreSegmentLabel(seg) {
+  const key = String(seg || '').trim().toLowerCase();
+  return GENRE_SEGMENT_LABELS[key] || String(seg || '').trim();
+}
+
+function genreDisplayLabel(raw) {
+  return String(raw || '').split(',').map(genreSegmentLabel).join(', ');
+}
+
+/* "Pop", "POP" and "pop" are three separate rows in the database but one style
+   to a reader. Fold them together, sum the counts, and keep the variant with
+   the most albums as the row that a click opens.
+
+   The key is the *set* of translated tags, so anything that reads the same to a
+   user merges regardless of spelling or word order: "Asie, Musiques du monde"
+   joins "Musiques du monde, Asie", "Rock, Pop" joins "Pop, Rock", and the
+   Japanese 広東ポップ joins the Chinese 粤语流行. */
+function genreMergeKey(raw) {
+  return String(raw || '')
+    .split(',')
+    .map(seg => genreSegmentLabel(seg).toLowerCase())
+    .sort()
+    .join(' | ');
+}
+
+function mergeGenreAliases(items) {
+  const merged = new Map();
+  for (const item of items) {
+    const count = Number(item.count || 0);
+    const key = genreMergeKey(item.genre);
+    const hit = merged.get(key);
+    if (!hit) {
+      merged.set(key, {
+        ...item, count,
+        label: genreDisplayLabel(item.genre),
+        aliases: [item.genre],
+        raw: item.genre,
+        topCount: count,
+      });
+      continue;
+    }
+    hit.aliases.push(item.genre);
+    hit.count += count;
+    // Keep the spelling the API is most likely to recognise as the click target.
+    if (count > hit.topCount) {
+      hit.raw = item.genre;
+      hit.topCount = count;
+    }
+  }
+  return [...merged.values()].sort((a, b) => b.count - a.count || a.label.localeCompare(b.label));
+}
+
+function groupGenresByFamily(genres) {
+  const buckets = GENRE_FAMILIES.map(f => ({ ...f, items: [], albums: 0 }));
+  const byId = new Map(buckets.map(b => [b.id, b]));
+  for (const g of genres) {
+    const bucket = byId.get(genreFamilyOf(g.genre).id);
+    bucket.items.push(g);
+    bucket.albums += Number(g.count || 0);
+  }
+  for (const bucket of buckets) {
+    bucket.items = mergeGenreAliases(bucket.items);
+    // Album totals are counted from the raw rows, but the shelf reports the
+    // merged ones so the tile total always equals the sum of its chips.
+    bucket.albums = bucket.items.reduce((s, i) => s + Number(i.count || 0), 0);
+  }
+  return buckets
+    .filter(b => b.items.length)
+    .sort((a, b) => b.albums - a.albums || a.label.localeCompare(b.label));
+}
+
+async function renderGenres(vc, params = {}) {
   const genres = await api('/genres') || [];
+  const families = groupGenresByFamily(genres);
+  const biggest = families.reduce((m, f) => Math.max(m, f.albums), 1);
 
   vc.innerHTML = `
     <div class="topbar">
@@ -1659,51 +1933,210 @@ async function renderGenres(vc) {
     </div>
     <div class="section-header">
       <div class="section-title">Genres</div>
-      <div class="section-sub" id="genres-count">${genres.length} genres</div>
+      <div class="section-sub" id="genres-count">${genres.length} styles · ${families.length} families</div>
     </div>
-    <div class="focus-bar"><input id="genres-filter" type="search" aria-label="Filter genres" placeholder="Filter genres…" maxlength="128" class="catalog-filter-input"></div>
-    <div class="grid" id="genres-grid"></div>
+    <div class="focus-bar">
+      <input id="genres-filter" type="search" aria-label="Filter genres" placeholder="Filter styles…" maxlength="128" class="catalog-filter-input">
+      <span class="gnr-tip">Select a family to browse its styles</span>
+    </div>
+    <div class="gnr-stage">
+      <div class="gnr-grid" id="gnr-grid" role="tablist" aria-label="Genre families">
+        ${families.map((f, i) => genreTileHtml(f, i, biggest)).join('')}
+      </div>
+      <div class="gnr-panels" id="gnr-panels">
+        ${families.map(f => genrePanelHtml(f, biggest)).join('')}
+      </div>
+      <div class="gnr-empty" id="gnr-empty" hidden>No styles match that filter.</div>
+    </div>
   `;
 
-  const grid = UI['genres-grid'];
-  const input = UI['search-input'];
-  const countEl = UI['genres-count'];
+  setupSearch({ autoFocus: false });
 
-  function draw(items) {
-    grid.innerHTML = '';
-    countEl.textContent = `${items.length} genres`;
-    if (!items.length) {
-      grid.innerHTML = `<div style="padding:0;color:var(--muted);font-size:13px;grid-column:1/-1">No genres found.</div>`;
-      return;
+  const gridEl = UI['gnr-grid'];
+  const panelsEl = UI['gnr-panels'];
+  const emptyEl = UI['gnr-empty'];
+  const countEl = UI['genres-count'];
+  const filterEl = UI['genres-filter'];
+
+  let activeId = families.some(f => f.id === params?.family) ? params.family : families[0]?.id || null;
+
+  function setActive(id) {
+    activeId = id;
+    for (const tile of gridEl.querySelectorAll('.gnr-tile')) {
+      const on = tile.dataset.family === id;
+      tile.setAttribute('aria-selected', on ? 'true' : 'false');
+      tile.classList.toggle('is-open', on);
+      tile.tabIndex = on ? 0 : -1;
     }
-    const fragment = document.createDocumentFragment();
-    items.forEach(item => {
-      const card = document.createElement('div');
-      card.className = 'card';
-      card.innerHTML = `
-        <div class="card-art" style="display:flex;align-items:center;justify-content:center;background:linear-gradient(145deg,var(--s2),var(--s4));font-family:'Cormorant Garamond',serif;font-size:28px;color:var(--gold)">
-          ${escHtml(item.genre.charAt(0).toUpperCase())}
-        </div>
-        <div class="card-title">${escHtml(item.genre)}</div>
-        <div class="card-sub">${item.count} albums</div>
-      `;
-      card.addEventListener('click', () => navigate('genre', { id: item.genre }));
-      fragment.appendChild(card);
-    });
-    grid.appendChild(fragment);
+    for (const panel of panelsEl.querySelectorAll('.gnr-panel')) {
+      panel.hidden = panel.dataset.family !== id;
+    }
   }
 
-  setupSearch({ autoFocus: false });
-  UI['genres-filter']?.addEventListener('input', e => {
-    const q = (e.target.value || '').trim().toLowerCase();
-    draw(genres.filter(item => item.genre.toLowerCase().includes(q)));
+  gridEl.addEventListener('click', e => {
+    const tile = e.target.closest('.gnr-tile');
+    if (!tile || tile.classList.contains('is-empty')) return;
+    setActive(tile.dataset.family);
+    if (!tile.classList.contains('is-open')) {
+      const panel = panelsEl.querySelector(`.gnr-panel[data-family="${tile.dataset.family}"]`);
+      panel?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }
   });
-  draw(genres);
+
+  gridEl.addEventListener('keydown', e => {
+    if (e.key !== 'ArrowRight' && e.key !== 'ArrowLeft') return;
+    const tiles = [...gridEl.querySelectorAll('.gnr-tile:not(.is-empty)')];
+    const at = tiles.indexOf(document.activeElement);
+    if (at < 0) return;
+    e.preventDefault();
+    const next = tiles[(at + (e.key === 'ArrowRight' ? 1 : tiles.length - 1)) % tiles.length];
+    next.focus();
+  });
+
+  panelsEl.addEventListener('click', e => {
+    const chip = e.target.closest('.gnr-chip');
+    if (!chip) return;
+    navigate('genre', { id: chip.dataset.genre });
+  });
+
+  function applyFilter(raw) {
+    const q = String(raw || '').trim().toLowerCase();
+    let hits = 0;
+    let firstMatch = null;
+
+    for (const fam of families) {
+      const matched = q ? fam.items.filter(i => i.genre.toLowerCase().includes(q)) : fam.items;
+      const tile = gridEl.querySelector(`.gnr-tile[data-family="${fam.id}"]`);
+      const panel = panelsEl.querySelector(`.gnr-panel[data-family="${fam.id}"]`);
+      tile.classList.toggle('is-empty', !matched.length);
+      panel.classList.toggle('is-empty', !matched.length);
+      if (matched.length) { hits += matched.length; if (!firstMatch) firstMatch = fam.id; }
+
+      const shown = matched.slice(0, 14);
+      panel.querySelector('.gnr-chips').innerHTML = shown.map(i => genreChipHtml(i, fam.albums)).join('');
+      const more = matched.length - shown.length;
+      const moreEl = panel.querySelector('.gnr-more');
+      moreEl.hidden = more <= 0;
+      moreEl.textContent = more > 0 ? `+${more} more — refine the filter to narrow down` : '';
+      panel.querySelector('.gnr-panel-count').textContent =
+        `${matched.length} of ${fam.items.length} · ${matched.reduce((s, i) => s + Number(i.count || 0), 0).toLocaleString()} albums`;
+    }
+
+    emptyEl.hidden = hits > 0;
+    countEl.textContent = q
+      ? `${hits} of ${genres.length} styles · ${families.length} families`
+      : `${genres.length} styles · ${families.length} families`;
+
+    if (q && activeId && gridEl.querySelector(`.gnr-tile[data-family="${activeId}"]`)?.classList.contains('is-empty')) {
+      setActive(firstMatch);
+    }
+  }
+
+  filterEl?.addEventListener('input', e => applyFilter(e.target.value));
+
+  attachGenreTilt(gridEl);
+  applyFilter('');
+  if (activeId) setActive(activeId);
+}
+
+function genreTileHtml(fam, index, biggest) {
+  const width = Math.max(6, Math.round(fam.albums / biggest * 100));
+  const styles = `${fam.items.length} style${fam.items.length === 1 ? '' : 's'}`;
+  return `
+    <button type="button" class="gnr-tile" role="tab" data-family="${fam.id}"
+            aria-selected="false" tabindex="-1"
+            style="--h:${fam.hue};--s:${fam.sat ?? 48};--delay:${index * 32}ms">
+      <span class="gnr-tile-art" aria-hidden="true">
+        <img src="/static/img/genres/${fam.id}.jpg" alt="" loading="lazy" decoding="async" onerror="this.remove()">
+      </span>
+      <span class="gnr-tile-veil" aria-hidden="true"></span>
+      <span class="gnr-tile-sheen" aria-hidden="true"></span>
+      <span class="gnr-tile-body">
+        <span class="gnr-tile-kicker">${styles}</span>
+        <span class="gnr-tile-label">${escHtml(fam.label)}</span>
+        <span class="gnr-tile-blurb">${escHtml(fam.blurb)}</span>
+        <span class="gnr-tile-foot">
+          <span class="gnr-tile-count">${fam.albums.toLocaleString()}</span>
+          <span class="gnr-tile-unit">albums</span>
+        </span>
+        <span class="gnr-tile-meter" aria-hidden="true"><span class="gnr-tile-fill" style="width:${width}%"></span></span>
+      </span>
+    </button>`;
+}
+
+function genrePanelHtml(fam, biggest) {
+  const shown = fam.items.slice(0, 14);
+  const more = fam.items.length - shown.length;
+  return `
+    <section class="gnr-panel" data-family="${fam.id}" style="--h:${fam.hue}" aria-label="${escHtml(fam.label)}" hidden>
+      <div class="gnr-panel-head">
+        <span class="gnr-panel-dot" aria-hidden="true"></span>
+        <h2 class="gnr-panel-title">${escHtml(fam.label)}</h2>
+        <span class="gnr-panel-count">${fam.items.length} of ${fam.items.length} · ${fam.albums.toLocaleString()} albums</span>
+      </div>
+      <div class="gnr-chips">
+        ${shown.map(i => genreChipHtml(i, biggest)).join('')}
+      </div>
+      <div class="gnr-more" hidden></div>
+    </section>`;
+}
+
+function genreChipHtml(item, biggest) {
+  const width = Math.max(4, Math.round(Number(item.count || 0) / biggest * 100));
+  // data-genre carries the raw database string so a click always queries a
+  // label the API knows; only the visible name is translated.
+  const merged = (item.aliases || []).length > 1;
+  return `
+    <button type="button" class="gnr-chip" data-genre="${escHtml(item.raw)}"
+            title="${escHtml((item.aliases || []).join(' · '))}">
+      <span class="gnr-chip-name">${escHtml(item.label)}${merged ? `<span class="gnr-chip-alias">+${item.aliases.length - 1}</span>` : ''}</span>
+      <span class="gnr-chip-count">${Number(item.count || 0).toLocaleString()}</span>
+      <span class="gnr-chip-meter" aria-hidden="true"><span class="gnr-chip-fill" style="width:${width}%"></span></span>
+    </button>`;
+}
+
+/* Pointer-driven depth. Tiles lean toward the cursor and the sheen tracks it, so
+   the grid reads as a shallow 3D shelf rather than a flat list. Everything is
+   skipped for coarse pointers and for reduced-motion users. */
+function attachGenreTilt(root) {
+  const fine = window.matchMedia?.('(hover: hover) and (pointer: fine)');
+  const calm = window.matchMedia?.('(prefers-reduced-motion: reduce)');
+  if (!fine?.matches || calm?.matches) return;
+
+  for (const tile of root.querySelectorAll('.gnr-tile')) {
+    let frame = 0;
+    let rx = 0, ry = 0, mx = 50, my = 50;
+
+    const paint = () => {
+      frame = 0;
+      tile.style.setProperty('--rx', rx.toFixed(2) + 'deg');
+      tile.style.setProperty('--ry', ry.toFixed(2) + 'deg');
+      tile.style.setProperty('--mx', mx.toFixed(1) + '%');
+      tile.style.setProperty('--my', my.toFixed(1) + '%');
+    };
+
+    tile.addEventListener('pointermove', e => {
+      const box = tile.getBoundingClientRect();
+      const nx = (e.clientX - box.left) / box.width;
+      const ny = (e.clientY - box.top) / box.height;
+      mx = nx * 100;
+      my = ny * 100;
+      ry = (nx - 0.5) * 13;
+      rx = (0.5 - ny) * 10;
+      if (!frame) frame = requestAnimationFrame(paint);
+    });
+
+    tile.addEventListener('pointerleave', () => {
+      rx = 0; ry = 0; mx = 50; my = 50;
+      if (!frame) frame = requestAnimationFrame(paint);
+    });
+  }
 }
 
 async function renderGenre(vc, { id }) {
   const data = await api(`/genres/${encodeURIComponent(id)}/albums?limit=1000&sort=year`);
   const albums = data?.albums || [];
+  const family = genreFamilyOf(id);
 
   vc.innerHTML = `
     <div class="topbar">
@@ -1715,11 +2148,16 @@ async function renderGenre(vc, { id }) {
       </button>
     </div>
     <div class="section-header">
-      <div class="section-title">${escHtml(id)}</div>
-      <div class="section-sub">${albums.length} albums</div>
+      <div class="section-title">${escHtml(genreDisplayLabel(id))}</div>
+      <div class="section-sub">
+        <button type="button" class="gnr-crumb" data-family="${family.id}" style="--h:${family.hue}">${escHtml(family.label)}</button>
+        <span> · ${albums.length} albums</span>
+      </div>
     </div>
     <div class="grid" id="genre-albums-grid"></div>
   `;
+
+  UI['gnr-crumb']?.addEventListener('click', () => navigate('genres', { family: family.id }));
 
   const grid = UI['genre-albums-grid'];
   if (!albums.length) {
@@ -2256,7 +2694,7 @@ async function renderAlbum(vc, { id }) {
           ${album.year ? `<div class="album-meta-item">${album.year}</div>` : ''}
           <div class="album-meta-item">${tracks.length} tracks</div>
           <div class="album-meta-item">${fmt(totalDur)}</div>
-          ${album.genre ? `<div class="album-meta-item">${escHtml(album.genre)}</div>` : ''}
+          ${album.genre ? `<button type="button" class="album-meta-item album-meta-genre" id="album-genre-link" data-genre="${escHtml(album.genre)}">${escHtml(album.genre)}</button>` : ''}
         </div>
         <div class="album-actions">
           <button class="btn btn-gold" id="play-all-btn">
@@ -2471,6 +2909,11 @@ async function renderAlbum(vc, { id }) {
   // Play all
   UI['play-all-btn'].addEventListener('click', () => {
     if (tracks.length) playTrack(tracks[0], tracks, 0);
+  });
+
+  // Genre badge opens the family shelf, pre-focused on this album's family.
+  UI['album-genre-link']?.addEventListener('click', () => {
+    navigate('genres', { family: genreFamilyOf(album.genre).id });
   });
 
   // Overflow manage menu toggle

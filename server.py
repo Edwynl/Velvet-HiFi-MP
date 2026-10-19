@@ -4371,6 +4371,7 @@ async def auth_middleware(request: Request, call_next):
     should_skip = request.method == "GET" and (
         path in public_get_paths or path in PUBLIC_FRONTEND_JS_PATHS
         or path.startswith("/docs/")
+        or path.startswith(GENRE_ART_PREFIX)
     )
     if path == '/api/security/admin-login':
         should_skip = True  # The endpoint verifies only the admin password itself.
@@ -4550,6 +4551,31 @@ def serve_icon():
 def serve_hires_logo():
     path = Path(__file__).parent / "static" / "logo-hires.png"
     return FileResponse(path, media_type="image/png")
+
+
+# Abstract shelf artwork for the Genres tiles. Generated build output — no
+# library data in it — so it is served like the other chrome assets rather than
+# behind a ticket. The id is matched against this fixed set, so the route can
+# never be pointed at an arbitrary file under static/.
+GENRE_ART_IDS = (
+    "world", "pop", "hiphop", "jazz", "asianpop", "mood",
+    "film", "classical", "indie", "electronic", "rock", "folk",
+)
+GENRE_ART_PREFIX = "/static/img/genres/"
+
+
+@app.get("/static/img/genres/{family}.jpg")
+def serve_genre_art(family: str):
+    if family not in GENRE_ART_IDS:
+        raise HTTPException(404, "Unknown genre artwork")
+    path = Path(__file__).parent / "static" / "img" / "genres" / f"{family}.jpg"
+    if not path.is_file():
+        raise HTTPException(404, "Genre artwork not built")
+    return FileResponse(
+        path,
+        media_type="image/jpeg",
+        headers={"Cache-Control": "public, max-age=604800"},
+    )
 
 
 # ─── Entry Point ──────────────────────────────────────────────────────────────
