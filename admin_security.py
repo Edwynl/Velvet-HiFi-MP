@@ -27,7 +27,19 @@ def requires_admin(method, path):
         return False
     if re.fullmatch(r'/api/(?:tracks/\d+/played|albums/\d+/favorite|artists/\d+/enrich-bio)', path):
         return False
-    if method == 'POST' and (path == '/api/playlists' or re.fullmatch(r'/api/playlists/\d+/tracks', path)):
+    # Playlists are a listening artefact, not library state. Creating one,
+    # renaming it and taking a track back out must not interrupt playback for
+    # someone who is already on this server - it used to prompt for the admin
+    # password on the rename and the remove, but not on create or add.
+    # Deleting the whole playlist still costs the administrator step: that one
+    # takes the entire list with it.
+    if method == 'POST' and path == '/api/playlists':
+        return False
+    if method == 'PUT' and re.fullmatch(r'/api/playlists/\d+', path):
+        return False
+    if method == 'POST' and re.fullmatch(r'/api/playlists/\d+/tracks', path):
+        return False
+    if method == 'DELETE' and re.fullmatch(r'/api/playlists/\d+/tracks/\d+', path):
         return False
     return path.startswith('/api/')
 

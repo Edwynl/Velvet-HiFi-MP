@@ -58,6 +58,25 @@ class AdminSessionTests(unittest.TestCase):
         self.assertTrue(self.admin.is_configured())
         self.assertFalse(self.admin.password_matches('anything'))
 
+    def test_editing_a_playlist_is_not_an_administrator_action(self):
+        """Renaming and removing a track are listening, not library surgery.
+
+        Deleting the whole playlist stays behind the admin step on purpose, so
+        that is the one that must still answer admin_password_required.
+        """
+        free = [
+            ('POST', '/api/playlists'),
+            ('PUT', '/api/playlists/7'),
+            ('POST', '/api/playlists/7/tracks'),
+            ('DELETE', '/api/playlists/7/tracks/42'),
+        ]
+        for method, path in free:
+            with self.subTest(method=method, path=path):
+                self.assertFalse(admin_security.requires_admin(method, path))
+        self.assertTrue(admin_security.requires_admin('DELETE', '/api/playlists/7'))
+        # Anything else under playlists is still administrator territory.
+        self.assertTrue(admin_security.requires_admin('PUT', '/api/playlists/7/other'))
+
     def test_tailnet_browsing_and_sensitive_endpoints_need_separate_cookie(self):
         client = TestClient(server.app, raise_server_exceptions=False)
         with patch.object(listener_access, 'is_passwordless_listener', return_value=True), \
@@ -116,10 +135,16 @@ class TailnetListenerTests(unittest.TestCase):
             self.assertFalse(listener_access.is_passwordless_listener(rewritten,'100.70.0.2'))
 
     def test_sensitive_policy_covers_config_uploads_deletions_and_legacy_get(self):
-        for method,path in [('GET','/api/config'),('POST','/api/albums/1/cover'),('DELETE','/api/playlists/1/tracks/1'),
+        for method,path in [('GET','/api/config'),('POST','/api/albums/1/cover'),
                             ('GET','/api/security/reset-api-key'),('POST','/api/albums/1/open-folder'),
-                            ('POST','/api/cast/device'),('POST','/api/playback/play')]:
+                            ('POST','/api/cast/device'),('POST','/api/playback/play'),
+                            ('DELETE','/api/playlists/1')]:
             self.assertTrue(admin_security.requires_admin(method,path))
+        # Adding a track to a playlist and taking it back out are the same kind
+        # of act, so neither costs an administrator password; renaming the list
+        # is editing, not a library change.
         for method,path in [('GET','/api/artists/1/albums'),('POST','/api/artists/1/enrich-bio'),
-                            ('GET','/api/zones'),('GET','/api/cast/status/device'),('POST','/api/playlists/1/tracks')]:
+                            ('GET','/api/zones'),('GET','/api/cast/status/device'),
+                            ('POST','/api/playlists/1/tracks'),('DELETE','/api/playlists/1/tracks/1'),
+                            ('PUT','/api/playlists/1')]:
             self.assertFalse(admin_security.requires_admin(method,path))
