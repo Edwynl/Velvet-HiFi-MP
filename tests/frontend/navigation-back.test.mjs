@@ -597,8 +597,8 @@ function testLandscapeAlbumLayoutCssGuards() {
     'Expected landscape album hero to keep cover art and metadata in balanced columns',
   );
   assert.ok(
-    html.includes('grid-template-columns: repeat(2, minmax(0, 1fr)) !important;'),
-    'Expected landscape album actions to use a balanced two-column grid',
+    html.includes('grid-template-columns: repeat(4, minmax(0, 1fr)) !important;'),
+    'Expected landscape album actions to span the hero in one four-button row',
   );
   assert.ok(
     !html.includes('class="album-hero-title" style="display:flex;align-items:center;justify-content:center;gap:12px;flex-wrap:wrap"'),

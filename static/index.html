@@ -2639,10 +2639,13 @@ input[type=range]::-webkit-slider-thumb:hover { background: var(--gold); }
     .album-hero-info {
       padding-top: 0;
       min-width: 0;
-      display: flex;
-      flex-direction: column;
-      justify-content: flex-start;
+      display: contents;
       text-align: left;
+    }
+    .album-hero-details {
+      grid-column: 2;
+      grid-row: 1;
+      min-width: 0;
     }
     .album-label {
       margin-bottom: 12px;
@@ -2677,7 +2680,8 @@ input[type=range]::-webkit-slider-thumb:hover { background: var(--gold); }
     .album-actions {
       width: 100%;
       display: grid;
-      grid-template-columns: repeat(2, minmax(0, 1fr));
+      grid-column: 1 / -1;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
       gap: 6px;
       align-items: stretch;
     }
@@ -2687,8 +2691,9 @@ input[type=range]::-webkit-slider-thumb:hover { background: var(--gold); }
       min-width: 0;
     }
     .album-actions .btn {
-      padding: 8px 6px;
-      font-size: 10px;
+      min-height: 44px;
+      padding: 8px 4px;
+      font-size: 11px;
       line-height: 1;
       justify-content: center;
       gap: 4px;
@@ -3584,9 +3589,12 @@ input[type=range]::-webkit-slider-thumb:hover { background: var(--gold); }
       text-align: left !important;
       padding: 0 !important;
       min-width: 0 !important;
-      display: flex !important;
-      flex-direction: column !important;
-      justify-content: flex-start !important;
+      display: contents !important;
+    }
+    .album-hero-details {
+      grid-column: 2;
+      grid-row: 1;
+      min-width: 0;
     }
     .album-label {
       margin-bottom: 6px !important;
@@ -3627,8 +3635,9 @@ input[type=range]::-webkit-slider-thumb:hover { background: var(--gold); }
     }
     .album-actions {
       display: grid !important;
-      grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
-      width: min(100%, 420px) !important;
+      grid-column: 1 / -1;
+      grid-template-columns: repeat(4, minmax(0, 1fr)) !important;
+      width: 100% !important;
       gap: 8px !important;
       align-items: stretch !important;
     }
@@ -3639,8 +3648,8 @@ input[type=range]::-webkit-slider-thumb:hover { background: var(--gold); }
     }
     .album-actions .btn,
     .album-actions .album-more-btn > .btn {
-      min-height: 36px !important;
-      padding: 7px 10px !important;
+      min-height: 44px !important;
+      padding: 7px 4px !important;
       font-size: 11px !important;
       line-height: 1 !important;
       justify-content: center !important;

@@ -2803,17 +2803,19 @@ async function renderAlbum(vc, { id }) {
         <div class="album-art-placeholder"></div>
       </div>
       <div class="album-hero-info">
-        <div class="album-label">Album</div>
-        <div class="album-hero-title">
-          ${escHtml(album.title)}
-          ${album.is_hires ? `<img src="/static/logo-hires.png" class="hires-badge-detail" alt="Hi-Res">` : ''}
-        </div>
-        <div class="album-hero-artist" id="hero-artist">${escHtml(album.artist_name || '')}</div>
-        <div class="album-meta-row">
-          ${album.year ? `<div class="album-meta-item">${album.year}</div>` : ''}
-          <div class="album-meta-item">${tracks.length} tracks</div>
-          <div class="album-meta-item">${fmt(totalDur)}</div>
-          ${album.genre ? `<button type="button" class="album-meta-item album-meta-genre" id="album-genre-link" data-genre="${escHtml(album.genre)}">${escHtml(album.genre)}</button>` : ''}
+        <div class="album-hero-details">
+          <div class="album-label">Album</div>
+          <div class="album-hero-title">
+            ${escHtml(album.title)}
+            ${album.is_hires ? `<img src="/static/logo-hires.png" class="hires-badge-detail" alt="Hi-Res">` : ''}
+          </div>
+          <div class="album-hero-artist" id="hero-artist">${escHtml(album.artist_name || '')}</div>
+          <div class="album-meta-row">
+            ${album.year ? `<div class="album-meta-item">${album.year}</div>` : ''}
+            <div class="album-meta-item">${tracks.length} tracks</div>
+            <div class="album-meta-item">${fmt(totalDur)}</div>
+            ${album.genre ? `<button type="button" class="album-meta-item album-meta-genre" id="album-genre-link" data-genre="${escHtml(album.genre)}">${escHtml(album.genre)}</button>` : ''}
+          </div>
         </div>
         <div class="album-actions">
           <button class="btn btn-gold" id="play-all-btn">
