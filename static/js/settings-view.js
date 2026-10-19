@@ -11,7 +11,7 @@ function renderLibraryRows(libraries = []) {
       <div class="library-path" title="${escHtml(lib.path)}">${escHtml(lib.path)}</div>
       <div class="library-item-actions">
         <button class="btn btn-gold scan-lib" data-path="${escHtml(lib.path)}" data-id="${lib.id}" title="Import new music from this folder">Scan Folder</button>
-        <button class="btn btn-ghost refresh-lib" data-path="${escHtml(lib.path)}" data-id="${lib.id}" style="color:var(--gold)" title="Re-read metadata from files already imported from this folder">Re-read Tags</button>
+        <button class="btn btn-ghost refresh-lib" data-path="${escHtml(lib.path)}" data-id="${lib.id}" title="Re-read metadata from files already imported from this folder">Re-read Tags</button>
         <button class="btn btn-ghost remove-lib" data-id="${lib.id}" style="color:var(--muted)">Remove</button>
       </div>
     </div>
@@ -75,11 +75,17 @@ function renderScanStatusPanel(s = {}) {
     `;
   }
 
+  /* Idle card. With an empty library this genuinely is "ready to import"; with a
+   populated one the old wording read as if the numbers below still had to be
+   imported, when they are the library that is already there. */
+  const hasLibrary = libraryAlbums > 0 || libraryTracks > 0;
   return `
     <div class="scan-status-card idle">
-      <div class="scan-status-title">Ready to import</div>
-      <div class="scan-status-sub">Add as many folders as you need, then scan one folder or import all folders together.</div>
-      <div class="scan-status-metrics">
+      <div class="scan-status-title">${hasLibrary ? 'Library loaded' : 'Ready to import'}</div>
+      <div class="scan-status-sub">${hasLibrary
+        ? 'Everything already scanned stays put. Scan again to pick up new or changed files.'
+        : 'Add as many folders as you need, then scan one folder or import all folders together.'}</div>
+      <div class="scan-status-metrics is-triple">
         <div class="scan-status-metric"><div class="scan-status-value">${libraryAlbums.toLocaleString()}</div><div class="scan-status-label">Albums</div></div>
         <div class="scan-status-metric"><div class="scan-status-value">${libraryTracks.toLocaleString()}</div><div class="scan-status-label">Tracks</div></div>
         <div class="scan-status-metric"><div class="scan-status-value">${Number(s.library_artists || 0).toLocaleString()}</div><div class="scan-status-label">Artists</div></div>
@@ -128,32 +134,37 @@ async function renderSettings(vc) {
       </div>
       <div style="font-size:12px;color:var(--muted);line-height:1.55;margin-top:8px">VELVET applies no EQ or DSP. The OS mixer, browser or renderer may still process audio, so this is not a bit-perfect guarantee.</div>
       <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px">
-        <button class="btn btn-ghost dsp-apply-btn" data-profile-id="" style="padding:8px 10px">Apply</button>
+        ${!activeDspId
+          ? '<button class="btn btn-ghost dsp-apply-btn" data-profile-id="" style="padding:8px 10px" disabled title="Already applied">Apply</button>'
+          : '<button class="btn btn-gold dsp-apply-btn" data-profile-id="" style="padding:8px 10px">Apply</button>'}
       </div>
     </div>
   `;
-  const renderDspPresetCard = (profile) => `
-    <div class="dsp-preset-card" data-profile-id="${profile.id}" style="background:var(--s2);border:1px solid ${String(profile.id) === activeDspId ? 'var(--gold)' : 'var(--border)'};border-radius:var(--radius);padding:14px 16px;margin-bottom:10px">
+  const renderDspPresetCard = (profile) => {
+    const isActive = String(profile.id) === activeDspId;
+    return `
+    <div class="dsp-preset-card" data-profile-id="${profile.id}" style="background:var(--s2);border:1px solid ${isActive ? 'var(--gold)' : 'var(--border)'};border-radius:var(--radius);padding:14px 16px;margin-bottom:10px">
       <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:8px">
         <div>
           <div style="font-size:14px;color:var(--text);font-weight:600">${escHtml(profile.name)}</div>
           <div style="font-size:11px;color:var(--gold);text-transform:uppercase;letter-spacing:.08em;margin-top:4px">${escHtml(dspProfileRoleLabel(profile))}</div>
         </div>
         <div style="display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end">
-          ${String(profile.id) === activeDspId ? '<span style="font-size:10px;padding:4px 8px;border-radius:999px;background:rgba(201,168,76,.18);color:var(--gold)">Active</span>' : ''}
+          ${isActive ? '<span style="font-size:10px;padding:4px 8px;border-radius:999px;background:rgba(201,168,76,.18);color:var(--gold)">Active</span>' : ''}
           ${profile.is_factory ? '<span style="font-size:10px;padding:4px 8px;border-radius:999px;background:rgba(255,255,255,.06);color:var(--muted)">Factory</span>' : '<span style="font-size:10px;padding:4px 8px;border-radius:999px;background:rgba(255,255,255,.06);color:var(--muted)">Custom</span>'}
         </div>
       </div>
       <div style="font-size:12px;color:var(--muted);line-height:1.55;margin-top:8px">${escHtml(profile.description || 'No description')}</div>
       <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px">
-        <button class="btn btn-ghost dsp-apply-btn" data-profile-id="${profile.id}" style="padding:8px 10px">Apply</button>
+        <button class="btn ${isActive ? 'btn-ghost' : 'btn-gold'} dsp-apply-btn" data-profile-id="${profile.id}" style="padding:8px 10px"${isActive ? ' disabled title="Already applied"' : ''}>Apply</button>
         <button class="btn btn-ghost dsp-open-btn" data-profile-id="${profile.id}" style="padding:8px 10px">${profile.is_factory ? 'Edit Copy' : 'Edit'}</button>
         ${profile.is_factory
-          ? `<button class="btn btn-ghost dsp-clone-btn" data-profile-id="${profile.id}" style="padding:8px 10px;color:var(--gold)">Duplicate</button>`
+          ? `<button class="btn btn-ghost dsp-clone-btn" data-profile-id="${profile.id}" style="padding:8px 10px">Duplicate</button>`
           : ''}
       </div>
     </div>
   `;
+  };
   const renderDspPresetGroups = () => `
       <div class="dsp-category-heading">Source Direct / VELVET DSP Off</div>
       ${renderDspOffCard()}
@@ -274,8 +285,8 @@ async function renderSettings(vc) {
               </div>
 
               <div style="display:flex;gap:10px;flex-wrap:wrap">
-                <button class="btn btn-gold" id="dsp-save-btn">Save</button>
-                <button class="btn btn-ghost" id="dsp-apply-editor-btn">Save & Apply</button>
+                <button class="btn btn-ghost" id="dsp-save-btn">Save</button>
+                <button class="btn btn-gold" id="dsp-apply-editor-btn">Save &amp; Apply</button>
                 <button class="btn btn-ghost" id="dsp-reset-editor-btn">New Blank</button>
                 <button class="btn btn-ghost" id="dsp-delete-editor-btn" style="color:#ff8d8d;display:none">Delete Custom</button>
               </div>
@@ -416,8 +427,9 @@ function applyDspProfile(profileId) {
 
     if (!filters.length) {
       list.innerHTML = `
-        <div style="padding:12px;border:1px dashed var(--border);border-radius:var(--radius);font-size:12px;color:var(--muted)">
-          No filters yet. Add a filter to build a custom EQ.
+        <div style="padding:12px;border:1px dashed var(--border);border-radius:var(--radius);font-size:12px;color:var(--muted);line-height:1.55">
+          No filters yet. This preset plays flat until you add some — saving it now is
+          fine if you just want a blank to build on.
         </div>
       `;
       return;
