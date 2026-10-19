@@ -32,6 +32,10 @@ def split_artists(artist_string: str) -> list[str]:
         r"\s*ft\.\s*",
         r"\s+and\s+",
         r"\s*,\s*",
+        # Some releases write a co-bill as '陶喆_蔡健雅'. Without this the whole
+        # string becomes one artist row, which then owns the track's primary
+        # artist field and shadows both real artists in search.
+        r"\s*_\s*",
     ]
     pattern = "|".join(separators)
     parts = re.split(pattern, artist_string, flags=re.IGNORECASE)

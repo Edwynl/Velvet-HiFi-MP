@@ -37,6 +37,17 @@ class ScannerServiceTests(unittest.TestCase):
         self.assertEqual(sort_name("The Beatles"), "Beatles, The")
         self.assertEqual(split_artists("Alice & Bob feat. Carol"), ["Alice", "Bob", "Carol"])
 
+    def test_split_artists_splits_underscore_cobills(self):
+        # '陶喆_蔡健雅' imported as one string used to become a single artist row
+        # that owned the track's primary artist field, hiding both real artists.
+        self.assertEqual(split_artists("陶喆_蔡健雅"), ["陶喆", "蔡健雅"])
+        self.assertEqual(split_artists("陶喆_关诗敏"), ["陶喆", "关诗敏"])
+        self.assertEqual(split_artists("A_B_C"), ["A", "B", "C"])
+        self.assertEqual(split_artists("Alice_ Bob"), ["Alice", "Bob"])
+        # Empty halves drop out rather than producing a blank artist.
+        self.assertEqual(split_artists("Alice__Bob"), ["Alice", "Bob"])
+        self.assertEqual(split_artists("Alice"), ["Alice"])
+
     def test_discover_audio_files_skips_appledouble_files(self):
         files = discover_audio_files([str(self.music_dir)], {".flac"})
         self.assertEqual(sorted(Path(path).name for path in files), ["one.flac", "two.flac"])
