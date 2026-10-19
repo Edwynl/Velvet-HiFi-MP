@@ -10,13 +10,11 @@ function renderEQPresets() {
   const container = $('eq-presets-container');
   if (!container || !state.dspProfiles) return;
 
-  // Two different things used to be painted the same way, which is why the
-  // editor and the Settings shelf never agreed: the rail lit up whatever the
-  // *draft* pointed at, while Settings lit up whatever was *applied*. The rail
-  // now marks the applied preset, and the draft gets its own quiet outline.
+  // The rail selects the draft. Playback is reported separately by the
+  // Applied/Preview status; choosing a draft must not replace the stream.
   const draftSourceId = String(eqActiveDraft().sourceId || '');
   const appliedId = String(state.dspProfile || '');
-  const cls = (id) => `eq-preset-btn${String(id) === appliedId ? ' active' : ''}${String(id) === draftSourceId ? ' is-draft' : ''}`;
+  const cls = (id) => `eq-preset-btn${String(id) === draftSourceId ? ' active' : ''}${String(id) === draftSourceId && (draftSourceId !== appliedId || eqActiveDraft().edited) ? ' is-draft' : ''}`;
 
   let html = `<button class="${cls('')}" title="Apply no EQ or DSP" onclick="selectEQPreset('')">Off</button>`;
   const usedLabels = new Map([['Off', 1]]);
@@ -279,6 +277,7 @@ function eqSourceDraft(id) {
     extras,
     gains: eqGraphicGains(filters),
     edited: false,
+    pending: false,
     converted: false,
   };
 }
@@ -524,7 +523,7 @@ function eqRenderEditor() {
 function syncEQEditorFromOutput() {
   if (!$('eq-overlay')?.classList.contains('active')) return;
   if (eqEditor.bypassedProfileId !== null) return;
-  if (eqEditor.active === 'A' && !eqActiveDraft().edited) {
+  if (eqEditor.active === 'A' && !eqActiveDraft().edited && !eqActiveDraft().pending) {
     eqEditor.slots.A = eqSourceDraft(state.dspProfile);
   }
   eqRenderEditor();
@@ -544,24 +543,13 @@ function applyEqProfileToPlayer(profileId) {
   return true;
 }
 
-// Picking a preset in the main slot is a decision, not a preview: it goes
-// live at once, and the rail then shows it as applied. Leaving it as a draft
-// meant the phone had no way to hear a preset at all - the rail never lit up
-// and the panel kept saying "not yet applied". Editing a curve is still a
-// draft, because dragging a slider must not restart playback. The B slot
-// stays a draft as well, or comparing against it would apply the comparison.
+// Select first, apply with the primary button. Reloading audio on every
+// preset tap interrupted listening and a failed reload erased the choice.
 window.selectEQPreset = async function(id) {
   log('[VELVET] Selecting EQ Preset:', id);
   const slot = eqEditor.active;
   eqEditor.slots[slot] = eqSourceDraft(id);
-  const draft = eqActiveDraft();
-  if (slot === 'A' && !draft.edited) {
-    eqEditor.bypassedProfileId = null;
-    // The same preset is already in force: leave the playback where it is.
-    if (String(state.dspProfile || '') !== String(id || '')) {
-      applyEqProfileToPlayer(id);
-    }
-  }
+  eqActiveDraft().pending = true;
   eqRenderEditor();
 }
 
@@ -695,6 +683,7 @@ window.saveEQDraft = async function() {
     // Untouched preset: applied as stored, nothing is written.
     if (!eqDraftIsApplied(draft)) {
       eqEditor.bypassedProfileId = null;
+      draft.pending = false;
       applyEqProfileToPlayer(draft.sourceId);
     } else {
       // Already in force: say so instead of closing the panel silently.

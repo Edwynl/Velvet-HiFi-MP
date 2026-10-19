@@ -24,6 +24,7 @@ function makeJsonResponse(body, status = 200) {
     async text() {
       return JSON.stringify(payload);
     },
+    clone() { return makeJsonResponse(payload, status); },
   };
 }
 
@@ -118,7 +119,12 @@ function createHarness() {
     const body = opts.body ? JSON.parse(opts.body) : null;
     requests.push({ method, path: parsedUrl.pathname, body });
     if (parsedUrl.pathname === '/api/security/status') {
-      return makeJsonResponse({enabled: false, admin_protected: false});
+      return makeJsonResponse({enabled: false, admin_protected: refuseWrites, admin_unlocked: false});
+    }
+    if (parsedUrl.pathname === '/api/security/admin-login' && method === 'POST') {
+      if (body?.password !== 'test-admin-password') return makeJsonResponse({code:'admin_password_invalid'},403);
+      refuseWrites = false;
+      return makeJsonResponse({success:true});
     }
 
     if (parsedUrl.pathname === '/api/stats' && method === 'GET') {
@@ -435,6 +441,7 @@ async function main() {
         .find(button => button.textContent?.trim() === 'Black')
     );
     blackBackgroundButton.click();
+    await dom.window.saveEQDraft();
     await waitFor(() => document.querySelector('#dsp-select').value === '2');
     assert.equal(document.querySelector('#mobile-top-dsp-label').textContent.trim(), 'Black');
     assert.equal(dom.window.localStorage.getItem('velvet:dsp-profile-id'), '2');
@@ -1330,10 +1337,7 @@ async function eqEditorFidelityChecks() {
     assert.match(document.querySelector('#eq-conversion-note').textContent, /Parametric preset/);
     assert.equal(document.querySelector('#eq-conversion-note').hidden, false);
     assert.equal(document.querySelector('#eq-btn-save').textContent, 'Apply');
-    // Picking a preset is a decision, not a preview: it goes live at once and
-    // the rail marks it as applied. A draft that only says "not yet applied"
-    // left the phone with no way to tell whether the choice had taken.
-    assert.equal(status(), 'Applied');
+    assert.equal(status(), 'Preview (not yet applied)');
 
     // The curve is the real cascade (shelf Q*sqrt(2) as in FFmpeg), not a
     // per-band heuristic; the narrow 47 Hz peak is drawn at its true height.
@@ -1569,7 +1573,7 @@ async function autoEqAndReplayGainChecks() {
 // The phone could not hear a preset: picking one only filled the draft, so
 // the rail stayed dark, the panel kept saying "not yet applied" and there
 // was no way to tell whether the choice had taken.
-async function eqPresetAppliesImmediatelyChecks() {
+async function eqPresetSelectionChecks() {
   const harness = createHarness();
   const dom = await harness.createDom();
   const { document } = dom.window;
@@ -1580,8 +1584,13 @@ async function eqPresetAppliesImmediatelyChecks() {
     await dom.window.loadDspProfiles();
     await dom.window.openGraphicEQ();
 
-    // Picking a preset in the main slot goes live at once.
+    // Picking highlights a draft; only Apply changes playback/preferences.
     await dom.window.selectEQPreset('2');
+    assert.equal(dom.window.eval('state.dspProfile'), '');
+    assert.equal(railActive(), 'Black');
+    assert.equal(status(), 'Preview (not yet applied)');
+    await dom.window.saveEQDraft();
+    await dom.window.openGraphicEQ();
     assert.equal(dom.window.eval('state.dspProfile'), '2');
     assert.equal(document.querySelector('#dsp-select').value, '2');
     assert.equal(status(), 'Applied');
@@ -1591,6 +1600,10 @@ async function eqPresetAppliesImmediatelyChecks() {
 
     // Another preset replaces it, the same way round.
     await dom.window.selectEQPreset('3');
+    assert.equal(dom.window.eval('state.dspProfile'), '2');
+    assert.equal(railActive(), 'Vocal Warm');
+    await dom.window.saveEQDraft();
+    await dom.window.openGraphicEQ();
     assert.equal(dom.window.eval('state.dspProfile'), '3');
     assert.equal(document.querySelector('#dsp-select').value, '3');
     assert.equal(status(), 'Applied');
@@ -1598,6 +1611,8 @@ async function eqPresetAppliesImmediatelyChecks() {
 
     // Off is a choice too.
     await dom.window.selectEQPreset('');
+    await dom.window.saveEQDraft();
+    await dom.window.openGraphicEQ();
     assert.equal(dom.window.eval('state.dspProfile'), '');
     assert.equal(document.querySelector('#dsp-select').value, '');
     assert.equal(status(), 'Applied');
@@ -1620,7 +1635,7 @@ async function eqPresetAppliesImmediatelyChecks() {
     dom.window.applyDspProfileToOutput('2');
     assert.equal(dom.window.eval('eqActiveDraft().edited'), true, 'external choice keeps unsaved edits');
     assert.equal(dom.window.eval('eqActiveDraft().gains[0]'), 2);
-    assert.equal(railActive(), 'Black');
+    assert.equal(railActive(), 'Vocal Warm', 'external playback changes keep the edited selection');
     assert.equal(status(), 'Preview (not yet applied)');
 
     // The comparison slot stays a draft: comparing must not apply it.
@@ -1641,16 +1656,22 @@ async function eqPresetAppliesImmediatelyChecks() {
     // most of the time, and the old code failed in silence.
     harness.refuseWrites = true;
     document.querySelector('#eq-btn-save').click();
+    await waitFor(() => document.querySelector('#admin-verification-cancel'));
+    document.querySelector('#admin-verification-cancel').click();
     await waitFor(() => /administrator password/.test(document.querySelector('#toast').textContent));
     assert.ok(
       !harness.dspProfiles.some(profile => profile.name === 'Custom EQ'),
       'a refused write must not reach the library'
     );
-    harness.refuseWrites = false;
 
     // Retry keeps the draft, stores it, applies it and restores the saved
     // filters when reopening. A flat edited curve is a valid saved choice.
-    await dom.window.saveEQDraft();
+    const retry = dom.window.saveEQDraft();
+    await waitFor(() => document.querySelector('#admin-verification-password'));
+    document.querySelector('#admin-verification-password').value = 'test-admin-password';
+    document.querySelector('#admin-verification form').dispatchEvent(new dom.window.Event('submit', {bubbles:true,cancelable:true}));
+    await retry;
+    assert.ok(harness.requests.some(r => r.path === '/api/security/admin-login'), 'save unlocks and retries the real protected write flow');
     const savedId = dom.window.eval('state.dspProfile');
     assert.equal(dom.window.localStorage.getItem('velvet:dsp-profile-id'), savedId);
     await dom.window.openGraphicEQ();
@@ -1681,10 +1702,83 @@ async function eqPresetAppliesImmediatelyChecks() {
   }
 }
 
+async function eqLiveSelectionAndResumeChecks() {
+  const harness = createHarness();
+  const dom = await harness.createDom();
+  const { document } = dom.window;
+  const media = dom.window.eval('audio');
+  let mediaTime = 42, loads = 0, plays = 0, invalidSeeks = 0;
+  try {
+    await dom.window.loadDspProfiles();
+    Object.defineProperties(media, {
+      currentTime: { configurable: true, get: () => mediaTime, set: value => {
+        if (new URL(media.src).searchParams.has('dsp') && value > 0) {
+          invalidSeeks++;
+          throw new Error('Live transcoded response is not seekable');
+        }
+        mediaTime = value;
+      } },
+      duration: { configurable: true, get: () => Infinity },
+      readyState: { configurable: true, get: () => 0 },
+    });
+    media.load = () => { loads++; mediaTime = 0; };
+    media.play = () => { plays++; return Promise.resolve(); };
+    dom.window.eval("state.currentTrack = { id: 1, title: 'Live EQ', artist_name: 'Test', duration: 180, sample_rate: 44100 }; state.playing = true;");
+    await dom.window.openGraphicEQ();
+    const stored = dom.window.localStorage.getItem('velvet:dsp-profile-id');
+    for (const id of ['2', '3', '2']) await dom.window.selectEQPreset(id);
+    assert.equal(loads, 0, 'browsing presets must not reload a playing song');
+    assert.equal(plays, 0);
+    assert.equal(mediaTime, 42);
+    assert.equal(dom.window.eval('state.dspProfile'), '');
+    assert.equal(dom.window.localStorage.getItem('velvet:dsp-profile-id'), stored);
+    assert.equal(document.querySelector('.eq-preset-btn.active').textContent, 'Black');
+    await dom.window.saveEQDraft();
+    assert.equal(plays, 1, 'Apply replaces the stream once');
+    assert.equal(new URL(media.src).searchParams.get('start'), '42');
+    media.dispatchEvent(new dom.window.Event('loadedmetadata'));
+    assert.equal(invalidSeeks, 0, 'never seek the live FLAC stream on the client');
+    assert.equal(dom.window.eval('browserPlaybackPosition()'), 42);
+    mediaTime = 3;
+    dom.window.eval('_timeupdatePending = true; flushTimeupdate();');
+    assert.equal(document.querySelector('#mobile-time-current').textContent, '0:45');
+    assert.equal(document.querySelector('#mobile-time-total').textContent, '3:00');
+    await dom.window.openGraphicEQ();
+    await dom.window.selectEQPreset('3');
+    assert.equal(plays, 1);
+    await dom.window.saveEQDraft();
+    assert.equal(new URL(media.src).searchParams.get('start'), '45', 'a second change uses the absolute track position');
+    assert.equal(dom.window.localStorage.getItem('velvet:dsp-profile-id'), '3');
+    const progress = document.querySelector('#mobile-progress-row');
+    const track = progress.querySelector('.mobile-progress-track');
+    track.getBoundingClientRect = () => ({left:0,width:100});
+    const event = (type, x) => Object.assign(new dom.window.Event(type, {bubbles:true}), {clientX:x,pointerType:'touch',pointerId:1});
+    const playsBeforeSeek = plays;
+    progress.dispatchEvent(event('pointerdown', 20));
+    progress.dispatchEvent(event('pointermove', 40));
+    assert.equal(plays, playsBeforeSeek, 'dragging previews without starting many FFmpeg streams');
+    progress.dispatchEvent(event('pointerup', 50));
+    progress.dispatchEvent(event('click', 50));
+    assert.equal(plays, playsBeforeSeek + 1, 'releasing commits just one stream, without a duplicate click seek');
+    assert.equal(new URL(media.src).searchParams.get('start'), '90');
+    mediaTime = 4;
+    await dom.window.openGraphicEQ();
+    await dom.window.selectEQPreset('');
+    await dom.window.saveEQDraft();
+    assert.equal(new URL(media.src).searchParams.has('start'), false, 'direct sources retain HTTP Range seeking');
+    media.dispatchEvent(new dom.window.Event('loadedmetadata'));
+    assert.equal(mediaTime, 94);
+    assert.equal(dom.window.eval('browserStreamOffset'), 0);
+  } finally {
+    dom.window.close();
+  }
+}
+
 try {
+  await eqLiveSelectionAndResumeChecks();
   await main();
   await eqEditorFidelityChecks();
-  await eqPresetAppliesImmediatelyChecks();
+  await eqPresetSelectionChecks();
   await autoEqAndReplayGainChecks();
   console.log('frontend_dsp_settings_check=OK');
   process.exit(0);

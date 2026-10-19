@@ -5495,10 +5495,7 @@ input[type=range]::-webkit-slider-thumb:hover { background: var(--gold); }
       color: var(--gold);
       border-left-color: var(--gold);
     }
-    /* Which preset the editor is showing, as opposed to which one is playing.
-       Drawn as an inset ring rather than a border edge, because the active
-       mark uses the left border on desktop and the bottom border on mobile -
-       a second border would collide with whichever one is in force. */
+    /* Selected drafts keep a visible ring until confirmed with Apply. */
     .eq-preset-btn.is-draft {
       background: rgba(201, 168, 76, 0.10);
       box-shadow: inset 0 0 0 1px rgba(201, 168, 76, 0.45);
@@ -8841,6 +8838,38 @@ let audioDataArrayR = null;
 let vuSilentGain = null; // Pull the analyser graph silently to the destination.
 let channelSplitter = null; // ChannelSplitterNode for L/R separation
 let browserPlaybackToken = 0;
+let browserStreamOffset = 0;
+
+function browserPlaybackPosition() {
+  return browserStreamOffset + (Number.isFinite(audio.currentTime) ? audio.currentTime : 0);
+}
+
+function browserPlaybackDuration() {
+  const known = Number(state.currentTrack?.duration) || 0;
+  const media = Number.isFinite(audio.duration) && audio.duration > 0 ? audio.duration : 0;
+  return browserStreamOffset ? (known || (media ? media + browserStreamOffset : 0)) : (media || known);
+}
+
+// Live FFmpeg output has no byte-range seek table. Resume it at the input
+// on the server instead of asking WebKit to seek an unseekable response.
+function browserStreamNeedsOffset(track) {
+  if (state.upsample && state.upsample !== 'none') return true;
+  const profile = dspProfileById(state.dspProfile);
+  if (!profile) return false;
+  const rate = Number(track?.sample_rate) || 48000;
+  return Boolean(Number(profile.preamp_db) || Number(profile.stereo_width)
+    || (Number(profile.reverb_room_size) && Number(profile.reverb_wet_dry))
+    || dspProfileFilters(profile).some(f => f.enabled !== false && Number(f.gain) && Number(f.freq) < rate / 2));
+}
+
+function seekBrowserPlayback(seconds) {
+  const target = Math.max(0, Number(seconds) || 0);
+  if (browserStreamNeedsOffset(state.currentTrack) && state.currentTrack) {
+    startBrowserPlayback(state.currentTrack, { resumeTime: target }).catch(() => {});
+  } else {
+    audio.currentTime = target;
+  }
+}
 const browserPlaybackRecoveryConfig = {
   pauseDelayMs: 400,
   stallDelayMs: 5500, // 5.5s (up from 4.5s) - allow more time for mobile buffering
@@ -9017,7 +9046,7 @@ function attemptDspAutoFallback(reason = 'stream-error') {
     select.value = '';
     select.dispatchEvent(new Event('change', { bubbles: true }));
   } else {
-    const resumeTime = Number.isFinite(audio.currentTime) ? audio.currentTime : 0;
+    const resumeTime = browserPlaybackPosition();
     startBrowserPlayback(state.currentTrack, { resumeTime }).catch(() => {});
   }
 
@@ -9057,7 +9086,7 @@ function scheduleBrowserPlaybackRecovery(reason, { delayMs = browserPlaybackReco
     if (!canRecoverBrowserPlayback()) return;
 
     const activeTrack = state.currentTrack;
-    const resumeTime = Number.isFinite(audio.currentTime) && audio.currentTime > 0 ? audio.currentTime : 0;
+    const resumeTime = browserPlaybackPosition();
     browserRecoveryLastAt = Date.now();
     browserRecoveryAttempts += 1;
 
@@ -9366,7 +9395,8 @@ async function startBrowserPlayback(track, { resumeTime = null, token = null } =
   let ticket = authState.apiKey ? currentStreamTicket() : '';
   const ticketWasAwaited = !!authState.apiKey && !ticket;
   if (ticketWasAwaited) ticket = await refreshStreamTicket();
-  const targetUrl = streamUrl(track.id, undefined, ticket);
+  const streamOffset = Number.isFinite(resumeTime) && resumeTime > 0 && browserStreamNeedsOffset(track) ? resumeTime : 0;
+  const targetUrl = streamUrl(track.id, undefined, ticket) + (streamOffset ? `&start=${encodeURIComponent(streamOffset)}` : '');
   if (playbackToken !== browserPlaybackToken) return false;
   clearDspStartupHealthCheck();
 
@@ -9382,12 +9412,13 @@ async function startBrowserPlayback(track, { resumeTime = null, token = null } =
   cleanupSuspendedAudioContextIfNeeded();
 
   audio.removeAttribute('src');
+  browserStreamOffset = streamOffset;
   audio.load();
 
   audio.src = targetUrl;
   audio.load();
 
-  if (Number.isFinite(resumeTime) && resumeTime > 0) {
+  if (!streamOffset && Number.isFinite(resumeTime) && resumeTime > 0) {
     const seekAfterMetadata = () => {
       if (playbackToken !== browserPlaybackToken) return;
       try {
@@ -9967,15 +9998,15 @@ function flushTimeupdate() {
   const trackDuration = Number.isFinite(Number(state.currentTrack?.duration)) && Number(state.currentTrack.duration) > 0
     ? Number(state.currentTrack.duration)
     : 0;
-  const totalDuration = audioDuration || trackDuration;
+  const totalDuration = browserPlaybackDuration();
   if (audioDuration && state.currentTrack && !trackDuration) {
-    state.currentTrack.duration = audioDuration;
+    state.currentTrack.duration = audioDuration + browserStreamOffset;
   }
-  const pct = totalDuration ? (audio.currentTime / totalDuration) * 100 : 0;
+  const pct = totalDuration ? (browserPlaybackPosition() / totalDuration) * 100 : 0;
   UI['progress-fill'].style.width = pct + '%';
   UI['progress-fill'].style.setProperty('--prog', pct + '%');
   UI['mobile-progress-fill'].style.width = pct + '%';
-  const curr = fmt(audio.currentTime);
+  const curr = fmt(browserPlaybackPosition());
   const tot = totalDuration ? fmt(totalDuration) : '—';
   UI['time-current'].textContent = curr;
   UI['time-total'].textContent = tot;
@@ -10078,7 +10109,7 @@ audio.addEventListener('ended', async () => {
   if (state.repeatMode === 'one') {
     cleanupSuspendedAudioContextIfNeeded();
     audio.playbackRate = 1.0;
-    audio.currentTime = 0; audio.play(); return;
+    seekBrowserPlayback(0); audio.play(); return;
   }
   const next = state.queueIdx + 1;
   if (next < state.queue.length) {
@@ -10203,7 +10234,7 @@ const togglePlayAction = async () => {
       if (state.currentTrack) updateMediaSession(state.currentTrack);
     } catch (error) {
       console.warn('[VELVET] Resume play failed, retrying stream:', error?.message || error);
-      const resumeTime = Number.isFinite(audio.currentTime) ? audio.currentTime : 0;
+      const resumeTime = browserPlaybackPosition();
       const recovered = await startBrowserPlayback(state.currentTrack, { resumeTime });
       if (!recovered) {
         state.playing = false;
@@ -10253,13 +10284,13 @@ UI['mobile-vu-progress-bar']?.addEventListener('click', (e) => {
   const rect = bar.getBoundingClientRect();
   const x = e.clientX - rect.left;
   const pct = x / rect.width;
-  if (audio.duration) {
-    audio.currentTime = pct * audio.duration;
+  if (browserPlaybackDuration()) {
+    seekBrowserPlayback(pct * browserPlaybackDuration());
   }
 });
 
 UI['btn-prev'].addEventListener('click', () => {
-  if (!isCastZone() && !isNativeZone() && audio.currentTime > 3) { audio.currentTime = 0; return; }
+  if (!isCastZone() && !isNativeZone() && browserPlaybackPosition() > 3) { seekBrowserPlayback(0); return; }
   const prev = state.queueIdx - 1;
   if (prev >= 0) { state.queueIdx = prev; playTrack(state.queue[prev]); }
 });
@@ -10579,18 +10610,30 @@ UI['vu-calibration'].addEventListener('change', event => {
 syncVUControls();
 
 // Handle progress scrub on both desktop and mobile bars
-function seekFromClientX(clientX, trackEl) {
+function seekFromClientX(clientX, trackEl, preview = false) {
   if (isCastZone() || isNativeZone()) return;
-  if (!Number.isFinite(audio.duration) || audio.duration <= 0) return;
+  if (browserPlaybackDuration() <= 0) return;
   const rect = trackEl.getBoundingClientRect();
   const pct = Math.min(1, Math.max(0, (clientX - rect.left) / rect.width));
-  audio.currentTime = audio.duration * pct;
+  if (preview) {
+    for (const id of ['progress-fill', 'mobile-progress-fill']) {
+      UI[id].style.width = pct * 100 + '%';
+      UI[id].style.setProperty('--prog', pct * 100 + '%');
+    }
+    return;
+  }
+  seekBrowserPlayback(browserPlaybackDuration() * pct);
 }
 function bindProgressScrub(containerEl) {
   let isSeeking = false;
+  let pointerSeekAt = -Infinity;
 
   const track = containerEl.querySelector('.progress-track') || containerEl.querySelector('.mobile-progress-track');
   const stopSeek = (e) => {
+    if (isSeeking && e?.type === 'pointerup') {
+      if (browserStreamNeedsOffset(state.currentTrack)) seekFromClientX(e.clientX, track);
+      pointerSeekAt = performance.now();
+    }
     isSeeking = false;
     if (e && typeof e.pointerId === 'number' && containerEl.hasPointerCapture?.(e.pointerId)) {
       containerEl.releasePointerCapture(e.pointerId);
@@ -10598,6 +10641,7 @@ function bindProgressScrub(containerEl) {
   };
   containerEl.addEventListener('click', e => {
     if (!track) return;
+    if (performance.now() - pointerSeekAt < 500) return;
     seekFromClientX(e.clientX, track);
   });
   containerEl.addEventListener('pointerdown', e => {
@@ -10605,13 +10649,13 @@ function bindProgressScrub(containerEl) {
     if (!track) return;
     isSeeking = true;
     containerEl.setPointerCapture?.(e.pointerId);
-    seekFromClientX(e.clientX, track);
+    seekFromClientX(e.clientX, track, browserStreamNeedsOffset(state.currentTrack));
     e.preventDefault();
   });
   containerEl.addEventListener('pointermove', e => {
     if (!isSeeking) return;
     if (!track) return;
-    seekFromClientX(e.clientX, track);
+    seekFromClientX(e.clientX, track, browserStreamNeedsOffset(state.currentTrack));
     e.preventDefault();
   });
   containerEl.addEventListener('pointerup', stopSeek);
@@ -10718,7 +10762,7 @@ UI['upsample-select'].addEventListener('change', e => {
     if (isNativeZone()) {
       playTrack(state.currentTrack, state.queue, state.queueIdx);
     } else {
-      const t = audio.currentTime;
+      const t = browserPlaybackPosition();
       startBrowserPlayback(state.currentTrack, { resumeTime: t }).then((ok) => {
         if (!ok) showToast('Tap play to resume output');
       });
@@ -10771,7 +10815,7 @@ function setReplayGainMode(mode) {
     return;
   }
   if (state.currentTrack) {
-    const t = audio.currentTime;
+    const t = browserPlaybackPosition();
     startBrowserPlayback(state.currentTrack, { resumeTime: t }).then((ok) => {
       if (!ok) showToast('Tap play to resume output');
     });
@@ -10779,10 +10823,7 @@ function setReplayGainMode(mode) {
   showToast(mode === 'off' ? 'ReplayGain off' : `ReplayGain: ${mode} gain`);
 }
 
-// One route for "this DSP profile is now the one in force". The Settings
-// dropdown, the EQ editor's preset rail and the phone's landscape picker
-// all come through here, so they cannot drift apart: picking a preset in
-// the EQ editor applies it exactly like the dropdown does.
+// Settings and the EQ editor's Apply button share the same output change.
 function applyDspProfileToOutput(profileId) {
   const value = String(profileId || '');
   state.dspProfile = value;
@@ -10809,7 +10850,7 @@ function applyDspProfileToOutput(profileId) {
     } else if (isNativeZone()) {
       playTrack(state.currentTrack, state.queue, state.queueIdx, { resume: true });
     } else {
-      const t = audio.currentTime;
+      const t = browserPlaybackPosition();
       startBrowserPlayback(state.currentTrack, { resumeTime: t }).then((ok) => {
         if (!ok) showToast('Tap play to resume output');
       });
@@ -10865,7 +10906,7 @@ if ('mediaSession' in navigator) {
       if (state.currentTrack) updateMediaSession(state.currentTrack);
     } catch (error) {
       console.warn('[VELVET] MediaSession play failed, retrying stream:', error?.message || error);
-      const resumeTime = Number.isFinite(audio.currentTime) ? audio.currentTime : 0;
+      const resumeTime = browserPlaybackPosition();
       const recovered = state.currentTrack
         ? await startBrowserPlayback(state.currentTrack, { resumeTime })
         : false;
@@ -11575,7 +11616,7 @@ function renderSyncedLyrics() {
     el.className = 'lyrics-line';
     el.id = `lyric-${i}`;
     el.textContent = line.text || '';
-    el.addEventListener('click', () => { audio.currentTime = line.time; });
+    el.addEventListener('click', () => { seekBrowserPlayback(line.time); });
     body.appendChild(el);
   });
 }
@@ -11615,7 +11656,7 @@ function updateLyricsHighlight(currentTime) {
 
 audio.addEventListener('timeupdate', () => {
   if ($('lyrics-panel').classList.contains('open')) {
-    updateLyricsHighlight(audio.currentTime);
+    updateLyricsHighlight(browserPlaybackPosition());
   }
 });
 
