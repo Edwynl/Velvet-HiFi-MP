@@ -596,6 +596,47 @@ async function main() {
     const guarded = dom.window.describeSignalProcessing('native', { name: 'Hot' }, 'none',
       { active: true, headroom_guard_db: -13, effective_preamp_db: -13 });
     assert.ok(guarded.some(line => /Headroom guard: -13\.0 dB extra attenuation/.test(line)));
+    // A local output reports what it actually applied; that beats re-deriving
+    // from the profile definition, which only says what should have run.
+    const hot = { id: 7, name: 'Hot' };
+    const nativeBypassed = dom.window.describeSignalProcessing('native', hot, 'none',
+      { active: true }, { requested_profile_id: 7, status: 'bypassed' });
+    assert.match(nativeBypassed[1], /selected but bypassed/);
+    const nativeOff = dom.window.describeSignalProcessing('native', hot, 'none',
+      { active: true }, { requested_profile_id: 7, status: 'off' });
+    assert.match(nativeOff[1], /not applied on this output/);
+    // An answer about a different profile describes an earlier playback, so the
+    // resolved plan is the honest thing to show instead.
+    const staleNative = dom.window.describeSignalProcessing('native', hot, 'none',
+      { active: true }, { requested_profile_id: 3, status: 'bypassed' });
+    assert.doesNotMatch(staleNative[1], /bypassed/);
+    assert.match(staleNative[1], /DSP Hot/);
+    // Object literals come from the jsdom realm, so compare fields rather than
+    // deep-equalling across prototypes.
+    const zoneBypassed = dom.window.describeZoneDsp('native', hot,
+      { active: true }, { requested_profile_id: 7, status: 'bypassed' });
+    assert.equal(zoneBypassed.requested, 'Hot');
+    assert.equal(zoneBypassed.effective, 'Bypassed: no active processing');
+    const zoneOff = dom.window.describeZoneDsp('native', hot,
+      { active: true }, { requested_profile_id: 7, status: 'off' });
+    assert.equal(zoneOff.effective, 'Not applied on this output');
+    const staleZone = dom.window.describeZoneDsp('native', hot,
+      { active: true }, { requested_profile_id: 3, status: 'applied' });
+    assert.equal(staleZone.effective, 'Not applied (previous selection)');
+    // The phone needs the same answer the desktop format label gives.
+    const hiresBadge = document.querySelector('#mobile-player-hires-badge');
+    assert.equal(hiresBadge.getAttribute('role'), 'button');
+    dom.window.eval("state.currentTrack = { id: 11, title: 'Native Track', artist_name: 'Tester', duration: 180, sample_rate: 96000, bit_depth: 24, format: 'FLAC' };");
+    hiresBadge.dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true }));
+    await waitFor(() => document.querySelector('#modal-title').textContent === 'Signal Path');
+    // Reachable by keyboard too, not by pointer alone.
+    document.querySelector('#modal-cancel').click();
+    hiresBadge.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    await waitFor(() => document.querySelector('#modal-title').textContent === 'Signal Path');
+    document.querySelector('#modal-cancel').click();
+    hiresBadge.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: ' ', bubbles: true }));
+    await waitFor(() => document.querySelector('#modal-title').textContent === 'Signal Path');
+    document.querySelector('#modal-cancel').click();
     const browserLines = dom.window.describeSignalProcessing('browser', null, 'none');
     assert.equal(JSON.stringify(browserLines), JSON.stringify(['No PCM upsampling', 'VELVET DSP off (source direct)']));
 

@@ -4131,6 +4131,18 @@ input[type=range]::-webkit-slider-thumb:hover { background: var(--gold); }
     gap: 8px;
     z-index: 2;
   }
+  /* Now that the badge opens the Signal Path, it has to read as a control. */
+  .mobile-player-hires-badge[role="button"] {
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .mobile-player-hires-badge[role="button"]:active {
+    transform: scale(0.97);
+  }
+  .mobile-player-hires-badge[role="button"]:focus-visible {
+    outline: 2px solid var(--gold);
+    outline-offset: 2px;
+  }
   .mobile-player-hires-badge span.pulse-dot {
     width: 6px; height: 6px;
     border-radius: 50%;
@@ -7031,7 +7043,7 @@ input[type=range]::-webkit-slider-thumb:hover { background: var(--gold); }
             <div class="player-title" id="player-title">—</div>
           </div>
           <div class="player-artist" id="player-artist">Select a track to play</div>
-          <div class="player-format" id="player-format"></div>
+          <div class="player-format" id="player-format" title="What VELVET is actually doing to this output — DSP, ReplayGain, upsampling"></div>
         </div>
       </div>
 
@@ -7312,7 +7324,8 @@ input[type=range]::-webkit-slider-thumb:hover { background: var(--gold); }
       <div class="mobile-player-art-wrapper">
         <div class="mobile-player-glow"></div>
         <img id="mobile-player-cover" alt="" src="" />
-        <div class="mobile-player-hires-badge" id="mobile-player-hires-badge">
+        <div class="mobile-player-hires-badge" id="mobile-player-hires-badge"
+             role="button" tabindex="0" title="What VELVET is actually doing to this output — DSP, ReplayGain, upsampling">
           <span class="font-mono text-[10px] text-gold tracking-tighter" id="mobile-player-format-text" style="color: var(--gold)"></span>
           <span class="pulse-dot"></span>
         </div>
@@ -7779,6 +7792,7 @@ async function activateZone(zone, transferPlayback = true) {
 
   // A new zone has not been cast to yet, and has its own DSP choice.
   state.castDsp = null;
+  state.nativeDsp = null;
   state.castStartOffset = 0;
   state.castPosition = 0;
   // A late Play/Pause answer from the previous zone must not touch this one.
@@ -7917,10 +7931,18 @@ function describeSignalProcessing(zoneType, dspProfile, upsample, plan = null, c
   } else if (replaygainOn) {
     lines.push(`ReplayGain ${replaygain.mode} (status unavailable)`);
   }
+  // A local output runs the chain itself, so the server's answer for that exact
+  // playback outranks the profile definition, which only says what should run.
+  // Only while it still describes the profile selected now: a start that fell
+  // back to the source after a failed DSP build leaves an older answer behind.
+  const nativeStatus = zoneType === 'native' && castDspMatches(castDsp, dspProfile)
+    ? castDsp.status : null;
   if (!dspProfile) {
     lines.push('VELVET DSP off (source direct)');
-  } else if (plan && !plan.active) {
+  } else if (nativeStatus === 'bypassed' || (!nativeStatus && plan && !plan.active)) {
     lines.push(`DSP ${dspProfile.name} selected but bypassed: no active processing`);
+  } else if (nativeStatus === 'off') {
+    lines.push(`DSP ${dspProfile.name} selected but not applied on this output`);
   } else {
     lines.push(plan ? `DSP ${dspProfile.name}` : `DSP ${dspProfile.name} (status unavailable)`);
     lines.push(...dspPlanLines(plan));
@@ -7941,6 +7963,14 @@ function describeZoneDsp(zoneType, dspProfile, plan = null, castDsp = null) {
     return { requested, effective };
   }
   if (!dspProfile) return { requested, effective: 'Off (source direct)' };
+  // Same guard as a renderer: an answer about another profile describes a
+  // previous playback, not the output that is running now.
+  if (zoneType === 'native' && castDsp && !castDspMatches(castDsp, dspProfile)) {
+    return { requested, effective: 'Not applied (previous selection)' };
+  }
+  const nativeStatus = zoneType === 'native' ? castDsp?.status : null;
+  if (nativeStatus === 'bypassed') return { requested, effective: 'Bypassed: no active processing' };
+  if (nativeStatus === 'off') return { requested, effective: 'Not applied on this output' };
   if (plan && !plan.active) return { requested, effective: 'Bypassed: no active processing' };
   return { requested, effective: plan ? dspProfile.name : `${dspProfile.name} (status unavailable)` };
 }
@@ -7963,10 +7993,13 @@ async function showSignalPath() {
   // An unanswered or failed cast cannot confirm the renderer's DSP/ReplayGain
   // path, even when it still reports the same track. Show uncertainty until
   // another cast is acknowledged, rather than advertising the old processing.
-  const castDsp = activeZone.type !== 'cast' ? null
-    : (state.castPending || state.castDspUnverified)
+  const castDsp = activeZone.type === 'cast'
+    ? (state.castPending || state.castDspUnverified
       ? { ...(state.castDsp || {}), pending: true }
-      : state.castDsp;
+      : state.castDsp)
+    : activeZone.type === 'native'
+      ? state.nativeDsp
+      : null;
   let plan = null;
   // A renderer's transcode was resolved at the source rate, as this plan is.
   if (dspProfile && (activeZone.type !== 'cast'
@@ -8720,6 +8753,7 @@ const state = {
   castDevice: null, // { udn, name }
   castPollId: null,
   castDsp: null, // the server's DSP status for what the renderer is playing
+  nativeDsp: null, // the server's DSP status for what the local output played
   castStartOffset: 0, // seconds into the track where the renderer's stream starts
   castPosition: 0, // track position on the renderer (offset included)
   castSeq: 0, // the newest castTo request; older answers are dropped
@@ -9473,6 +9507,11 @@ async function playTrack(track, queue, idx, { resume = false } = {}) {
       })
     });
     if (result?.success) {
+      // The native player is the one output that runs the filter chain itself,
+      // and the server resolves and reports what it actually did. Keep that
+      // answer instead of re-deriving it later from the profile definition,
+      // which cannot see anything the output refused to apply.
+      state.nativeDsp = result.dsp || null;
       state.playing = true;
       updatePlayBtnUI();
       updateMediaSession(track);
@@ -10610,6 +10649,22 @@ UI['player-format'].addEventListener('click', e => {
   e.stopPropagation();
   showSignalPath();
 });
+
+// The phone had no way to ask the same question as the desktop player: the
+// Signal Path was only reachable from the desktop format label.
+const hiresBadge = UI['mobile-player-hires-badge'];
+if (hiresBadge) {
+  hiresBadge.addEventListener('click', e => {
+    e.stopPropagation();
+    showSignalPath();
+  });
+  hiresBadge.addEventListener('keydown', e => {
+    if (e.key !== 'Enter' && e.key !== ' ') return;
+    e.preventDefault();
+    e.stopPropagation();
+    showSignalPath();
+  });
+}
 
 bindDesktopPlayerSelectPopover('upsample-select', { openUp: true });
 
