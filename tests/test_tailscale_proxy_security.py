@@ -61,7 +61,11 @@ def isolated_http_server(*, enabled=False, enforce_all=True):
             try:
                 with httpx.Client(base_url=f"http://127.0.0.1:{port}", trust_env=False,
                                   timeout=5) as client:
-                    deadline = time.monotonic() + 20
+                    # The child imports the whole server module, so a cold start
+                    # is measured in tens of seconds once the machine is busy
+                    # running the rest of the suite. 20s made this fixture fail
+                    # at random under full-suite load while passing on its own.
+                    deadline = time.monotonic() + 90
                     while time.monotonic() < deadline:
                         if proc.poll() is not None:
                             output.seek(0)
@@ -73,7 +77,10 @@ def isolated_http_server(*, enabled=False, enforce_all=True):
                             pass
                         time.sleep(0.05)
                     else:
-                        raise AssertionError("Proxy fixture did not become ready")
+                        output.seek(0)
+                        raise AssertionError(
+                            "Proxy fixture did not become ready within 90s; child output:\n"
+                            + output.read())
                     yield client
             finally:
                 if proc.poll() is None:

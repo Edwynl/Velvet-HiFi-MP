@@ -231,6 +231,9 @@ class LocalPlayer:
         self.stream = None
         self.process = None
         self.current_file = None
+        # Which library track this player is playing, so a re-issue for the
+        # same track can resume instead of starting over.
+        self.track_id: Optional[int] = None
         self.output_sample_rate = None
         self._played_frames = 0
         self._gain = 1.0  # Unity gain leaves the PCM samples unchanged.
@@ -280,12 +283,17 @@ class LocalPlayer:
         dsp_filter: str = "",
         output_sample_rate: Optional[int] = None,
         allow_device_rate_fallback: bool = True,
+        start_seconds: float = 0.0,
     ) -> bool:
         """
         Play an audio file using sounddevice.
 
         This uses FFmpeg to decode and sounddevice to play.
         For true high-quality output, use the streaming API instead.
+
+        start_seconds drops the leading audio instead of playing it. It exists
+        so re-issuing playback for the same track (a DSP change mid-track) can
+        resume where the old one was rather than starting over.
         """
         readable_path = filesystem_path(file_path)
         if not Path(readable_path).exists():
@@ -295,13 +303,25 @@ class LocalPlayer:
         gain = float(volume)
         if not numpy.isfinite(gain) or not 0.0 <= gain <= 1.0:
             raise ValueError("Volume must be a finite number between 0 and 1")
+        try:
+            offset = float(start_seconds or 0.0)
+        except (TypeError, ValueError):
+            offset = 0.0
+        if not numpy.isfinite(offset) or offset <= 0:
+            offset = 0.0
         self.stop()
         self._played_frames = 0
         self._gain = gain
 
         device_info = self._get_device_info()
         resolved_rate = int(output_sample_rate or device_info.get("sample_rate") or 48000)
-        cmd = ["ffmpeg", "-nostdin", "-loglevel", "error", "-i", readable_path]
+        cmd = ["ffmpeg", "-nostdin", "-loglevel", "error"]
+        if offset > 0:
+            # Input-side -ss: ffmpeg seeks and still decodes accurately to the
+            # requested timestamp because the output is re-encoded, and it does
+            # not have to demux the whole file first.
+            cmd.extend(["-ss", f"{offset:.3f}"])
+        cmd.extend(["-i", readable_path])
         if dsp_filter:
             # Apply filters after the input and before output encoding.
             cmd.extend(["-af", dsp_filter])
@@ -531,6 +551,8 @@ def play_local(
     volume: float = 1.0,
     dsp_profile_id: Optional[int] = None,
     upsample: str = "none",
+    start_seconds: float = 0.0,
+    resume: bool = False,
 ) -> dict:
     """
     Play a track locally on the specified audio device.
@@ -588,13 +610,22 @@ def play_local(
             )
             dsp_filter = (build_dsp_filter_chain(dict(dsp_profile), track["sample_rate"])
                           if dsp_profile else "")
+            # Changing the DSP re-issues playback for the track that is already
+            # running. The player knows how far it got, so resume here rather
+            # than snapping the listener back to the first second.
+            offset = float(start_seconds or 0.0)
+            if resume and offset <= 0 and player.track_id == track_id:
+                offset = max(0.0, float(player.get_position() or 0.0))
             success = player.play_file(
                 file_path,
                 volume,
                 dsp_filter=dsp_filter,
                 output_sample_rate=output_sample_rate,
                 allow_device_rate_fallback=upsample == "none",
+                start_seconds=offset,
             )
+            if success:
+                player.track_id = track_id
 
             if success:
                 # A 0-frame or failing track can drain before this point;
@@ -613,6 +644,9 @@ def play_local(
                     "device": device_info["name"],
                     "latency": latency,
                     "track_id": track_id,
+                    # Where playback actually began, so the client does not paint
+                    # 0:00 over a track that resumed three minutes in.
+                    "start_offset": round(offset, 3),
                     "dsp_profile_id": dsp_profile_id,
                     "dsp": dsp_effective_status(
                         dsp_profile_id, dict(dsp_profile) if dsp_profile else None,

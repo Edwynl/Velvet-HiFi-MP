@@ -19,13 +19,18 @@ class DummyPlayer:
         self.stop_calls = 0
         self.pause_calls = 0
         self.resume_calls = 0
+        self.track_id = None
+        self._position = 0.0
         DummyPlayer.instances.append(self)
 
     def _get_device_info(self):
         return {"name": "Dummy DAC", "sample_rate": 48000}
 
+    def get_position(self):
+        return self._position
+
     def play_file(self, file_path, volume=1.0, dsp_filter="", output_sample_rate=None,
-                  allow_device_rate_fallback=True):
+                  allow_device_rate_fallback=True, start_seconds=0.0):
         self.output_sample_rate = output_sample_rate
         self.play_calls.append(
             {
@@ -33,6 +38,7 @@ class DummyPlayer:
                 "volume": volume,
                 "dsp_filter": dsp_filter,
                 "output_sample_rate": output_sample_rate,
+                "start_seconds": start_seconds,
             }
         )
         return True

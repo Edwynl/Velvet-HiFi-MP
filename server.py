@@ -3906,6 +3906,16 @@ def play_local(body: dict):
     volume = body.get("volume", 1.0)
     dsp_profile_id = body.get("dsp_profile_id")
     upsample = body.get("upsample", "none")
+    # A DSP change re-issues playback for the track that is already running, so
+    # the client sends where it was; 0 keeps the ordinary start-of-track path.
+    start_seconds = body.get("start_seconds") or 0
+    try:
+        start_seconds = max(0.0, float(start_seconds))
+    except (TypeError, ValueError):
+        start_seconds = 0.0
+    # resume lets the server resume the running track from where it actually
+    # got to, instead of trusting a position the browser may not have polled.
+    resume = bool(body.get("resume"))
 
     try:
         import local_playback
@@ -3916,6 +3926,8 @@ def play_local(body: dict):
             volume=volume,
             dsp_profile_id=dsp_profile_id,
             upsample=upsample,
+            start_seconds=start_seconds,
+            resume=resume,
         )
         return result
     except Exception as e:

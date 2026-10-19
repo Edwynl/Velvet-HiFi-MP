@@ -1509,6 +1509,9 @@ class ServerApiTests(unittest.TestCase):
                     "volume": 0.85,
                     "dsp_profile_id": 4,
                     "upsample": "2x",
+                    # A DSP change re-issues the running track from here.
+                    "start_seconds": 12.5,
+                    "resume": True,
                 },
             )
 
@@ -1520,7 +1523,22 @@ class ServerApiTests(unittest.TestCase):
             volume=0.85,
             dsp_profile_id=4,
             upsample="2x",
+            start_seconds=12.5,
+            resume=True,
         )
+
+    def test_playback_route_sanitises_a_junk_start_position(self):
+        """A malformed resume must not become a negative or NaN offset."""
+        for junk in ("not a number", -30, None):
+            with self.subTest(start_seconds=junk):
+                with patch.object(local_playback, "play_local",
+                                  return_value={"success": True}) as play_local_mock:
+                    resp = self.client.post(
+                        "/api/playback/play",
+                        json={"track_id": 1, "start_seconds": junk},
+                    )
+                self.assertEqual(resp.status_code, 200)
+                self.assertGreaterEqual(play_local_mock.call_args.kwargs["start_seconds"], 0.0)
 
     def test_zones_route_uses_cached_devices_unless_refresh_is_requested(self):
         cached_devices = [{"udn": "cached-1", "name": "Cached Renderer"}]

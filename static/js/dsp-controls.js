@@ -9,17 +9,23 @@ function formatFreq(f) {
 function renderEQPresets() {
   const container = $('eq-presets-container');
   if (!container || !state.dspProfiles) return;
-  
-  const sourceId = eqActiveDraft().sourceId;
-  let html = `<button class="eq-preset-btn ${!sourceId ? 'active' : ''}" onclick="selectEQPreset('')">Off</button>`;
+
+  // Two different things used to be painted the same way, which is why the
+  // editor and the Settings shelf never agreed: the rail lit up whatever the
+  // *draft* pointed at, while Settings lit up whatever was *applied*. The rail
+  // now marks the applied preset, and the draft gets its own quiet outline.
+  const draftSourceId = String(eqActiveDraft().sourceId || '');
+  const appliedId = String(state.dspProfile || '');
+  const cls = (id) => `eq-preset-btn${String(id) === appliedId ? ' active' : ''}${String(id) === draftSourceId ? ' is-draft' : ''}`;
+
+  let html = `<button class="${cls('')}" title="Apply no EQ or DSP" onclick="selectEQPreset('')">Off</button>`;
   const usedLabels = new Map([['Off', 1]]);
-  
+
   visibleDspProfiles(state.dspProfiles).forEach((profile, i) => {
-    const isActive = sourceId === String(profile.id);
     const shortLabel = uniqueDspLabel(dspDisplayLabel(profile, `DSP ${i + 1}`), usedLabels);
-    html += `<button class="eq-preset-btn ${isActive ? 'active' : ''}" title="${escHtml(profile.name || shortLabel)}" onclick="selectEQPreset('${profile.id}')">${escHtml(shortLabel)}</button>`;
+    html += `<button class="${cls(profile.id)}" title="${escHtml(profile.name || shortLabel)}" onclick="selectEQPreset('${profile.id}')">${escHtml(shortLabel)}</button>`;
   });
-  
+
   container.innerHTML = html;
 }
 
@@ -528,6 +534,10 @@ function applyEqProfileToPlayer(profileId) {
   }
 }
 
+// Selecting a preset only loads it into the draft. Applying is the Save
+// button's job, and it says so - "Apply" for an untouched preset, "Apply Off"
+// once the draft is Off. Editing must never restart playback, so this
+// deliberately does not touch state.dspProfile.
 window.selectEQPreset = async function(id) {
   log('[VELVET] Selecting EQ Preset:', id);
   eqEditor.slots[eqEditor.active] = eqSourceDraft(id);
@@ -819,9 +829,30 @@ window.exportAutoEq = async function() {
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 };
 
+function eqHasUnsavedWork() {
+  return Object.values(eqEditor.slots).some(slot => slot && slot.edited);
+}
+
+function eqDiscardDrafts() {
+  eqEditor.slots.A = null;
+  eqEditor.slots.B = null;
+}
+
+/* Closing the editor used to drop an edited draft without a word, which reads
+   as "the EQ ignored me". Ask before throwing work away. */
 window.closeGraphicEQ = function() {
-  if (eqEditor.bypassedProfileId !== null) window.toggleEQBypass();
-  UI['eq-overlay']?.classList.remove('active');
+  const shutdown = () => {
+    eqDiscardDrafts();
+    if (eqEditor.bypassedProfileId !== null) window.toggleEQBypass();
+    UI['eq-overlay']?.classList.remove('active');
+  };
+  if (!eqHasUnsavedWork()) { shutdown(); return; }
+  showConfirm({
+    title: 'Discard EQ changes?',
+    body: 'This preset has unsaved filter changes. Closing now throws them away and leaves playback as it is.',
+    confirmText: 'Discard',
+    onConfirm: shutdown,
+  });
 };
 
 window.openGraphicEQ = async function() {

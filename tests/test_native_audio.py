@@ -157,6 +157,73 @@ class NativeAudioTests(unittest.TestCase):
                 player.stop()
 
 
+    def test_seek_goes_before_the_input_so_ffmpeg_does_not_demux_from_zero(self):
+        """A DSP change re-issues the running track; it must not start over.
+
+        -ss belongs before -i: ffmpeg seeks, and because the output is
+        re-encoded the timestamp is still accurate. After -i it would decode
+        everything up to the offset just to throw it away.
+        """
+        with tempfile.TemporaryDirectory() as root:
+            audio = Path(root) / "source.flac"
+            audio.write_bytes(b"test")
+            commands = []
+
+            def spawn(cmd, **kwargs):
+                commands.append(cmd)
+                return _FakeProcess()
+
+            player = None
+            with patch.object(local_playback, "SOUNDDEVICE_AVAILABLE", True), \
+                 patch.object(local_playback, "sd", create=True) as sd, \
+                 patch.object(local_playback.subprocess, "Popen", side_effect=spawn):
+                sd.OutputStream.side_effect = _FakeStream
+                player = local_playback.LocalPlayer()
+                with patch.object(player, "_get_device_info",
+                                  return_value={"name": "DAC", "sample_rate": 48000}):
+                    self.assertTrue(player.play_file(str(audio), output_sample_rate=48000,
+                                                     start_seconds=93.456))
+                # A junk or negative offset must not become a -ss at all.
+                for bad in (0, -5, float("nan")):
+                    self.assertTrue(player.play_file(str(audio), output_sample_rate=48000,
+                                                     start_seconds=bad))
+                player.stop()
+
+            self.assertEqual(len(commands), 4)
+            resumed = commands[0]
+            self.assertIn("-ss", resumed)
+            self.assertEqual(resumed[resumed.index("-ss") + 1], "93.456")
+            self.assertLess(resumed.index("-ss"), resumed.index("-i"))
+            for plain in commands[1:]:
+                self.assertNotIn("-ss", plain)
+
+    def test_resume_flag_only_resumes_the_track_already_playing(self):
+        with tempfile.TemporaryDirectory() as root:
+            source = Path(root) / "source.flac"
+            source.write_bytes(b"test")
+
+            def run(player, track_id, resume):
+                with patch.object(local_playback, "SOUNDDEVICE_AVAILABLE", True), \
+                     patch.object(local_playback, "_active_player", player), \
+                     patch("sqlite3.connect") as connect:
+                    connect.return_value.execute.return_value.fetchone.return_value = {
+                        "file_path": str(source), "sample_rate": 48000}
+                    return local_playback.play_local(
+                        track_id=track_id, resume=resume)["start_offset"]
+
+            from unittest.mock import MagicMock
+            player = MagicMock(device_id=None, latency="medium", track_id=7)
+            player._get_device_info.return_value = {"name": "DAC", "sample_rate": 48000}
+            player.get_position.return_value = 42.5
+            player.play_file.return_value = True
+            self.assertEqual(run(player, 7, resume=True), 42.5)
+            self.assertEqual(player.play_file.call_args.kwargs["start_seconds"], 42.5)
+            # A different track has nothing to resume into.
+            self.assertEqual(run(player, 9, resume=True), 0)
+            # Without the flag the offset stays at zero even for the same track.
+            self.assertEqual(run(player, 7, resume=False), 0)
+
+
 class _CallbackStop(Exception):
     pass
 
