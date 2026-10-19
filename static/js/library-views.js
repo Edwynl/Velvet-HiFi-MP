@@ -523,8 +523,15 @@ async function renderDiscover(vc) {
     } else {
       items.slice(0, 10).forEach((item, index) => {
         const row = makeTrackRow(item, index + 1, true);
-        row.addEventListener('click', () => playTrack(item, items, index));
-        fragment.appendChild(row);
+        // A ＋ button here cost a sixth grid column and left the row hanging
+        // in the dark. Swiping the row left opens the playlist picker.
+        row.querySelector('.track-add-btn')?.remove();
+        fragment.appendChild(makeTrackSwipeRow(
+          row,
+          () => playTrack(item, items, index),
+          () => showPlaylistPicker(item),
+          { add: true },
+        ));
       });
     }
 
@@ -1125,8 +1132,15 @@ async function renderComposer(vc, { id }) {
     const trackFragment = document.createDocumentFragment();
     tracks.slice(0, 60).forEach((track, index) => {
       const row = makeTrackRow(track, index + 1, true);
-      row.addEventListener('click', () => playTrack(track, tracks, index));
-      trackFragment.appendChild(row);
+      // A ＋ button here cost a sixth grid column and left the row hanging
+      // in the dark. Swiping the row left opens the playlist picker.
+      row.querySelector('.track-add-btn')?.remove();
+      trackFragment.appendChild(makeTrackSwipeRow(
+        row,
+        () => playTrack(track, tracks, index),
+        () => showPlaylistPicker(track),
+        { add: true },
+      ));
     });
     trackList.appendChild(trackFragment);
   }
@@ -1363,8 +1377,15 @@ async function renderWork(vc, { id, role = '', credit = '', version = '' }) {
     const trackFragment = document.createDocumentFragment();
     tracks.slice(0, 80).forEach((track, index) => {
       const row = makeTrackRow(track, index + 1, true);
-      row.addEventListener('click', () => playTrack(track, tracks, index));
-      trackFragment.appendChild(row);
+      // A ＋ button here cost a sixth grid column and left the row hanging
+      // in the dark. Swiping the row left opens the playlist picker.
+      row.querySelector('.track-add-btn')?.remove();
+      trackFragment.appendChild(makeTrackSwipeRow(
+        row,
+        () => playTrack(track, tracks, index),
+        () => showPlaylistPicker(track),
+        { add: true },
+      ));
     });
     trackList.appendChild(trackFragment);
   }
@@ -1557,8 +1578,15 @@ async function renderCreditEntity(vc, { id }) {
     const fragment = document.createDocumentFragment();
     tracks.slice(0, 80).forEach((track, index) => {
       const row = makeTrackRow(track, index + 1, true);
-      row.addEventListener('click', () => playTrack(track, tracks, index));
-      fragment.appendChild(row);
+      // A ＋ button here cost a sixth grid column and left the row hanging
+      // in the dark. Swiping the row left opens the playlist picker.
+      row.querySelector('.track-add-btn')?.remove();
+      fragment.appendChild(makeTrackSwipeRow(
+        row,
+        () => playTrack(track, tracks, index),
+        () => showPlaylistPicker(track),
+        { add: true },
+      ));
     });
     trackList.appendChild(fragment);
   }
@@ -1632,8 +1660,17 @@ async function renderTracks(vc) {
       const fragment = document.createDocumentFragment();
       tracks.forEach((track, index) => {
         const row = makeTrackRow(track, offset + index + 1, true);
-        row.addEventListener('click', () => playTrack(track, tracks, index));
-        fragment.appendChild(row);
+        // The ＋ button cost a sixth grid column and left the row hanging in
+        // the dark. Swiping the row left is the way into the playlist picker,
+        // the same gesture the album and playlist pages already use.
+        row.querySelector('.track-add-btn')?.remove();
+        const swipe = makeTrackSwipeRow(
+          row,
+          () => playTrack(track, tracks, index),
+          () => showPlaylistPicker(track),
+          { add: true },
+        );
+        fragment.appendChild(swipe);
       });
       list.appendChild(fragment);
     }
@@ -2316,7 +2353,7 @@ async function renderPlaylists(vc) {
 
   const grid = UI['playlists-grid'];
   if (!playlists.length) {
-    grid.innerHTML = `<div style="padding:0;color:var(--muted);font-size:13px;grid-column:1/-1">No playlists yet. Create one from this page or add a track with the ＋ button.</div>`;
+    grid.innerHTML = `<div style="padding:0;color:var(--muted);font-size:13px;grid-column:1/-1">No playlists yet. Create one from this page, or swipe a track left in Albums, Tracks or Search to add it.</div>`;
     return;
   }
 
@@ -2378,7 +2415,7 @@ async function renderPlaylist(vc, { id }) {
 
   const list = UI['playlist-tracks-list'];
   if (!playlist.tracks.length) {
-    list.innerHTML = `<div style="padding:24px 32px;color:var(--muted);font-size:13px">This playlist is empty. Add tracks with the ＋ button in albums, search, or tracks.</div>`;
+    list.innerHTML = `<div style="padding:24px 32px;color:var(--muted);font-size:13px">This playlist is empty. Swipe a track left in Albums, Tracks or Search to add it.</div>`;
     return;
   }
 
@@ -3272,7 +3309,10 @@ async function renderSearch(vc, { q } = {}) {
   const visibleTracks = [...tracks];
   const makeSearchTrackRow = (t, i) => {
     const el = makeTrackRow(t, i + 1, true);
-    el.addEventListener('click', () => {
+    // A ＋ button here cost a sixth grid column and left the row hanging
+    // in the dark. Swiping the row left opens the playlist picker.
+    el.querySelector('.track-add-btn')?.remove();
+    const play = () => {
       playTrack(t, visibleTracks, i);
       if (!t.album_id) return;
       (async () => {
@@ -3293,8 +3333,8 @@ async function renderSearch(vc, { q } = {}) {
           console.warn('Failed to sync search playback queue:', error);
         }
       })();
-    });
-    return el;
+    };
+    return makeTrackSwipeRow(el, play, () => showPlaylistPicker(t), { add: true });
   };
 
   // Artists are always above Albums, which are always above Tracks.

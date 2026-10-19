@@ -1863,6 +1863,33 @@ input[type=range]::-webkit-slider-thumb:hover { background: var(--gold); }
 .modal-header { padding: 16px 24px; font-size: 16px; font-weight: 600; border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; }
 .modal-header h3 { margin: 0; font-size: inherit; font-weight: inherit; }
 .modal-body { padding: 24px; font-size: 14px; color: var(--muted); overflow: auto; flex: 1 1 auto; }
+/* Playlist picker: a tap on a list, never a typed number in a native dialog. */
+.playlist-pick-track {
+  color: var(--text); font-size: 13px; margin-bottom: 12px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.playlist-pick-list { display: flex; flex-direction: column; gap: 4px; }
+.playlist-pick-item {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  width: 100%; padding: 10px 12px; border-radius: var(--radius);
+  background: var(--s3); border: 1px solid var(--border); color: var(--text);
+  font-family: 'DM Sans', sans-serif; font-size: 13px; text-align: left; cursor: pointer;
+  transition: border-color .15s, color .15s;
+}
+.playlist-pick-item:hover, .playlist-pick-item:focus-visible {
+  border-color: var(--gold); color: var(--gold); outline: none;
+}
+.playlist-pick-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.playlist-pick-count {
+  color: var(--muted); font-size: 11px; font-family: 'DM Mono', monospace; flex-shrink: 0;
+}
+.playlist-pick-empty { color: var(--muted); font-size: 12px; margin-top: 8px; }
+.playlist-pick-input {
+  width: 100%; margin-top: 12px; padding: 10px 12px; border-radius: var(--radius);
+  background: var(--s3); border: 1px solid var(--border); color: var(--text);
+  font-family: 'DM Sans', sans-serif; font-size: 13px;
+}
+.playlist-pick-input:focus { border-color: var(--gold); outline: none; }
 .modal-footer { padding: 16px 24px; display: flex; justify-content: flex-end; gap: 12px; background: rgba(0,0,0,0.1); flex-shrink: 0; }
 
 /* ─── Toast ─── */
@@ -2760,6 +2787,12 @@ input[type=range]::-webkit-slider-thumb:hover { background: var(--gold); }
       grid-template-columns: 44px 1fr auto;
       gap: 8px;
       padding: 10px 12px;
+    }
+    /* A swiped row keeps the same three columns. The five-column swipe grid
+       is more specific, so it would otherwise leave two empty tracks on the
+       right of every row on the phone. */
+    .track-swipe-row .track-item {
+      grid-template-columns: 44px 1fr auto;
     }
     .track-format,
     .track-sr {
@@ -8263,12 +8296,18 @@ function showConfirm({ title, body, extra = '', confirmText = 'Confirm', confirm
   container.onclick = (e) => {
     if (e.target === container) close();
   };
-  confirmBtn.onclick = () => {
-    onConfirm();
+  confirmBtn.onclick = async () => {
+    // A callback that answers false keeps the panel open, for a choice that
+    // was not filled in yet.
+    const keepOpen = await onConfirm();
+    if (keepOpen === false) return;
     close();
   };
   
   container.classList.add('open');
+  // The caller gets the close function so a choice made inside the body can
+  // dismiss the panel itself.
+  return close;
 }
 
 // Auth state
@@ -11228,39 +11267,55 @@ let currentEqGains = new Array(10).fill(0);
 
 // dsp-controls functions are loaded from /static/js/dsp-controls.js.
 
+// A Home Screen web app on iOS never shows alert(), confirm() or prompt():
+// confirm() comes back false and prompt() comes back null, so a native
+// dialog silently does nothing. The phone is the main way this server is
+// used, so the playlist picker is a panel of the app's own, and a choice in
+// it is a tap rather than a typed number.
 async function showPlaylistPicker(track) {
   const playlists = await api('/playlists') || [];
+  const items = playlists.map(playlist => {
+    const count = Number(playlist.track_count) || 0;
+    return `
+    <button type="button" class="playlist-pick-item" data-playlist-id="${escHtml(playlist.id)}">
+      <span class="playlist-pick-name">${escHtml(playlist.name)}</span>
+      <span class="playlist-pick-count">${count} track${count === 1 ? '' : 's'}</span>
+    </button>`;
+  }).join('');
 
-  let playlistId = null;
-  if (!playlists.length) {
-    const newName = prompt(`No playlists yet.\nCreate one for "${track.title}"`, `${track.artist_name || 'VELVET'} Mix`);
-    if (!newName) return;
-    const created = await api('/playlists', {
-      method: 'POST',
-      body: JSON.stringify({ name: newName })
-    });
-    playlistId = created?.id;
-  } else {
-    const options = playlists
-      .map((playlist, index) => `${index + 1}. ${playlist.name} (${playlist.track_count || 0} tracks)`)
-      .join('\n');
-    const choice = prompt(
-      `Add "${track.title}" to playlist:\n\n${options}\n\nEnter a number, or type a new playlist name:`,
-      '1'
-    );
-    if (!choice) return;
-    if (/^\d+$/.test(choice) && playlists[Number(choice) - 1]) {
-      playlistId = playlists[Number(choice) - 1].id;
-    } else {
+  const close = showConfirm({
+    title: 'Add to playlist',
+    body: `
+      <div class="playlist-pick-track">${escHtml(track.title || 'Unknown Title')}</div>
+      <div class="playlist-pick-list">${items}</div>
+      ${playlists.length ? '' : '<div class="playlist-pick-empty">No playlists yet. Name one below to start one.</div>'}
+      <input type="text" id="playlist-new-name" class="playlist-pick-input" maxlength="80"
+             placeholder="New playlist name" autocomplete="off" enterkeyhint="done">`,
+    confirmText: 'Create & add',
+    confirmTone: 'primary',
+    onConfirm: async () => {
+      const name = ($('playlist-new-name')?.value || '').trim();
+      if (!name) {
+        showToast('Type a name for the new playlist');
+        return false;
+      }
       const created = await api('/playlists', {
         method: 'POST',
-        body: JSON.stringify({ name: choice.trim() })
+        body: JSON.stringify({ name })
       });
-      playlistId = created?.id;
-    }
-  }
+      if (created?.id) await addTrackToPlaylist(track, created.id);
+    },
+  });
 
-  if (!playlistId) return;
+  $('modal-body')?.querySelectorAll('.playlist-pick-item').forEach(button => {
+    button.addEventListener('click', async () => {
+      close();
+      await addTrackToPlaylist(track, button.dataset.playlistId);
+    });
+  });
+}
+
+async function addTrackToPlaylist(track, playlistId) {
   const result = await api(`/playlists/${playlistId}/tracks`, {
     method: 'POST',
     body: JSON.stringify({ track_id: track.id })
