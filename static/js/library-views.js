@@ -2004,14 +2004,40 @@ async function renderGenres(vc, params = {}) {
     }
   }
 
-  gridEl.addEventListener('click', e => {
+  /* A tap on a tile must hand the user off to the styles below it.
+
+   `block: 'start'` rather than 'nearest': on a phone the twelve tiles fill the
+   first screen, so a tap that leaves the page exactly where it was gives no
+   feedback at all and the section that was just chosen stays off-screen. This
+   always parks the panel just under the sticky header, so the next thing on
+   screen is the list to pick from.
+
+   The browser resolves the scroll ancestor itself — #main or the document,
+   depending on layout — so no guesswork about the scroller is needed.
+   scroll-margin-top is set from the live header rather than a hardcoded padding
+   so the panel is never tucked up underneath it.
+
+   (An earlier version never scrolled at all: it guarded the call behind "was
+   this tile closed?", which setActive had already answered on the line above.) */
+function revealGenrePanel(panel, viewRoot) {
+  if (!panel) return;
+
+  panel.classList.remove('is-revealed');
+  void panel.offsetWidth;              // restart the flash when re-tapping
+  panel.classList.add('is-revealed');
+
+  const topbar = viewRoot?.querySelector('.topbar');
+  const safeTop = Math.ceil((topbar?.getBoundingClientRect().bottom || 0) + 10);
+  panel.style.scrollMarginTop = `${safeTop}px`;
+  panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+gridEl.addEventListener('click', e => {
     const tile = e.target.closest('.gnr-tile');
     if (!tile || tile.classList.contains('is-empty')) return;
-    setActive(tile.dataset.family);
-    if (!tile.classList.contains('is-open')) {
-      const panel = panelsEl.querySelector(`.gnr-panel[data-family="${tile.dataset.family}"]`);
-      panel?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-    }
+    const id = tile.dataset.family;
+    setActive(id);
+    revealGenrePanel(panelsEl.querySelector(`.gnr-panel[data-family="${id}"]`), vc);
   });
 
   gridEl.addEventListener('keydown', e => {
@@ -2060,6 +2086,9 @@ async function renderGenres(vc, params = {}) {
 
     if (q && activeId && gridEl.querySelector(`.gnr-tile[data-family="${activeId}"]`)?.classList.contains('is-empty')) {
       setActive(firstMatch);
+      // The panel just swapped under the user; put it back in view so the
+      // matches the filter just found are actually on screen.
+      if (firstMatch) revealGenrePanel(panelsEl.querySelector(`.gnr-panel[data-family="${firstMatch}"]`), vc);
     }
   }
 

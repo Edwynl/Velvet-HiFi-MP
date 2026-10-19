@@ -6318,6 +6318,10 @@ input[type=range]::-webkit-slider-thumb:hover { background: var(--gold); }
 .gnr-stage {
   padding: 4px 32px 44px;
   perspective: 1600px;
+  /* Drop the 300ms double-tap zoom delay on rapid taps. `manipulation` removes
+     only double-tap-to-zoom; two-finger pinch zoom is preserved, so this does
+     not cost accessibility. */
+  touch-action: manipulation;
 }
 
 .gnr-grid {
@@ -6365,6 +6369,7 @@ input[type=range]::-webkit-slider-thumb:hover { background: var(--gold); }
     opacity 0.28s;
   animation: gnr-rise 0.5s cubic-bezier(0.2, 0.7, 0.3, 1) backwards;
   animation-delay: var(--delay, 0ms);
+  touch-action: manipulation;
   -webkit-tap-highlight-color: transparent;
 }
 
@@ -6529,6 +6534,17 @@ input[type=range]::-webkit-slider-thumb:hover { background: var(--gold); }
   from { opacity: 0; transform: translateY(-10px); }
   to   { opacity: 1; transform: translateY(0); }
 }
+/* Flash fired when a tile sends the user here, so the jump reads as a
+   destination. gnr-open already replays on its own whenever a panel is
+   revealed; this only tints the frame. */
+.gnr-panel.is-revealed {
+  animation: gnr-open 0.34s cubic-bezier(0.2, 0.7, 0.3, 1),
+             gnr-flash 1s ease-out;
+}
+@keyframes gnr-flash {
+  0%   { border-color: hsl(var(--h) 75% 60% / 0.9); box-shadow: 0 0 0 1px hsl(var(--h) 75% 55% / 0.4), 0 0 46px hsl(var(--h) 80% 50% / 0.34); }
+  100% { border-color: var(--border); box-shadow: none; }
+}
 
 .gnr-panel-head {
   display: flex;
@@ -6581,6 +6597,7 @@ input[type=range]::-webkit-slider-thumb:hover { background: var(--gold); }
     border-color 0.2s,
     background-color 0.2s,
     box-shadow 0.2s;
+  touch-action: manipulation;
   -webkit-tap-highlight-color: transparent;
 }
 .gnr-chip-name {
@@ -6670,6 +6687,7 @@ input[type=range]::-webkit-slider-thumb:hover { background: var(--gold); }
   text-transform: uppercase;
   cursor: pointer;
   vertical-align: middle;
+  touch-action: manipulation;
   transition: background-color 0.2s, border-color 0.2s, transform 0.2s;
 }
 .gnr-crumb:hover {
