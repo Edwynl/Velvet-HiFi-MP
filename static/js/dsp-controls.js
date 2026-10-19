@@ -524,23 +524,33 @@ function applyEqProfileToPlayer(profileId) {
   state.dspProfile = normalizedId;
   if (normalizedId) state.lastEqProfile = normalizedId;
   const select = $('dsp-select');
-  if (select) {
-    select.value = normalizedId;
-    select.dispatchEvent(new Event('change', { bubbles: true }));
-    return true;
-  } else {
-    persistDspProfileId(normalizedId);
-    return false;
-  }
+  // The Settings <select> is only a mirror of the choice - the work
+  // happens in one place, so the EQ editor's rail and the dropdown can
+  // never drift apart.
+  if (select) select.value = normalizedId;
+  if (window.applyDspProfileToOutput) window.applyDspProfileToOutput(normalizedId);
+  else persistDspProfileId(normalizedId);
+  return true;
 }
 
-// Selecting a preset only loads it into the draft. Applying is the Save
-// button's job, and it says so - "Apply" for an untouched preset, "Apply Off"
-// once the draft is Off. Editing must never restart playback, so this
-// deliberately does not touch state.dspProfile.
+// Picking a preset in the main slot is a decision, not a preview: it goes
+// live at once, and the rail then shows it as applied. Leaving it as a draft
+// meant the phone had no way to hear a preset at all - the rail never lit up
+// and the panel kept saying "not yet applied". Editing a curve is still a
+// draft, because dragging a slider must not restart playback. The B slot
+// stays a draft as well, or comparing against it would apply the comparison.
 window.selectEQPreset = async function(id) {
   log('[VELVET] Selecting EQ Preset:', id);
-  eqEditor.slots[eqEditor.active] = eqSourceDraft(id);
+  const slot = eqEditor.active;
+  eqEditor.slots[slot] = eqSourceDraft(id);
+  const draft = eqActiveDraft();
+  if (slot === 'A' && !draft.edited) {
+    eqEditor.bypassedProfileId = null;
+    // The same preset is already in force: leave the playback where it is.
+    if (String(state.dspProfile || '') !== String(id || '')) {
+      applyEqProfileToPlayer(id);
+    }
+  }
   eqRenderEditor();
 }
 
@@ -674,7 +684,10 @@ window.saveEQDraft = async function() {
     // Untouched preset: applied as stored, nothing is written.
     if (!eqDraftIsApplied(draft)) {
       eqEditor.bypassedProfileId = null;
-      if (!applyEqProfileToPlayer(draft.sourceId)) showToast(draft.sourceId ? `DSP: ${draft.name}` : 'DSP: Off');
+      applyEqProfileToPlayer(draft.sourceId);
+    } else {
+      // Already in force: say so instead of closing the panel silently.
+      showToast(draft.sourceId ? `DSP: ${draft.name}` : 'DSP: Off');
     }
     UI['eq-overlay']?.classList.remove('active');
     return;
@@ -687,11 +700,16 @@ window.saveEQDraft = async function() {
   }
   if (btn) btn.textContent = 'Saving...';
   try {
+    // api() already offers the administrator unlock and repeats the write,
+    // so a refusal here means the unlock did not happen. Say so instead of
+    // failing quietly - the phone has no admin session most of the time.
     const savedId = await eqPersistDraft(draft, { target: overwrite });
     if (savedId) {
       eqReplaceSavedDraft(draft, savedId);
       eqApplyAndClose(savedId);
       showToast('Preset saved and applied');
+    } else {
+      showToast('Preset not saved. Writing one needs the administrator password.', 6000);
     }
   } catch (err) {
     showToast('Failed to save EQ');
@@ -711,7 +729,12 @@ async function eqSaveCopy(name) {
     } else {
       savedId = await eqPersistDraft(draft, { name });
     }
-    if (!savedId) throw new Error('not saved');
+    if (!savedId) {
+      // api() already offered the administrator unlock; a refusal here
+      // means it did not happen.
+      showToast('Preset not saved. Writing one needs the administrator password.', 6000);
+      return;
+    }
     eqReplaceSavedDraft(draft, savedId);
     eqRenderEditor();
     showToast(`Saved "${name}" (not yet applied)`);

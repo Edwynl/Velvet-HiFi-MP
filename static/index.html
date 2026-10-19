@@ -10779,19 +10779,19 @@ function setReplayGainMode(mode) {
   showToast(mode === 'off' ? 'ReplayGain off' : `ReplayGain: ${mode} gain`);
 }
 
-UI['dsp-select'].addEventListener('change', e => {
-  if (e.target.value === '__open_eq__') {
-    e.target.value = state.dspProfile || '';
-    if (window.openGraphicEQ) window.openGraphicEQ();
-    return;
-  }
-  state.dspProfile = e.target.value;
+// One route for "this DSP profile is now the one in force". The Settings
+// dropdown, the EQ editor's preset rail and the phone's landscape picker
+// all come through here, so they cannot drift apart: picking a preset in
+// the EQ editor applies it exactly like the dropdown does.
+function applyDspProfileToOutput(profileId) {
+  const value = String(profileId || '');
+  state.dspProfile = value;
   resetDspErrorStreak();
-  if (state.dspProfile) {
-    state.lastEqProfile = String(state.dspProfile);
+  if (value) {
+    state.lastEqProfile = value;
   }
-  persistDspProfileId(state.dspProfile);
-  const selected = state.dspProfiles.find(profile => String(profile.id) === String(state.dspProfile));
+  persistDspProfileId(value);
+  const selected = state.dspProfiles.find(profile => String(profile.id) === String(value));
   // In a cast zone castTo reports the renderer's result instead.
   if (!(isCastZone() && state.currentTrack)) {
     showToast(selected ? `DSP: ${selected.name}` : 'DSP: Off');
@@ -10814,6 +10814,15 @@ UI['dsp-select'].addEventListener('change', e => {
     updatePlayerUI(state.currentTrack);
   }
   syncMobileLandscapeControls();
+}
+
+UI['dsp-select'].addEventListener('change', e => {
+  if (e.target.value === '__open_eq__') {
+    e.target.value = state.dspProfile || '';
+    if (window.openGraphicEQ) window.openGraphicEQ();
+    return;
+  }
+  applyDspProfileToOutput(e.target.value);
 });
 
 // Close cast menu when clicking outside

@@ -302,17 +302,21 @@ function updatePlayerUI(track) {
   updatePlayingArtistLink(UI['mobile-player-track-artist'], track);
   UI['mobile-landscape-track-title'].textContent = track.title || '—';
   updatePlayingArtistLink(UI['mobile-landscape-track-artist'], track);
+  // Only write these when the value really changes. Writing the same value
+  // again still counts as a mutation, and the phone repaints the artwork
+  // when it sees one - so changing the DSP must not touch the cover.
   const albumCover = UI['mobile-player-cover'];
-  if (Number.isSafeInteger(Number(track.album_id)) && Number(track.album_id) > 0) {
-    albumCover.setAttribute('role', 'link');
-    albumCover.tabIndex = 0;
-    albumCover.setAttribute('aria-label', 'Open album' + (track.album_title ? ': ' + track.album_title : ''));
-    albumCover.title = 'Open album';
+  const coverHasAlbum = Number.isSafeInteger(Number(track.album_id)) && Number(track.album_id) > 0;
+  const coverLabel = 'Open album' + (track.album_title ? ': ' + track.album_title : '');
+  if (coverHasAlbum) {
+    if (albumCover.getAttribute('role') !== 'link') albumCover.setAttribute('role', 'link');
+    if (albumCover.tabIndex !== 0) albumCover.tabIndex = 0;
+    if (albumCover.getAttribute('aria-label') !== coverLabel) albumCover.setAttribute('aria-label', coverLabel);
+    if (albumCover.title !== 'Open album') albumCover.title = 'Open album';
   } else {
-    albumCover.removeAttribute('role');
-    albumCover.removeAttribute('tabindex');
-    albumCover.removeAttribute('aria-label');
-    albumCover.removeAttribute('title');
+    ['role', 'tabindex', 'aria-label', 'title'].forEach(attr => {
+      if (albumCover.hasAttribute(attr)) albumCover.removeAttribute(attr);
+    });
   }
   const mobileBadge = UI['mobile-player-hires-badge'];
   if (showHiRes || compactFormat) {

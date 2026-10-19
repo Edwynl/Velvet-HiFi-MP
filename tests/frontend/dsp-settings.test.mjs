@@ -45,6 +45,9 @@ const AUTOEQ_IMPORTED_FILTERS = [
 
 function createHarness() {
   let nextProfileId = 100;
+  // Lets a test pretend the server refuses a write because the session is
+  // not unlocked for administrator work.
+  let refuseWrites = false;
   const requests = [];
   const castControl = { paused: false, seekOk: true, replaygainDb: -7.1, hold: false, held: [],
     fail: false, controlFail: false, payloads: {}, serverResults: {},
@@ -156,6 +159,12 @@ function createHarness() {
     }
 
     if (parsedUrl.pathname === '/api/dsp/profiles' && method === 'POST') {
+      if (refuseWrites) {
+        return makeJsonResponse(
+          { code: 'admin_password_required', error: 'Unlock administrator access for this session.' },
+          403,
+        );
+      }
       const profile = normalizeProfile({
         id: nextProfileId++,
         name: body?.name || 'Custom DSP',
@@ -317,6 +326,8 @@ function createHarness() {
     requests,
     dspProfiles,
     castControl,
+    get refuseWrites() { return refuseWrites; },
+    set refuseWrites(value) { refuseWrites = !!value; },
     async createDom() {
       const html = inlineFrontendModules(readFileSync(HTML_PATH, 'utf8'))
         .replace(/<link[^>]+>/g, '');
@@ -1316,7 +1327,10 @@ async function eqEditorFidelityChecks() {
     assert.match(document.querySelector('#eq-conversion-note').textContent, /Parametric preset/);
     assert.equal(document.querySelector('#eq-conversion-note').hidden, false);
     assert.equal(document.querySelector('#eq-btn-save').textContent, 'Apply');
-    assert.equal(status(), 'Preview (not yet applied)');
+    // Picking a preset is a decision, not a preview: it goes live at once and
+    // the rail marks it as applied. A draft that only says "not yet applied"
+    // left the phone with no way to tell whether the choice had taken.
+    assert.equal(status(), 'Applied');
 
     // The curve is the real cascade (shelf Q*sqrt(2) as in FFmpeg), not a
     // per-band heuristic; the narrow 47 Hz peak is drawn at its true height.
@@ -1549,9 +1563,76 @@ async function autoEqAndReplayGainChecks() {
   }
 }
 
+// The phone could not hear a preset: picking one only filled the draft, so
+// the rail stayed dark, the panel kept saying "not yet applied" and there
+// was no way to tell whether the choice had taken.
+async function eqPresetAppliesImmediatelyChecks() {
+  const harness = createHarness();
+  const dom = await harness.createDom();
+  const { document } = dom.window;
+  const status = () => document.querySelector('#eq-apply-state').textContent.trim();
+  const railActive = () =>
+    document.querySelector('#eq-presets-container .eq-preset-btn.active')?.textContent?.trim() || '';
+  try {
+    await dom.window.loadDspProfiles();
+    await dom.window.openGraphicEQ();
+
+    // Picking a preset in the main slot goes live at once.
+    await dom.window.selectEQPreset('2');
+    assert.equal(dom.window.eval('state.dspProfile'), '2');
+    assert.equal(document.querySelector('#dsp-select').value, '2');
+    assert.equal(status(), 'Applied');
+    assert.equal(railActive(), 'Black');
+    assert.equal(dom.window.localStorage.getItem('velvet:dsp-profile-id'), '2');
+    assert.equal(document.querySelector('#mobile-top-dsp-label').textContent.trim(), 'Black');
+
+    // Another preset replaces it, the same way round.
+    await dom.window.selectEQPreset('3');
+    assert.equal(dom.window.eval('state.dspProfile'), '3');
+    assert.equal(document.querySelector('#dsp-select').value, '3');
+    assert.equal(status(), 'Applied');
+    assert.equal(railActive(), 'Vocal Warm');
+
+    // Off is a choice too.
+    await dom.window.selectEQPreset('');
+    assert.equal(dom.window.eval('state.dspProfile'), '');
+    assert.equal(document.querySelector('#dsp-select').value, '');
+    assert.equal(status(), 'Applied');
+    assert.equal(railActive(), 'Off');
+
+    // The comparison slot stays a draft: comparing must not apply it.
+    await dom.window.selectEQPreset('2');
+    document.querySelector('#eq-btn-ab').click();
+    await dom.window.selectEQPreset('3');
+    assert.equal(dom.window.eval('state.dspProfile'), '2', 'the B slot never applies');
+    assert.equal(document.querySelector('#dsp-select').value, '2');
+    assert.equal(status(), 'Preview (not yet applied)');
+
+    // Editing the curve is a draft again: the preset in force stays.
+    document.querySelector('#eq-btn-ab').click();
+    dom.window.handleEQSliderInput(0, '2');
+    assert.equal(status(), 'Preview (not yet applied)');
+    assert.equal(dom.window.eval('state.dspProfile'), '2');
+
+    // A refused write must say so. The phone has no administrator session
+    // most of the time, and the old code failed in silence.
+    harness.refuseWrites = true;
+    document.querySelector('#eq-btn-save').click();
+    await waitFor(() => /administrator password/.test(document.querySelector('#toast').textContent));
+    assert.ok(
+      !harness.dspProfiles.some(profile => profile.name === 'Custom EQ'),
+      'a refused write must not reach the library'
+    );
+    harness.refuseWrites = false;
+  } finally {
+    dom.window.close();
+  }
+}
+
 try {
   await main();
   await eqEditorFidelityChecks();
+  await eqPresetAppliesImmediatelyChecks();
   await autoEqAndReplayGainChecks();
   console.log('frontend_dsp_settings_check=OK');
   process.exit(0);
