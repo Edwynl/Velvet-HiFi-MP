@@ -10930,7 +10930,19 @@ async function navigate(view, params = {}, push = true) {
 
   if (push) {
     const idPart = params.id ? '/' + encodeURIComponent(params.id) : '';
-    history.pushState({ view, params }, '', '#' + view + idPart);
+    const nextHash = '#' + view + idPart;
+    const entry = { view, params };
+    // Opening the page that is already open must not stack a second copy of
+    // it. Tapping the now-playing cover or the player info lands back on the
+    // album that is already open, and every one of those taps used to leave
+    // another identical entry behind: the back button then had to be pressed
+    // once per visit before the page looked like it had changed at all.
+    const current = history.state;
+    if (current && sameRoute(view, params, current.view, current.params)) {
+      history.replaceState(entry, '', nextHash);
+    } else {
+      history.pushState(entry, '', nextHash);
+    }
   }
 
   // Update nav active state

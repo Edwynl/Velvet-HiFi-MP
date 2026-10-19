@@ -674,8 +674,49 @@ async function testAlbumSwipeOpensPlaylistPickerWithoutPlayingOrInlinePlus() {
   } finally { dom.window.close(); }
 }
 
+async function testReopeningTheSameAlbumDoesNotStackHistory() {
+  const harness = createHarness();
+  const dom = await harness.createDom();
+  try {
+    await dom.window.navigate('albums');
+    await waitFor(() => dom.window.document.querySelector('#albums-grid > *'));
+    await dom.window.navigate('album', { id: 11 });
+    await waitFor(() => dom.window.document.querySelector('.back-btn'));
+    const document = dom.window.document;
+
+    // Something has to be playing before the now-playing cover or the player
+    // info can lead back to the album.
+    const row = await waitFor(() => document.querySelector('#tracks-container .track-item'));
+    dom.window.playTrack = (track) => {
+      dom.window.eval(`state.currentTrack = ${JSON.stringify(track)};`);
+    };
+    row.click();
+    await waitFor(() => dom.window.eval('state.currentTrack && state.currentTrack.id') === 101);
+
+    const lengthBefore = dom.window.history.length;
+
+    // Tapping the player info lands back on the album that is already open.
+    document.querySelector('.player-info').click();
+    await new Promise(resolve => setTimeout(resolve, 300));
+    assert.equal(dom.window.location.hash, '#album/11');
+    assert.equal(dom.window.history.length, lengthBefore, 're-opening the album must not stack history');
+
+    // So does tapping the cover in the full-screen player.
+    document.querySelector('#mobile-player-cover').click();
+    await new Promise(resolve => setTimeout(resolve, 300));
+    assert.equal(dom.window.location.hash, '#album/11');
+    assert.equal(dom.window.history.length, lengthBefore, 're-opening the album must not stack history');
+
+    // One press of Back leaves the album for good.
+    document.querySelector('.back-btn').click();
+    await waitFor(() => dom.window.location.hash === '#albums', { timeoutMs: 3000 });
+    assert.equal(dom.window.eval('state.view'), 'albums');
+  } finally { dom.window.close(); }
+}
+
 async function main() {
   await testAlbumSwipeOpensPlaylistPickerWithoutPlayingOrInlinePlus();
+  await testReopeningTheSameAlbumDoesNotStackHistory();
   await testAlbumBackFallsBackWhenHistoryBackDoesNothing();
   await testBackToAlbumsRestoresKeptViewWithoutRefetch();
   await testBackToAlbumsRestoresKeptViewWithoutRefetch(true);
