@@ -610,31 +610,27 @@ async function renderAlbums(vc) {
         <input id="search-input" type="text" maxlength="128" placeholder="Search artists, albums, tracks…">
       </div>
     </div>
-    <div class="album-toolbar" role="group" aria-label="Album filters and sorting">
-      <div class="album-toolbar-actions">
-        <button class="btn btn-ghost" id="favorites-filter-btn" aria-pressed="false">♡ Favorites</button>
-        <select class="album-select" id="album-sort-select" aria-label="Sort albums">
-          <option value="title">A–Z</option>
-          <option value="year">Year</option>
-          <option value="artist">Artist</option>
-          <option value="added">Added</option>
-        </select>
-        <button class="btn btn-ghost" id="clear-focus-btn" hidden>Clear filters</button>
-      </div>
-      <div class="album-toolbar-filters">
-        <select class="album-select" id="album-genre-select" aria-label="Genre">
-          <option value="">All genres</option>
-          ${genres.map(g => `<option value="${escHtml(g)}">${escHtml(g)}</option>`).join('')}
-        </select>
-        <select class="album-select" id="album-decade-select" aria-label="Decade">
-          <option value="">All decades</option>
-          ${decades.map(d => `<option value="${escHtml(d)}">${escHtml(d)}</option>`).join('')}
-        </select>
-      </div>
-    </div>
     <div class="section-header" id="albums-header" title="Click to scroll to top">
       <div class="section-title">Albums</div>
       <div class="section-sub" id="albums-count">${totalAlbums} albums</div>
+    </div>
+    <div class="album-toolbar" role="group" aria-label="Album filters and sorting">
+      <button class="btn btn-ghost" id="favorites-filter-btn" aria-pressed="false">♡ Favorites</button>
+      <select class="album-select" id="album-sort-select" aria-label="Sort albums">
+        <option value="title">A–Z</option>
+        <option value="year">Year</option>
+        <option value="artist">Artist</option>
+        <option value="added">Added</option>
+      </select>
+      <select class="album-select" id="album-genre-select" aria-label="Genre">
+        <option value="">All genres</option>
+        ${genres.map(g => `<option value="${escHtml(g)}">${escHtml(g)}</option>`).join('')}
+      </select>
+      <select class="album-select" id="album-decade-select" aria-label="Decade">
+        <option value="">All decades</option>
+        ${decades.map(d => `<option value="${escHtml(d)}">${escHtml(d)}</option>`).join('')}
+      </select>
+      <button class="btn btn-ghost" id="clear-focus-btn" hidden>Clear filters</button>
     </div>
     <div class="grid" id="albums-grid"></div>
     <div class="back-to-top" id="back-to-top-btn" style="display:none">↑</div>
@@ -2300,7 +2296,7 @@ async function renderPlaylists(vc) {
     </div>
     <div class="section-header">
       <div class="section-title">Playlists</div>
-      <div class="section-sub">${playlists.length} playlists</div>
+      <div class="section-sub">${playlists.length} playlist${playlists.length === 1 ? '' : 's'}</div>
     </div>
     <div class="grid" id="playlists-grid"></div>
   `;

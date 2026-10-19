@@ -428,16 +428,20 @@ html, body {
   color: var(--text);
 }
 
-/* Album controls share one touch target size without nested filter pills. */
+/* Album controls share one touch target size without nested filter pills.
+   All five controls are direct children of one wrapping flex row: the old two
+   wrapper divs let "Clear filters" push right inside its own group, which left
+   it stranded and misaligned against the filter row below it on narrow
+   windows. One row means margin-left:auto parks it against the real right
+   edge, and every select grows to the same width so the three of them read as
+   one control instead of three unrelated sizes. */
 .album-toolbar {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 8px 16px;
+  gap: 8px;
   padding: 0 32px 20px;
 }
-.album-toolbar-actions,
-.album-toolbar-filters { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .album-toolbar .btn,
 .album-select {
   min-height: 44px;
@@ -453,7 +457,8 @@ html, body {
 .album-toolbar [hidden] { display: none; }
 .album-select {
   display: block;
-  width: 160px;
+  flex: 1 1 150px;
+  max-width: 190px;
   min-width: 0;
   padding: 8px 32px 8px 12px;
   appearance: none;
@@ -465,14 +470,26 @@ html, body {
   text-overflow: ellipsis;
   cursor: pointer;
 }
-#album-sort-select { width: 96px; }
+#album-sort-select { flex: 0 1 150px; }
 .album-toolbar .btn[aria-pressed="true"] { color: var(--gold); border-color: var(--gold); }
 .album-toolbar :is(button, select):focus-visible { outline: 2px solid var(--gold); outline-offset: 2px; }
 #clear-focus-btn { margin-left: auto; padding: 8px; background: transparent; border-color: transparent; }
 @media (max-width: 768px) {
-  .album-toolbar { display: grid; gap: 8px; padding: 0 16px 20px; }
-  .album-toolbar-filters { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .album-toolbar-filters .album-select { width: 100%; }
+  /* Two even columns so every control lines up with the one beside it, and
+     Clear spans the full width instead of hanging off the right of a half row. */
+  .album-toolbar {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+    padding: 0 16px 20px;
+  }
+  .album-toolbar .album-select { flex: none; max-width: none; width: 100%; }
+  #album-sort-select { width: 100%; }
+  /* A grid cell stretches its button across the full column; .btn is an
+     inline-flex with no justify-content, so its label would sit hard left in
+     an otherwise empty half-row. */
+  .album-toolbar .btn { justify-content: center; }
+  #clear-focus-btn { grid-column: 1 / -1; margin-left: 0; }
   /* Keep native iOS selectors readable without focus zoom. */
   .album-select { font-size: 16px; }
 }
@@ -588,6 +605,12 @@ html, body {
   font-size: 18px;
   font-family: 'Cormorant Garamond', serif;
   margin-bottom: 6px;
+  /* Device names come straight from the OS and can be long — a real one here is
+     "LG SMARTGAME+ (NVIDIA High Definition Audio)", 44 characters. Clamp on one
+     line like the album cards do, rather than let it run past the card edge. */
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .zone-sub {
