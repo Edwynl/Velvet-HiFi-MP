@@ -170,7 +170,7 @@ function createHarness({ initialHash = '#home' } = {}) {
     if (parsedUrl.pathname === '/api/albums/page' && method === 'GET') {
       return Promise.resolve(makeJsonResponse({
         albums: albumList, total: albumList.length,
-        genres: ['Classical', 'Jazz', 'Rock'], decades: ['2020s'],
+        genres: ['Asian Pop', 'Classical', 'Jazz', 'Rock'], decades: ['2020s'],
         limit: 60, offset: 0,
       }));
     }

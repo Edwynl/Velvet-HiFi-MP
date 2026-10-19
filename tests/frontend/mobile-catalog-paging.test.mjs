@@ -36,7 +36,7 @@ const request = async (url, options = {}) => {
     const offset = Number(u.searchParams.get('offset') || 0);
     return response({
       albums: albums.slice(offset, offset + Number(u.searchParams.get('limit') || 60)),
-      total: albums.length, genres: ['Classical'], decades: ['2020s'],
+      total: albums.length, genres: ['Classical', 'Asian Pop'], decades: ['2020s'],
     });
   }
   if (u.pathname === '/api/search') {
@@ -95,6 +95,16 @@ await wait(()=>dom.window.document.querySelector('#albums-grid .card .card-title
 // after leaving page 2 and when clearing genre/decade without clearing sort.
 const albumDoc = dom.window.document;
 const lastAlbumRequest = () => requests.filter(u => u.pathname === '/api/albums/page').at(-1);
+// The Albums view opens on a focused shelf; the selects must agree with the
+// request that produced the grid on screen.
+assert.equal(albumDoc.querySelector('#album-sort-select').selectedOptions[0].textContent, 'Year');
+assert.equal(albumDoc.querySelector('#album-genre-select').selectedOptions[0].textContent, 'Asian Pop');
+assert.equal(albumDoc.querySelector('#album-decade-select').selectedOptions[0].textContent, '2020s');
+assert.equal(lastAlbumRequest().searchParams.get('sort'), 'year');
+assert.equal(lastAlbumRequest().searchParams.get('genre'), 'Asian Pop');
+assert.equal(lastAlbumRequest().searchParams.get('decade'), '2020s');
+assert.equal(albumDoc.querySelector('#clear-focus-btn').hidden, false,
+  'a default genre/decade focus offers Clear filters on entry');
 async function chooseAlbumOption(id, value, param, label) {
   const select = albumDoc.getElementById(id);
   const before = requests.length;
@@ -109,6 +119,11 @@ for (const [value, label] of [['year', 'Year'], ['artist', 'Artist'], ['added', 
   await chooseAlbumOption('album-sort-select', value, 'sort', label);
 }
 await chooseAlbumOption('album-sort-select', 'artist', 'sort', 'Artist');
+// Drop the default genre/decade focus first, then prove that a sort on its own
+// still does not offer Clear filters.
+albumDoc.querySelector('#clear-focus-btn').click();
+await wait(() => albumDoc.querySelector('#clear-focus-btn').hidden);
+assert.equal(lastAlbumRequest().searchParams.get('sort'), 'artist');
 assert.equal(albumDoc.querySelector('#clear-focus-btn').hidden, true);
 await chooseAlbumOption('album-genre-select', 'Classical', 'genre', 'Classical');
 await chooseAlbumOption('album-decade-select', '2020s', 'decade', '2020s');

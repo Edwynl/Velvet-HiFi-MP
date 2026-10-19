@@ -560,10 +560,29 @@ function setViewScrollHandler(view, mainEl, handler) {
   window.addEventListener('scroll', handler, { passive: true });
 }
 
+/* The Albums shelf opens on a focused view rather than the whole catalog.
+   Genre and decade values must come from the server's own vocabulary
+   (library_paging.ALBUM_GENRE_GROUPS and the decade list), so each default is
+   only honoured when that response actually offers it — a backend vocabulary
+   change degrades to "no filter" instead of silently requesting a value that
+   matches nothing. */
+const DEFAULT_ALBUM_SORT = 'year';
+const DEFAULT_ALBUM_GENRE = 'Asian Pop';
+const DEFAULT_ALBUM_DECADE = '2020s';
+
+const offeredAlbumFilter = (values, wanted) =>
+  (Array.isArray(values) && values.includes(wanted)) ? wanted : '';
+
 async function renderAlbums(vc) {
   const isMobile = isCompactLayout();
   // Server filters and returns only one page; the device never receives 15k albums.
-  const firstPage = await api('/albums/page?limit=' + ALBUMS_PER_PAGE + '&offset=0');
+  // The opening request already carries the default focus, so entering the view
+  // still costs exactly one round trip. The same response returns the
+  // genre/decade vocabulary, which is what confirms those defaults below.
+  const firstPage = await api('/albums/page?limit=' + ALBUMS_PER_PAGE + '&offset=0'
+    + '&sort=' + DEFAULT_ALBUM_SORT
+    + '&genre=' + encodeURIComponent(DEFAULT_ALBUM_GENRE)
+    + '&decade=' + encodeURIComponent(DEFAULT_ALBUM_DECADE));
   let allAlbums = firstPage?.albums || [];
   let totalAlbums = Number(firstPage?.total || 0);
   const genres = firstPage?.genres || [];
@@ -571,10 +590,14 @@ async function renderAlbums(vc) {
   let pageRequestSerial = 0;
   let renderedPage = 1;
   let showFavoritesOnly = false;
-  let currentSort = 'title';
+  let currentSort = DEFAULT_ALBUM_SORT;
   let currentPage = 1;
-  let currentGenre = '';
-  let currentDecade = '';
+  let currentGenre = offeredAlbumFilter(genres, DEFAULT_ALBUM_GENRE);
+  let currentDecade = offeredAlbumFilter(decades, DEFAULT_ALBUM_DECADE);
+  // A default the server did not offer was asked for blindly. Drop it and refetch
+  // once instead of leaving an empty grid under a filter nothing can match.
+  const defaultsRejected = (!!DEFAULT_ALBUM_GENRE && !currentGenre)
+    || (!!DEFAULT_ALBUM_DECADE && !currentDecade);
   let allTracks = [];
 
   vc.innerHTML = `
@@ -637,6 +660,11 @@ async function renderAlbums(vc) {
   const prevBtn = UI['prev-page-btn'];
   const nextBtn = UI['next-page-btn'];
   const pageInfo = UI['page-info'];
+
+  // Keep the three selects showing exactly what is being requested.
+  sortSelect.value = currentSort;
+  genreSelect.value = currentGenre;
+  decadeSelect.value = currentDecade;
 
   // Scroll to top on header click
   headerEl.addEventListener('click', (e) => {
@@ -720,6 +748,9 @@ async function renderAlbums(vc) {
   }
 
   renderGrid();
+
+  // Only a rejected default needs a second round trip; the normal path is done.
+  if (defaultsRejected) loadPage({ reset: true });
 
   // Every topbar search is now global: Artists -> Albums -> Tracks.
   setupSearch({ autoFocus: false });
