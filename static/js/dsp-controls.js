@@ -472,6 +472,9 @@ function updateEQApplyState() {
     } else if (eqDraftIsApplied(draft)) {
       phase = 'applied';
       label = 'Applied';
+    } else if (isBrowserZone() && browserDspFailure?.profileId === draft.sourceId) {
+      phase = 'failed';
+      label = 'Selection saved; audio format failed';
     }
     status.dataset.state = phase;
     status.textContent = label;
@@ -879,7 +882,7 @@ window.openGraphicEQ = async function() {
   if (!state.dspProfiles?.length) {
     await loadDspProfiles();
   }
-  const activeProfileId = state.dspProfile || '';
+  const activeProfileId = state.dspProfile || (isBrowserZone() ? browserDspFailure?.profileId : '') || '';
   const hasProfile = activeProfileId
     ? visibleDspProfiles(state.dspProfiles).some(profile => String(profile.id) === String(activeProfileId))
     : false;

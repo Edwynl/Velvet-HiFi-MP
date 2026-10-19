@@ -8839,6 +8839,8 @@ let vuSilentGain = null; // Pull the analyser graph silently to the destination.
 let channelSplitter = null; // ChannelSplitterNode for L/R separation
 let browserPlaybackToken = 0;
 let browserStreamOffset = 0;
+let browserDspContainer = 'flac';
+let browserDspFailure = null;
 
 function browserPlaybackPosition() {
   return browserStreamOffset + (Number.isFinite(audio.currentTime) ? audio.currentTime : 0);
@@ -9033,24 +9035,39 @@ function scheduleDspStartupHealthCheck(playbackToken) {
 function attemptDspAutoFallback(reason = 'stream-error') {
   if (dspAutoFallbackInFlight) return false;
   if (!isBrowserZone() || !state.currentTrack || !state.dspProfile) return false;
+  // Safari can reject a live FLAC response even though it plays FLAC files.
+  // Retry lossless PCM before disabling the user's chosen EQ.
+  if (browserDspContainer === 'flac' && (!state.upsample || state.upsample === 'none')) {
+    browserDspContainer = 'wav';
+    clearDspStartupHealthCheck();
+    resetDspErrorStreak();
+    const resumeTime = browserPlaybackPosition();
+    showToast('Retrying EQ with compatible lossless audio');
+    startBrowserPlayback(state.currentTrack, { resumeTime }).catch(() => {});
+    return true;
+  }
   dspAutoFallbackInFlight = true;
   clearDspStartupHealthCheck();
 
   const failedProfileId = String(state.dspProfile);
+  browserDspFailure = { profileId: failedProfileId, reason };
   state.lastEqProfile = failedProfileId;
   state.dspProfile = '';
-  persistDspProfileId('', { lastProfileId: failedProfileId });
+  // A decoder failure is not the user's choice of Off. Retain their saved
+  // preference while the current playback safely uses the original source.
+  persistDspProfileId(failedProfileId);
 
   const select = UI['dsp-select'];
   if (select) {
     select.value = '';
-    select.dispatchEvent(new Event('change', { bubbles: true }));
-  } else {
-    const resumeTime = browserPlaybackPosition();
-    startBrowserPlayback(state.currentTrack, { resumeTime }).catch(() => {});
   }
+  const resumeTime = browserPlaybackPosition();
+  startBrowserPlayback(state.currentTrack, { resumeTime }).catch(() => {});
+  syncDspPresetCards();
+  syncMobileLandscapeControls();
+  if ($('eq-overlay')?.classList.contains('active')) eqRenderEditor();
 
-  showToast('EQ failed, switched Off');
+  showToast('EQ could not play in this browser. Selection saved; playing the original audio.', 8000);
   console.warn('[VELVET] DSP auto-fallback to Off:', reason, 'profile=', failedProfileId);
   resetDspErrorStreak();
   setTimeout(() => {
@@ -9316,10 +9333,11 @@ function getAudioLevel() {
 function streamUrl(trackId, upsample, ticket = '') {
   const u = upsample || state.upsample;
   const dsp = state.dspProfile ? `&dsp=${encodeURIComponent(state.dspProfile)}` : '';
+  const container = state.dspProfile && browserDspContainer === 'wav' ? '&container=wav' : '';
   const replaygain = state.replaygain && state.replaygain !== 'off' ? `&replaygain=${state.replaygain}` : '';
   // Never put the long-lived API key in a media URL; use a stream-only ticket.
   const ticketParam = ticket ? `&ticket=${encodeURIComponent(ticket)}` : '';
-  return `/api/stream/${trackId}?upsample=${u}${dsp}${replaygain}${ticketParam}`;
+  return `/api/stream/${trackId}?upsample=${u}${dsp}${container}${replaygain}${ticketParam}`;
 }
 
 // <audio> cannot send X-API-Key. When protection is on, stream URLs carry a
@@ -9455,6 +9473,7 @@ async function startBrowserPlayback(track, { resumeTime = null, token = null } =
       const failures = noteDspError(state.dspProfile);
       if (likelyUnsupported || failures >= 2) {
         attemptDspAutoFallback(likelyUnsupported ? 'play-rejected-unsupported' : 'play-rejected');
+        if (playbackToken !== browserPlaybackToken) return false;
       }
     }
     console.warn('[VELVET] Browser playback failed:', error?.message || error);
@@ -10826,6 +10845,7 @@ function setReplayGainMode(mode) {
 // Settings and the EQ editor's Apply button share the same output change.
 function applyDspProfileToOutput(profileId) {
   const value = String(profileId || '');
+  browserDspFailure = null;
   state.dspProfile = value;
   const select = UI['dsp-select'];
   if (select) select.value = value;
@@ -10834,6 +10854,7 @@ function applyDspProfileToOutput(profileId) {
     state.lastEqProfile = value;
   }
   persistDspProfileId(value);
+  syncMobileLandscapeControls();
   const selected = state.dspProfiles.find(profile => String(profile.id) === String(value));
   // In a cast zone castTo reports the renderer's result instead.
   if (!(isCastZone() && state.currentTrack)) {

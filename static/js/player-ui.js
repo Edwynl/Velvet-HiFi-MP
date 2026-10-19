@@ -11,8 +11,12 @@ function syncMobileLandscapeControls() {
     upsampleEl.textContent = state.upsample && state.upsample !== 'none' ? (selected || state.upsample) : 'Source';
   }
   if (dspEl) {
-    const selected = $('dsp-select')?.selectedOptions?.[0]?.textContent?.trim();
-    dspEl.textContent = state.dspProfile ? (selected || 'DSP') : 'Off';
+    const failure = isBrowserZone() ? browserDspFailure : null;
+    const profileId = state.dspProfile || failure?.profileId;
+    const profile = state.dspProfiles.find(p => String(p.id) === String(profileId));
+    const label = profile ? dspDisplayLabel(profile) : 'DSP';
+    dspEl.textContent = failure ? `${label} unavailable` : state.dspProfile ? label : 'Off';
+    dspEl.title = failure ? `Saved preset could not play (${failure.reason}); original audio is playing.` : '';
   }
   const eqButton = $('mobile-top-eq');
   eqButton?.classList.toggle('active', Boolean(state.dspProfile));

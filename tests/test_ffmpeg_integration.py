@@ -52,6 +52,15 @@ class FFmpegIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 data = b"".join([block async for block in response.body_iterator])
                 self.assertEqual(response.media_type, "audio/flac")
                 self.assertEqual(data[:4], b"fLaC")
+                response = await server._stream_with_dsp(str(source), dsp, start_seconds=0.02, container="wav")
+                data = b"".join([block async for block in response.body_iterator])
+                self.assertEqual(response.media_type, "audio/wav")
+                output = Path(folder) / "compatible.wav"
+                output.write_bytes(data)
+                probe = subprocess.run(["ffprobe", "-v", "error", "-show_streams", "-of", "json", str(output)], check=True, capture_output=True)
+                stream = json.loads(probe.stdout)["streams"][0]
+                self.assertEqual(stream["codec_name"], "pcm_s24le")
+                self.assertEqual(int(stream["sample_rate"]), rate)
 
     async def test_dsp_stream_for_a_renderer_resumes_as_24_bit_flac(self):
         # EQ-3: what a DLNA renderer receives (and its DIDL claims): 24-bit

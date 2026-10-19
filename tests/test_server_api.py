@@ -1777,6 +1777,11 @@ class ServerApiTests(unittest.TestCase):
             transcoded = self.client.head(f"/api/stream/1?dsp={profile_id}")
         self.assertEqual(transcoded.status_code, 200)
         self.assertEqual(transcoded.headers["content-type"], "audio/flac")
+        with patch.object(server.asyncio, "create_subprocess_exec",
+                          side_effect=AssertionError("HEAD must not start FFmpeg")):
+            compatible = self.client.head(f"/api/stream/1?dsp={profile_id}&container=wav")
+        self.assertEqual(compatible.status_code, 200)
+        self.assertEqual(compatible.headers["content-type"], "audio/wav")
 
     def test_renderer_urls_use_the_configured_server_port(self):
         self.assertEqual(upnp_server.MAIN_PORT, server.settings.port)

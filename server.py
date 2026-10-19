@@ -2595,7 +2595,7 @@ async def _stream_upsampled(file_path: str, target_rate: str, quality: str = "hi
 
 
 async def _stream_with_dsp(file_path: str, dsp_filter: str, timeout_seconds: int = 3600,
-                           start_seconds: float = 0):
+                           start_seconds: float = 0, container: str = "flac"):
     """
     Stream audio with DSP processing only (no upsampling).
 
@@ -2606,19 +2606,20 @@ async def _stream_with_dsp(file_path: str, dsp_filter: str, timeout_seconds: int
         start_seconds: Start this far into the track (DLNA re-cast resume)
     """
     lease = await _acquire_transcode_slot()
+    encoding = (["-c:a", "pcm_s24le", "-f", "wav"] if container == "wav" else [
+        "-c:a", "flac", "-compression_level", "0",
+        "-frame_size", str(FLAC_TRANSCODE_BLOCK_SIZE), "-f", "flac",
+    ])
     cmd = [
         "ffmpeg", "-nostdin", *_ffmpeg_input_args(file_path, start_seconds),
         # The gain is already in the samples: copying the source's
         # REPLAYGAIN_*/R128_* tags would let a player apply it twice.
         "-map_metadata", "-1",
         "-af", dsp_filter,
-        "-c:a", "flac",
-        "-compression_level", "0",
         # Fixed blocks: by default the encoder takes its block size from the
         # first decoded frame, which after -ss can be a few samples (FLAC's
         # minimum is 16) and FFmpeg then exits without writing any audio.
-        "-frame_size", str(FLAC_TRANSCODE_BLOCK_SIZE),
-        "-f", "flac",
+        *encoding,
         "pipe:1",
         "-loglevel", "error"
     ]
@@ -2628,7 +2629,7 @@ async def _stream_with_dsp(file_path: str, dsp_filter: str, timeout_seconds: int
     return TranscodeStreamingResponse(
         iter_ffmpeg_stdout(cmd, timeout_seconds=timeout_seconds, guard=guard),
         guard=guard,
-        media_type="audio/flac",
+        media_type="audio/wav" if container == "wav" else "audio/flac",
         headers={
             "X-Output-Mode": "DSP",
             "Cache-Control": "no-cache"
@@ -2677,6 +2678,7 @@ async def stream_track(
     quality: str = Query("high", description="standard|high|extreme - upsampling quality"),
     dop: str = Query("none", description="none|dsd64|dsd128|dsd256 - DSD over PCM output"),
     dsp: int = Query(None, description="DSP profile ID to apply"),
+    container: Literal["flac", "wav"] = Query("flac", description="Lossless DSP stream container; WAV is a browser compatibility retry"),
     start: float = Query(0, ge=0, le=TRANSCODE_MAX_SECONDS,
                          description="Start offset in seconds (transcoded streams only)"),
     replaygain: Literal["off", "track", "album"] = Query(
@@ -2767,7 +2769,7 @@ async def stream_track(
         raise HTTPException(422, "start applies only to transcoded (DSP or upsampled) streams")
     if request.method == "HEAD" and (target_rate or dsp_filter):
         # Describe the transcoded stream without starting FFmpeg.
-        return Response(media_type="audio/wav" if target_rate else "audio/flac",
+        return Response(media_type="audio/wav" if target_rate or container == "wav" else "audio/flac",
                         headers={"Cache-Control": "no-cache"})
     if target_rate:
         limit = _transcode_time_limit_seconds(track["duration"], timeout_minutes)
@@ -2776,6 +2778,8 @@ async def stream_track(
     # Handle DSP-only (no upsampling)
     if dsp_filter:
         limit = _transcode_time_limit_seconds(track["duration"], timeout_minutes)
+        if container == "wav":
+            return await _stream_with_dsp(fp, dsp_filter, limit, start_seconds=start, container="wav")
         return await _stream_with_dsp(fp, dsp_filter, limit, start_seconds=start)
 
     return _stream_file_direct(fp, request, track["format"] or "")

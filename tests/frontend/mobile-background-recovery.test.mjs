@@ -437,11 +437,17 @@ async function testDspErrorAutoFallbacksToDry() {
     audio.dispatchEvent(new dom.window.Event('error'));
     audio.dispatchEvent(new dom.window.Event('error'));
 
+    await waitFor(() => /container=wav/.test(audio.src));
+    assert.equal(dom.window.eval('state.dspProfile'), '2', 'first rejection retries PCM without erasing the chosen EQ');
+    audio.dispatchEvent(new dom.window.Event('error'));
+    audio.dispatchEvent(new dom.window.Event('error'));
+
     await waitFor(() => dom.window.eval('state.dspProfile') === '');
     await waitFor(() => harness.getPlayCalls() >= 1, { timeoutMs: 8000 });
-    // Off is persisted explicitly so a reload cannot resurrect the failed preset.
-    assert.equal(dom.window.localStorage.getItem('velvet:dsp-profile-id'), 'off');
+    // A decoder failure keeps the saved choice; playback alone falls back to dry.
+    assert.equal(dom.window.localStorage.getItem('velvet:dsp-profile-id'), '2');
     assert.equal(dom.window.localStorage.getItem('velvet:dsp-last-profile-id'), '2');
+    assert.match(dom.window.document.querySelector('#mobile-top-dsp-label').textContent, /unavailable/);
   } finally {
     dom.window.close();
   }
@@ -479,9 +485,10 @@ async function testDspStartupNoProgressAutoFallbacksToDry() {
 
     await dom.window.startBrowserPlayback({ id: 7, title: 'Recovery Track' }, { resumeTime: 0 });
     await waitFor(() => dom.window.eval('state.dspProfile') === '', { timeoutMs: 6000 });
-    // Off is persisted explicitly so a reload cannot resurrect the failed preset.
-    assert.equal(dom.window.localStorage.getItem('velvet:dsp-profile-id'), 'off');
+    // A decoder failure keeps the saved choice; playback alone falls back to dry.
+    assert.equal(dom.window.localStorage.getItem('velvet:dsp-profile-id'), '2');
     assert.equal(dom.window.localStorage.getItem('velvet:dsp-last-profile-id'), '2');
+    assert.match(dom.window.document.querySelector('#mobile-top-dsp-label').textContent, /unavailable/);
   } finally {
     dom.window.close();
   }
@@ -519,15 +526,37 @@ async function testDspPlayRejectedAutoFallbacksToDry() {
     const ok = await dom.window.startBrowserPlayback({ id: 7, title: 'Recovery Track' });
     assert.equal(ok, false);
     await waitFor(() => dom.window.eval('state.dspProfile') === '');
-    // Off is persisted explicitly so a reload cannot resurrect the failed preset.
-    assert.equal(dom.window.localStorage.getItem('velvet:dsp-profile-id'), 'off');
+    // A decoder failure keeps the saved choice; playback alone falls back to dry.
+    assert.equal(dom.window.localStorage.getItem('velvet:dsp-profile-id'), '2');
     assert.equal(dom.window.localStorage.getItem('velvet:dsp-last-profile-id'), '2');
+    assert.match(dom.window.document.querySelector('#mobile-top-dsp-label').textContent, /unavailable/);
   } finally {
     dom.window.close();
   }
 }
 
+async function testDspCodecRetryKeepsSelection() {
+  const harness = createHarness();
+  const dom = await harness.createDom();
+  try {
+    const audio = primeAudio(dom, { paused:false, currentTime:31, readyState:4 });
+    dom.window.eval("state.currentTrack={id:7,title:'Codec retry',duration:240}; state.dspProfile='2'; persistDspProfileId('2');");
+    let calls = 0;
+    Object.defineProperty(audio, 'play', { configurable:true, value() {
+      calls++;
+      return /container=wav/.test(audio.src) ? Promise.resolve() : Promise.reject(new Error('Media source not supported'));
+    } });
+    await dom.window.startBrowserPlayback({id:7,title:'Codec retry'});
+    await waitFor(() => calls === 2 && dom.window.eval('state.playing'));
+    assert.equal(dom.window.eval('state.dspProfile'), '2');
+    assert.equal(dom.window.localStorage.getItem('velvet:dsp-profile-id'), '2');
+    assert.match(audio.src, /dsp=2&container=wav/);
+    assert.equal(dom.window.eval('browserDspContainer'), 'wav');
+  } finally { dom.window.close(); }
+}
+
 try {
+  await testDspCodecRetryKeepsSelection();
   await testRecoveryAfterWaiting();
   await testManualPauseDoesNotAutoRecover();
   await testExpectedPauseDuringDspSwitchDoesNotAutoRecover();
