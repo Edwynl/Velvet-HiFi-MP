@@ -4,7 +4,7 @@ import vm from 'node:vm';
 
 const html = readFileSync('static/index.html', 'utf8').replace(/\r\n/g, '\n');
 const between = (start, end) => html.slice(html.indexOf(start), html.indexOf(end));
-const ticketSource = between('function streamUrl(', '// DO NOT call initAudioAnalyser()');
+const ticketSource = between('function browserUsesSeekableDsp(', '// DO NOT call initAudioAnalyser()');
 
 assert.ok(!/[?&]api_key=/.test(html), 'No URL may carry the long-lived API key');
 
@@ -19,6 +19,8 @@ function makeContext({ apiKey = 'key-A', api } = {}) {
   const authState = { apiKey };
   const context = vm.createContext({
     authState,
+    browserDspContainer: 'flac',
+    navigator: {userAgent:'Desktop test', platform:'Win32', maxTouchPoints:0},
     state: { upsample: 'none', dspProfile: 3 },
     encodeURIComponent,
     JSON,
@@ -30,6 +32,18 @@ function makeContext({ apiKey = 'key-A', api } = {}) {
   });
   vm.runInContext(ticketSource, context);
   return { context, authState, clock, run: code => vm.runInContext(code, context) };
+}
+
+// iPhone compatibility parameters preserve the same short-lived ticket flow.
+{
+  const {context, run} = makeContext({api:async () => { throw new Error('no network expected'); }});
+  context.navigator.userAgent = 'iPhone';
+  assert.equal(run("streamUrl(5, undefined, 'T-phone')"),
+    '/api/stream/5?upsample=none&dsp=3&seekable=1&ticket=T-phone');
+  context.browserDspContainer = 'wav';
+  assert.equal(run("streamUrl(5, undefined, 'T-phone')"),
+    '/api/stream/5?upsample=none&dsp=3&container=wav&seekable=1&ticket=T-phone');
+  assert.ok(!run("streamUrl(5, undefined, 'T-phone')").includes('key-A'));
 }
 
 const hours = h => Math.floor(1_700_000_000_000 / 1000) + h * 3600;
