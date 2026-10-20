@@ -10201,6 +10201,7 @@ audio.addEventListener('playing', () => {
   }
   resetBrowserPlaybackRecoveryWindow();
   updatePlayBtnUI();
+  syncBrowserMediaSession();
 });
 
 audio.addEventListener('waiting', () => {
@@ -10286,6 +10287,7 @@ document.addEventListener('visibilitychange', () => {
     // Safari suspends AudioContext and the MediaElementSource graph gets broken.
     // Then audio.play() silently fails on resume because the graph is stale.
     cleanupSuspendedAudioContextIfNeeded();
+    syncBrowserMediaSession();
     if (!canRecoverBrowserPlayback()) return;
     // On mobile, audio.paused=true during lock screen is normal (not an error).
     // Only trigger recovery when audio has no data loaded.
@@ -10302,10 +10304,12 @@ document.addEventListener('visibilitychange', () => {
     // This covers cases where browserInterrupted was set but playing event
     // was suppressed and never got a chance to clear it.
     browserInterrupted = false;
+    syncBrowserMediaSession();
   }
 });
 
 window.addEventListener('pageshow', () => {
+  syncBrowserMediaSession();
   if (!canRecoverBrowserPlayback()) return;
   // Same logic as visibilitychange: only recover when truly no data, not when just paused.
   if (audio.readyState < 2) {
@@ -11039,7 +11043,8 @@ document.addEventListener('click', e => {
 
 // ─── Media Session Controls ───────────────────────────────────────────────────
 
-if ('mediaSession' in navigator) {
+function registerMediaSessionActions() {
+  if (!('mediaSession' in navigator)) return;
   const setMediaAction = (action, handler) => {
     try {
       navigator.mediaSession.setActionHandler(action, handler);
@@ -11090,6 +11095,18 @@ if ('mediaSession' in navigator) {
   setMediaAction('seekbackward', null);
   setMediaAction('seekforward', null);
 }
+
+function syncBrowserMediaSession() {
+  if (!isBrowserZone() || !state.currentTrack || !('mediaSession' in navigator)) return;
+  // The active audio element and the VU mirror can cause WebKit to rebuild
+  // its remote commands. Publish music actions again after playback starts
+  // and whenever the installed app is hidden/restored. Never restart audio.
+  registerMediaSessionActions();
+  updateMediaSession(state.currentTrack);
+  setMediaSessionPlaybackState(state.playing ? 'playing' : 'paused');
+}
+
+registerMediaSessionActions();
 
 startBrowserPlaybackWatchdog();
 

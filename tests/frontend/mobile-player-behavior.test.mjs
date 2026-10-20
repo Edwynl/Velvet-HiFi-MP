@@ -356,6 +356,50 @@ async function testUnsupportedMediaActionDoesNotStopSetup() {
   }
 }
 
+async function testLockScreenActionsSurvivePlaybackAndPageLifecycle() {
+  const harness = createHarness();
+  const dom = await harness.createDom();
+  try {
+    const { document } = dom.window;
+    const audio = primeAudio(dom, { currentTime: 20, paused: false });
+    dom.window.eval(`
+      state.currentTrack = { id: 2, title: 'Lock Screen Song', album_id: 11, duration: 180 };
+      state.queue = [{ id: 1 }, state.currentTrack, { id: 3 }];
+      state.queueIdx = 1;
+      state.playing = true;
+    `);
+    const assertTrackControls = stage => {
+      for (const action of ['play', 'pause', 'previoustrack', 'nexttrack']) {
+        assert.equal(typeof harness.mediaActions.get(action), 'function', `${stage}: ${action}`);
+      }
+      assert.equal(harness.mediaActions.get('seekbackward'), null, `${stage}: no skip-back`);
+      assert.equal(harness.mediaActions.get('seekforward'), null, `${stage}: no skip-forward`);
+      assert.equal(audio.currentTime, 20, `${stage}: resync must not seek or restart playback`);
+    };
+    for (const stage of ['playing', 'hidden', 'visible', 'pageshow']) {
+      // Model WebKit dropping its remote-command registrations or replacing
+      // them with the audio element's default seek controls.
+      harness.mediaActions.clear();
+      if (stage === 'playing') audio.dispatchEvent(new dom.window.Event('playing'));
+      else if (stage === 'pageshow') dom.window.dispatchEvent(new dom.window.Event('pageshow'));
+      else {
+        Object.defineProperty(document, 'hidden', { configurable: true, value: stage === 'hidden' });
+        document.dispatchEvent(new dom.window.Event('visibilitychange'));
+      }
+      assertTrackControls(stage);
+    }
+    assert.equal(dom.window.navigator.mediaSession.metadata.title, 'Lock Screen Song');
+    assert.equal(dom.window.navigator.mediaSession.playbackState, 'playing');
+    dom.window.eval('state.playing = false;');
+    audio.pause();
+    harness.mediaActions.clear();
+    dom.window.dispatchEvent(new dom.window.Event('pageshow'));
+    assertTrackControls('paused pageshow');
+    assert.equal(dom.window.navigator.mediaSession.playbackState, 'paused');
+    assert.equal(audio.paused, true, 'Restoring controls must not resume intentionally paused audio');
+  } finally { dom.window.close(); }
+}
+
 function testUltraCompactLandscapeCssGuards() {
   const html = inlineFrontendModules(readFileSync(HTML_PATH, 'utf8'));
 
@@ -568,6 +612,7 @@ async function main() {
   await testBottomBarPauseDoesNotOpenFullscreen();
   await testMobileProgressMirrorsPlaybackState();
   await testLockScreenTrackControls();
+  await testLockScreenActionsSurvivePlaybackAndPageLifecycle();
   await testUnsupportedMediaActionDoesNotStopSetup();
   testUltraCompactLandscapeCssGuards();
   testLandscapeMiniPlayerProgressCssGuards();
