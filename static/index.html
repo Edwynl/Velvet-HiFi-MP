@@ -8539,12 +8539,20 @@ function showAdminVerification(submit, setupRequired = false) {
 const KEEP_ALIVE_VIEWS = new Set(['albums']);
 const _keptViews = new Map();  // view -> { nodes, scrollTop, savedAt }
 
+// The outgoing view stays mounted until the incoming one replaces it. The
+// handoff is only resolved when the swap lands, so a slow request never paints
+// a bare background and the kept view is stored exactly once.
+let _pendingViewHandoff = null;
+
 // `opts.timeoutMs` overrides the 8 s limit; with `opts.timeoutResult` a
 // timeout returns that value (no toast) so the caller can tell it apart.
 async function api(path, opts = {}) {
   const { timeoutMs = 8000, timeoutResult, ...fetchOpts } = opts;
   opts = fetchOpts;
-  if ((opts.method || 'GET').toUpperCase() !== 'GET') _keptViews.clear();
+  if ((opts.method || 'GET').toUpperCase() !== 'GET') {
+    _keptViews.clear();
+    _pendingViewHandoff = null;
+  }
   const headers = opts.headers || {};
   if (opts.body && !headers['Content-Type']) {
     headers['Content-Type'] = 'application/json';
@@ -11182,13 +11190,23 @@ async function navigate(view, params = {}, push = true) {
   if (prevView && KEEP_ALIVE_VIEWS.has(prevView) && vc.firstChild) {
     // Read the offset first: removing the content clamps it to 0.
     const scrollTop = getScrollRoot()?.scrollTop || 0;
-    const nodes = document.createDocumentFragment();
     // Keep the editor connected while entering search so the mobile keyboard
     // remains open. Save its original value with the kept album controls.
     const topbar = view === 'search' ? vc.querySelector(':scope > .topbar') : null;
     const searchValue = topbar?.querySelector('#search-input')?.value;
-    nodes.append(...[...vc.childNodes].filter(node => node !== topbar));
-    _keptViews.set(prevView, { nodes, topbar, searchValue, scrollTop, savedAt: Date.now() });
+    // The kept view stays on screen until the next view replaces it. Detaching
+    // it here emptied #view-container for the whole request round-trip, so a
+    // slow phone connection painted a bare background before the new page.
+    if (!_pendingViewHandoff) {
+      _pendingViewHandoff = {
+        view: prevView,
+        nodes: [...vc.childNodes].filter(node => node !== topbar),
+        topbar,
+        searchValue,
+        scrollTop,
+        savedAt: Date.now(),
+      };
+    }
   } else if (prevView && vc.innerHTML) {
     _cachePage(prevView, vc.innerHTML);
   }
@@ -11322,6 +11340,58 @@ $$('.player-info').forEach(el => {
 
 // ─── Rendering ───────────────────────────────────────────────────────────────
 
+// Hands the container over from the outgoing view to the incoming one.
+//
+// The outgoing view stays mounted until the incoming content replaces it, so a
+// slow request never empties the container and never paints a bare background.
+// The view class flips together with the swap: the observer callback runs
+// before the next paint, so the incoming content is styled with its own class
+// while the outgoing one keeps the layout it had. The scroll reset moves to
+// the same moment, which stops the old page from jumping to the top while the
+// request is still in flight.
+function _beginViewHandoff(vc) {
+  const targetClass = 'view-' + state.view;
+  let swapped = false;
+  const observer = new MutationObserver(records => {
+    if (!records.some(record => record.removedNodes.length)) return;
+    flip();
+  });
+  const flip = () => {
+    if (swapped) return;
+    swapped = true;
+    observer.disconnect();
+    vc.className = targetClass;
+  };
+  observer.observe(vc, { childList: true });
+  // With nothing on screen there is no layout to protect: switch straight away.
+  if (!vc.firstChild) flip();
+  return {
+    finish({ keepScroll = false } = {}) {
+      observer.disconnect();
+      flip();
+      const handoff = _pendingViewHandoff;
+      _pendingViewHandoff = null;
+      if (handoff) {
+        // The swap detached the kept nodes. They keep their listeners, so they
+        // can be re-attached on the way back.
+        const detached = handoff.nodes.filter(node => !node.isConnected);
+        if (detached.length) {
+          const nodes = document.createDocumentFragment();
+          nodes.append(...detached);
+          _keptViews.set(handoff.view, {
+            nodes,
+            topbar: handoff.topbar,
+            searchValue: handoff.searchValue,
+            scrollTop: handoff.scrollTop,
+            savedAt: handoff.savedAt,
+          });
+        }
+      }
+      if (!keepScroll) scrollToTop();
+    },
+  };
+}
+
 async function render({ restore = false } = {}) {
   log('[VELVET] render() started');
   if (['settings', 'remote'].includes(state.view) && !await ensureAdminSession()) {
@@ -11336,16 +11406,13 @@ async function render({ restore = false } = {}) {
   vc._disposeHome?.();
   vc._disposeHome = null;
   
-  scrollToTop();
-
   if (state.view !== 'search' && searchOutsideHandler) {
     document.removeEventListener('pointerdown', searchOutsideHandler, true);
     searchOutsideHandler = null;
   }
 
-  // Show loading immediately with smoother transition
-  vc.style.opacity = '0.5';
-  vc.className = 'view-' + state.view;
+  // The outgoing view stays mounted until the incoming one replaces it.
+  const handoff = _beginViewHandoff(vc);
 
   const kept = _keptViews.get(state.view);
   _keptViews.delete(state.view);
@@ -11357,6 +11424,8 @@ async function render({ restore = false } = {}) {
     vc.style.opacity = '1';
     const root = getScrollRoot();
     if (root) root.scrollTop = kept.scrollTop;
+    // The restored view keeps the offset it was left at.
+    handoff.finish({ keepScroll: true });
     log('[VELVET] Render complete (kept view):', state.view);
     return;
   }
@@ -11376,6 +11445,7 @@ async function render({ restore = false } = {}) {
   if (cached) {
     vc.innerHTML = cached;
     vc.style.opacity = '1';
+    handoff.finish();
     log('[VELVET] Render complete (cached):', state.view);
     return;
   }
@@ -11418,6 +11488,9 @@ async function render({ restore = false } = {}) {
     </div>`;
   } finally {
     vc.style.opacity = '1';
+    // The swap landed: store the kept view and reset the scroll now, not
+    // while the request was still in flight.
+    handoff.finish();
   }
 }
 
