@@ -297,6 +297,14 @@ def classify(target_name: str, label: str, description: str,
 
 _MZ_RESIZE = re.compile(r"/(\d+)x(\d+)[a-z]{2}(?:-60)?\.(jpg|png|webp)$")
 _OG_IMAGE = re.compile(r'<meta property="og:image" content="([^"]+)"')
+# The label's own picture of the act, embedded in the artist page. It is a
+# square crop and it is what the label publishes as the artist portrait.
+_IDENTITY_IMAGE = re.compile(
+    r'(https://is\d+-ssl\.mzstatic\.com/image/thumb/AMCArtistImages[^"\'\\ ]+?)'
+    r'/\d+x\d+[a-z]*(?:-60)?\.(?:jpg|png|webp)')
+# Apple's stand-in artwork: the same cover for every artist that has no
+# picture of its own.
+_GENERIC_APPLE_IMAGE = re.compile(r"(?:/cover\.jpg|/apple-music\.png|/features/)", re.IGNORECASE)
 
 
 def _upscale(url: str, edge: int = 800) -> str:
@@ -415,14 +423,41 @@ class Apple:
         page = await self._client.get(link)
         if page.status_code != 200:
             return None
+        apple_name = matched.get("artistName")
+        artist_id = matched.get("artistId")
+        match_level = matched_level
+
+        # The artist page's own identity picture comes first. It is the
+        # label's current portrait for the act, and it is the only square
+        # image on the page. The og:image below is a wide crop of whatever
+        # the page is currently featuring, which for many artists is the
+        # generic cover.jpg or the apple-music.png placeholder rather than
+        # a picture of the artist at all.
+        identity = _IDENTITY_IMAGE.search(page.text)
+        if identity:
+            return {
+                "url": _upscale(identity.group(1).split("?")[0]),
+                "apple_name": apple_name,
+                "artist_id": artist_id,
+                "match_level": match_level,
+                "source": "apple-music-artist-image",
+            }
         found = _OG_IMAGE.search(page.text)
         if not found:
             return None
+        url = _upscale(found.group(1).split("?")[0])
+        source = "apple-og-image"
+        if _GENERIC_APPLE_IMAGE.search(url):
+            # Apple's stand-in artwork: a blank tile for the whole library.
+            # Not worth storing, and it is what pushed many artists onto a
+            # wiki photograph further down the chain.
+            source = "apple-og-image-generic"
         return {
-            "url": _upscale(found.group(1).split("?")[0]),
-            "apple_name": matched.get("artistName"),
-            "artist_id": matched.get("artistId"),
-            "match_level": matched_level,
+            "url": url,
+            "apple_name": apple_name,
+            "artist_id": artist_id,
+            "match_level": match_level,
+            "source": source,
         }
 
 
@@ -697,13 +732,17 @@ async def resolve(apple: Apple, wiki: Optional[Wiki], artist: dict,
             attempts.append("apple error %s" % type(exc).__name__)
         if found:
             level = found.get("match_level", "exact")
+            apple_source = found.get("source", "apple-og-image")
+            reason = ("Apple Music artist identity image (%s name match)" % level
+                      if apple_source == "apple-music-artist-image"
+                      else "Apple Music artist page og:image (%s name match)" % level)
             return {"status": "ok", "image_url": found["url"],
-                    "source": "apple-og-image",
+                    "source": apple_source,
                     # A containment match ("软硬" / "軟硬天師") may be a different
                     # act that merely shares a prefix, so it is review-only.
                     "confidence": "high" if level == "exact" else
                                   "medium" if level == "alias" else "low",
-                    "reason": "Apple Music artist page og:image (%s name match)" % level,
+                    "reason": reason,
                     "matched_label": found["apple_name"],
                     "reference": "https://music.apple.com/artist/%s" % found["artist_id"]}
         attempts.append("apple: no verified match")
@@ -725,8 +764,9 @@ async def resolve(apple: Apple, wiki: Optional[Wiki], artist: dict,
                 bridged = None
             if bridged:
                 return {"status": "ok", "image_url": bridged["url"],
-                        "source": "apple-og-image", "confidence": "high",
-                        "reason": "Apple Music og:image via Wikidata-verified English name",
+                        "source": bridged.get("source", "apple-og-image"),
+                        "confidence": "high",
+                        "reason": "Apple Music artist image via Wikidata-verified English name",
                         "matched_label": bridged["apple_name"],
                         "matched_description": res.get("matched_description"),
                         "reference": "https://music.apple.com/artist/%s" % bridged["artist_id"]}
@@ -953,7 +993,7 @@ async def run(args: argparse.Namespace) -> int:
 
             # Apple's "no artwork" tile is a flat colour block. Storing it is
             # worse than the letter placeholder, so fall back to Wikimedia.
-            if res.get("source") == "apple-og-image":
+            if res.get("source", "").startswith("apple-og-image"):
                 spread, edges = image_stats(jpeg)
                 if looks_flat(spread, edges):
                     row["colour_spread"] = round(spread, 1)
