@@ -4,6 +4,7 @@ import json
 import subprocess
 import threading
 import time
+from settings import get_settings
 
 _lock = threading.Lock()
 _snapshot = ({}, 0)
@@ -73,8 +74,8 @@ def is_passwordless_listener(request, client_ip):
             continue
         for handler in site.get('Handlers', {}).values():
             proxy = handler.get('Proxy', '').rstrip('/')
-            if proxy in {f'http://127.0.0.1:{request.url.port or 8765}',
-                         'http://127.0.0.1:8765', 'http://localhost:8765'}:
+            port = get_settings().port
+            if proxy in {f'http://127.0.0.1:{port}', f'http://localhost:{port}'}:
                 return True
     return False
 

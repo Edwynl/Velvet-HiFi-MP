@@ -53,7 +53,7 @@
 3. 如需自动安装 Python/FFmpeg/Node.js：
    powershell -ExecutionPolicy Bypass -File .\install.ps1 -InstallSystemTools
 4. 双击 start.bat
-5. 浏览器打开 http://localhost:8765
+5. 浏览器打开 http://localhost:8771
 6. 进入 Settings → 填入音乐目录路径 → 点击 Save & Scan Library
 ```
 
@@ -133,7 +133,7 @@ powershell -ExecutionPolicy Bypass -File .\install.ps1 -InstallSystemTools
 2. 创建或复用 Python 虚拟环境 `venv/`
 3. 自动安装所有依赖（fastapi、uvicorn、mutagen、httpx 等）
 4. 读取 `.env`
-5. 启动服务器（端口 8765）
+5. 启动服务器（端口 8771）
 6. 同时启动 UPnP/DLNA 服务（端口 8766）
 
 控制台会显示：
@@ -141,8 +141,8 @@ powershell -ExecutionPolicy Bypass -File .\install.ps1 -InstallSystemTools
 ================================================
   VELVET Personal Music Server
 ================================================
-  Browser UI: http://localhost:8765
-  Network:    http://192.168.1.100:8765
+  Browser UI: http://localhost:8771
+  Network:    http://192.168.1.100:8771
   UPnP/DLNA:  visible to Marantz M1 & Cambridge EXN100
 ================================================
 ```
@@ -151,7 +151,7 @@ powershell -ExecutionPolicy Bypass -File .\install.ps1 -InstallSystemTools
 
 ## 4. 首次配置
 
-打开浏览器访问 `http://localhost:8765`，点击左侧 **Settings**。
+打开浏览器访问 `http://localhost:8771`，点击左侧 **Settings**。
 
 ### 4.1 设置音乐目录
 
@@ -381,7 +381,7 @@ Win+R → cmd → ipconfig
 
 | 设备 | 访问方式 |
 |---|---|
-| 手机/平板 | 浏览器打开 `http://192.168.1.100:8765` |
+| 手机/平板 | 浏览器打开 `http://192.168.1.100:8771` |
 | 另一台电脑 | 同上 |
 | HiFi 设备 | 通过 HEOS/StreamMagic app 找到 VELVET |
 | 电视 | 通过 Chromecast / 浏览器 |
@@ -434,7 +434,7 @@ VELVET 支持多个客户端**同时连接**，各自独立播放不同音乐。
 |---|---|---|
 | `VELVET_MUSIC_DIR` | `C:\Music` | 音乐库根目录 |
 | `VELVET_DATA_DIR` | `velvet_data` | 数据库和封面缓存目录 |
-| `VELVET_PORT` | `8765` | Web 服务端口 |
+| `VELVET_PORT` | `8771` | Web 服务端口 |
 | `VELVET_HOST` | `0.0.0.0` | 监听地址 |
 | `VELVET_UPNP_FRIENDLY_NAME` | `VELVET` | DLNA/UPnP 设备名 |
 
@@ -443,7 +443,7 @@ VELVET 支持多个客户端**同时连接**，各自独立播放不同音乐。
 编辑 `.env`：
 
 ```env
-VELVET_PORT=8765
+VELVET_PORT=8771
 ```
 
 UPnP 控制端口目前仍在 `upnp_server.py` 中定义为 `8766`。
@@ -468,7 +468,7 @@ UPnP 控制端口目前仍在 `upnp_server.py` 中定义为 `8766`。
 
 或手动开放端口：
 ```
-netsh advfirewall firewall add rule name="VELVET" dir=in action=allow protocol=TCP localport=8765
+netsh advfirewall firewall add rule name="VELVET" dir=in action=allow protocol=TCP localport=8771
 netsh advfirewall firewall add rule name="VELVET-UPnP" dir=in action=allow protocol=TCP localport=8766
 netsh advfirewall firewall add rule name="VELVET-SSDP" dir=in action=allow protocol=UDP localport=1900
 ```
@@ -566,7 +566,7 @@ velvet_v3/
 ## 15. API 参考
 
 VELVET 提供完整的 REST API，可供第三方客户端或自动化脚本使用。  
-完整文档访问：`http://localhost:8765/docs`（FastAPI 自动生成的 Swagger UI）
+完整文档访问：`http://localhost:8771/docs`（FastAPI 自动生成的 Swagger UI）
 
 ### 常用端点
 

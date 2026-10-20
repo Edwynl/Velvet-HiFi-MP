@@ -39,7 +39,7 @@ VELVET is a premium, minimalist personal music server designed for audiophiles. 
      ```
 3. **Configure**: edit `.env` if your music folder is not auto-detected.
 4. **Run**: double-click `start.bat`.
-5. **Access**: open `http://localhost:8765` on the host PC and set a password in **Remote Access** before connecting over LAN, Tailscale or a tunnel. Unconfigured remote access is blocked.
+5. **Access**: open `http://localhost:8771` on the host PC and set a password in **Remote Access** before connecting over LAN, Tailscale or a tunnel. Unconfigured remote access is blocked.
 
 The installer creates `venv/`, installs Python packages, optionally installs Node dependencies, creates a machine-local `.env`, and checks FFmpeg/fpcalc availability. Do not move `venv/` or `.env` between computers; regenerate them with `install.bat`.
 
@@ -92,7 +92,7 @@ VELVET 是一款专为音乐发烧友打造的高级简约私人音乐服务器�
      ```
 3. **配置音乐目录**：检查 `.env` 里的 `VELVET_MUSIC_DIR`。
 4. **启动**：双击 `start.bat`。
-5. **访问**：先在服务器电脑打开 `http://localhost:8765`，进入 **Remote Access** 设置至少 8 位密码，再通过局域网或 Tailscale 从其他设备连接。未完成密码初始化时，远程 API 会拒绝访问。
+5. **访问**：先在服务器电脑打开 `http://localhost:8771`，进入 **Remote Access** 设置至少 8 位密码，再通过局域网或 Tailscale 从其他设备连接。未完成密码初始化时，远程 API 会拒绝访问。
 
 不要在电脑之间复制 `venv/` 和 `.env`。换电脑后保留源码，重新运行 `install.bat`，脚本会按新电脑路径重建虚拟环境和本地配置。
 

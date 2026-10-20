@@ -69,7 +69,7 @@ tailscale ip -4
 现在，在手机上打开浏览器，访问：
 
 ```
-http://100.x.x.x:8765
+http://100.x.x.x:8771
 ```
 
 （将 `100.x.x.x` 替换为你服务器的 Tailscale IP）
@@ -152,7 +152,7 @@ credentials-file: C:\Users\<你的用户名>\.cloudflared\<隧道ID>.json
 
 ingress:
   - hostname: musiciq.yourdomain.com
-    service: http://localhost:8765
+    service: http://localhost:8771
   - service: http_status:404
 ```
 
@@ -235,5 +235,5 @@ cloudflared tunnel run musiciq
 
 2. 检查防火墙：
    ```powershell
-   netsh advfirewall firewall add rule name="MusicIQ" dir=in action=allow protocol=tcp localport=8765
+   netsh advfirewall firewall add rule name="MusicIQ" dir=in action=allow protocol=tcp localport=8771
    ```

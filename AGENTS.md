@@ -15,16 +15,16 @@
 
 ## 正式服务
 
-- 8765 只运行 main 的正式网页；8766 是 UPnP XML 服务，不是 UI。
+- 8771 只运行 main 的正式网页；8766 是 UPnP XML 服务，不是 UI。
 - 当前 main 工作树：`C:\Users\edwyn\.codex\worktrees\main-runtime\VELVET_NEXT`。启动时使用该工作树作为工作目录，并传入其中 server.py 的绝对路径。路径变动时用 `git worktree list` 确认 main。
-- 原始 checkout `C:\Antigravity\Claude Code\VELVET_NEXT` 可能仍是旧功能分支；不得从这里直接启动 8765。保留其中未提交工作、共享媒体数据和用户启动方案。
+- 原始 checkout `C:\Antigravity\Claude Code\VELVET_NEXT` 可能仍是旧功能分支；不得从这里直接启动 8771。保留其中未提交工作、共享媒体数据和用户启动方案。
 - 测试使用独立空闲端口及隔离数据。停止服务前核对 PID、端口和进程路径，不终止无关进程。
 
 ## 发布检查
 
 1. 确认 main 与远端状态，保留已有和其他任务的新修复，不 force push、不整文件回退。
 2. 执行 `npm run test:pwa`，并检查 PWA 相关 diff。
-3. 发布后读取 `http://localhost:8765/`，将实际 HTML 与 main 的 `static/index.html` 比较（可归一化换行），核对 standalone 和 safe-area；检查实际进程路径及更新资源。
+3. 发布后读取 `http://localhost:8771/`，将实际 HTML 与 main 的 `static/index.html` 比较（可归一化换行），核对 standalone 和 safe-area；检查实际进程路径及更新资源。
 4. 真实 iPhone 的 WebKit 行为需要手机复核；静态测试通过不能代替真实设备验证。
 
 只有用户明确要求的具体 PWA 改动才可以调整这些保护行为。普通 UI 任务无需重复请求许可，直接保持保护规则执行。

@@ -373,8 +373,8 @@ app = FastAPI(
 # Default origins + allow CORS_ORIGINS env var (comma-separated URLs)
 # Example: set CORS_ORIGINS=https://abc123.lt.me,https://xyz789.cf.com
 _ALLOWED_ORIGINS_DEFAULT = [
-    "http://localhost:8765",
-    "http://127.0.0.1:8765",
+    f"http://localhost:{PORT}",
+    f"http://127.0.0.1:{PORT}",
 ]
 
 def _get_cors_origins():
@@ -4476,7 +4476,7 @@ async def auth_middleware(request: Request, call_next):
 
     # When no password has been configured, do not expose the music library,
     # destructive APIs, or local playback control over LAN/Tailscale.
-    # Users can initialize security at http://localhost:8765 on the host PC.
+    # Users can initialize security at the configured local UI port on the host PC.
     if (not auth_enabled and not _is_loopback_client_ip(client_ip)
             and not (admin_active and (passwordless_listener or admin_unlocked))):
         setup_visible = request.method == "GET" and (

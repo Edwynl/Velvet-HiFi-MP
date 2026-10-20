@@ -9,9 +9,10 @@ import threading
 import time
 import shutil
 from typing import Optional
+from settings import get_settings
 
 # VELVET server port
-VELVET_PORT = 8765
+VELVET_PORT = get_settings().port
 
 
 class TailscaleManager:

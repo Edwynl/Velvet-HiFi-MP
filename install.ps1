@@ -127,7 +127,7 @@ function Ensure-EnvFile {
         "# This file is machine-specific and should not be committed.",
         "VELVET_MUSIC_DIR=$musicDir",
         "VELVET_DATA_DIR=velvet_data",
-        "VELVET_PORT=8765",
+        "VELVET_PORT=8771",
         "VELVET_HOST=0.0.0.0",
         "VELVET_UPNP_FRIENDLY_NAME=VELVET",
         "",
@@ -136,7 +136,7 @@ function Ensure-EnvFile {
         "# LASTFM_API_KEY=",
         "",
         "# Optional CORS override, JSON array",
-        "# VELVET_CORS_ORIGINS=[`"http://localhost:8765`",`"http://127.0.0.1:8765`"]"
+        "# VELVET_CORS_ORIGINS=[`"http://localhost:8771`",`"http://127.0.0.1:8771`"]"
     )
 
     Set-Content -LiteralPath $envPath -Value $content -Encoding UTF8
@@ -262,4 +262,4 @@ Write-Ok "Python files compile"
 Write-Host ""
 Write-Host "VELVET is ready." -ForegroundColor Green
 Write-Host "Start it with: .\start.bat"
-Write-Host "Open: http://localhost:8765"
+Write-Host "Open: http://localhost:8771"

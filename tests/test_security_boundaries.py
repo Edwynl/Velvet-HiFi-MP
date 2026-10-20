@@ -17,7 +17,7 @@ class SecurityBoundaryTests(unittest.TestCase):
         self.config_patch.start()
         self.manager_patch = patch.object(server.security, '_security_manager', server.security.SecurityManager())
         self.manager_patch.start()
-        self.client = TestClient(server.app, base_url="http://localhost:8765")
+        self.client = TestClient(server.app, base_url="http://localhost:8771")
 
     def tearDown(self):
         self.client.close()
@@ -63,10 +63,10 @@ class SecurityBoundaryTests(unittest.TestCase):
             self.assertEqual(response.status_code, 401)
 
     def test_local_reverse_proxy_never_inherits_loopback_trust(self):
-        # `tailscale serve --bg 8765` connects from 127.0.0.1 for remote phones.
+        # `tailscale serve --bg 8771` connects from 127.0.0.1 for remote phones.
         tailnet = {"Host": "velvet.tail1234.ts.net", "X-Forwarded-For": "100.101.102.103",
                    "X-Forwarded-Host": "velvet.tail1234.ts.net", "X-Forwarded-Proto": "https"}
-        with TestClient(server.app, base_url="http://localhost:8765",
+        with TestClient(server.app, base_url="http://localhost:8771",
                         client=("127.0.0.1", 50123)) as loopback, \
              patch.object(server.security, "is_auth_enabled", return_value=False):
             self.assertEqual(loopback.get("/api/stats").status_code, 200)
@@ -77,7 +77,7 @@ class SecurityBoundaryTests(unittest.TestCase):
 
         verify = patch.object(server.security, "verify_auth",
                               return_value={"allowed": False, "error": "denied"})
-        with TestClient(server.app, base_url="http://localhost:8765",
+        with TestClient(server.app, base_url="http://localhost:8771",
                         client=("127.0.0.1", 50124)) as loopback, \
              patch.object(server.security, "is_auth_enabled", return_value=True), \
              patch.dict("os.environ", {"VELVET_AUTH_ENFORCE_ALL_NETWORKS": "false"}), \
@@ -86,7 +86,7 @@ class SecurityBoundaryTests(unittest.TestCase):
             self.assertEqual(verify_auth.call_args.kwargs["ip"], "proxied:100.101.102.103")
 
     def test_forwarded_headers_never_raise_trust_of_remote_peer(self):
-        with TestClient(server.app, base_url="http://localhost:8765",
+        with TestClient(server.app, base_url="http://localhost:8771",
                         client=("203.0.113.7", 50125)) as remote, \
              patch.object(server.security, "is_auth_enabled", return_value=False):
             response = remote.get("/api/stats", headers={"X-Forwarded-For": "127.0.0.1"})
@@ -105,12 +105,12 @@ class SecurityBoundaryTests(unittest.TestCase):
     def test_configured_cors_preflight_reaches_cors_middleware(self):
         with patch.object(server.security, "is_auth_enabled", return_value=True):
             response = self.client.options("/api/dsp/profiles/1", headers={
-                "Origin": "http://localhost:8765",
+                "Origin": "http://localhost:8771",
                 "Access-Control-Request-Method": "PUT",
                 "Access-Control-Request-Headers": "X-API-Key,Content-Type",
             })
             self.assertEqual(response.status_code, 200)
-            self.assertEqual(response.headers["access-control-allow-origin"], "http://localhost:8765")
+            self.assertEqual(response.headers["access-control-allow-origin"], "http://localhost:8771")
 
     def test_bootstrap_rejects_public_proxy_host_and_cross_origin(self):
         with patch.object(server.security, "is_auth_enabled", return_value=False), \
