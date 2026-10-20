@@ -1,0 +1,206 @@
+﻿kind,id,current,proposed,merge_ids,aliases,source,check,approve
+artist,4,张碧晨,张碧晨,,Diamond Zhang|Zhang Bichen|張碧晨,file tag artist field | https://en.wikipedia.org/wiki/Zhang_Bichen | https://music.apple.com/us/artist/1019445030 | https://musicbrainz.org/artist/404d293e-8c40-4aac-99fd-70181564e9ba,mainland,Y
+artist,7,孟佳,孟佳,,Jia|Meng Jia,https://zh.wikipedia.org/w/api.php?action=parse&page=%E5%AD%9F%E4%BD%B3&prop=wikitext&section=0&format=json&redirects=1,mainland,Y
+artist,8,王源,王源,,Roy|Roy Wang|Wang Yuan,https://en.wikipedia.org/w/api.php?action=parse&page=Roy%20Wang&prop=wikitext&section=0&format=json&redirects=1 | https://music.163.com/api/artist/albums/956386?limit=12,mainland,Y
+artist,10,王赫野,王赫野,,Billy|王宇淞,https://zh.wikipedia.org/w/api.php?action=parse&page=%E7%8E%8B%E8%B5%AB%E9%87%8E&prop=wikitext&section=0&format=json&redirects=1,mainland,Y
+artist,12,王铮亮,王铮亮,,Reno Wang|王錚亮,https://zh.wikipedia.org/w/api.php?action=parse&page=%E7%8E%8B%E9%93%AE%E4%BA%AE&prop=wikitext&section=0&format=json&redirects=1,mainland,Y
+artist,22,吉克隽逸,吉克隽逸,,Summer|Summer Momoko,https://music.163.com/api/artist/albums/166018?limit=12 | https://zh.wikipedia.org/w/api.php?action=parse&page=%E5%90%89%E5%85%8B%E9%9A%BD%E9%80%B8&prop=wikitext&section=0&format=json&redirects=1,mainland,Y
+artist,24,摩登兄弟刘宇宁,摩登兄弟刘宇宁,,Liu Yu Ning|Liu Yuning|Modern Brothers|刘宇宁|劉宇寧|摩登兄弟,file tag artist field | https://en.wikipedia.org/w/api.php?action=parse&page=Liu%20Yuning&prop=wikitext&section=0&format=json&redirects=1 | https://zh.wikipedia.org/w/api.php?action=parse&page=%E5%8A%89%E5%AE%87%E5%AF%A7&prop=wikitext&section=0&format=json&redirects=1 | https://zh.wikipedia.org/w/api.php?action=parse&page=%E6%91%A9%E7%99%BB%E5%85%84%E5%BC%9F&prop=wikitext&section=0&format=json&redirects=1,mainland,Y
+artist,25,王以太,王以太,,Wang Yitai|Yitai Wang|王闪火,file tag artist field | https://music.apple.com/us/artist/1436812638 | https://musicbrainz.org/artist/d7c888ae-3ca3-43db-a196-487ea5d9f07b | https://zh.wikipedia.org/wiki/王以太,mainland,Y
+artist,26,杨坤,杨坤,,Yang Kun|楊坤,https://music.apple.com/us/artist/368490054 | https://musicbrainz.org/artist/28fd77d2-d1cd-478c-9450-209fc14deb52,mainland,Y
+artist,27,谭维维,谭维维,,Sitar Tan|Tan Weiwei|譚維維,https://zh.wikipedia.org/w/api.php?action=parse&page=%E8%AD%9A%E7%B6%AD%E7%B6%AD&prop=wikitext&section=0&format=json&redirects=1,mainland,Y
+artist,38,张含韵,张含韵,,Baby|Baby Zhang|Kristy|Kristy Zhang|張含韻,https://en.wikipedia.org/w/api.php?action=parse&page=Baby%20Zhang&prop=wikitext&section=0&format=json&redirects=1 | https://zh.wikipedia.org/w/api.php?action=parse&page=%E5%BC%B5%E5%90%AB%E9%9F%BB&prop=wikitext&section=0&format=json&redirects=1,mainland,Y
+artist,47,李玖哲,李玖哲,,Neil Keyz|Nicky Lee|李哲熙,file tag artist field | https://zh.wikipedia.org/w/api.php?action=parse&page=李玖哲&prop=wikitext&section=0&format=json&redirects=1,taiwan,Y
+artist,52,弦子,弦子,,Stringer|Zhang Xianzi|张弦子|張弦子,file tag artist field | https://music.apple.com/us/artist/681639010 | https://musicbrainz.org/artist/24478f88-3de0-40f9-be2a-acd05451aeb2 | https://zh.wikipedia.org/wiki/弦子,mainland,Y
+artist,107,LBI利比,LBI利比,1022,LBI|Lbi|利比|时柏尘,file tag artist field | https://music.apple.com/cn/artist/1616297807 | https://music.apple.com/us/artist/1616297807 | https://musicbrainz.org/artist/917b3d63-40f8-4df5-8af5-cc441df1a1ed,mainland,Y
+artist,108,艾辰,艾辰,,Ai Chen|Chen Ai,file tag artist field | https://music.apple.com/us/artist/1438634929 | https://musicbrainz.org/artist/d4359625-9a62-4fef-9ffe-fd89d24edac6,mainland,Y
+artist,172,J HALL 這好,J HALL 這好,,J HALL 这好,Simplified variant of the display name | file tag artist field,taiwan,Y
+artist,263,薄荷葉,薄荷葉,,薄荷叶,Simplified variant of the display name | file tag artist field,unknown,Y
+artist,449,Beyond,Beyond,,超越,https://music.apple.com/artist/79668659 | https://zh.wikipedia.org/zh-hk/Beyond,hongkong,Y
+artist,462,Mr.,Mr.,,Mister|White Noise,https://zh.wikipedia.org/wiki/Mr.,hongkong,Y
+artist,464,郭芯其,郭芯其,,Rammie Guo|郭斌妮,file tag artist field | https://zh.wikipedia.org/wiki/%E9%83%AD%E8%8A%AF%E5%85%B6,hongkong,Y
+artist,466,軟硬天師,軟硬天師,478,Softhard|Softhard Angels|軟硬|软硬天师,file tag artist field | https://en.wikipedia.org/wiki/Softhard,hongkong,Y
+artist,480,雷有輝,雷有輝,,Lui Yau Fai|Patrick Lui|雷有暉|雷有辉,Simplified variant of the display name | file tag artist field | https://musicbrainz.org/artist/67e20217-827d-4727-b1b9-ba8dfdc79041 | https://zh.wikipedia.org/wiki/%E9%9B%B7%E6%9C%89%E8%BC%9D,hongkong,Y
+artist,511,Apple 凌雪怡,Apple 凌雪怡,,Apple|Apple Ling Suet Yi|凌雪怡,file tag artist field | https://zh.wikipedia.org/wiki/%E5%87%8C%E9%9B%AA%E6%80%A1,hongkong,Y
+artist,514,JC 陳詠桐,JC 陳詠桐,513,JC|JC 陈咏桐|Jennifer Chan|Jennifer Chan Wing Tung|陳泳彤|陳詠桐,Simplified variant of the display name | file tag artist field | https://zh.wikipedia.org/wiki/%E9%99%B3%E8%A9%A0%E6%A1%90,hongkong,Y
+artist,522,宋波濤,宋波濤,,matheo|宋波涛,https://baike.baidu.com/item/%E5%AE%8B%E6%B3%A2%E6%B6%9B/106323 | https://www.newton.com.tw/wiki/%E5%AE%8B%E6%B3%A2%E6%BF%A4,mainland,Y
+artist,523,專家Dickson,專家Dickson,,Ivan Yuen|Ivan Yuen Man Tai|专家Dickson|阮文泰,Simplified variant of the display name | https://zh.wikipedia.org/wiki/%E5%B0%88%E5%AE%B6Dickson,hongkong,Y
+artist,524,應昌佑,應昌佑,,"Charles, Ying Cheong Yau|应昌佑",Simplified variant of the display name | file tag artist field | https://www.wikidata.org/wiki/Q5083768,hongkong,Y
+artist,527,杜文澤,杜文澤,,Chapman To|吳卓彰|杜文泽|杜汶澤,Simplified variant of the display name | https://www.wikidata.org/wiki/Q708456 | https://www.youtube.com/watch?v=FbV2SlF7TiA,hongkong,Y
+artist,528,梁祖儀,梁祖儀,,Joey Leong|梁祖仪,https://musicbrainz.org/artist/90032fc7-c28c-45ba-96c7-b62fce9b3910 | https://zh.wikipedia.org/wiki/%E6%A2%81%E7%A5%96%E5%84%80,other,Y
+artist,530,王灝兒,王灝兒,808 519,JW|Joey Wong|Wong Ho Yee Joey|王灏儿,Simplified variant of the display name | file tag artist field | https://musicbrainz.org/artist/6d2667ea-2bd4-4a6a-94b5-cafc5e24ea66 | https://zh.wikipedia.org/wiki/%E7%8E%8B%E7%81%9D%E5%85%92,hongkong,Y
+artist,532,衛蘭,衛蘭,,Janice M. Vidal|Renee|卫兰|明樂蒂,Simplified variant of the display name | file tag artist field | https://zh.wikipedia.org/wiki/%E8%A1%9B%E8%98%AD,hongkong,Y
+artist,536,馬天佑,馬天佑,,Mayao Ma|马天佑,Simplified variant of the display name | file tag artist field | https://www.wikidata.org/wiki/Q19983478,unknown,Y
+artist,537,黎明,黎明,,Lai Ming|Leon Lai|Leon Lai Ming,file tag artist field | https://en.wikipedia.org/wiki/Leon_Lai | https://zh.wikipedia.org/zh-hk/%E9%BB%8E%E6%98%8E,hongkong,Y
+artist,715,葉文輝,葉文輝,728,Barry Ip|Wen Hui Ye|叶文辉|啤梨,Simplified variant of the display name | https://zh.wikipedia.org/wiki/%E8%91%89%E6%96%87%E8%BC%9D,hongkong,Y
+artist,716,李彩樺,李彩樺,,Cai Hua Li|Rain Li Choi Wa|李彩桦|李彩華,Simplified variant of the display name | file tag artist field | https://www.youtube.com/watch?v=-Ob6Du_Nh0Y | https://zh.wikipedia.org/wiki/%E6%9D%8E%E5%BD%A9%E8%8F%AF,hongkong,Y
+artist,733,林苑,林苑,,Gia Lin,https://zh.wikipedia.org/wiki/%E6%9E%97%E8%8B%91,mainland,Y
+artist,760,秦岚,秦岚,,Qin Lan,https://c.y.qq.com/soso/fcgi-bin/client_search_cp?w=%E4%B8%80%E8%82%A9%E4%B9%8B%E9%9A%94&format=json&p=1&n=8&t=0,mainland,Y
+artist,806,JUD 陳泳希,JUD 陳泳希,,JUD 陈泳希|陳泳希,Simplified variant of the display name | file tag artist field | https://itunes.apple.com/search?term=False%20Reality%20JUD&entity=song&limit=5&country=TW,taiwan,Y
+artist,820,黃浩琳,黃浩琳,,Lillian Wong|Lillian Wong Ho Lam|黄浩琳,Simplified variant of the display name | https://zh.wikipedia.org/wiki/黃浩琳,hongkong,Y
+artist,874,Sabrina cheung 張蔓莎,Sabrina cheung 張蔓莎,,Sabrina Cheung|Sabrina cheung 张蔓莎|張蔓莎,Simplified variant of the display name | https://musicbrainz.org/artist/e580fee5-b86f-48db-8c95-7a3eb335ffb6 | https://zh.wikipedia.org/wiki/%E5%BC%B5%E8%94%93%E8%8E%8E,hongkong,Y
+artist,884,OST 泰雅的後代,OST 泰雅的後代,,O.S.T 泰雅的後代|OST 泰雅的后代,Simplified variant of the display name | file tag artist field | https://zh.wikipedia.org/w/api.php?action=query&prop=extracts&explaintext=1&exintro=1&pageids=1712414&format=json,taiwan,Y
+artist,888,吳汶芳,吳汶芳,,Fang Wu|吴汶芳|純愛女爵|花仙子,Simplified variant of the display name | file tag artist field | https://zh.wikipedia.org/w/api.php?action=parse&page=吳汶芳&prop=wikitext&section=0&format=json&redirects=1,taiwan,Y
+artist,889,呂衣喬,呂衣喬,,吕衣乔,Simplified variant of the display name | file tag artist field,unknown,Y
+artist,891,周深,周深,,Charlie Zhou|Zhou Shen,https://music.apple.com/us/artist/1154054707 | https://musicbrainz.org/artist/b8582c50-2e88-4d2e-a064-d287d6276be5,mainland,Y
+artist,894,大壯,大壯,,Da Zhuang|大壮|王轩,file tag artist field | https://musicbrainz.org/ws/2/recording?query=recording:%22%E4%B8%8A%E4%BA%86%E5%B9%B4%E7%B4%80%E7%9A%84%E7%94%B7%E4%BA%BA%22&fmt=json&limit=5,mainland,Y
+artist,897,庾澄慶,庾澄慶,,Harlem Yu|Yu Chengqing|哈林|庾澄庆,Simplified variant of the display name | file tag artist field | https://www.wikidata.org/wiki/Q285713 | https://zh.wikipedia.org/w/api.php?action=parse&page=庾澄慶&prop=wikitext&section=0&format=json&redirects=1,taiwan,Y
+artist,898,張惠春,張惠春,,Saya|张惠春,Simplified variant of the display name | file tag artist field | https://zh.wikipedia.org/w/api.php?action=parse&page=張惠春&prop=wikitext&section=0&format=json&redirects=1,taiwan,Y
+artist,902,文章,文章,,John Huang|黃文章,file tag artist field | https://zh.wikipedia.org/wiki/文章_(歌手),taiwan,Y
+artist,903,暗杠,暗杠,,AnGang|Dark Knee|Joe,file tag artist field | https://music.apple.com/us/artist/1287040341 | https://music.apple.com/us/artist/1652007765 | https://musicbrainz.org/artist/95d6c258-82b5-4601-afa6-fa9701100d2a,mainland,Y
+artist,904,曾昱嘉,曾昱嘉,,Tseng Yu-Jia|阿弟,file tag artist field | https://zh.wikipedia.org/w/api.php?action=parse&page=曾昱嘉&prop=wikitext&section=0&format=json&redirects=1,taiwan,Y
+artist,906,曾靜玟,曾靜玟,,Jin Wen Tseng|曾静玟,Simplified variant of the display name | file tag artist field | https://zh.wikipedia.org/w/api.php?action=parse&page=曾靜玟&prop=wikitext&section=0&format=json&redirects=1,taiwan,Y
+artist,907,朱俐靜,朱俐靜,,Miu Chu|Zhu Li Jing|朱俐静,Simplified variant of the display name | file tag artist field | https://zh.wikipedia.org/w/api.php?action=parse&page=朱俐靜&prop=wikitext&section=0&format=json&redirects=1,taiwan,Y
+artist,908,朱興東,朱興東,,朱兴东,Simplified variant of the display name | file tag artist field,unknown,Y
+artist,909,李亞明,李亞明,,Li Yaming|新人教師|李亚明,Simplified variant of the display name | file tag artist field | https://zh.wikipedia.org/w/api.php?action=parse&page=李亞明&prop=wikitext&section=0&format=json&redirects=1,taiwan,Y
+artist,910,李唯楓,李唯楓,,Coke Lee|Coke Li|李唯枫,Simplified variant of the display name | file tag artist field | https://www.wikidata.org/w/api.php?action=wbgetentities&ids=Q5562892%7CQ9197465%7CQ708686%7CQ251068%7CQ12174450%7CQ15908468%7CQ702535%7CQ716055%7CQ16907998&format=json&props=labels%7Caliases&languages=en%7Czh%7Czh-hans%7Czh-hant%7Czh-tw%7Czh-cn | https://zh.wikipedia.org/w/api.php?action=parse&page=李唯楓&prop=wikitext&section=0&format=json&redirects=1,taiwan,Y
+artist,911,李宣榕,李宣榕,946,Sharon|Sharon Lee|Sharon Li|彭宣榕|金希,file tag artist field | https://musicbrainz.org/artist/9577de3d-c215-4dc5-9eba-73ecaf764db5 | https://zh.wikipedia.org/wiki/李宣榕,taiwan,Y
+artist,912,李玉璽,李玉璽,,李玉玺,Simplified variant of the display name | file tag artist field,taiwan,Y
+artist,913,林亭翰,林亭翰,,Justin Lin,file tag artist field | https://zh.wikipedia.org/wiki/林亭翰,taiwan,Y
+artist,915,林隆璇,林隆璇,,Kevin Lin|Lin Lung Hsuan,file tag artist field | https://www.wikidata.org/w/api.php?action=wbgetentities&ids=Q9294393&format=json&props=labels%7Caliases%7Cdescriptions,taiwan,Y
+artist,922,游子陽,游子陽,,游子阳,Simplified variant of the display name | file tag artist field,unknown,Y
+artist,923,熊貓堂ProducePandas,熊貓堂ProducePandas,,Produce Pandas|ProducePandas|熊猫堂|熊猫堂ProducePandas|熊貓堂,Simplified variant of the display name | file tag artist field | https://www.wikidata.org/w/api.php?action=wbgetentities&ids=Q109535689&format=json&props=labels%7Caliases%7Cdescriptions,taiwan,Y
+artist,924,王力宏,王力宏,,Alexander Wang|Leehom Wang|二哥,file tag artist field | https://www.wikidata.org/w/api.php?action=wbgetentities&ids=Q5562892%7CQ9197465%7CQ708686%7CQ251068%7CQ12174450%7CQ15908468%7CQ702535%7CQ716055%7CQ16907998&format=json&props=labels%7Caliases&languages=en%7Czh%7Czh-hans%7Czh-hant%7Czh-tw%7Czh-cn | https://zh.wikipedia.org/w/api.php?action=parse&page=王力宏&prop=wikitext&section=0&format=json&redirects=1,taiwan,Y
+artist,925,王宏恩,王宏恩,,Biung|Biung Wang|Wang Hong'en,file tag artist field | https://www.wikidata.org/wiki/Q9065070 | https://zh.wikipedia.org/w/api.php?action=parse&page=王宏恩&prop=wikitext&section=0&format=json&redirects=1,taiwan,Y
+artist,930,知更,知更,,John Stoniae|劉庭佐,file tag artist field | https://zh.wikipedia.org/wiki/劉庭佐,taiwan,Y
+artist,931,童雲晞,童雲晞,,童云晞,Simplified variant of the display name | file tag artist field,unknown,Y
+artist,932,答案商店,答案商店,,Answer Store,file tag artist field | https://www.instagram.com/p/C7dsP1KR4Yh/,taiwan,Y
+artist,934,羅嘉豪,羅嘉豪,,Hyper|Hyper Lo Ka Hou|Lo Ka Hou|罗嘉豪,Simplified variant of the display name | file tag artist field | https://zh.wikipedia.org/w/api.php?action=parse&page=羅嘉豪&prop=wikitext&section=0&format=json&redirects=1,other,Y
+artist,935,范曉萱,范曉萱,2077,Mavis Fan|范晓萱|范晓萱 100%乐团|范范|萱萱|音樂小魔女,file tag artist field | https://zh.wikipedia.org/w/api.php?action=parse&page=范晓萱&prop=wikitext&section=0&format=json&redirects=1,taiwan,Y
+artist,936,蘇芮,蘇芮,,Julie Su|Julie Sue|Su Jui|Sue Rey|苏芮|蘇瑞芬|蘇阿麗,file tag artist field | https://en.wikipedia.org/w/api.php?action=parse&page=Su%20Rui&prop=wikitext&section=0&format=json&redirects=1 | https://www.wikidata.org/w/api.php?action=wbgetentities&ids=Q712080%7CQ8981661%7CQ9294393%7CQ104722630%7CQ110105352%7CQ109535689&format=json&props=labels%7Caliases&languages=en%7Czh%7Czh-hans%7Czh-hant%7Czh-tw%7Czh-cn | https://zh.wikipedia.org/w/api.php?action=parse&page=蘇芮&prop=wikitext&section=0&format=json&redirects=1,taiwan,Y
+artist,937,謝沛恩,謝沛恩,,Aggie Hsieh|Aggie Xie|谢沛恩,Simplified variant of the display name | file tag artist field | https://musicbrainz.org/artist/465fde46-a615-4252-8c66-c21a778574b4 | https://zh.wikipedia.org/wiki/謝沛恩,taiwan,Y
+artist,938,貝克小姐Miss Bac.,貝克小姐Miss Bac.,,Miss Bac.|貝克小姐|贝克小姐Miss Bac.,Simplified variant of the display name | file tag artist field | https://itunes.apple.com/search?term=%E6%A9%98%E9%BB%83%E8%89%B2%E7%9A%84%E4%BD%A0&entity=song&limit=3&country=TW | https://zh.wikipedia.org/w/api.php?action=parse&page=貝克小姐&prop=wikitext&section=0&format=json&redirects=1,taiwan,Y
+artist,940,邰正宵,邰正宵,,Samuel Tai|Tai Cheng-Hsiao|Tai Ching Siu|玫瑰王子|邰正霄|阿B,file tag artist field | https://zh.wikipedia.org/w/api.php?action=parse&page=邰正宵&prop=wikitext&section=0&format=json&redirects=1,taiwan,Y
+artist,941,郁可唯,郁可唯,,Yisa Yu|郁英霞,file tag artist field | https://zh.wikipedia.org/wiki/郁可唯,mainland,Y
+artist,942,郭采潔,郭采潔,,Amber Kuo|Kuo Tsai-chieh|郭采洁,Simplified variant of the display name | https://zh.wikipedia.org/w/api.php?action=parse&page=郭采潔&prop=wikitext&section=0&format=json&redirects=1,taiwan,Y
+artist,943,郭靜,郭靜,,Claire Kuo|克萊兒|郭伯瑤|郭静,file tag artist field | https://www.wikidata.org/w/api.php?action=wbgetentities&ids=Q5562892%7CQ9197465%7CQ708686%7CQ251068%7CQ12174450%7CQ15908468%7CQ702535%7CQ716055%7CQ16907998&format=json&props=labels%7Caliases&languages=en%7Czh%7Czh-hans%7Czh-hant%7Czh-tw%7Czh-cn | https://zh.wikipedia.org/w/api.php?action=parse&page=郭靜&prop=wikitext&section=0&format=json&redirects=1,taiwan,Y
+artist,945,鄭智化,鄭智化,,Zheng Zhi-Hua|郑智化,Simplified variant of the display name | file tag artist field | https://zh.wikipedia.org/w/api.php?action=parse&page=鄭智化&prop=wikitext&section=0&format=json&redirects=1,taiwan,Y
+artist,947,金池,金池,,Ada|Jin Chi|李素萍|李素蘿,file tag artist field | https://musicbrainz.org/ws/2/artist?query=artist:%22金池%22%20AND%20country:CN&fmt=json&limit=3 | https://zh.wikipedia.org/w/api.php?action=parse&page=金池&prop=wikitext&section=0&format=json&redirects=1 | https://zh.wikipedia.org/wiki/%E9%87%91%E6%B1%A0,mainland,Y
+artist,953,陳妍希,陳妍希,,Michelle Chen|陈妍希|陳玟希,Simplified variant of the display name | file tag artist field | https://zh.wikipedia.org/w/api.php?action=parse&page=陳妍希&prop=wikitext&section=0&format=json&redirects=1,taiwan,Y
+artist,954,陳宇祥,陳宇祥,,Shawn Chen|陈宇祥,Simplified variant of the display name | file tag artist field | https://zh.wikipedia.org/w/api.php?action=parse&page=陳宇祥&prop=wikitext&section=0&format=json&redirects=1,taiwan,Y
+artist,955,陳彥允,陳彥允,,Chen Yen-Yun|Ian Chen|陈彦允|陳炫燁,Simplified variant of the display name | file tag artist field | https://www.wikidata.org/w/api.php?action=wbgetentities&ids=Q5562892%7CQ9197465%7CQ708686%7CQ251068%7CQ12174450%7CQ15908468%7CQ702535%7CQ716055%7CQ16907998&format=json&props=labels%7Caliases&languages=en%7Czh%7Czh-hans%7Czh-hant%7Czh-tw%7Czh-cn | https://zh.wikipedia.org/w/api.php?action=parse&page=陳彥允&prop=wikitext&section=0&format=json&redirects=1,taiwan,Y
+artist,957,陳莫非,陳莫非,,陈莫非,Simplified variant of the display name | file tag artist field,unknown,Y
+artist,958,韋禮安,韋禮安,,WeiBird|Weibird韋鳥|William Wei|William Wei Li An|韦礼安,Simplified variant of the display name | file tag artist field | https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch=WeiBird%20Taiwanese%20singer&srlimit=3&format=json | https://zh.wikipedia.org/w/api.php?action=parse&page=韋禮安&prop=wikitext&section=0&format=json&redirects=1 | https://zh.wikipedia.org/wiki/%E9%9F%8B%E7%A6%AE%E5%AE%89,taiwan,Y
+artist,961,黃雅莉,黃雅莉,,黄雅莉,Simplified variant of the display name | file tag artist field,unknown,Y
+artist,962,黃齡,黃齡,,Huang Ling|Isabelle Huang|Yellow Zero|黄龄,file tag artist field | https://zh.wikipedia.org/wiki/黃齡,mainland,Y
+artist,973,Jay Park,Jay Park,,Park Jae-beom,https://zh.wikipedia.org/wiki/Jay%20Park,unknown,Y
+artist,999,陈小满,陈小满,,Mandy Chan 陈小满,https://music.163.com/api/artist/head/info/get?id=12037089 | https://music.163.com/api/search/get?s=%E5%A6%82%E6%9E%9C%E6%B5%B7%E5%BA%95%E6%9C%89%E9%A3%9E%E9%B8%9F&type=1&limit=8,mainland,Y
+artist,1000,陈一豪,陈一豪,,让长沙再次骄傲|陈一豪Clear,https://c.y.qq.com/soso/fcgi-bin/client_search_cp?p=1&n=6&w=%E5%A5%B6%E5%A5%B6%20%E9%99%88%E4%B8%80%E8%B1%AA&format=json | https://music.163.com/api/artist/head/info/get?id=32893629,mainland,Y
+artist,1011,何和声,何和声,,和声,https://c.y.qq.com/soso/fcgi-bin/client_search_cp?p=1&n=6&w=%E6%97%A9%E8%AF%A5&format=json | https://music.163.com/api/search/get?s=%E6%97%A9%E8%AF%A5&type=1&limit=8,mainland,Y
+artist,1012,黄俊涵,黄俊涵,,HEAT J,https://music.163.com/api/artist/head/info/get?id=12085631 | https://music.163.com/api/search/get?s=%E6%B2%A1%E9%81%93%E7%90%86%20%E9%BB%84%E4%BF%8A%E6%B6%B5&type=1&limit=8,mainland,Y
+artist,1013,何潔,何潔,,J.He|何洁,https://zh.wikipedia.org/wiki/何潔,mainland,Y
+artist,1016,刘家奇,刘家奇,,刘家奇阿,https://c.y.qq.com/soso/fcgi-bin/client_search_cp?p=1&n=6&w=%E5%86%99%E7%BB%99%E8%87%AA%E5%B7%B1%E7%9A%84%E4%BF%A1&format=json | https://music.163.com/api/search/get?s=%E5%86%99%E7%BB%99%E8%87%AA%E5%B7%B1%E7%9A%84%E4%BF%A1%20%E5%88%98%E5%AE%B6%E5%A5%87%E9%98%BF&type=1&limit=8,mainland,Y
+artist,1024,Lin Sheng,Lin Sheng,,Will Lam,https://music.163.com/api/artist/head/info/get?id=48850650,unknown,Y
+artist,1025,钟琳涵,钟琳涵,,钟琳涵RingHa,https://music.163.com/api/artist/head/info/get?id=55645253 | https://music.163.com/api/search/get?s=%E9%A3%9E%20%E9%92%9F%E7%90%B3%E6%B6%B5&type=1&limit=8,mainland,Y
+artist,1030,岑先生,岑先生,,Mr.Cen,https://music.163.com/api/artist/head/info/get?id=1041122,mainland,Y
+artist,1039,许佳豪,许佳豪,,Smoke,https://music.163.com/api/artist/head/info/get?id=49937403,mainland,Y
+artist,1049,叶斯淳,叶斯淳,,Ye Si Chun,https://itunes.apple.com/search?term=Ye%20Si%20Chun&entity=musicArtist&limit=4&country=TW,mainland,Y
+artist,1051,余火火,余火火,,Huohuo Yu,https://itunes.apple.com/lookup?id=1735440685&entity=song | https://itunes.apple.com/lookup?id=1825350818&entity=song,mainland,Y
+artist,1052,云汐,云汐,,Yun Xi,https://itunes.apple.com/lookup?id=1588421086&entity=song | https://itunes.apple.com/search?term=Yun%20Xi&entity=musicArtist&limit=4&country=TW,mainland,Y
+artist,1105,Jony J,Jony J,,Xiao Jia,https://en.wikipedia.org/wiki/Jony_J,mainland,Y
+artist,1107,鬼卞,鬼卞,,Gui Bian|胡雪松,file tag artist field | https://musicbrainz.org/artist/32c8a074-a547-440d-a014-7fd07c2ad057,mainland,Y
+artist,1221,Eileen Yo游宇潼,Eileen Yo游宇潼,,Eileen Yo|游宇潼,file tag artist field | https://zh.wikipedia.org/wiki/游宇潼,taiwan,Y
+artist,1236,LEE 孫王力,LEE 孫王力,,LEE 孙王力,Simplified variant of the display name | file tag artist field,unknown,Y
+artist,1254,魚丁糸,魚丁糸,1270,Oaeen|Sodagreen|鱼丁糸,Simplified variant of the display name | file tag artist field | https://en.wikipedia.org/wiki/Sodagreen,taiwan,Y
+artist,1297,吳霏,吳霏,,吴霏,Simplified variant of the display name | file tag artist field,taiwan,Y
+artist,1304,小球(莊鵑瑛),小球(莊鵑瑛),,小球|小球(庄鹃瑛)|莊三缺|莊小球|莊尖兵|莊鵑瑛|阿球,Simplified variant of the display name | https://zh.wikipedia.org/w/api.php?action=parse&page=小球&prop=wikitext&section=0&format=json&redirects=1,taiwan,Y
+artist,1308,李千娜,李千娜,1252,Gina Li|Lee Chien-na|Li Qian Na|Nana Lee|李千那,file tag artist field | https://en.wikipedia.org/wiki/Lee_Chien-na | https://www.wikidata.org/w/api.php?action=wbgetentities&ids=Q5562892%7CQ9197465%7CQ708686%7CQ251068%7CQ12174450%7CQ15908468%7CQ702535%7CQ716055%7CQ16907998&format=json&props=labels%7Caliases&languages=en%7Czh%7Czh-hans%7Czh-hant%7Czh-tw%7Czh-cn | https://zh.wikipedia.org/w/api.php?action=parse&page=李千娜&prop=wikitext&section=0&format=json&redirects=1,taiwan,Y
+artist,1315,羅時豐,羅時豐,,Daniel Lo|國民李師|大牛哥|罗时丰,Simplified variant of the display name | file tag artist field | https://zh.wikipedia.org/w/api.php?action=parse&page=羅時豐&prop=wikitext&section=0&format=json&redirects=1,taiwan,Y
+artist,1318,艾薇,艾薇,,小火球|李艾薇,file tag artist field | https://zh.wikipedia.org/w/api.php?action=parse&page=李艾薇&prop=wikitext&section=0&format=json&redirects=1,taiwan,Y
+artist,1321,迪克牛仔,迪克牛仔,,Dick and Cowboy|林進璋,file tag artist field | https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch=%22Dick%20and%20Cowboy%22&srlimit=4&format=json | https://zh.wikipedia.org/wiki/%E8%BF%AA%E5%85%8B%E7%89%9B%E4%BB%94,taiwan,Y
+artist,1323,鳳小岳,鳳小岳,,Feng Xiaoyue|凤小岳,Simplified variant of the display name | file tag artist field | https://zh.wikipedia.org/wiki/鳳小岳,taiwan,Y
+artist,1327,黃玠瑋,黃玠瑋,,Zoe Huang|黄玠玮,Simplified variant of the display name | file tag artist field | https://zh.wikipedia.org/wiki/黃玠瑋,taiwan,Y
+artist,1566,G.K. 高偉庭,G.K. 高偉庭,,G.K. 高伟庭,Simplified variant of the display name | file tag artist field,unknown,Y
+artist,1676,蔡秋鳳,蔡秋鳳,,Carris|Carris Tsai Qiu-feng|Kerris Tsai|蔡瑞芬|蔡秋凤|蔡阿鳳,file tag artist field | https://www.wikidata.org/w/api.php?action=wbsearchentities&search=%E8%94%A1%E7%A7%8B%E5%87%A4&language=zh&uselang=en&format=json&limit=2&type=item | https://zh.wikipedia.org/w/api.php?action=parse&page=蔡秋鳳&prop=wikitext&section=0&format=json&redirects=1 | https://zh.wikipedia.org/wiki/%E8%94%A1%E7%A7%8B%E9%B3%B3,taiwan,Y
+artist,1716,何卓彥,何卓彥,,CY Leo|Cy Leo|何卓彦,Simplified variant of the display name | https://zh.wikipedia.org/w/api.php?action=parse&page=%E4%BD%95%E5%8D%93%E5%BD%A5&prop=wikitext&format=json&redirects=1,hongkong,Y
+artist,1730,宋亞軒,宋亞軒,,Song Yaxuan|宋亚轩,https://musicbrainz.org/artist/0bbd4050-5db8-4686-bd94-45493c116a1c,mainland,Y
+artist,1735,袁娅维,袁娅维,,Tia|袁娟|袁婭維,file tag artist field | https://music.apple.com/cn/artist/638018821 | https://music.apple.com/us/artist/1659500242 | https://zh.wikipedia.org/wiki/袁婭維,mainland,Y
+artist,1747,呂士軒,呂士軒,,Lu Shih-hsuan|Trout Fresh|吕士轩,Simplified variant of the display name | file tag artist field | https://en.wikipedia.org/w/api.php?action=parse&page=Trout%20Fresh&prop=wikitext&section=0&format=json&redirects=1,taiwan,Y
+artist,1748,張伍,張伍,,张伍,Simplified variant of the display name | file tag artist field,unknown,Y
+artist,1750,盧栗莉,盧栗莉,,Lily|Lily Lu|Lu Li-Li|卢栗莉|盧粒粒,Simplified variant of the display name | file tag artist field | https://zh.wikipedia.org/wiki/盧栗莉,taiwan,Y
+artist,1761,張敬軒,張敬軒,,Cheung King Hin|Hins Cheung|Zhang Jingxuan|张敬轩|張寧,Simplified variant of the display name | file tag artist field | https://zh.wikipedia.org/wiki/%E5%BC%B5%E6%95%AC%E8%BB%92,hongkong,Y
+artist,1762,王菀之,王菀之,,Ivana Wong|Wong Yuen Chi|之之|易灣娜,https://zh.wikipedia.org/wiki/%E7%8E%8B%E8%92%82%E4%B9%8B,hongkong,Y
+artist,1763,攬佬SKAI ISYOURGOD,攬佬SKAI ISYOURGOD,,SKAI ISYOURGOD|揽佬|揽佬SKAI ISYOURGOD|攬佬|陳序塏,Simplified variant of the display name | file tag artist field | https://zh.wikipedia.org/wiki/%E6%94%AC%E4%BD%AC,mainland,Y
+artist,1766,林芯儀,林芯儀,,Shennio Lin|林珀如|林芯仪,Simplified variant of the display name | file tag artist field | https://zh.wikipedia.org/wiki/林芯儀,taiwan,Y
+artist,1767,激膚樂團,激膚樂團,,My Skin Against Your Skin|激肤乐团|激膚,Simplified variant of the display name | file tag artist field | https://musicbrainz.org/ws/2/artist?query=%E6%BF%80%E8%86%9A&fmt=json&limit=5 | https://musicbrainz.org/ws/2/recording?query=recording:%22You%20Better%20Kiss%20Me%22&fmt=json&limit=3,taiwan,Y
+artist,1774,DENZEL丹澤,DENZEL丹澤,,Big Denzel|DENZEL丹泽|DeChosen,Simplified variant of the display name | file tag artist field | https://music.163.com/api/artist/albums/12065150?limit=12,mainland,Y
+artist,1776,宋沛Matty,宋沛Matty,1780,MattyPei|宋沛 MattyPei,file tag artist field | https://c.y.qq.com/soso/fcgi-bin/client_search_cp?w=MattyPei&format=json&p=1&n=8&t=0,mainland,Y
+artist,1778,賈廷一,賈廷一,,Whydg|贾廷一,Simplified variant of the display name | file tag artist field | https://music.163.com/api/artist/albums/29032531?limit=12,mainland,Y
+artist,1781,张昊,张昊,,Utopia,file tag artist field | https://music.163.com/api/artist/albums/12173444?limit=12,mainland,Y
+artist,1784,派克特,派克特,,PACT|PACT Pai ke te|PACT派克特,file tag artist field | https://music.apple.com/cn/artist/1753772246 | https://music.apple.com/us/artist/1439648179 | https://music.apple.com/us/artist/1753772246,mainland,Y
+artist,1785,猴子lámpo,猴子lámpo,,Lamp猴子,file tag artist field | https://www.kugou.com/singer/info/N34SK50D2D117,mainland,Y
+artist,1786,王晨宇IceCraz,王晨宇IceCraz,,IceCraz|王晨宇,file tag artist field | https://music.apple.com/cn/artist/1492288343,mainland,Y
+artist,1787,谢帝,谢帝,,BO$$ X|Boss X|Fat Shady|蔡镇鸿|謝帝|谢老板儿,file tag artist field | https://music.apple.com/us/artist/1062071776 | https://musicbrainz.org/artist/d3188544-7690-495f-be01-edacfccbe925 | https://zh.wikipedia.org/wiki/謝帝,mainland,Y
+artist,1790,米利亞,米利亞,,"Melia, Nebraska|米利亚",Simplified variant of the display name | file tag artist field | https://www.wikidata.org/wiki/Q18343663,unknown,Y
+artist,1791,艾志恒Asen,艾志恒Asen,,A-Sen|Asen|艾志恒,file tag artist field | https://music.apple.com/cn/artist/1636240804 | https://music.apple.com/us/artist/1636240804 | https://music.apple.com/us/artist/452761766,mainland,Y
+artist,1795,伊格赛听,伊格赛听,,Gesaiting,https://musicbrainz.org/artist/7308837e-3210-442a-89d1-1306e72feb2d,unknown,Y
+artist,1801,苏星婕,苏星婕,,Su Xingjie|Xingjie Su,file tag artist field | https://music.apple.com/us/artist/1551599936 | https://musicbrainz.org/artist/04be0264-9f5e-41e1-9c82-7317cc91ef64,mainland,Y
+artist,1803,麦小兜,麦小兜,,Yolo|杨洛|楊洛,https://zh.wikipedia.org/wiki/%E9%BA%A6%E5%B0%8F%E5%85%9C,mainland,Y
+artist,1804,莉莉周她說 Lily Chou-Chou Lied,莉莉周她說 Lily Chou-Chou Lied,,Lily Chou-Chou Lied|莉莉周她說|莉莉周她说 Lily Chou-Chou Lied,Simplified variant of the display name | file tag artist field | https://musicbrainz.org/artist/eebc9c64-636a-406b-81de-02087db23d59 | https://www.deezer.com/artist/244218532,taiwan,Y
+artist,1806,薛之谦,薛之谦,,Jacky Xue|Joker Xue|Xue Zhiqian|薛之謙,file tag artist field | https://music.apple.com/us/artist/160809474 | https://musicbrainz.org/artist/a7d64787-c8ae-4aee-a365-30c5a8e91fe3,mainland,Y
+artist,1807,溫拿樂隊,溫拿樂隊,,The Wynners|温拿乐队|温拿樂隊,https://musicbrainz.org/artist/06ea4f74-d83a-4028-860e-52937e352411,hongkong,Y
+artist,1810,陈果,陈果,,Chen Guo|陳果,file tag artist field | https://music.apple.com/us/artist/81573722 | https://musicbrainz.org/artist/db91518f-2cc8-4e63-8c2a-3ea37ca4489b,mainland,Y
+artist,1812,梁家輝,梁家輝,,Hui Jia Liang|梁家辉,Simplified variant of the display name | https://soundcloud.com/hui-jia-liang/this-is-the-night,unknown,Y
+artist,1814,隔壁老樊,隔壁老樊,,Fan Kaijie|Ge Bi Lao Fan|樊凯杰,file tag artist field | https://musicbrainz.org/artist/0074dc2e-8d17-412b-9838-f257f5fb5885 | https://zh.wikipedia.org/wiki/隔壁老樊,mainland,Y
+artist,1815,人力飛行劇團,人力飛行劇團,,Mr. Wing|Mr.Wing|人力飞行剧团,Simplified variant of the display name | file tag artist field | https://www.facebook.com/mr.wing.theatre/ | https://www.instagram.com/mr.wingtc/,taiwan,Y
+artist,1816,傅菁,傅菁,,Fu Jing|Jinna,https://zh.wikipedia.org/w/api.php?action=parse&page=%E5%82%85%E8%8F%81&prop=wikitext&section=0&format=json&redirects=1,mainland,Y
+artist,1817,魏如萱,魏如萱,,OH夜DJ|Waa Wei|Wei Ru-Xuan,file tag artist field | https://zh.wikipedia.org/w/api.php?action=parse&page=魏如萱&prop=wikitext&section=0&format=json&redirects=1,taiwan,Y
+artist,1838,刘惜君,刘惜君,,Liu Xijun|劉惜君,file tag artist field | https://musicbrainz.org/artist/969302c7-ada9-4ee4-a082-9f34ca59bc4e | https://zh.wikipedia.org/wiki/%E5%8A%89%E6%83%9C%E5%90%9B,mainland,Y
+artist,1839,炎明熹,炎明熹,,Gigi Yim|Gigi Yim Ming Hay|Yim Ming-hay|王佳恩|王爖熹,https://www.wikidata.org/wiki/Q107633867 | https://zh.wikipedia.org/wiki/%E7%82%8E%E6%98%8E%E7%86%B9,hongkong,Y
+artist,1842,安崎,安崎,,陳雅馨,https://zh.wikipedia.org/wiki/%E5%AE%89%E5%B4%8E,mainland,Y
+artist,1845,魔动闪霸,魔动闪霸,,魔動閃霸,https://zh.wikipedia.org/w/api.php?action=query&list=search&srsearch=%E9%AD%94%E5%8B%95%E9%97%AA%E9%9C%B8&srlimit=5&format=json&srnamespace=0,unknown,Y
+artist,1848,毛不易,毛不易,,Mao Bu Yi|Mao Buyi|Wang Weijia|王維家|王维家,file tag artist field | https://music.apple.com/us/artist/1280926060 | https://musicbrainz.org/artist/0b7595fc-ae3e-44a0-b62b-7907efd2a15d | https://www.wikidata.org/wiki/Q48903516,mainland,Y
+artist,1850,林晓峰,林晓峰,,Jerry Lamb|林曉峰,https://musicbrainz.org/artist/6d91a47f-1e56-47f6-99a9-c1f07f490382 | https://zh.wikipedia.org/wiki/%E6%9E%97%E6%9B%89%E5%B3%B0,hongkong,Y
+artist,1856,吕方,吕方,,David Lui|David Lui / Josh Lui|呂方,https://musicbrainz.org/artist/cac463f6-6355-4670-8689-46f4a1413dda | https://zh.wikipedia.org/wiki/%E5%90%95%E6%96%B9 | https://zh.wikipedia.org/wiki/%E5%91%82%E6%96%B9,hongkong,Y
+artist,1860,张智霖,张智霖,,Julian Cheung|Julian Cheung Chi Lam|張智霖,https://zh.wikipedia.org/wiki/%E5%BC%B5%E6%99%BA%E9%9C%96,hongkong,Y
+artist,1862,周柏豪,周柏豪,,Pakho Chau|Pakho Chau Pak-ho,https://en.wikipedia.org/wiki/Pakho_Chau | https://zh.wikipedia.org/wiki/%E5%91%A8%E6%9F%8F%E8%B1%AA,hongkong,Y
+artist,1863,陈楚生,陈楚生,,Chen Chusheng|Chen Shu Sheng|陳楚生,https://en.wikipedia.org/w/api.php?action=parse&page=Chen%20Chusheng&prop=wikitext&section=0&format=json&redirects=1,mainland,Y
+artist,1868,趙馨玥,趙馨玥,,NINEONE#|乃万|赵馨玥|趙輝,Simplified variant of the display name | https://zh.wikipedia.org/w/api.php?action=parse&page=NINEONE%23&prop=wikitext&section=0&format=json&redirects=1 | https://zh.wikipedia.org/w/api.php?action=query&prop=extracts&explaintext=1&exintro=1&format=json&redirects=1&titles=NINEONE%23,mainland,Y
+artist,1870,家家,家家,,Auli Purepurepuan|JiaJia|紀家盈,file tag artist field | https://zh.wikipedia.org/w/api.php?action=parse&page=紀家盈&prop=wikitext&section=0&format=json&redirects=1,taiwan,Y
+artist,1871,容祖儿,容祖儿,,Joey Yung|容祖兒,https://musicbrainz.org/artist/4ca94925-d3f1-4126-92da-c069c9f309b4 | https://zh.wikipedia.org/wiki/%E5%AE%B9%E7%A5%96%E5%85%92,hongkong,Y
+artist,1881,唐艺,唐艺,,Tang Vanessa|Tang Yi|唐藝,https://musicbrainz.org/artist/542c4b5f-ddc8-4f2a-93f6-6de04111fb38,mainland,Y
+artist,1902,GAI周延,GAI周延,,GAI|Zhou Yan|周延,file tag artist field | https://music.apple.com/us/artist/1522410451 | https://musicbrainz.org/artist/edbb6103-386b-4378-b045-e5142789487c,mainland,Y
+artist,1908,李宗盛,李宗盛,,Jonathan Lee|Lee Tsung Sheng,file tag artist field | https://zh.wikipedia.org/w/api.php?action=parse&page=李宗盛&prop=wikitext&section=0&format=json&redirects=1,taiwan,Y
+artist,1909,周华健,周华健,,Emil Chau|Emil Wakin Chau|Wakin Chau|Zhou Huajian|周華健,file tag artist field | https://en.wikipedia.org/wiki/Wakin_Chau | https://musicbrainz.org/artist/ba5afaf8-8e63-4e67-aa3c-454071c660a0 | https://www.wakin.com/profile | https://zh.wikipedia.org/wiki/周華健,taiwan,Y
+artist,1933,刘端端,刘端端,,Liu Duanduan,file tag artist field | https://zh.wikipedia.org/w/api.php?action=parse&page=%E5%88%98%E7%AB%AF%E7%AB%AF&prop=wikitext&section=0&format=json&redirects=1,mainland,Y
+artist,1947,刘恋,刘恋,,Liu Lian,https://zh.wikipedia.org/w/api.php?action=parse&page=%E5%88%98%E6%81%8B&prop=wikitext&section=0&format=json&redirects=1,mainland,Y
+artist,1961,华晨宇,华晨宇,,Hua Chenyu|花花,file tag artist field | https://en.wikipedia.org/w/api.php?action=parse&page=Hua%20Chenyu&prop=wikitext&section=0&format=json&redirects=1,mainland,Y
+artist,2009,雷深如 (J.Arie),雷深如 (J.Arie),,J.Arie|Rachel Lui Sum Yu|雷深如|雷琛瑜,file tag artist field | https://zh.wikipedia.org/w/api.php?action=parse&page=雷深如&prop=wikitext&section=0&format=json&redirects=1,hongkong,Y
+artist,2012,Jer 柳應廷,Jer 柳應廷,,Jer Lau|Jer 柳应廷|Jeremy Lau Ying-ting|柳應廷,Simplified variant of the display name | file tag artist field | https://en.wikipedia.org/wiki/Jer_Lau | https://zh.wikipedia.org/wiki/%E6%9F%B3%E6%87%89%E5%BB%B7,hongkong,Y
+artist,2038,頌樂,頌樂,,Kim Yong Sun|Solar|金容仙|颂乐,Simplified variant of the display name | https://zh.wikipedia.org/w/api.php?action=query&prop=extracts&explaintext=1&exintro=1&format=json&redirects=1&titles=%E9%A0%8C%E6%A8%82,other,Y
+artist,2049,黃凱逸 (Zelos Wong),黃凱逸 (Zelos Wong),,Zelos|Zelos Wong|Zelos Wong Hoi Yat|黃凱逸|黄凯逸 (Zelos Wong),Simplified variant of the display name | file tag artist field | https://www.cdwarehouse.com.hk/products/%E9%BB%83%E5%87%B1%E9%80%B8-zelos-wong-hoi-yat-zillow-talk-cd | https://www.youtube.com/watch?v=bQwzusTrRrI | https://zh.wikipedia.org/wiki/%E9%BB%83%E5%87%B1%E9%80%B8,hongkong,Y
+artist,2050,Edan 呂爵安,Edan 呂爵安,,Edan Lui|Edan Lui Cheuk-on|Edan 吕爵安|呂爵安,Simplified variant of the display name | file tag artist field | https://en.wikipedia.org/wiki/Edan_Lui | https://zh.wikipedia.org/wiki/%E5%91%82%E7%88%B0%E5%AE%89,hongkong,Y
+artist,2055,江美琪,江美琪,,Maggie Chiang,file tag artist field | https://zh.wikipedia.org/w/api.php?action=parse&page=江美琪&prop=wikitext&section=0&format=json&redirects=1,taiwan,Y
+artist,2058,洪佩瑜,洪佩瑜,,Pei-Yu Hung,file tag artist field | https://www.wikidata.org/w/api.php?action=wbsearchentities&search=%E6%B4%AA%E4%BD%A9%E7%91%9C&language=zh&uselang=en&format=json&limit=2&type=item,taiwan,Y
+artist,2059,戴佩妮,戴佩妮,,Dai Peini|Penny Dai Pei Ni|Penny Tai|Tai Pei Ni|佩妮,https://musicbrainz.org/artist/ef7870d0-1c7e-4327-a989-1f92b4dd35f5 | https://www.wikidata.org/wiki/Q714501,taiwan,Y
+artist,2062,白安,白安,,Bai An|Baian,file tag artist field | https://www.wikidata.org/w/api.php?action=wbgetentities&ids=Q5562892%7CQ9197465%7CQ708686%7CQ251068%7CQ12174450%7CQ15908468%7CQ702535%7CQ716055%7CQ16907998&format=json&props=labels%7Caliases&languages=en%7Czh%7Czh-hans%7Czh-hant%7Czh-tw%7Czh-cn,taiwan,Y
+artist,2065,許哲珮,許哲珮,,Peggy Hsu|许哲珮,Simplified variant of the display name | file tag artist field | https://zh.wikipedia.org/w/api.php?action=parse&page=許哲珮&prop=wikitext&section=0&format=json&redirects=1,taiwan,Y
+artist,2240,梁業,梁業,,Fatboy|Fatboy Leung Yip|Leung Yip|梁业|肥仔,Simplified variant of the display name | https://zh.wikipedia.org/wiki/梁業,hongkong,Y
+artist,2251,功夫胖KungFu-Pen,功夫胖KungFu-Pen,,KungFu-Pen|Kungfu-Pen|功夫胖|施逸凡,file tag artist field | https://musicbrainz.org/artist/8bcbcac7-a613-4fb0-a674-596bdc1e426c | https://zh.wikipedia.org/wiki/C-Block,mainland,Y
+artist,2267,Ian 陳卓賢,Ian 陳卓賢,,Ian Chan|Ian Chan Cheuk-yin|Ian 陈卓贤|陳卓賢,Simplified variant of the display name | file tag artist field | https://en.wikipedia.org/wiki/Ian_Chan | https://zh.wikipedia.org/wiki/%E9%99%B3%E5%8D%93%E8%B3%A4,hongkong,Y
+artist,2272,陳光榮,陳光榮,2270,Justin Lee|陈光荣,Simplified variant of the display name | file tag artist field,unknown,Y
+artist,2284,李文曦,李文曦,,Lee Man Hei|Oscar|奧仕卡,https://zh.wikipedia.org/w/api.php?action=parse&page=%E6%9D%8E%E6%96%87%E6%9B%A6&prop=wikitext&format=json&redirects=1,hongkong,Y
+artist,2305,ONE PROMISE,ONE PROMISE,,Empty,https://zh.wikipedia.org/w/api.php?action=query&prop=extracts&explaintext=1&exintro=1&format=json&redirects=1&titles=ONE%20PROMISE,hongkong,Y
+artist,2378,廖頴琛,廖頴琛,,III|Iris Liu|Iris Liu Wing Sum|iii|廖颕琛,Simplified variant of the display name | https://zh.wikipedia.org/w/api.php?action=parse&page=iii&prop=wikitext&format=json&redirects=1,hongkong,Y
+artist,2417,Sukie S 石詠莉,Sukie S 石詠莉,,Sukie|Sukie S|Sukie S 石咏莉|Sukie Shek|石詠莉,Simplified variant of the display name | file tag artist field | https://zh.wikipedia.org/wiki/%E7%9F%B3%E8%A9%A0%E8%8E%89,hongkong,Y
+artist,2435,劉若英,劉若英,,Rene Liu|刘若英,Simplified variant of the display name | https://zh.wikipedia.org/w/api.php?action=parse&page=劉若英&prop=wikitext&section=0&format=json&redirects=1,taiwan,Y
+artist,2439,妞妞,妞妞,,王崇,https://tv.sohu.com/v/dXMvMjAxOTA1NzMyLzcxNzY3NDEyLnNodG1s.html,unknown,Y
+artist,2455,宋妍霏,宋妍霏,,Cecilia Boey|梅倩仪,https://zh.wikipedia.org/wiki/%E5%AE%8B%E5%A6%8D%E9%9C%8F,hongkong,Y
+artist,2483,海哲明,海哲明,,Hai Zheming|Jammy,https://baike.baidu.com/item/海哲明/10182155 | https://musicbrainz.org/artist/1beb86da-9a1a-4396-b73e-7372853c4f37,mainland,Y
+artist,2486,張杰,張杰,,Jason Zhang|Zhang Jie|张杰,file tag artist field | https://music.apple.com/cn/artist/368669716 | https://music.apple.com/us/artist/368669716 | https://musicbrainz.org/artist/9249dd1d-68dd-4fcd-8dcb-c3104791032d,mainland,Y
+artist,2493,孫涵,孫涵,,BY2|Yumiko|孙涵|孫雨|白緯玲|白緯芬,Simplified variant of the display name | https://zh.wikipedia.org/wiki/BY2,hongkong,Y
+artist,2498,戚薇,戚薇,,Qi Wei|Stephy Qi,https://zh.wikipedia.org/w/api.php?action=parse&page=%E6%88%8A%E8%96%87&prop=wikitext&section=0&format=json&redirects=1,mainland,Y
+artist,2500,阿杜,阿杜,,A Do|A-do|Ah Du|Do Cheng Yi|Toh Sing Gee|杜成义|杜成義,https://musicbrainz.org/artist/d75f612d-9783-4d7e-8c96-8885bbfdf6de | https://www.wikidata.org/wiki/Q3600304 | https://zh.wikipedia.org/wiki/阿杜_(新加坡歌手),other,Y
+artist,2510,梁博,梁博,,Bruce Liang|Liang Bo,file tag artist field | https://en.wikipedia.org/wiki/Liang_Bo | https://music.apple.com/us/artist/869293938,mainland,Y
+artist,2511,梁心頤,梁心頤,,Lara Veronin|拉拉|梁心拉|梁心颐,Simplified variant of the display name | file tag artist field | https://zh.wikipedia.org/w/api.php?action=parse&page=梁心頤&prop=wikitext&section=0&format=json&redirects=1,taiwan,Y
+artist,2514,廖昌永,廖昌永,,C. Y. Liao|Changyong Liao|Liao Changyong,https://en.wikipedia.org/w/api.php?action=parse&page=Liao%20Changyong&prop=wikitext&section=0&format=json&redirects=1,mainland,Y
+artist,2523,郭思达,郭思达,,Guo Sida,file tag artist field | https://musicbrainz.org/artist/d1aa131b-d382-477e-9b76-924976a35900,mainland,Y
+artist,2526,侃侃,侃侃,,Kan Kan|张小静,https://music.apple.com/us/artist/892624028 | https://musicbrainz.org/artist/f073a5bb-e9fd-4bc8-82c2-9317dc4416c6,mainland,Y
+artist,2534,范逸臣,范逸臣,,Fan Yi-chen|Lingas|Van Fan,file tag artist field | https://www.wikidata.org/w/api.php?action=wbgetentities&ids=Q5562892%7CQ9197465%7CQ708686%7CQ251068%7CQ12174450%7CQ15908468%7CQ702535%7CQ716055%7CQ16907998&format=json&props=labels%7Caliases&languages=en%7Czh%7Czh-hans%7Czh-hant%7Czh-tw%7Czh-cn | https://zh.wikipedia.org/w/api.php?action=parse&page=范逸臣&prop=wikitext&section=0&format=json&redirects=1,taiwan,Y
+artist,2535,胡歌,胡歌,,Hu Ge,https://zh.wikipedia.org/w/api.php?action=parse&page=%E8%83%A1%E6%AD%8C&prop=wikitext&section=0&format=json&redirects=1,mainland,Y
+artist,2546,許光漢,許光漢,,Greg Han|Greg Hsu|Hsu Kuang-han|许光汉|賴格,Simplified variant of the display name | file tag artist field | https://zh.wikipedia.org/w/api.php?action=parse&page=許光漢&prop=wikitext&section=0&format=json&redirects=1,taiwan,Y
+artist,2549,陈华,陈华,,Hua Chen|阿華田|陳華,https://zh.wikipedia.org/wiki/陳華_(歌手),taiwan,Y
+artist,2565,王加一,王加一,,王琦柚,https://music.163.com/api/artist/albums/30627660?limit=12,mainland,Y
+artist,2569,许乐,许乐,,許樂,https://musicbrainz.org/artist/bda99d42-cc80-437a-a691-b595ee053649,unknown,Y
+artist,2570,邹丽珍,邹丽珍,,鄒麗珍,https://music.163.com/api/artist/albums/36806591?limit=12,mainland,Y
+artist,2577,陳綺貞 (Cheer Chen),陳綺貞 (Cheer Chen),,Cheer Chen|Chen Chi-chen|陈绮贞 (Cheer Chen)|陳綺貞,Simplified variant of the display name | https://zh.wikipedia.org/w/api.php?action=parse&page=陳綺貞&prop=wikitext&section=0&format=json&redirects=1,taiwan,Y

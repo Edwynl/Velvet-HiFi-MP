@@ -53,7 +53,13 @@ _NAMES = {
                 # stored under a romanisation or an English name, and the
                 # shelf could not place them until the real name was found.
                 '|LBI利比|弦子|肖佳|艾志恒Asen|艾辰|苏星婕|賈廷一|陈果|麦小兜|黃齡|郁可唯'
-                '|功夫胖KungFu-Pen|唐艺|大壯|海哲明|金池',
+                '|功夫胖KungFu-Pen|唐艺|大壯|海哲明|金池'
+                '|劉惜君|唐藝|大壮|宋亚轩|宋波涛|揽佬SKAI ISYOURGOD|楊坤|袁婭維|謝帝|陳果|黄龄'
+                '|Mr.岑|何和声|何潔|余火火|刘家奇|庄辉辉|张不翻|张良|张鑫|抠抠|拜荣基|探长'
+                '|晴小瑶|杨树人|杨默依Moi|潘成|烟|程响|罗一舟|葉斯淳|蒋坤炜|趙馨玥|钟琳涵|闭文思'
+                '|陈一豪|陈小满|陈琪东|雲汐|黄俊涵'
+                '|云汐|傅菁|叶斯淳|宋沛Matty|岑先生|杨泽霖|皮卡潘|秦岚|许佳豪'
+                '|DENZEL丹泽|何洁|張含韻|王錚亮|譚維維|赵馨玥|鄒麗珍|陳楚生',
     'hongkong': '邓紫棋|鄧紫棋|G.E.M.|陈奕迅|陳奕迅|Eason Chan|张学友|張學友|Jacky Cheung|刘德华|劉德華|Andy Lau|张国荣|張國榮|Leslie Cheung|王菲|Faye Wong|Beyond|陈慧娴|陳慧嫻|Priscilla Chan|李克勤|Hacken Lee|容祖儿|容祖兒|Joey Yung|梅艳芳|梅艷芳|Anita Mui|谭咏麟|譚詠麟|Alan Tam|林忆莲|林憶蓮|Sandy Lam|陈柏宇|陳柏宇|Jason Chan|石詠莉|石咏莉|Sukie S'
                 '|林子祥|陳百強|Danny Chan|黎瑞恩|陳潔儀|歌莉雅|Goalpha|薛凱琪|Fiona Sit|薛凯琪'
                 '|林奕匡|Phil Lam|林奕匡 (Phil Lam)|鍾鎮濤|Kenny Bee|鄭融|Stephanie Cheng|關心妍'
@@ -74,7 +80,11 @@ _NAMES = {
                 # stored under a romanisation or an English name, and the
                 # shelf could not place them until the real name was found.
                 '|JC 陳詠桐|宋亞軒|宋波濤|專家Dickson|張敬軒|應昌佑|李彩樺|杜文澤|林苑'
-                '|梁家輝|梁曉豐|梁祖儀|溫拿樂隊|王灝兒|王菀之|甄楚倩|衛蘭|超越|郭芯其|雷有輝|馬天佑|黎明',
+                '|梁家輝|梁曉豐|梁祖儀|溫拿樂隊|王灝兒|王菀之|甄楚倩|衛蘭|超越|郭芯其|雷有輝|馬天佑|黎明'
+                '|Edan 吕爵安|Ian 陈卓贤|JC 陈咏桐|Jer 柳应廷|Sabrina cheung 张蔓莎|Sukie S 石咏莉'
+                '|专家Dickson|卫兰|应昌佑|张敬轩|李彩桦|杜文泽|温拿乐队|王灏儿|雷有辉|黄凯逸 (Zelos Wong)'
+                '|孫涵|廖頴琛|李文曦|梁業|黃浩琳|何卓彥'
+                '|何卓彦|孙涵|廖颕琛|梁业|黄浩琳',
     'taiwan': '周杰伦|周杰倫|Jay Chou|蔡依林|Jolin Tsai|张惠妹|張惠妹|A-Mei|五月天|Mayday|陶喆|David Tao|邓丽君|鄧麗君|Teresa Teng|张雨生|張雨生|张宇|張宇|伍佰|罗大佑|羅大佑|李宗盛|刘若英|劉若英|Rene Liu|苏打绿|蘇打綠|Sodagreen|鱼丁糸|魚丁糸|Oaeen|戴爱玲|戴愛玲|Ailing Dai|Princess Ai|棉花糖|katncandix2|蔡琴|田馥甄|Hebe Tien'
               '|王若琳|Joanna Wang|許茹芸|Valen Hsu|丁噹|丁噹 (Della)|陳綺貞 (Cheer Chen)|A-Lin|A-lin 黃麗玲|黃麗玲'
               '|張信哲|张信哲|Jeff Chang|范逸臣|王羽佳|Yuja Wang|柯有倫|Alan Kuo|徐若瑄|Vivian Hsu'
@@ -101,7 +111,14 @@ _NAMES = {
               '|Eileen Yo游宇潼|小球(莊鵑瑛)|庾澄慶|文章|曾昱嘉|李千娜|李宣榕|林亭翰|林芯儀'
               '|王宏恩|盧栗莉|知更|答案商店|米利亞|魚丁糸|鳳小岳|黃玠瑋|謝沛恩|戴佩妮'
               '|張惠春|李亞明|激膚樂團|羅嘉豪|羅時豐|范曉萱|蔡秋鳳|迪克牛仔|邰正宵|郭采潔'
-              '|鄭智化|陈华|陳妍希|陳宇祥|韋禮安',
+              '|鄭智化|陈华|陳妍希|陳宇祥|韋禮安'
+              '|JUD 陳泳希|人力飞行剧团|凤小岳|卢栗莉|吳汶芳|呂士軒|周華健|小球(庄鹃瑛)|庾澄庆'
+              '|张惠春|曾靜玟|朱俐靜|李亚明|李唯楓|李玖哲|林芯仪|林隆璇|激肤乐团|熊貓堂ProducePandas'
+              '|王力宏|罗时丰|艾薇|范晓萱|莉莉周她说 Lily Chou-Chou Lied|蔡秋鳳|蘇芮|许光汉|许哲珮'
+              '|谢沛恩|貝克小姐Miss Bac.|郑智化|郭采洁|郭靜|陈妍希|陈宇祥|陈绮贞 (Cheer Chen)'
+              '|陳彥允|陳華|韦礼安|黄玠玮|蔡秋凤|J HALL 這好|吳霏|李玉璽'
+              '|J HALL 这好|JUD 陈泳希|吕士轩|吴汶芳|吴霏|曾静玟|朱俐静|李唯枫|李玉玺|梁心颐'
+              '|熊猫堂ProducePandas|苏芮|贝克小姐Miss Bac.|郭静|陈彦允',
     'japan': '玉置浩二|Koji Tamaki|安全地帯|安全地带|Anzen Chitai|宇多田ヒカル|Hikaru Utada|中島美嘉|中岛美嘉|Mika Nakashima|浜崎あゆみ|Ayumi Hamasaki|米津玄師|Kenshi Yonezu|藤井風|Fujii Kaze|YOASOBI|Ado|Official髭男dism|高瀬統也|Toya Takase|TakaseToya|坂本龍一|坂本龙一|Ryuichi Sakamoto|波多野裕介|MARiA (美依礼芽)',
     'korea': 'BIGBANG|BIGBANG (빅뱅)|BTS|防弹少年团|防彈少年團|BLACKPINK|TWICE|NAYEON|IU|아이유|李知恩|G-DRAGON|태양|TAEYANG|NewJeans|aespa|LE SSERAFIM|IVE|Red Velvet|少女时代|少女時代|Girls’ Generation|Girls\' Generation|SHINee|EXO|2NE1|SEVENTEEN',
 }

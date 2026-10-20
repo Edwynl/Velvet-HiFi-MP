@@ -1,0 +1,242 @@
+{
+ "_note": "Hand-settled decisions from the 2026-10-20 alias pass. The corrections list is machine-built; the judgements below are the ones a machine cannot make, and each one says why.",
+ "merged": [
+  {
+   "source_id": 1270,
+   "target_id": 1254,
+   "kept_name": "魚丁糸",
+   "other_name": "Sodagreen",
+   "decision": "merge",
+   "reason": "Same act. Sodagreen renamed itself 魚丁糸 in 2020 after the trademark was registered by their former manager; Oaeen is the English name the band used in that period, and the file tags for the row stored as Oaeen carry 魚丁糸. The single Sodagreen row holds the English single 'Tomorrow will be fine.'"
+  },
+  {
+   "source_id": 808,
+   "target_id": 530,
+   "kept_name": "王灝兒",
+   "other_name": "JW",
+   "decision": "merge",
+   "reason": "Same singer. The row abbreviated to 'JW' holds the early Ivana Wong albums ('Filled with Love', 'I Don't Want to Leave', 'Nazca Lines'), and the same albums sit under 王灝兒 in later pressings."
+  },
+  {
+   "source_id": 2077,
+   "target_id": 935,
+   "kept_name": "范曉萱",
+   "other_name": "范晓萱 100%乐团",
+   "decision": "merge",
+   "reason": "Same person. 范曉萱 (Mavis Fan) records with her band 100%樂團; the row was created from the album credit '范晓萱 100%乐团' on 过客, while the 112 tracks of her solo work sit under 范曉萱."
+  },
+  {
+   "source_id": 478,
+   "target_id": 466,
+   "kept_name": "軟硬天師",
+   "other_name": "軟硬",
+   "decision": "merge",
+   "reason": "Same act, the Hong Kong rap duo Softhard (DJ Hard 林海峰 + MC Soft 葛民輝). Row 466 currently carries the corrupt display name '466' with the alias 'Soft Hard', and the two rows share five album titles. The surviving row takes the display name 軟硬."
+  },
+  {
+   "source_id": 513,
+   "target_id": 514,
+   "kept_name": "JC 陳詠桐",
+   "other_name": "JC",
+   "decision": "merge",
+   "reason": "Same singer: the library stores the stage name and the full name as two rows. 'Album 1' and the JC rows carry the same tracks."
+  },
+  {
+   "source_id": 519,
+   "target_id": 530,
+   "kept_name": "王灝兒",
+   "other_name": "Wong Ho Yee Joey",
+   "decision": "merge",
+   "reason": "Same singer: both rows carry 'Feel The Bass' and the JW First EP set. 王灝兒 is the birth name behind the Ivana Wong stage name."
+  },
+  {
+   "source_id": 728,
+   "target_id": 715,
+   "kept_name": "葉文輝",
+   "other_name": "Wen Hui Ye",
+   "decision": "merge",
+   "reason": "Same singer: the romanised row is the pinyin albumartist spelling of the same 葉文輝 recordings. Confirmed by the file tags (13 of 16 tracks) and by the catalogue."
+  },
+  {
+   "source_id": 946,
+   "target_id": 911,
+   "kept_name": "李宣榕",
+   "other_name": "金希",
+   "decision": "merge",
+   "reason": "Same singer: 金希 is the stage name 李宣榕 records under. Wikipedia's 英文名 field for 李宣榕 lists both."
+  },
+  {
+   "source_id": 1252,
+   "target_id": 1308,
+   "kept_name": "李千娜",
+   "other_name": "Nana Lee",
+   "decision": "merge",
+   "reason": "Same singer: both rows carry 'Cha Mou Nan Zai'. Confirmed independently during the search pass. A different Nana Lee (Indonesian) exists and must not be merged."
+  },
+  {
+   "source_id": 2270,
+   "target_id": 2272,
+   "kept_name": "陳光榮",
+   "other_name": "Justin Lee",
+   "decision": "merge",
+   "reason": "Same singer: 陳光榮's English name is Justin Lee, and the Chinese row currently holds no tracks of its own."
+  }
+ ],
+ "not_merged": [
+  {
+   "source_id": 449,
+   "target_id": 2066,
+   "kept_name": "黃貫中",
+   "other_name": "Beyond",
+   "decision": "keep separate",
+   "reason": "Not the same artist. Beyond is the band; 黃貫中 is one member, and only 6 of Beyond's 1197 tracks are billed to him."
+  },
+  {
+   "source_id": 891,
+   "target_id": 2461,
+   "kept_name": "衣睿",
+   "other_name": "周深",
+   "decision": "keep separate",
+   "reason": "Not the same artist. The Chinese name comes from the collaboration series 音乐缘计划, where the guest is credited as the artist and 周深 as the albumartist."
+  },
+  {
+   "source_id": 1762,
+   "target_id": 1761,
+   "kept_name": "張敬軒",
+   "other_name": "王菀之",
+   "decision": "keep separate",
+   "reason": "Not the same artist. The shared album 王菀之x張敬軒 903 id club 拉闊演奏廳 is a duet concert; both names belong on it."
+  },
+  {
+   "source_id": 2439,
+   "target_id": 77,
+   "kept_name": "陳奕迅",
+   "other_name": "妞妞",
+   "decision": "keep separate",
+   "reason": "Not the same artist. 声生不息.港乐季 is a televised ensemble show; many singers appear on each episode."
+  },
+  {
+   "source_id": 2514,
+   "target_id": 2515,
+   "kept_name": "苏楚力",
+   "other_name": "廖昌永",
+   "decision": "keep separate",
+   "reason": "Not the same artist. 天下同心 is a soundtrack for a compilation of performed songs, and the two sang on it together."
+  },
+  {
+   "source_id": 2526,
+   "target_id": 2525,
+   "kept_name": "童丽",
+   "other_name": "侃侃",
+   "decision": "keep separate",
+   "reason": "Not the same artist. 经典咏流传2 is a televised song-and-story series that each episode features a different singer."
+  }
+ ],
+ "regions": [
+  {
+   "artist_id": 2059,
+   "name": "戴佩妮",
+   "region": "taiwan",
+   "evidence": "https://zh.wikipedia.org/wiki/戴佩妮",
+   "reason": "馬來西亞創作女歌手、佛跳牆主唱；2000 年在台灣出道，唱片由台灣厂牌發行"
+  },
+  {
+   "artist_id": 940,
+   "name": "邰正宵",
+   "region": "taiwan",
+   "evidence": "https://zh.wikipedia.org/wiki/邰正宵",
+   "reason": "台灣男歌手，出生於香港，在臺灣成名"
+  },
+  {
+   "artist_id": 942,
+   "name": "郭采潔",
+   "region": "taiwan",
+   "evidence": "https://zh.wikipedia.org/wiki/郭采潔",
+   "reason": "臺灣女歌手及演員"
+  },
+  {
+   "artist_id": 945,
+   "name": "鄭智化",
+   "region": "taiwan",
+   "evidence": "https://zh.wikipedia.org/wiki/鄭智化",
+   "reason": "出生於臺北，臺灣男歌手"
+  },
+  {
+   "artist_id": 947,
+   "name": "金池",
+   "region": "mainland",
+   "evidence": "https://zh.wikipedia.org/wiki/金池",
+   "reason": "中华人民共和国宁德人，2012 年參加《中國好聲音》"
+  },
+  {
+   "artist_id": 958,
+   "name": "韋禮安",
+   "region": "taiwan",
+   "evidence": "https://zh.wikipedia.org/wiki/韋禮安",
+   "reason": "臺灣男創作歌手，藝名 Weibird"
+  },
+  {
+   "artist_id": 1321,
+   "name": "迪克牛仔",
+   "region": "taiwan",
+   "evidence": "https://zh.wikipedia.org/wiki/迪克牛仔",
+   "reason": "本名林進璋，台灣男歌手；1998 年在香港出版翻唱專輯，但本籍臺灣"
+  },
+  {
+   "artist_id": 1676,
+   "name": "蔡秋鳳",
+   "region": "taiwan",
+   "evidence": "https://zh.wikipedia.org/wiki/蔡秋鳳",
+   "reason": "臺灣雲林縣四湖鄉人，臺灣臺語女歌手"
+  },
+  {
+   "artist_id": 1803,
+   "name": "麦小兜",
+   "region": "mainland",
+   "evidence": "https://zh.wikipedia.org/wiki/麦小兜",
+   "reason": "本名杨洛，中国大陆流行乐女歌手、网络主播"
+  },
+  {
+   "artist_id": 1817,
+   "name": "魏如萱",
+   "region": "taiwan",
+   "evidence": "https://zh.wikipedia.org/wiki/魏如萱",
+   "reason": "臺灣創作女歌手、演員及電台主持人"
+  },
+  {
+   "artist_id": 1842,
+   "name": "安崎",
+   "region": "mainland",
+   "evidence": "https://zh.wikipedia.org/wiki/安崎",
+   "reason": "本名陈雅馨，出生於中华人民共和国重慶市，中國大陸女歌手"
+  },
+  {
+   "artist_id": 2498,
+   "name": "戚薇",
+   "region": "mainland",
+   "evidence": "https://zh.wikipedia.org/wiki/戚薇",
+   "reason": "出生于四川省成都市，中国大陆影视歌三栖明星"
+  },
+  {
+   "artist_id": 2535,
+   "name": "胡歌",
+   "region": "mainland",
+   "evidence": "https://en.wikipedia.org/wiki/Hu_Ge",
+   "reason": "Chinese actor and singer, from Shanghai"
+  }
+ ],
+ "display_names": [
+  {
+   "artist_id": 449,
+   "display": "Beyond",
+   "also_known_as": "超越",
+   "reason": "Releases and the download folders both say Beyond; 超越 is a translation, not the name the band records under."
+  },
+  {
+   "artist_id": 1105,
+   "display": "Jony J",
+   "also_known_as": "肖佳",
+   "reason": "The albums and the download folders say Jony J; 肖佳 is the birth name behind the stage name."
+  }
+ ]
+}
