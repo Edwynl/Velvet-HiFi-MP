@@ -674,13 +674,17 @@ async function testAlbumSwipeOpensPlaylistPickerWithoutPlayingOrInlinePlus() {
   } finally { dom.window.close(); }
 }
 
-async function testReopeningTheSameAlbumDoesNotStackHistory() {
+async function testReopeningTheSameAlbumDoesNotStackHistory(albumId = 11, landscape = false) {
   const harness = createHarness();
   const dom = await harness.createDom();
   try {
+    if (landscape) {
+      dom.window.innerWidth = 844;
+      Object.defineProperty(dom.window, 'innerHeight', { configurable: true, value: 390 });
+    }
     await dom.window.navigate('albums');
     await waitFor(() => dom.window.document.querySelector('#albums-grid > *'));
-    await dom.window.navigate('album', { id: 11 });
+    await dom.window.navigate('album', { id: albumId });
     await waitFor(() => dom.window.document.querySelector('.back-btn'));
     const document = dom.window.document;
 
@@ -694,6 +698,15 @@ async function testReopeningTheSameAlbumDoesNotStackHistory() {
     await waitFor(() => dom.window.eval('state.currentTrack && state.currentTrack.id') === 101);
 
     const lengthBefore = dom.window.history.length;
+
+    // Expanding/minimizing the player is UI state, never a library visit.
+    for (let i = 0; i < 2; i++) {
+      document.querySelector('#player-art').click();
+      assert.ok(document.querySelector('#mobile-fullscreen-player').classList.contains('open'));
+      document.querySelector('#mobile-player-back').click();
+      assert.equal(document.querySelector('#mobile-fullscreen-player').classList.contains('open'), false);
+    }
+    assert.equal(dom.window.history.length, lengthBefore);
 
     // Tapping the player info lands back on the album that is already open.
     document.querySelector('.player-info').click();
@@ -714,9 +727,26 @@ async function testReopeningTheSameAlbumDoesNotStackHistory() {
   } finally { dom.window.close(); }
 }
 
+async function testBackSkipsExistingDuplicateAlbumEntries() {
+  const harness = createHarness();
+  const dom = await harness.createDom();
+  try {
+    await dom.window.navigate('albums');
+    await dom.window.navigate('album', { id: 11 });
+    // A tab opened before the fix can already contain duplicate album visits.
+    dom.window.history.pushState({ view: 'album', params: { id: '11' } }, '', '#album/11');
+    dom.window.history.pushState({ view: 'album', params: { id: 11 } }, '', '#album/11');
+    dom.window.document.querySelector('.back-btn').click();
+    await waitFor(() => dom.window.location.hash === '#albums');
+    await waitFor(() => dom.window.document.querySelector('#albums-grid'));
+  } finally { dom.window.close(); }
+}
+
 async function main() {
   await testAlbumSwipeOpensPlaylistPickerWithoutPlayingOrInlinePlus();
   await testReopeningTheSameAlbumDoesNotStackHistory();
+  await testReopeningTheSameAlbumDoesNotStackHistory('11', true);
+  await testBackSkipsExistingDuplicateAlbumEntries();
   await testAlbumBackFallsBackWhenHistoryBackDoesNothing();
   await testBackToAlbumsRestoresKeptViewWithoutRefetch();
   await testBackToAlbumsRestoresKeptViewWithoutRefetch(true);

@@ -11191,29 +11191,47 @@ function routeHash(view, params = {}) {
 }
 
 function sameRoute(viewA, paramsA = {}, viewB, paramsB = {}) {
-  return viewA === viewB && JSON.stringify(paramsA || {}) === JSON.stringify(paramsB || {});
+  // Hash routes contain string IDs; album cards and player links use numbers.
+  // They are one library visit regardless of that representation or key order.
+  const key = params => JSON.stringify(Object.keys(params || {}).sort().map(name =>
+    [name, name === 'id' ? String(params[name]) : params[name]]));
+  return viewA === viewB && key(paramsA) === key(paramsB);
 }
 
 function handleHistoryBack(fallbackView = 'home', fallbackParams = {}) {
   const currentView = state.view;
   const currentParams = state.viewParams || {};
   let settled = false;
+  let backTimer;
 
   const markSettled = () => {
+    // Older tabs may already have stacked visits to the same album. The main
+    // popstate listener has updated state before this listener runs.
+    if (sameRoute(state.view, state.viewParams, currentView, currentParams)) {
+      stepBack();
+      return;
+    }
     settled = true;
+    window.clearTimeout(backTimer);
+    window.removeEventListener('popstate', markSettled);
   };
 
-  window.addEventListener('popstate', markSettled, { once: true });
-  history.back();
-
-  window.setTimeout(() => {
+  const useFallback = () => {
+    window.removeEventListener('popstate', markSettled);
     if (settled) return;
     if (!sameRoute(state.view, state.viewParams, currentView, currentParams)) return;
 
     const nextHash = routeHash(fallbackView, fallbackParams);
     history.replaceState({ view: fallbackView, params: fallbackParams }, '', nextHash);
     navigate(fallbackView, fallbackParams, false);
-  }, 220);
+  };
+  const stepBack = () => {
+    window.clearTimeout(backTimer);
+    backTimer = window.setTimeout(useFallback, 220);
+    history.back();
+  };
+  window.addEventListener('popstate', markSettled);
+  stepBack();
 }
 
 window.addEventListener('popstate', (event) => {
@@ -11222,6 +11240,7 @@ window.addEventListener('popstate', (event) => {
   // memory pressure is high (handled by _cachePage eviction policy).
   if (event.state && event.state.view) {
     log('[VELVET] Popstate navigation (from state):', event.state.view);
+    if (sameRoute(state.view, state.viewParams, event.state.view, event.state.params)) return;
     navigate(event.state.view, event.state.params, false);
   } else {
     // Falls back to URL hash decoding if state is missing
@@ -11229,7 +11248,9 @@ window.addEventListener('popstate', (event) => {
     log('[VELVET] Popstate navigation (from hash):', hash || 'home');
     if (hash) {
       const [view, id] = hash.split('/');
-      navigate(view, id ? { id: decodeURIComponent(id) } : {}, false);
+      const params = id ? { id: decodeURIComponent(id) } : {};
+      if (sameRoute(state.view, state.viewParams, view, params)) return;
+      navigate(view, params, false);
     } else {
       navigate('home', {}, false);
     }
