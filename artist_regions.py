@@ -48,7 +48,12 @@ _NAMES = {
                 '|Jony J|Vava|Higher Brothers|KnowKnow|Melo|7Teen|Bruce Liu|Xiao Xia|GoKKy'
                 '|Xiayin Wang|Jo-Yu Chen|Liu Yunzhi|China National Symphony Orchestra|余佳运|王加一'
                 '|盛夏光年|Shen Wanwan|张可盈|孔令奇|张一鸣|李曉東|艾小伦|喻言|王箏|蔡国庆'
-                '|陳安立|陳穎欣|陳紅|陳輝|雅麗|龚玥|承桓|宋沛 MattyPei|慧凯|DENZEL丹澤|张昊',
+                '|陳安立|陳穎欣|陳紅|陳輝|雅麗|龚玥|承桓|宋沛 MattyPei|慧凯|DENZEL丹澤|张昊'
+                # Names confirmed by a second source in 2026-10: the singer was
+                # stored under a romanisation or an English name, and the
+                # shelf could not place them until the real name was found.
+                '|LBI利比|弦子|肖佳|艾志恒Asen|艾辰|苏星婕|賈廷一|陈果|麦小兜|黃齡|郁可唯'
+                '|功夫胖KungFu-Pen|唐艺|大壯|海哲明|金池',
     'hongkong': '邓紫棋|鄧紫棋|G.E.M.|陈奕迅|陳奕迅|Eason Chan|张学友|張學友|Jacky Cheung|刘德华|劉德華|Andy Lau|张国荣|張國榮|Leslie Cheung|王菲|Faye Wong|Beyond|陈慧娴|陳慧嫻|Priscilla Chan|李克勤|Hacken Lee|容祖儿|容祖兒|Joey Yung|梅艳芳|梅艷芳|Anita Mui|谭咏麟|譚詠麟|Alan Tam|林忆莲|林憶蓮|Sandy Lam|陈柏宇|陳柏宇|Jason Chan|石詠莉|石咏莉|Sukie S'
                 '|林子祥|陳百強|Danny Chan|黎瑞恩|陳潔儀|歌莉雅|Goalpha|薛凱琪|Fiona Sit|薛凯琪'
                 '|林奕匡|Phil Lam|林奕匡 (Phil Lam)|鍾鎮濤|Kenny Bee|鄭融|Stephanie Cheng|關心妍'
@@ -64,7 +69,12 @@ _NAMES = {
                 '|董嘉鴻|葉振棠|蔣卓嘉|蕭景鴻 (阿弟)|邱士縉|邱彥筒|Marf Yau|Marf 邱彦筒|赖美云'
                 '|Anson Kong 江𤒹生|Rock 何晉樂|吳若希|宋妍霏|林志美|Samantha Lam|林晓峰|梁祖尧|汤骏业'
                 '|王祖蓝|罗景文|姚焯菲|路滨琪|路濱淇|陳光榮|房祖名|張智霖'
-                '|KOLOR|Connie Shih|Chintung Tse|Lee Ping-Huei|Jessica Chan|Manson Cheung|呂方|吕方|周富坚|董嘉鸿|陳永健|張智霖|张智霖',
+                '|KOLOR|Connie Shih|Chintung Tse|Lee Ping-Huei|Jessica Chan|Manson Cheung|呂方|吕方|周富坚|董嘉鸿|陳永健|張智霖|张智霖'
+                # Names confirmed by a second source in 2026-10: the singer was
+                # stored under a romanisation or an English name, and the
+                # shelf could not place them until the real name was found.
+                '|JC 陳詠桐|宋亞軒|宋波濤|專家Dickson|張敬軒|應昌佑|李彩樺|杜文澤|林苑'
+                '|梁家輝|梁曉豐|梁祖儀|溫拿樂隊|王灝兒|王菀之|甄楚倩|衛蘭|超越|郭芯其|雷有輝|馬天佑|黎明',
     'taiwan': '周杰伦|周杰倫|Jay Chou|蔡依林|Jolin Tsai|张惠妹|張惠妹|A-Mei|五月天|Mayday|陶喆|David Tao|邓丽君|鄧麗君|Teresa Teng|张雨生|張雨生|张宇|張宇|伍佰|罗大佑|羅大佑|李宗盛|刘若英|劉若英|Rene Liu|苏打绿|蘇打綠|Sodagreen|鱼丁糸|魚丁糸|Oaeen|戴爱玲|戴愛玲|Ailing Dai|Princess Ai|棉花糖|katncandix2|蔡琴|田馥甄|Hebe Tien'
               '|王若琳|Joanna Wang|許茹芸|Valen Hsu|丁噹|丁噹 (Della)|陳綺貞 (Cheer Chen)|A-Lin|A-lin 黃麗玲|黃麗玲'
               '|張信哲|张信哲|Jeff Chang|范逸臣|王羽佳|Yuja Wang|柯有倫|Alan Kuo|徐若瑄|Vivian Hsu'
@@ -84,7 +94,14 @@ _NAMES = {
               # Verve (34), WM Taiwan (18), AsiaMuse (8) and five other markets,
               # which leaves no majority and used to park it wherever the label
               # rules happened to tilt. The owner keeps it on the Taiwan shelf.
-              '|Various Artists',
+              '|Various Artists'
+              # Names confirmed by a second source in 2026-10: the singer was
+              # stored under a romanisation or an English name, and the
+              # shelf could not place them until the real name was found.
+              '|Eileen Yo游宇潼|小球(莊鵑瑛)|庾澄慶|文章|曾昱嘉|李千娜|李宣榕|林亭翰|林芯儀'
+              '|王宏恩|盧栗莉|知更|答案商店|米利亞|魚丁糸|鳳小岳|黃玠瑋|謝沛恩|戴佩妮'
+              '|張惠春|李亞明|激膚樂團|羅嘉豪|羅時豐|范曉萱|蔡秋鳳|迪克牛仔|邰正宵|郭采潔'
+              '|鄭智化|陈华|陳妍希|陳宇祥|韋禮安',
     'japan': '玉置浩二|Koji Tamaki|安全地帯|安全地带|Anzen Chitai|宇多田ヒカル|Hikaru Utada|中島美嘉|中岛美嘉|Mika Nakashima|浜崎あゆみ|Ayumi Hamasaki|米津玄師|Kenshi Yonezu|藤井風|Fujii Kaze|YOASOBI|Ado|Official髭男dism|高瀬統也|Toya Takase|TakaseToya|坂本龍一|坂本龙一|Ryuichi Sakamoto|波多野裕介|MARiA (美依礼芽)',
     'korea': 'BIGBANG|BIGBANG (빅뱅)|BTS|防弹少年团|防彈少年團|BLACKPINK|TWICE|NAYEON|IU|아이유|李知恩|G-DRAGON|태양|TAEYANG|NewJeans|aespa|LE SSERAFIM|IVE|Red Velvet|少女时代|少女時代|Girls’ Generation|Girls\' Generation|SHINee|EXO|2NE1|SEVENTEEN',
 }
@@ -201,6 +218,16 @@ _LABELS = (
 
 
 def classify(names, releases):
+    # The first name is the row's display name: the spelling the library
+    # settled on after the aliases were gathered. It settles the shelf on
+    # its own, because an alias can be a name another artist also uses
+    # (陳光榮 records as "Justin Lee", and so does a Western musician), and
+    # a tie between the display name and such an alias would push a singer
+    # the roster can place back into Other.
+    if names:
+        display = _CURATED.get(_key(names[0]))
+        if display:
+            return display
     curated = {_CURATED[_key(name)] for name in names if _key(name) in _CURATED}
     if len(curated) == 1:
         return curated.pop()

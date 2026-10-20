@@ -13,6 +13,13 @@ class ArtistRegionTests(unittest.TestCase):
         self.assertEqual(classify(['未知歌手'], []), 'unknown')
         self.assertEqual(classify(['Artist'], [('WM Taiwan', ''), ('WM China', '')]), 'unknown')
 
+    def test_display_name_outranks_an_alias_shared_with_another_artist(self):
+        """陳光榮 records as "Justin Lee", and so does a Western musician.
+        The display name is the row's settled spelling, so it wins."""
+        self.assertEqual(classify(['陳光榮', 'Justin Lee'], []), 'hongkong')
+        # Without a curated display name, a genuine tie still stays Other.
+        self.assertEqual(classify(['Someone Else', 'Justin Lee', '陳光榮'], []), 'unknown')
+
     def test_genres_and_regional_imprints(self):
         self.assertEqual(classify(['Band'], [('', 'Musiques du monde, Asie, Corée, K-pop')]), 'korea')
         self.assertEqual(classify(['Band'], [('Sony Music Labels Inc.', '')]), 'japan')

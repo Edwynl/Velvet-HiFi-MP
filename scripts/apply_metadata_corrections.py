@@ -2,13 +2,21 @@
 
 The list is a UTF-8 CSV with the columns
 
-    kind,id,current,proposed,merge_ids,source,check,approve
+    kind,id,current,proposed,merge_ids,aliases,source,check,approve
 
 kind is ``artist``, ``album`` or ``track``; only rows whose ``approve``
 column is Y/yes/1/是 are applied. An artist row renames artist ``id`` to
 ``proposed`` and merges the space-separated ``merge_ids`` into it; every
 replaced name stays as an alias. Album and track rows retitle that row when
 its title still equals ``current``.
+
+The optional ``aliases`` column (pipe-separated) attaches further names to
+the same artist without renaming it. This is the path for a singer who is
+already stored under a Chinese name but also records under an English or a
+romanised one, and for a singer stored under their English name whose
+Chinese name is only known as an alias. Every attached name is also mapped
+back to the display name when the files' tags are rewritten, so a re-import
+on another machine produces one artist row instead of several.
 
 Nothing is written without --apply. Before writing, the database is copied
 with the SQLite backup API; with --write-tags every changed file's old tag
@@ -32,7 +40,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from artist_aliases import merge_artists, rename_artist  # noqa: E402
+from artist_aliases import add_alias, merge_artists, rename_artist  # noqa: E402
+from artist_alias_provenance import mark_alias_source  # noqa: E402
 from db_schema import apply_migrations  # noqa: E402
 from path_compat import filesystem_path  # noqa: E402
 
@@ -54,7 +63,12 @@ def read_corrections(path: Path) -> dict[str, list[dict]]:
                 raise ValueError(f"unknown kind {kind!r}")
             row["id"] = int(row["id"])
             row["merge_ids"] = [int(v) for v in (row.get("merge_ids") or "").split()]
-            row["proposed"] = row["proposed"].strip()
+            row["proposed"] = (row.get("proposed") or "").strip()
+            row["alias_names"] = [
+                name.strip()
+                for name in (row.get("aliases") or "").split("|")
+                if name.strip()
+            ]
             rows[kind].append(row)
     return rows
 
@@ -72,26 +86,67 @@ def backup_database(db_path: Path, out_path: Path) -> None:
 def apply_to_database(db: sqlite3.Connection, corrections: dict[str, list[dict]]) -> dict:
     """Apply corrections in the open transaction; returns what changed.
 
-    ``renamed_names`` maps each replaced artist name to the display name, so
-    file tags can be rewritten the same way.
+    ``renamed_names`` maps every replaced or attached name to the display
+    name, so file tags can be rewritten the same way.
     """
-    report: dict = {"artists": [], "albums": [], "tracks": [], "skipped": [], "renamed_names": {}}
+    report: dict = {"artists": [], "albums": [], "tracks": [], "skipped": [],
+                    "renamed_names": {}}
     for row in corrections["artist"]:
         artist = db.execute("SELECT name FROM artists WHERE id = ?", (row["id"],)).fetchone()
         if artist is None or artist[0] != row["current"]:
             report["skipped"].append({**row, "reason": "artist changed since the list was made"})
             continue
         old_names = [artist[0]]
+        missing_merges = []
         for merge_id in row["merge_ids"]:
             merged = db.execute("SELECT name FROM artists WHERE id = ?", (merge_id,)).fetchone()
             if merged is not None:
                 old_names.append(merged[0])
-        result = merge_artists(db, row["id"], row["merge_ids"])
-        result = rename_artist(db, result["artist_id"], row["proposed"])
-        for name in old_names:
-            if name != row["proposed"]:
-                report["renamed_names"][name] = row["proposed"]
-        report["artists"].append({"id": result["artist_id"], "name": row["proposed"], "from": old_names})
+            else:
+                # The row was already folded into another one, most likely by
+                # an earlier run of this list. Merging it again would fail.
+                missing_merges.append(merge_id)
+        if missing_merges:
+            report["skipped"].append({
+                **row, "reason": f"already merged: {missing_merges}"})
+            continue
+        target_id = row["id"]
+        # merge_artists also folds the target's same-titled albums, so it
+        # runs even when there is nothing to merge.
+        target_id = merge_artists(db, row["id"], row["merge_ids"])["artist_id"]
+        # An empty ``proposed`` keeps the stored name: the row exists to
+        # attach aliases, not to rename.
+        proposed = row["proposed"] or row["current"]
+        if proposed != row["current"]:
+            target_id = rename_artist(db, target_id, proposed)["artist_id"]
+        display = db.execute(
+            "SELECT name FROM artists WHERE id = ?", (target_id,)
+        ).fetchone()[0]
+
+        attached: list[str] = []
+        for name in row["alias_names"]:
+            if name.casefold() == display.casefold():
+                continue
+            if add_alias(db, target_id, name):
+                attached.append(name)
+        for name in attached:
+            # The alias was checked against a source before it reached this
+            # list, so record where it came from instead of leaving it
+            # unprovenanced for the legacy audit.
+            try:
+                mark_alias_source(
+                    db, target_id, name, "user_confirmed",
+                    evidence=str(row.get("source") or "")[:500],
+                )
+            except (sqlite3.Error, ValueError):
+                pass
+        for name in old_names + attached:
+            if name.casefold() != display.casefold():
+                report["renamed_names"][name] = display
+        report["artists"].append({
+            "id": target_id, "name": display, "from": old_names,
+            "aliases_added": attached,
+        })
 
     for kind, table in (("album", "albums"), ("track", "tracks")):
         for row in corrections[kind]:

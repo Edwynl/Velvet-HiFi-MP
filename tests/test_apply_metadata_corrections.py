@@ -18,7 +18,8 @@ from db_schema import apply_migrations
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 import apply_metadata_corrections as amc  # noqa: E402
 
-FIELDS = ["kind", "id", "current", "proposed", "merge_ids", "source", "check", "approve"]
+FIELDS = ["kind", "id", "current", "proposed", "merge_ids", "aliases",
+          "source", "check", "approve"]
 
 
 def write_flac(path: Path, tags: dict) -> None:
@@ -75,10 +76,10 @@ class ApplyMetadataCorrectionsTests(unittest.TestCase):
             conn.commit()
         self.csv_path = self.root / "corrections.csv"
         self._write_csv([
-            ["artist", 1, "鄭秀文", "鄭秀文", "2", "musicbrainz", "ok", "Y"],
-            ["album", 10, "Xin Shui Xuan Ze", "心水選擇", "", "musicbrainz", "pinyin", "y"],
-            ["track", 100, "Xin Shui Xuan Ze", "心水選擇", "", "musicbrainz", "pinyin", "是"],
-            ["track", 101, "Love Song", "情歌", "", "guess", "", "N"],
+            ["artist", 1, "鄭秀文", "鄭秀文", "2", "", "musicbrainz", "ok", "Y"],
+            ["album", 10, "Xin Shui Xuan Ze", "心水選擇", "", "", "musicbrainz", "pinyin", "y"],
+            ["track", 100, "Xin Shui Xuan Ze", "心水選擇", "", "", "musicbrainz", "pinyin", "是"],
+            ["track", 101, "Love Song", "情歌", "", "", "guess", "", "N"],
         ])
 
     def tearDown(self):
@@ -150,6 +151,53 @@ class ApplyMetadataCorrectionsTests(unittest.TestCase):
         self.assertEqual(amc.rewrite_artist_value("Jacky Cheung / Sammi Cheng feat. X", renamed),
                          "張學友 / 鄭秀文 feat. X")
         self.assertEqual(amc.rewrite_artist_value("Sammi Chengs", renamed), "Sammi Chengs")
+
+    def test_aliases_column_attaches_names_without_renaming(self):
+        """A row with an empty proposed keeps the display name and only
+        attaches aliases; the files' artist tags still get rewritten to the
+        display name so a re-import does not create a second artist row."""
+        self._write_csv([
+            ["artist", 1, "鄭秀文", "", "2", "陳慧敏|江若琳",
+             "Apple Music + Wikipedia", "ok", "Y"],
+        ])
+        amc.main([str(self.csv_path), "--db", str(self.db_path), "--apply", "--write-tags"])
+
+        with closing(sqlite3.connect(self.db_path)) as conn:
+            names = conn.execute("SELECT name FROM artists WHERE id = 1").fetchone()
+            aliases = fetch_aliases(conn, 1)
+        self.assertEqual(names, ("鄭秀文",))
+        self.assertIn("Sammi Cheng", aliases)   # came from the merge
+        self.assertIn("陳慧敏", aliases)
+        self.assertIn("江若琳", aliases)
+
+        # The file's artist tag now carries the display name, not the alias.
+        self.assertEqual(FLAC(self.flac)["artist"], ["鄭秀文 & Andy Lau"])
+
+    def test_aliases_column_records_provenance(self):
+        self._write_csv([
+            ["artist", 1, "鄭秀文", "", "", "Sammi Cheng", "Apple Music + Wikipedia", "ok", "Y"],
+        ])
+        amc.main([str(self.csv_path), "--db", str(self.db_path), "--apply"])
+        with closing(sqlite3.connect(self.db_path)) as conn:
+            row = conn.execute(
+                "SELECT p.source FROM artist_aliases aa "
+                "JOIN artist_alias_provenance p ON p.alias_id = aa.id "
+                "WHERE aa.name = 'Sammi Cheng'"
+            ).fetchone()
+        self.assertEqual(row, ("user_confirmed",))
+
+    def test_row_is_skipped_when_its_merge_target_is_already_gone(self):
+        """Re-running the same list must not fail on rows that an earlier
+        run already folded together."""
+        self._write_csv([
+            ["artist", 1, "鄭秀文", "", "2", "", "ok", "ok", "Y"],
+        ])
+        amc.main([str(self.csv_path), "--db", str(self.db_path), "--apply"])
+        # The merged row is gone, so the same list cannot be applied again.
+        amc.main([str(self.csv_path), "--db", str(self.db_path), "--apply"])
+        with closing(sqlite3.connect(self.db_path)) as conn:
+            names = conn.execute("SELECT name FROM artists WHERE id = 1").fetchone()
+        self.assertEqual(names, ("鄭秀文",))
 
 
 if __name__ == "__main__":
