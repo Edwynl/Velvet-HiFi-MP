@@ -1,7 +1,7 @@
 import httpx
 import json
 
-url = "http://127.0.0.1:8771/api/artists?limit=20"
+url = "http://127.0.0.1:8765/api/artists?limit=20"
 try:
     r = httpx.get(url)
     print(f"Status: {r.status_code}")

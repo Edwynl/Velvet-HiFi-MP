@@ -38,7 +38,7 @@ if defined TAILSCALE_EXE (
         echo.
         echo ================================================
         echo   VELVET Remote Access URL:
-        echo   http://%TAILSCALE_IP%:8771
+        echo   http://%TAILSCALE_IP%:8765
         echo ================================================
         echo.
     )
@@ -82,9 +82,9 @@ pip install --disable-pip-version-check -r requirements.txt -q
 
 :: ─── Start MusicIQ server ───
 echo [*] Starting VELVET server...
-echo    Local:  http://localhost:8771
+echo    Local:  http://localhost:8765
 if defined TAILSCALE_IP (
-    echo    Remote: http://%TAILSCALE_IP%:8771
+    echo    Remote: http://%TAILSCALE_IP%:8765
 )
 echo.
 

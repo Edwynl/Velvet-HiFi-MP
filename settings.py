@@ -59,7 +59,7 @@ class VelvetSettings(BaseSettings):
     music_dir: str = Field(default=r"C:\Music")
     data_dir: Path = Field(default=Path("velvet_data"))
 
-    port: int = Field(default=8771, ge=1024, le=65535)
+    port: int = Field(default=8765, ge=1024, le=65535)
     host: str = Field(default="0.0.0.0")
     log_level: str = Field(default="WARNING")
 
@@ -68,7 +68,7 @@ class VelvetSettings(BaseSettings):
     db_cache_size: int = Field(default=10000)
 
     cors_origins: list[str] = Field(
-        default=["http://localhost:8771", "http://127.0.0.1:8771"]
+        default=["http://localhost:8765", "http://127.0.0.1:8765"]
     )
     cors_credentials: bool = Field(default=True)
 

@@ -101,16 +101,16 @@ class AdminSessionTests(unittest.TestCase):
             self.assertEqual(client.post('/api/health/recycle-pool', headers={'Origin':'https://evil.example'}).status_code, 403)
 
 
-def request(peer, host='localhost:8771', headers=()):
+def request(peer, host='localhost:8765', headers=()):
     return Request({'type':'http','method':'GET','path':'/api/stats','scheme':'http',
-                    'server':('127.0.0.1',8771),'client':(peer,1234),
+                    'server':('127.0.0.1',8765),'client':(peer,1234),
                     'headers':[(b'host',host.encode()),*headers],'query_string':b''})
 
 
 class TailnetListenerTests(unittest.TestCase):
     def setUp(self):
         self.snapshot = {'ips':{'100.70.0.2','fd7a:115c:a1e0::2'},'dns':'server.example.ts.net',
-                         'web':{'server.example.ts.net:443':{'Handlers':{'/':{'Proxy':'http://127.0.0.1:8771'}}}},
+                         'web':{'server.example.ts.net:443':{'Handlers':{'/':{'Proxy':'http://127.0.0.1:8765'}}}},
                          'funnel':False}
 
     def test_only_known_peers_and_verified_local_serve_get_free_listening(self):
@@ -137,10 +137,10 @@ class TailnetListenerTests(unittest.TestCase):
     def test_proxy_must_target_the_current_velvet_port(self):
         proxy=request('127.0.0.1','server.example.ts.net',[(b'x-forwarded-for',b'100.70.0.2')])
         with patch.object(listener_access, '_tailnet_snapshot', return_value=self.snapshot):
-            for port in (8765, 8001, 8771):
+            for port in (8771, 8001, 8765):
                 with self.subTest(port=port):
                     self.snapshot['web']['server.example.ts.net:443']['Handlers']['/']['Proxy'] = f'http://localhost:{port}'
-                    self.assertEqual(listener_access.is_passwordless_listener(proxy,'proxied:100.70.0.2'), port == 8771)
+                    self.assertEqual(listener_access.is_passwordless_listener(proxy,'proxied:100.70.0.2'), port == 8765)
 
     def test_sensitive_policy_covers_config_uploads_deletions_and_legacy_get(self):
         for method,path in [('GET','/api/config'),('POST','/api/albums/1/cover'),

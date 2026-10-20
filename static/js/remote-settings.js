@@ -110,7 +110,7 @@ async function renderRemote(vc) {
           </a>
         ` : `
           <div class="settings-desc" style="margin-top:12px">On your Windows server, open PowerShell and run:</div>
-          <code style="display:block;overflow:auto;padding:12px;margin-top:8px;background:var(--s3)">${escHtml(status.https_setup_command || `tailscale serve --bg ${status.port || 8771}`)}</code>
+          <code style="display:block;overflow:auto;padding:12px;margin-top:8px;background:var(--s3)">${escHtml(status.https_setup_command || `tailscale serve --bg ${status.port || 8765}`)}</code>
           <div class="settings-desc" style="margin-top:8px">
             Enable HTTPS certificates/MagicDNS in your tailnet if prompted.
             Verify with <code>tailscale serve status</code>. This uses Serve within
