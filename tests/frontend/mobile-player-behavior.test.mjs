@@ -426,17 +426,17 @@ function testLandscapeFullscreenLayoutBalanceGuards() {
     hasCssRule(
       html,
       '.mobile-player-main',
-      'flex-direction:\\s*row\\s*!important;[^}]*align-items:\\s*center\\s*!important;[^}]*justify-content:\\s*center\\s*!important;[^}]*gap:\\s*28px\\s*!important;',
+      'display:\\s*grid\\s*!important;[^}]*grid-template-columns:\\s*minmax\\(0, 1fr\\) minmax\\(0, 1.15fr\\);[^}]*align-items:\\s*center\\s*!important;',
     ),
     'Expected landscape fullscreen player columns to stay centered instead of pushing metadata upward',
   );
   assert.ok(
-    hasCssRule(html, '.mobile-player-art-section', 'width:\\s*44%\\s*!important;'),
-    'Expected landscape fullscreen cover art column to remain visually substantial',
+    html.includes('width: min(100%, 320px, calc(100vh - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px) - 108px)) !important;'),
+    'Expected cover size to follow the available phone height and safe area',
   );
   assert.ok(
-    hasCssRule(html, '.mobile-player-controls-section', 'width:\\s*56%\\s*!important;'),
-    'Expected landscape fullscreen controls column to stay balanced with the cover art column',
+    hasCssRule(html, '.mobile-player-main-controls', 'justify-content:\\s*space-between\\s*!important;'),
+    'Expected the play button to sit in the center of the right column',
   );
 }
 
