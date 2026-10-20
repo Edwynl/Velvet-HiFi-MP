@@ -8841,6 +8841,29 @@ let browserPlaybackToken = 0;
 let browserStreamOffset = 0;
 let browserDspContainer = 'flac';
 let browserDspFailure = null;
+let browserAudioDiagnosticCount = 0;
+
+function reportBrowserAudio(stage, error = null) {
+  if (browserAudioDiagnosticCount >= 24) return;
+  browserAudioDiagnosticCount++;
+  const requested = new URL(audio.src || location.href, location.href);
+  const current = new URL(audio.currentSrc || audio.src || location.href, location.href);
+  const data = {stage, track:state.currentTrack?.id || '', profile:state.dspProfile || '',
+    container:browserDspContainer, upsample:state.upsample, code:audio.error?.code || 0,
+    name:error?.name || '', message:error?.message || audio.error?.message || '',
+    ready:audio.readyState, network:audio.networkState,
+    mediaDsp:current.searchParams.get('dsp') || '', requestedDsp:requested.searchParams.get('dsp') || ''};
+  const headers = authState.apiKey ? {'X-API-Key':authState.apiKey} : {};
+  const send = () => fetch('/api/browser-audio/diagnostics?event=' + encodeURIComponent(JSON.stringify(data)),
+    {headers, cache:'no-store'}).catch(() => {});
+  if (!requested.pathname.startsWith('/api/stream/')) { send(); return; }
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 2500);
+  fetch(requested.href, {method:'HEAD', headers, signal:controller.signal, cache:'no-store'})
+    .then(response => { data.http=response.status; data.contentType=response.headers.get('Content-Type'); data.length=response.headers.get('Content-Length'); })
+    .catch(e => { data.http=e.name; })
+    .finally(() => { clearTimeout(timer); send(); });
+}
 
 function browserPlaybackPosition() {
   return browserStreamOffset + (Number.isFinite(audio.currentTime) ? audio.currentTime : 0);
@@ -9035,6 +9058,7 @@ function scheduleDspStartupHealthCheck(playbackToken) {
 function attemptDspAutoFallback(reason = 'stream-error') {
   if (dspAutoFallbackInFlight) return false;
   if (!isBrowserZone() || !state.currentTrack || !state.dspProfile) return false;
+  reportBrowserAudio(reason);
   // Safari can reject a live FLAC response even though it plays FLAC files.
   // Retry lossless PCM before disabling the user's chosen EQ.
   if (browserDspContainer === 'flac' && (!state.upsample || state.upsample === 'none')) {
@@ -9463,6 +9487,7 @@ async function startBrowserPlayback(track, { resumeTime = null, token = null } =
     scheduleDspStartupHealthCheck(playbackToken);
   } catch (error) {
     if (playbackToken !== browserPlaybackToken) return false;
+    reportBrowserAudio('play-rejected', error);
     if (state.dspProfile) {
       const errorMessage = String(error?.message || '').toLowerCase();
       const likelyUnsupported =
@@ -10112,6 +10137,7 @@ audio.addEventListener('pause', () => {
 });
 
 audio.addEventListener('error', () => {
+  reportBrowserAudio('media-error');
   const errCode = Number(audio.error?.code || 0);
   if (errCode === 4 && state.dspProfile) {
     const failures = noteDspError(state.dspProfile);

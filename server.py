@@ -3876,6 +3876,34 @@ def delete_dsp_profile(profile_id: int):
 
 # ─── Local Playback API (WASAPI/ASIO) ───────────────────────────────────────────
 
+_browser_audio_events = deque(maxlen=64)
+_browser_audio_events_lock = threading.Lock()
+
+
+@app.get("/api/browser-audio/diagnostics")
+def browser_audio_diagnostics(request: Request, event: str = Query("", max_length=3000)):
+    """Bounded, local troubleshooting records; never accept a URL or credential."""
+    if event:
+        try:
+            data = json.loads(event)
+        except ValueError:
+            raise HTTPException(422, "Invalid diagnostic event")
+        if not isinstance(data, dict):
+            raise HTTPException(422, "Invalid diagnostic event")
+        allowed = {"stage", "track", "profile", "container", "upsample", "code", "name", "message",
+                   "ready", "network", "http", "contentType", "length", "mediaDsp", "requestedDsp"}
+        record = {key: str(value).replace("\r", " ").replace("\n", " ")[:240]
+                  for key, value in data.items() if key in allowed}
+        record["at"] = time.time()
+        record["agent"] = request.headers.get("user-agent", "")[:240]
+        with _browser_audio_events_lock:
+            _browser_audio_events.append(record)
+        log.warning("[BROWSER_AUDIO] %s", json.dumps(record, ensure_ascii=True))
+        return {"received": True}
+    with _browser_audio_events_lock:
+        return {"events": list(_browser_audio_events)}
+
+
 @app.get("/api/playback/devices")
 def get_audio_devices():
     """Get list of available audio output devices."""
