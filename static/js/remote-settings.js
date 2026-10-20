@@ -173,7 +173,7 @@ async function renderRemote(vc) {
           <div class="settings-desc" style="margin-bottom:12px">Use this key for programmatic access (apps, scripts)</div>
           <div class="remote-url-box">
             <input type="text" id="api-key-display" value="${security.has_api_key ? '••••••••••••••••' : 'Not generated'}" readonly class="settings-input" style="font-family:monospace">
-            <button class="btn-copy" onclick="showApiKey()" title="Show API Key">
+            <button class="btn-copy" id="api-key-reveal-btn" onclick="showApiKey()" title="Show API Key">
               <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
                 <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
                 <circle cx="12" cy="12" r="3"/>
@@ -381,6 +381,36 @@ async function generateNewApiKey() {
   } catch (e) {
     alert('Failed to generate API key: ' + e.message);
   }
+}
+
+// Reveal the API key in the admin's own page. The key is already on this
+// device (authState mirrors it into localStorage through storeApiKey), so
+// the toggle is a local read — nothing is requested and nothing is changed
+// on the server. Pressing it again masks the key again.
+function showApiKey() {
+  const input = document.getElementById('api-key-display');
+  if (!input) return;
+  const button = document.getElementById('api-key-reveal-btn');
+  if (input.dataset.revealed === 'true') {
+    input.value = '••••••••••••••••';
+    input.dataset.revealed = 'false';
+    if (button) button.title = 'Show API Key';
+    return;
+  }
+  let key = '';
+  try {
+    if (typeof authState !== 'undefined' && authState.apiKey) key = authState.apiKey;
+  } catch (e) { /* auth state not initialised in this context */ }
+  if (!key) {
+    try { key = localStorage.getItem('velvet_api_key') || ''; } catch (e) { key = ''; }
+  }
+  if (!key) {
+    input.value = 'Not generated';
+    return;
+  }
+  input.value = key;
+  input.dataset.revealed = 'true';
+  if (button) button.title = 'Hide API Key';
 }
 
 // Auto-refresh remote status in background

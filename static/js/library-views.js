@@ -2302,7 +2302,7 @@ async function renderGenre(vc, { id }) {
     <div class="section-header">
       <div class="section-title">${escHtml(genreDisplayLabel(id))}</div>
       <div class="section-sub">
-        <button type="button" class="gnr-crumb" data-family="${family.id}" style="--h:${family.hue}">${escHtml(family.label)}</button>
+        <button type="button" id="gnr-crumb" class="gnr-crumb" data-family="${family.id}" style="--h:${family.hue}">${escHtml(family.label)}</button>
         <span> · ${albums.length} albums</span>
       </div>
     </div>
