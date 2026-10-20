@@ -1581,11 +1581,27 @@ async function eqPresetSelectionChecks() {
   const railActive = () =>
     document.querySelector('#eq-presets-container .eq-preset-btn.active')?.textContent?.trim() || '';
   try {
+    dom.window.matchMedia = () => ({ matches: true });
     await dom.window.loadDspProfiles();
     await dom.window.openGraphicEQ();
 
     // Picking highlights a draft; only Apply changes playback/preferences.
     await dom.window.selectEQPreset('2');
+    const advancedButton = document.querySelector('#eq-btn-advanced');
+    const advancedPanel = document.querySelector('#eq-advanced-panel');
+    assert.equal(advancedPanel.hidden, true, 'presets are the default view');
+    assert.equal(advancedButton.getAttribute('aria-expanded'), 'false');
+    advancedButton.click();
+    assert.equal(advancedPanel.hidden, false);
+    assert.equal(advancedButton.getAttribute('aria-expanded'), 'true');
+    dom.window.handleEQSliderInput(0, '2');
+    advancedButton.click();
+    advancedButton.click();
+    assert.equal(dom.window.eval('eqActiveDraft().gains[0]'), 2, 'folding Advanced preserves custom edits');
+    assert.equal(railActive(), 'Black');
+    await dom.window.selectEQPreset('2');
+    advancedButton.click();
+    assert.equal(advancedPanel.hidden, true);
     assert.equal(dom.window.eval('state.dspProfile'), '');
     assert.equal(railActive(), 'Black');
     assert.equal(status(), 'Preview (not yet applied)');
@@ -1596,6 +1612,16 @@ async function eqPresetSelectionChecks() {
     assert.equal(status(), 'Applied');
     assert.equal(railActive(), 'Black');
     assert.equal(dom.window.localStorage.getItem('velvet:dsp-profile-id'), '2');
+    advancedButton.click();
+    await dom.window.openGraphicEQ();
+    assert.equal(advancedPanel.hidden, true, 'reopening starts with presets again');
+    assert.equal(railActive(), 'Black', 'reopening retains the applied preset');
+    dom.window.matchMedia = () => ({ matches: false });
+    await dom.window.openGraphicEQ();
+    assert.equal(advancedPanel.hidden, false, 'desktop keeps the full editor');
+    assert.equal(document.querySelector('#eq-overlay').classList.contains('eq-mobile-layout'), false);
+    dom.window.matchMedia = () => ({ matches: true });
+    await dom.window.openGraphicEQ();
     assert.equal(document.querySelector('#mobile-top-dsp-label').textContent.trim(), 'Black');
 
     // Another preset replaces it, the same way round.

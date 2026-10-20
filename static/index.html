@@ -5170,6 +5170,69 @@ input[type=range]::-webkit-slider-thumb:hover { background: var(--gold); }
       align-items: center;
     }
     .eq-close-btn:hover { color: var(--text-color); }
+    .eq-header-actions {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+    .eq-advanced-btn {
+      display: none;
+      align-items: center;
+      gap: 8px;
+      min-height: 44px;
+      padding: 8px 12px;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      background: transparent;
+      color: var(--text-muted);
+      font: 11px 'DM Mono', monospace;
+      cursor: pointer;
+    }
+    .eq-advanced-btn[aria-expanded="true"] {
+      color: var(--gold);
+      border-color: var(--gold);
+    }
+    .eq-advanced-btn svg { transition: transform .2s ease; }
+    .eq-mobile-layout .eq-advanced-btn { display: flex; }
+    .eq-mobile-layout .eq-title-detail { display: none; }
+    .eq-advanced-btn[aria-expanded="true"] svg { transform: rotate(180deg); }
+    .eq-mobile-layout .eq-close-btn { min-width: 44px; min-height: 44px; justify-content: center; }
+    .eq-advanced-panel {
+      display: flex;
+      flex-direction: column;
+      gap: 32px;
+      min-width: 0;
+    }
+    .eq-advanced-panel[hidden],
+    .eq-overlay.eq-mobile-layout:not(.eq-advanced) .eq-advanced-setting { display: none; }
+    .eq-overlay.eq-mobile-layout:not(.eq-advanced) .eq-container {
+      max-width: 1000px;
+      grid-template-columns: minmax(0, 1fr);
+      gap: 24px;
+    }
+    .eq-overlay.eq-mobile-layout:not(.eq-advanced) .eq-presets-list {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(min(100%, 150px), 1fr));
+      gap: 12px;
+      position: static;
+      overflow: visible;
+      padding: 0;
+    }
+    .eq-overlay.eq-mobile-layout:not(.eq-advanced) .eq-preset-btn {
+      width: 100%;
+      min-width: 0;
+      min-height: 60px;
+      padding: 14px 16px;
+      border: 1px solid var(--border);
+      background: #0e0e10;
+      overflow-wrap: anywhere;
+    }
+    .eq-overlay.eq-mobile-layout:not(.eq-advanced) .eq-preset-btn.active {
+      border-color: var(--gold);
+      color: var(--gold);
+      background: rgba(201, 168, 76, 0.10);
+    }
+    .eq-overlay.eq-mobile-layout:not(.eq-advanced) .eq-controls-panel { margin-top: 0; }
     .eq-container {
       max-width: 1280px;
       margin: 0 auto;
@@ -5620,6 +5683,7 @@ input[type=range]::-webkit-slider-thumb:hover { background: var(--gold); }
       .eq-workspace {
         gap: 18px;
       }
+      .eq-advanced-panel { gap: 18px; }
       .eq-curve-container {
         height: min(220px, 32vh);
         aspect-ratio: auto;
@@ -7464,10 +7528,16 @@ input[type=range]::-webkit-slider-thumb:hover { background: var(--gold); }
 
 <div id="eq-overlay" class="eq-overlay">
   <div class="eq-header">
-    <h1 class="eq-title">VELVET | EQ Editor</h1>
-    <button class="eq-close-btn" id="eq-close-btn">
-      <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
-    </button>
+    <h1 class="eq-title">VELVET | EQ<span class="eq-title-detail"> Editor</span></h1>
+    <div class="eq-header-actions">
+      <button class="eq-advanced-btn" id="eq-btn-advanced" aria-expanded="false" aria-controls="eq-advanced-panel">
+        Advanced
+        <svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="m3 6 5 5 5-5"></path></svg>
+      </button>
+      <button class="eq-close-btn" id="eq-close-btn" aria-label="Close EQ">
+        <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+      </button>
+    </div>
   </div>
   <div class="eq-container">
     <!-- Left Sidebar: Sound Presets -->
@@ -7479,6 +7549,7 @@ input[type=range]::-webkit-slider-thumb:hover { background: var(--gold); }
 
     <!-- Main Workspace -->
     <div class="eq-workspace">
+      <div id="eq-advanced-panel" class="eq-advanced-panel" hidden>
       <!-- Frequency Response Curve: the real cascaded biquad response -->
       <div class="eq-curve-container" id="eq-curve-container">
         <div class="eq-curve-y-labels" id="eq-curve-y-labels" aria-hidden="true"></div>
@@ -7541,13 +7612,14 @@ input[type=range]::-webkit-slider-thumb:hover { background: var(--gold); }
         </div>
       </section>
 
+      </div>
       <!-- Quick Controls -->
       <div class="eq-controls-panel">
         <div class="eq-status-block">
           <p class="eq-status-kicker">Preset · <span id="eq-apply-state" class="eq-apply-state" data-state="preview" aria-live="polite">Preview (not yet applied)</span></p>
           <p id="eq-current-name" class="eq-current-name">Custom EQ</p>
-          <p id="eq-headroom-note" class="eq-headroom-note">Headroom: 0.0 dB</p>
-          <label class="eq-replaygain" title="Static loudness gain from each file's ReplayGain tags, for all playback in this browser (with or without an EQ preset). Not bit-perfect while a gain is applied; positive gain never pushes the tagged peak above full scale.">ReplayGain
+          <p id="eq-headroom-note" class="eq-headroom-note eq-advanced-setting">Headroom: 0.0 dB</p>
+          <label class="eq-replaygain eq-advanced-setting" title="Static loudness gain from each file's ReplayGain tags, for all playback in this browser (with or without an EQ preset). Not bit-perfect while a gain is applied; positive gain never pushes the tagged peak above full scale.">ReplayGain
             <select id="eq-replaygain" aria-label="ReplayGain mode">
               <option value="off">Off</option>
               <option value="track">Track</option>
@@ -12007,6 +12079,7 @@ window.addEventListener('DOMContentLoaded', async () => {
   maintainStreamTicket();
   log('[VELVET] DOM ready, performing initial navigation...');
   // EQ Controls
+  UI['eq-btn-advanced']?.addEventListener('click', () => window.toggleEQAdvanced());
   UI['eq-btn-reset']?.addEventListener('click', () => window.resetEQDraft());
   UI['eq-btn-save']?.addEventListener('click', () => window.saveEQDraft());
   UI['eq-btn-ab']?.addEventListener('click', () => window.toggleEQAB());

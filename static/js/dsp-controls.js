@@ -877,8 +877,20 @@ window.closeGraphicEQ = function() {
   });
 };
 
+window.toggleEQAdvanced = function(force) {
+  const overlay = $('eq-overlay');
+  const expanded = typeof force === 'boolean' ? force : !overlay.classList.contains('eq-advanced');
+  overlay.classList.toggle('eq-advanced', expanded);
+  $('eq-advanced-panel').hidden = !expanded;
+  $('eq-btn-advanced').setAttribute('aria-expanded', String(expanded));
+};
+
 window.openGraphicEQ = async function() {
   $('eq-overlay').classList.add('active');
+  const mobileLayout = window.matchMedia?.('(max-width: 768px), (orientation: landscape) and (max-height: 500px)')?.matches ?? false;
+  $('eq-overlay').classList.toggle('eq-mobile-layout', mobileLayout);
+  window.toggleEQAdvanced(!mobileLayout);
+  $('eq-overlay').scrollTop = 0;
   if (!state.dspProfiles?.length) {
     await loadDspProfiles();
   }
