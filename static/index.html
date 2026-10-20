@@ -8850,16 +8850,17 @@ function reportBrowserAudio(stage, error = null) {
   const current = new URL(audio.currentSrc || audio.src || location.href, location.href);
   const data = {stage, track:state.currentTrack?.id || '', profile:state.dspProfile || '',
     container:browserDspContainer, upsample:state.upsample, code:audio.error?.code || 0,
+    seekable:requested.searchParams.get('seekable') || '',
     name:error?.name || '', message:error?.message || audio.error?.message || '',
     ready:audio.readyState, network:audio.networkState,
     mediaDsp:current.searchParams.get('dsp') || '', requestedDsp:requested.searchParams.get('dsp') || ''};
   const headers = authState.apiKey ? {'X-API-Key':authState.apiKey} : {};
-  const send = () => fetch('/api/browser-audio/diagnostics?event=' + encodeURIComponent(JSON.stringify(data)),
-    {headers, cache:'no-store'}).catch(() => {});
+  const send = () => Promise.resolve().then(() => fetch('/api/browser-audio/diagnostics?event=' + encodeURIComponent(JSON.stringify(data)),
+    {headers, cache:'no-store'})).catch(() => {});
   if (!requested.pathname.startsWith('/api/stream/')) { send(); return; }
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 2500);
-  fetch(requested.href, {method:'HEAD', headers, signal:controller.signal, cache:'no-store'})
+  Promise.resolve().then(() => fetch(requested.href, {method:'HEAD', headers, signal:controller.signal, cache:'no-store'}))
     .then(response => { data.http=response.status; data.contentType=response.headers.get('Content-Type'); data.length=response.headers.get('Content-Length'); })
     .catch(e => { data.http=e.name; })
     .finally(() => { clearTimeout(timer); send(); });
@@ -8879,6 +8880,10 @@ function browserPlaybackDuration() {
 // on the server instead of asking WebKit to seek an unseekable response.
 function browserStreamNeedsOffset(track) {
   if (state.upsample && state.upsample !== 'none') return true;
+  // The browser WAV compatibility response is a finalized, byte-seekable
+  // file. Let WebKit seek it normally; caching the full track also means
+  // scrubbing does not create a different transcode for every position.
+  if (browserDspContainer === 'wav' || browserUsesSeekableDsp()) return false;
   const profile = dspProfileById(state.dspProfile);
   if (!profile) return false;
   const rate = Number(track?.sample_rate) || 48000;
@@ -9354,14 +9359,20 @@ function getAudioLevel() {
   };
 }
 
+function browserUsesSeekableDsp() {
+  return /iPhone|iPad|iPod/.test(navigator.userAgent || '')
+    || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+}
+
 function streamUrl(trackId, upsample, ticket = '') {
   const u = upsample || state.upsample;
   const dsp = state.dspProfile ? `&dsp=${encodeURIComponent(state.dspProfile)}` : '';
   const container = state.dspProfile && browserDspContainer === 'wav' ? '&container=wav' : '';
+  const seekable = state.dspProfile && browserUsesSeekableDsp() ? '&seekable=1' : '';
   const replaygain = state.replaygain && state.replaygain !== 'off' ? `&replaygain=${state.replaygain}` : '';
   // Never put the long-lived API key in a media URL; use a stream-only ticket.
   const ticketParam = ticket ? `&ticket=${encodeURIComponent(ticket)}` : '';
-  return `/api/stream/${trackId}?upsample=${u}${dsp}${container}${replaygain}${ticketParam}`;
+  return `/api/stream/${trackId}?upsample=${u}${dsp}${container}${seekable}${replaygain}${ticketParam}`;
 }
 
 // <audio> cannot send X-API-Key. When protection is on, stream URLs carry a
@@ -10084,6 +10095,7 @@ audio.addEventListener('timeupdate', () => {
 
 audio.addEventListener('playing', () => {
   if (!isBrowserZone()) return;
+  if (state.dspProfile) reportBrowserAudio('playing');
   state.playing = true;
   clearDspStartupHealthCheck();
   resetDspErrorStreak();

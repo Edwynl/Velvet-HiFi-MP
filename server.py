@@ -8,6 +8,7 @@ import asyncio
 import collections
 import concurrent.futures
 import gzip
+import hashlib
 from functools import lru_cache
 import io
 import ipaddress
@@ -2637,6 +2638,91 @@ async def _stream_with_dsp(file_path: str, dsp_filter: str, timeout_seconds: int
     )
 
 
+_browser_dsp_jobs: dict[str, asyncio.Task] = {}
+BROWSER_DSP_CACHE_MAX_BYTES = 512 * 1024 * 1024
+BROWSER_DSP_CACHE_MAX_FILES = 4
+
+
+def _prune_browser_dsp_cache(folder: Path, current: Path) -> None:
+    files = sorted((p for p in folder.iterdir() if p.suffix in {".flac", ".wav"}),
+                   key=lambda p: p.stat().st_mtime, reverse=True)
+    total = sum(p.stat().st_size for p in files)
+    count = len(files)
+    for path in reversed(files):
+        if total <= BROWSER_DSP_CACHE_MAX_BYTES and count <= BROWSER_DSP_CACHE_MAX_FILES:
+            break
+        # Recent requests may still be opening a file for a Range response.
+        # Open files on Windows remain protected by their file handles too.
+        if path == current or ".part." in path.name or time.time() - path.stat().st_mtime < 60:
+            continue
+        try:
+            size = path.stat().st_size
+            path.unlink()
+            total -= size
+            count -= 1
+        except OSError:
+            pass
+
+
+async def _prepare_browser_dsp_file(file_path: str, dsp_filter: str, timeout_seconds: int,
+                                    start_seconds: float = 0, container: str = "wav") -> Path:
+    """A finalized lossless file with sample count, length, and HTTP Range.
+
+    WebKit rejects the unknown lengths in piped FLAC/WAV on some iPhones.
+    Finalizing only the browser compatibility path keeps the renderer stream
+    unchanged. Range probes reuse the same file and concurrent requests share
+    one conversion. Source files and the music library are never rewritten.
+    """
+    source = Path(filesystem_path(file_path))
+    stat = source.stat()
+    key = hashlib.sha256(json.dumps([str(source.resolve()), stat.st_mtime_ns, stat.st_size,
+                                    dsp_filter, start_seconds, container, "seekable-v1"]).encode()).hexdigest()
+    folder = CACHE_DIR / "browser-dsp"
+    folder.mkdir(parents=True, exist_ok=True)
+    target = folder / f"{key}.{container}"
+    if target.exists():
+        target.touch()
+        return target
+
+    async def prepare():
+        temporary = folder / f"{key}.{uuid.uuid4().hex}.part.{container}"
+        lease = await _acquire_transcode_slot()
+        guard = TranscodeGuard(lease.release)
+        try:
+            encoding = (["-c:a", "flac", "-sample_fmt", "s32", "-compression_level", "0",
+                         "-frame_size", str(FLAC_TRANSCODE_BLOCK_SIZE)] if container == "flac"
+                        else ["-c:a", "pcm_s24le"])
+            cmd = ["ffmpeg", "-nostdin", "-y", *_ffmpeg_input_args(file_path, start_seconds),
+                   "-map_metadata", "-1", "-af", dsp_filter, *encoding,
+                   "-f", container, str(temporary), "-loglevel", "error"]
+            process = await guard.spawn(cmd)
+            _, stderr = await asyncio.wait_for(process.communicate(), timeout_seconds)
+            if process.returncode or not temporary.exists() or temporary.stat().st_size < 44:
+                log.warning("Browser DSP conversion failed: %s", (stderr or b"").decode(errors="replace")[-500:])
+                raise HTTPException(502, "Browser DSP audio conversion failed")
+            temporary.replace(target)
+            try:
+                _prune_browser_dsp_cache(folder, target)
+            except OSError:
+                log.warning("Browser DSP cache cleanup skipped; prepared audio is available")
+            return target
+        finally:
+            await guard.finish()
+            temporary.unlink(missing_ok=True)
+
+    job = _browser_dsp_jobs.get(key)
+    if job is None:
+        job = asyncio.create_task(prepare())
+        _browser_dsp_jobs[key] = job
+        def finished(task):
+            if _browser_dsp_jobs.get(key) is task:
+                _browser_dsp_jobs.pop(key, None)
+            if not task.cancelled():
+                task.exception()  # retrieve failures even when the requester disconnected
+        job.add_done_callback(finished)
+    return await asyncio.shield(job)
+
+
 def _select_pcm_upsample_rate(source_rate: int | None, multiplier: str) -> str | None:
     """Preserve the source's 44.1k/48k sample-rate family when upsampling."""
     factors = {"none": 1, "2x": 2, "4x": 4, "8x": 8, "16x": 16}
@@ -2679,6 +2765,7 @@ async def stream_track(
     dop: str = Query("none", description="none|dsd64|dsd128|dsd256 - DSD over PCM output"),
     dsp: int = Query(None, description="DSP profile ID to apply"),
     container: Literal["flac", "wav"] = Query("flac", description="Lossless DSP stream container; WAV is a browser compatibility retry"),
+    seekable: bool = Query(False, description="Finalize browser DSP audio for metadata and byte-range seeking"),
     start: float = Query(0, ge=0, le=TRANSCODE_MAX_SECONDS,
                          description="Start offset in seconds (transcoded streams only)"),
     replaygain: Literal["off", "track", "album"] = Query(
@@ -2767,6 +2854,12 @@ async def stream_track(
         raise HTTPException(422, "Unsupported upsampling quality")
     if start and not (target_rate or dsp_filter):
         raise HTTPException(422, "start applies only to transcoded (DSP or upsampled) streams")
+    if (container == "wav" or seekable) and dsp_filter and not target_rate:
+        limit = _transcode_time_limit_seconds(track["duration"], timeout_minutes)
+        output = await _prepare_browser_dsp_file(fp, dsp_filter, limit, start_seconds=start, container=container)
+        response = _stream_file_direct(str(output), request, container.upper())
+        response.headers["X-Output-Mode"] = "DSP"
+        return response
     if request.method == "HEAD" and (target_rate or dsp_filter):
         # Describe the transcoded stream without starting FFmpeg.
         return Response(media_type="audio/wav" if target_rate or container == "wav" else "audio/flac",
@@ -2778,8 +2871,6 @@ async def stream_track(
     # Handle DSP-only (no upsampling)
     if dsp_filter:
         limit = _transcode_time_limit_seconds(track["duration"], timeout_minutes)
-        if container == "wav":
-            return await _stream_with_dsp(fp, dsp_filter, limit, start_seconds=start, container="wav")
         return await _stream_with_dsp(fp, dsp_filter, limit, start_seconds=start)
 
     return _stream_file_direct(fp, request, track["format"] or "")
@@ -3891,7 +3982,7 @@ def browser_audio_diagnostics(request: Request, event: str = Query("", max_lengt
         if not isinstance(data, dict):
             raise HTTPException(422, "Invalid diagnostic event")
         allowed = {"stage", "track", "profile", "container", "upsample", "code", "name", "message",
-                   "ready", "network", "http", "contentType", "length", "mediaDsp", "requestedDsp"}
+                   "ready", "network", "http", "contentType", "length", "mediaDsp", "requestedDsp", "seekable"}
         record = {key: str(value).replace("\r", " ").replace("\n", " ")[:240]
                   for key, value in data.items() if key in allowed}
         record["at"] = time.time()

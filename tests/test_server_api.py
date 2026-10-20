@@ -14,7 +14,7 @@ import types
 import unittest
 from contextlib import closing
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import patch, AsyncMock
 
 from fastapi.testclient import TestClient
 
@@ -1777,11 +1777,30 @@ class ServerApiTests(unittest.TestCase):
             transcoded = self.client.head(f"/api/stream/1?dsp={profile_id}")
         self.assertEqual(transcoded.status_code, 200)
         self.assertEqual(transcoded.headers["content-type"], "audio/flac")
-        with patch.object(server.asyncio, "create_subprocess_exec",
-                          side_effect=AssertionError("HEAD must not start FFmpeg")):
+        compatible_path = self.root / "compatible.wav"
+        compatible_path.write_bytes(b"RIFF" + b"\x00" * 4 + b"WAVE" + bytes(range(100)))
+        with patch.object(server, "_prepare_browser_dsp_file", AsyncMock(return_value=compatible_path)):
             compatible = self.client.head(f"/api/stream/1?dsp={profile_id}&container=wav")
+            probe = self.client.get(f"/api/stream/1?dsp={profile_id}&container=wav", headers={"Range":"bytes=0-1"})
+            middle = self.client.get(f"/api/stream/1?dsp={profile_id}&container=wav", headers={"Range":"bytes=12-21"})
         self.assertEqual(compatible.status_code, 200)
         self.assertEqual(compatible.headers["content-type"], "audio/wav")
+        self.assertEqual(int(compatible.headers["content-length"]), compatible_path.stat().st_size)
+        self.assertEqual(compatible.headers["accept-ranges"], "bytes")
+        self.assertEqual(probe.status_code, 206)
+        self.assertEqual(probe.content, b"RI")
+        self.assertEqual(middle.status_code, 206)
+        self.assertEqual(middle.content, bytes(range(10)))
+        flac_path = self.root / "compatible.flac"
+        flac_path.write_bytes(b"fLaC" + bytes(range(100)))
+        with patch.object(server, "_prepare_browser_dsp_file", AsyncMock(return_value=flac_path)) as prepare:
+            head = self.client.head(f"/api/stream/1?dsp={profile_id}&seekable=1")
+            probe = self.client.get(f"/api/stream/1?dsp={profile_id}&seekable=1", headers={"Range":"bytes=0-1"})
+        self.assertEqual(head.headers["content-type"], "audio/flac")
+        self.assertEqual(int(head.headers["content-length"]), flac_path.stat().st_size)
+        self.assertEqual(probe.status_code, 206)
+        self.assertEqual(probe.content, b"fL")
+        self.assertEqual(prepare.call_args.kwargs["container"], "flac")
 
     def test_renderer_urls_use_the_configured_server_port(self):
         self.assertEqual(upnp_server.MAIN_PORT, server.settings.port)

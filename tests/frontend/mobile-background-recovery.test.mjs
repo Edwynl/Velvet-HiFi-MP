@@ -555,7 +555,24 @@ async function testDspCodecRetryKeepsSelection() {
   } finally { dom.window.close(); }
 }
 
+async function testIphoneEqUsesSeekableFlac() {
+  const harness = createHarness();
+  const dom = await harness.createDom();
+  try {
+    const audio = primeAudio(dom, {paused:false,currentTime:31,readyState:4});
+    Object.defineProperty(dom.window.navigator, 'userAgent', {configurable:true,value:'Mozilla/5.0 (iPhone; CPU iPhone OS 18_7 like Mac OS X) AppleWebKit/605.1.15'});
+    dom.window.eval("state.currentTrack={id:7,title:'iPhone EQ',duration:240,sample_rate:48000}; state.dspProfiles=[{id:2,name:'Black Background',preamp_db:-3}]; state.dspProfile='2';");
+    await dom.window.startBrowserPlayback({id:7,title:'iPhone EQ',sample_rate:48000}, {resumeTime:31});
+    assert.match(audio.src, /dsp=2&seekable=1/);
+    assert.doesNotMatch(audio.src, /container=wav|start=/, 'FLAC stays the preferred format and uses ordinary byte seeking');
+    assert.equal(audio.currentTime, 31);
+    assert.equal(dom.window.eval('browserStreamOffset'), 0);
+    assert.equal(dom.window.eval('state.dspProfile'), '2');
+  } finally { dom.window.close(); }
+}
+
 try {
+  await testIphoneEqUsesSeekableFlac();
   await testDspCodecRetryKeepsSelection();
   await testRecoveryAfterWaiting();
   await testManualPauseDoesNotAutoRecover();

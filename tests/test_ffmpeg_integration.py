@@ -21,6 +21,52 @@ from dsp_engine import build_dsp_filter_chain, read_replaygain_tags, resolve_rep
 
 @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "FFmpeg tools required")
 class FFmpegIntegrationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_browser_flac_has_final_sample_count_and_stays_lossless(self):
+        with tempfile.TemporaryDirectory() as folder:
+            source = Path(folder) / "source.flac"
+            subprocess.run(["ffmpeg", "-v", "error", "-f", "lavfi", "-i",
+                            "sine=frequency=1000:sample_rate=48000:duration=0.2",
+                            "-ac", "2", "-c:a", "flac", str(source)], check=True, capture_output=True)
+            with patch.object(server, "CACHE_DIR", Path(folder) / "cache"):
+                output = await server._prepare_browser_dsp_file(str(source), "volume=-3dB", 10, container="flac")
+                header = output.read_bytes()[:42]
+                self.assertEqual(header[:4], b"fLaC")
+                self.assertEqual(int.from_bytes(header[18:26], "big") & ((1 << 36) - 1), 9600,
+                                 "the FLAC stream-info must contain its actual sample count")
+                probe = subprocess.run(["ffprobe", "-v", "error", "-show_streams", "-of", "json", str(output)],
+                                       check=True, capture_output=True)
+                stream = json.loads(probe.stdout)["streams"][0]
+                self.assertEqual(stream["codec_name"], "flac")
+                self.assertEqual(int(stream["bits_per_raw_sample"]), 24)
+                self.assertEqual(int(stream["sample_rate"]), 48000)
+                self.assertAlmostEqual(float(stream["duration"]), 0.2, delta=0.01)
+
+    async def test_browser_wav_is_finalized_and_shared_by_range_probes(self):
+        with tempfile.TemporaryDirectory() as folder:
+            source = Path(folder) / "source.flac"
+            subprocess.run(["ffmpeg", "-v", "error", "-f", "lavfi", "-i",
+                            "sine=frequency=1000:sample_rate=48000:duration=0.2",
+                            "-ac", "2", "-c:a", "flac", str(source)], check=True, capture_output=True)
+            with patch.object(server, "CACHE_DIR", Path(folder) / "cache"), \
+                 patch.object(server, "_acquire_transcode_slot", wraps=server._acquire_transcode_slot) as slots:
+                first, second = await asyncio.gather(
+                    server._prepare_browser_dsp_file(str(source), "volume=-3dB", 10),
+                    server._prepare_browser_dsp_file(str(source), "volume=-3dB", 10))
+                self.assertEqual(first, second)
+                self.assertEqual(slots.await_count, 1)
+                data = first.read_bytes()
+                self.assertEqual(data[:4], b"RIFF")
+                self.assertEqual(int.from_bytes(data[4:8], "little"), len(data) - 8,
+                                 "WebKit must see a finite, correct RIFF size")
+                probe = subprocess.run(["ffprobe", "-v", "error", "-show_streams", "-of", "json", str(first)],
+                                       check=True, capture_output=True)
+                stream = json.loads(probe.stdout)["streams"][0]
+                self.assertEqual(stream["codec_name"], "pcm_s24le")
+                self.assertEqual(int(stream["sample_rate"]), 48000)
+                self.assertAlmostEqual(float(stream["duration"]), 0.2, delta=0.01)
+                self.assertEqual(await server._prepare_browser_dsp_file(str(source), "volume=-3dB", 10), first)
+                self.assertEqual(slots.await_count, 1, "metadata and Range probes reuse the finalized file")
+
     async def test_actual_wav_flac_and_mp3_transcodes(self):
         with tempfile.TemporaryDirectory() as folder:
             for rate, depth, extension in [(44100, 16, "flac"), (48000, 24, "flac"),
