@@ -1,0 +1,7 @@
+{
+  "_note": "Portraits that were picked by eye from the artwork set on each artist's Apple Music page, because the page's og:image is either a publicity still or carries the Apple Music banner. Pass this to scripts/backfill_artist_images.py with --portrait-map so a later run does not put the old picture back. Each path is the picture already stored in the library's image folder, so no download is needed. The mzl.* set cannot be taken automatically: on 蔡琴's page it opens on a photograph of a man, and the set the page returns changes between requests.",
+  "1928": "C:\\Antigravity\\Claude Code\\VELVET_NEXT\\velvet_data\\artist_images\\1928.jpg",
+  "1805": "C:\\Antigravity\\Claude Code\\VELVET_NEXT\\velvet_data\\artist_images\\1805.jpg",
+  "876": "C:\\Antigravity\\Claude Code\\VELVET_NEXT\\velvet_data\\artist_images\\876.jpg",
+  "602": "C:\\Antigravity\\Claude Code\\VELVET_NEXT\\velvet_data\\artist_images\\602.jpg"
+}

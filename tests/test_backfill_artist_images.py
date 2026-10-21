@@ -24,6 +24,10 @@ PLACEHOLDER = "https://is1-ssl.mzstatic.com/image/thumb/Music20/v4/x/apple-music
 
 IDENTITY_SCRIPT = ('https://is1-ssl.mzstatic.com/image/thumb/AMCArtistImages221/v4/ab/cd/'
                    'ami_identity-2026-10-15T08-10-15.855Z_cropped.png/1200x630cw.png')
+# The page's own picture of the act, the mzl.* series, served with a square
+# crop variant.
+PORTRAIT_SCRIPT = ('https://is1-ssl.mzstatic.com/image/thumb/Features115/v4/87/37/9c/'
+                   '87379cfc-1038-1f74-fc8f-1dfd4997a952/mzl.lvyhvtcz.jpg/243x243cc.webp')
 
 PAGE_TEMPLATE = ('<html><head>\n'
                  '<meta property="og:image" content="OG_URL">\n'
@@ -97,6 +101,38 @@ class AppleArtistImageTests(unittest.TestCase):
     def test_identity_picture_is_recognised(self):
         self.assertTrue(backfill._IDENTITY_IMAGE.search(IDENTITY))
         self.assertFalse(backfill._IDENTITY_IMAGE.search(GENERIC))
+
+    def test_artist_portrait_is_recognised(self):
+        """The mzl.* set holds good portraits, but it also holds other
+        people's, so it is found for a person to choose from rather than
+        taken on its own."""
+        self.assertTrue(backfill._ARTIST_PORTRAIT.search(PORTRAIT_SCRIPT))
+        self.assertFalse(backfill._ARTIST_PORTRAIT.search(GENERIC))
+        self.assertFalse(backfill._ARTIST_PORTRAIT.search(IDENTITY))
+
+    def test_portrait_set_is_not_taken_automatically(self):
+        """Only the identity picture is used on its own; the mzl.* set is
+        left alone, because on some pages it opens on somebody else."""
+        body = page(GENERIC, identity=PORTRAIT_SCRIPT)
+        import httpx
+
+        def handler(request):
+            if request.url.host == "itunes.apple.com":
+                return httpx.Response(200, json={"results": [{
+                    "artistId": ARTIST_ID,
+                    "artistName": "測試歌手",
+                    "artistLinkUrl": "https://music.apple.com/us/artist/test/%d" % ARTIST_ID,
+                }]})
+            return httpx.Response(200, text=body)
+
+        async def run():
+            async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+                return await backfill.Apple(client).artist_image("測試歌手", min_level="exact")
+
+        found = asyncio.run(run())
+        self.assertIsNotNone(found)
+        self.assertNotEqual(found["source"], "apple-music-artist-portrait")
+        self.assertEqual(found["source"], "apple-og-image-generic")
 
 
 if __name__ == "__main__":

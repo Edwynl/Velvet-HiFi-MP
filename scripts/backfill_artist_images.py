@@ -302,6 +302,12 @@ _OG_IMAGE = re.compile(r'<meta property="og:image" content="([^"]+)"')
 _IDENTITY_IMAGE = re.compile(
     r'(https://is\d+-ssl\.mzstatic\.com/image/thumb/AMCArtistImages[^"\'\\ ]+?)'
     r'/\d+x\d+[a-z]*(?:-60)?\.(?:jpg|png|webp)')
+# The artist's picture in the page's own artwork set (the mzl.* series). It
+# carries no banner, unlike the page's og:image, which is a wide editorial
+# shot with the Apple Music mark on it and often reads as a publicity still.
+_ARTIST_PORTRAIT = re.compile(
+    r'(https://is\d+-ssl\.mzstatic\.com/image/thumb/Features115[^"\'\\ ]*?/mzl\.[a-z0-9]+\.[a-z0-9]+)'
+    r'(?:\.png)?/\d+x\d+[a-z]*(?:-60)?\.(?:jpg|png|webp)')
 # Apple's stand-in artwork: the same cover for every artist that has no
 # picture of its own.
 _GENERIC_APPLE_IMAGE = re.compile(r"(?:/cover\.jpg|/apple-music\.png|/features/)", re.IGNORECASE)
@@ -442,6 +448,13 @@ class Apple:
                 "match_level": match_level,
                 "source": "apple-music-artist-image",
             }
+        # The page also carries an artwork set (the mzl.* series) with plain
+        # portraits of the act. It is the better picture, but the set also
+        # holds the publicity still that the og:image points at, and the
+        # pages of artists with a thin biography put other people's portraits
+        # in it too: 蔡琴's page opens on a photograph of a man. A wrong face
+        # is worse than a dated one, so this set is left for a person to
+        # pick from rather than taken automatically.
         found = _OG_IMAGE.search(page.text)
         if not found:
             return None
@@ -863,6 +876,11 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     ap.add_argument("--apple-name-map", default="",
                     help='JSON of {"<artist_id>": "<Apple artist name>"} forcing a '
                          'specific match for hand-reviewed name variants')
+    ap.add_argument("--portrait-map", default="",
+                    help='JSON of {"<artist_id>": "<image url>"} using a picture that '
+                         'was picked by eye for that artist. Use it for the acts whose '
+                         'Apple page offers a better portrait than the og:image, so a '
+                         'later run does not put the old picture back')
     ap.add_argument("--sources", default="apple,wiki",
                     help="comma separated: apple,wiki (default: apple,wiki)")
     ap.add_argument("--min-confidence", choices=["low", "medium", "high"], default="medium")
@@ -896,6 +914,11 @@ async def run(args: argparse.Namespace) -> int:
     if args.apple_name_map:
         raw = json.loads(Path(args.apple_name_map).read_text(encoding="utf-8"))
         apple_overrides = {int(k): v for k, v in raw.items()}
+
+    portrait_overrides: dict[int, str] = {}
+    if args.portrait_map:
+        raw = json.loads(Path(args.portrait_map).read_text(encoding="utf-8"))
+        portrait_overrides = {int(k): v for k, v in raw.items() if str(k).isdigit()}
 
     artists = load_artists(args.only_id or None,
                            args.include_filled or args.overwrite, args.order_by,
@@ -947,9 +970,17 @@ async def run(args: argparse.Namespace) -> int:
                 progress_fh.flush()
 
         async def handle(artist: dict) -> dict:
-            res = await resolve(apple, wiki, artist, sources,
-                                use_commons=not args.no_commons,
-                                exact_name=apple_overrides.get(artist["id"]))
+            picked = portrait_overrides.get(artist["id"])
+            if picked:
+                # A picture that was chosen by eye for this artist.
+                res = {"status": "ok", "image_url": picked,
+                       "source": "hand-picked-portrait", "confidence": "high",
+                       "reason": "picture picked by eye for this artist",
+                       "matched_label": artist["name"]}
+            else:
+                res = await resolve(apple, wiki, artist, sources,
+                                    use_commons=not args.no_commons,
+                                    exact_name=apple_overrides.get(artist["id"]))
             row = {
                 "id": artist["id"], "name": artist["name"],
                 "status": res["status"], "source": res.get("source"),
@@ -975,7 +1006,12 @@ async def run(args: argparse.Namespace) -> int:
 
             async with page_sem:
                 try:
-                    payload = await fetch_image(http, wiki, res["image_url"])
+                    if res["image_url"].startswith(("http://", "https://")):
+                        payload = await fetch_image(http, wiki, res["image_url"])
+                    else:
+                        # A picture that was picked by eye and already sits in
+                        # the library's image folder.
+                        payload = Path(res["image_url"]).read_bytes()
                 except Exception as exc:
                     row["status"] = "download-failed"
                     row["reason"] = "download failed: %s" % type(exc).__name__
