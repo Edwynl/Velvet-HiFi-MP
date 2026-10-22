@@ -22,10 +22,11 @@ import xml.etree.ElementTree as ET
 import urllib.request
 import re
 from pathlib import Path
-from http.server import HTTPServer, BaseHTTPRequestHandler
+from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs, quote
 import logging
 import ipaddress
+from contextlib import closing
 
 import env_loader  # noqa: F401 - load .env for direct module use
 import security
@@ -596,22 +597,22 @@ def _browse_metadata(oid):
         xml = container_xml("0", "-1", DEVICE_NAME, 3)
         return _didl_wrap(xml), 1, 1
     if oid == "artists":
-        n = len(db_query("SELECT id FROM artists"))
+        n = db_query("SELECT COUNT(*) as c FROM artists")[0]["c"]
         xml = container_xml("artists", "0", "Artists", n)
         return _didl_wrap(xml), 1, 1
     if oid == "albums":
-        n = len(db_query("SELECT id FROM albums"))
+        n = db_query("SELECT COUNT(*) as c FROM albums")[0]["c"]
         xml = container_xml("albums", "0", "Albums", n)
         return _didl_wrap(xml), 1, 1
     if oid == "tracks":
-        n = len(db_query("SELECT id FROM tracks"))
+        n = db_query("SELECT COUNT(*) as c FROM tracks")[0]["c"]
         xml = container_xml("tracks", "0", "All Tracks", n)
         return _didl_wrap(xml), 1, 1
     if oid.startswith("ar_"):
         aid = oid[3:]
         rows = db_query("SELECT name FROM artists WHERE id=?", (aid,))
         name = rows[0]["name"] if rows else "Artist"
-        n = len(db_query("SELECT id FROM albums WHERE artist_id=?", (aid,)))
+        n = db_query("SELECT COUNT(*) as c FROM albums WHERE artist_id=?", (aid,))[0]["c"]
         xml = container_xml(oid, "artists", name, n)
         return _didl_wrap(xml), 1, 1
     if oid.startswith("al_"):
@@ -621,7 +622,7 @@ def _browse_metadata(oid):
             "JOIN artists ar ON al.artist_id=ar.id WHERE al.id=?", (alid,)
         )
         name = f"{rows[0]['artist_name']} – {rows[0]['title']}" if rows else "Album"
-        n = len(db_query("SELECT id FROM tracks WHERE album_id=?", (alid,)))
+        n = db_query("SELECT COUNT(*) as c FROM tracks WHERE album_id=?", (alid,))[0]["c"]
         xml = container_xml(oid, f"ar_x", name, n)
         return _didl_wrap(xml), 1, 1
     if oid.startswith("t"):
@@ -637,88 +638,135 @@ def _browse_metadata(oid):
     return _didl_wrap(""), 0, 0
 
 def _browse_children(oid, start, count):
-    limit  = count if count > 0 else 9999
+    # Zero means ALL remaining children. Fetch in batches and enforce the
+    # actual serialized response budget, never an arbitrary item-count cap.
+    if oid == "0":
+        total = 3
+    elif oid in {"artists", "albums", "tracks"}:
+        total = db_query(f"SELECT COUNT(*) as c FROM {oid}")[0]["c"]
+    elif oid.startswith("ar_"):
+        total = db_query("SELECT COUNT(*) as c FROM albums WHERE artist_id=?", (oid[3:],))[0]["c"]
+    elif oid.startswith("al_"):
+        total = db_query("SELECT COUNT(*) as c FROM tracks WHERE album_id=?", (oid[3:],))[0]["c"]
+    else:
+        return _didl_wrap(""), 0, 0
+    remaining = max(total - start, 0)
+    limit = min(count, remaining) if count else remaining
     offset = start
 
     if oid == "0":
         containers = [
             container_xml("artists", "0", "Artists",
-                          len(db_query("SELECT id FROM artists"))),
+                          db_query("SELECT COUNT(*) as c FROM artists")[0]["c"]),
             container_xml("albums",  "0", "Albums",
-                          len(db_query("SELECT id FROM albums"))),
+                          db_query("SELECT COUNT(*) as c FROM albums")[0]["c"]),
             container_xml("tracks",  "0", "All Tracks",
-                          len(db_query("SELECT id FROM tracks"))),
+                          db_query("SELECT COUNT(*) as c FROM tracks")[0]["c"]),
         ]
         sliced = containers[offset:offset + limit]
-        return _didl_wrap("".join(sliced)), len(sliced), 3
+        return _bounded_browse_didl(sliced, total)
 
     if oid == "artists":
-        rows = db_query(
+        sql = (
             "SELECT ar.id, ar.name, COUNT(al.id) as album_count "
             "FROM artists ar LEFT JOIN albums al ON al.artist_id=ar.id "
-            "GROUP BY ar.id ORDER BY ar.sort_name "
+            "GROUP BY ar.id ORDER BY ar.sort_name, ar.id "
             f"LIMIT {limit} OFFSET {offset}"
         )
-        total = db_query("SELECT COUNT(*) as c FROM artists")[0]["c"]
-        xmls  = [container_xml(f"ar_{r['id']}", "artists", r["name"],
-                               r["album_count"]) for r in rows]
-        return _didl_wrap("".join(xmls)), len(xmls), total
+        render = lambda r: container_xml(f"ar_{r['id']}", "artists", r["name"], r["album_count"])
+        return _browse_rows(sql, (), render, total)
 
     if oid == "albums":
-        rows = db_query(
+        sql = (
             "SELECT al.id, al.title, ar.name as artist_name, COUNT(t.id) as tc "
             "FROM albums al JOIN artists ar ON al.artist_id=ar.id "
             "LEFT JOIN tracks t ON t.album_id=al.id "
-            "GROUP BY al.id ORDER BY ar.sort_name, al.year "
+            "GROUP BY al.id ORDER BY ar.sort_name, al.year, al.id "
             f"LIMIT {limit} OFFSET {offset}"
         )
-        total = db_query("SELECT COUNT(*) as c FROM albums")[0]["c"]
-        xmls  = [container_xml(f"al_{r['id']}", "albums",
-                               f"{r['artist_name']} – {r['title']}", r["tc"]) for r in rows]
-        return _didl_wrap("".join(xmls)), len(xmls), total
+        render = lambda r: container_xml(f"al_{r['id']}", "albums", f"{r['artist_name']} – {r['title']}", r["tc"])
+        return _browse_rows(sql, (), render, total)
 
     if oid == "tracks":
-        rows = db_query(
+        sql = (
             "SELECT t.*, ar.name as artist_name, al.title as album_title "
             "FROM tracks t JOIN artists ar ON t.artist_id=ar.id "
-            "JOIN albums al ON t.album_id=al.id ORDER BY ar.sort_name, al.title, t.track_number "
+            "JOIN albums al ON t.album_id=al.id ORDER BY ar.sort_name, al.title, t.track_number, t.id "
             f"LIMIT {limit} OFFSET {offset}"
         )
-        total = db_query("SELECT COUNT(*) as c FROM tracks")[0]["c"]
         extra = _browse_ticket_extra_seconds()
-        xmls  = [track_xml(r, "tracks", extra) for r in rows]
-        return _didl_wrap("".join(xmls)), len(xmls), total
+        return _browse_rows(sql, (), lambda r: track_xml(r, "tracks", extra), total)
 
     if oid.startswith("ar_"):
         aid = oid[3:]
-        rows = db_query(
+        sql = (
             "SELECT al.id, al.title, COUNT(t.id) as tc "
             "FROM albums al LEFT JOIN tracks t ON t.album_id=al.id "
-            "WHERE al.artist_id=? GROUP BY al.id ORDER BY al.year "
-            f"LIMIT {limit} OFFSET {offset}", (aid,)
+            "WHERE al.artist_id=? GROUP BY al.id ORDER BY al.year, al.id "
+            f"LIMIT {limit} OFFSET {offset}"
         )
-        total = db_query("SELECT COUNT(*) as c FROM albums WHERE artist_id=?", (aid,))[0]["c"]
         artist_rows = db_query("SELECT name FROM artists WHERE id=?", (aid,))
         aname = artist_rows[0]["name"] if artist_rows else ""
-        xmls  = [container_xml(f"al_{r['id']}", oid,
-                               f"{aname} – {r['title']}", r["tc"]) for r in rows]
-        return _didl_wrap("".join(xmls)), len(xmls), total
+        render = lambda r: container_xml(f"al_{r['id']}", oid, f"{aname} – {r['title']}", r["tc"])
+        return _browse_rows(sql, (aid,), render, total)
 
     if oid.startswith("al_"):
         alid = oid[3:]
-        rows = db_query(
+        sql = (
             "SELECT t.*, ar.name as artist_name, al.title as album_title "
             "FROM tracks t JOIN artists ar ON t.artist_id=ar.id "
             "JOIN albums al ON t.album_id=al.id "
-            "WHERE t.album_id=? ORDER BY t.disc_number, t.track_number "
-            f"LIMIT {limit} OFFSET {offset}", (alid,)
+            "WHERE t.album_id=? ORDER BY t.disc_number, t.track_number, t.id "
+            f"LIMIT {limit} OFFSET {offset}"
         )
-        total = db_query("SELECT COUNT(*) as c FROM tracks WHERE album_id=?", (alid,))[0]["c"]
         extra = _browse_ticket_extra_seconds()
-        xmls  = [track_xml(r, oid, extra) for r in rows]
-        return _didl_wrap("".join(xmls)), len(xmls), total
+        return _browse_rows(sql, (alid,), lambda r: track_xml(r, oid, extra), total)
 
     return _didl_wrap(""), 0, 0
+
+
+def _iter_browse_rows(sql, params):
+    with closing(sqlite3.connect(str(DB_PATH))) as conn:
+        conn.row_factory = sqlite3.Row
+        cursor = conn.execute(sql, params)
+        while rows := cursor.fetchmany(UPNP_BROWSE_BATCH_SIZE):
+            for row in rows:
+                yield dict(row)
+
+
+def _browse_rows(sql, params, render, total):
+    # Closing explicitly also releases the DB cursor if a byte-budget check
+    # fails midway through a batch, rather than relying on generator GC.
+    with closing(_iter_browse_rows(sql, params)) as rows:
+        return _bounded_browse_didl((render(row) for row in rows), total)
+
+
+def _soap_escape_result(result):
+    return result.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def _browse_response_xml(result, returned, total):
+    return _soap_response(
+        "service:ContentDirectory:1", "Browse",
+        f"<Result>{_soap_escape_result(result)}</Result>"
+        f"<NumberReturned>{returned}</NumberReturned>"
+        f"<TotalMatches>{total}</TotalMatches><UpdateID>1</UpdateID>")
+
+
+def _bounded_browse_didl(items, total):
+    parts = []
+    item_bytes = 0
+    for item in items:
+        item_bytes += len(_soap_escape_result(item).encode("utf-8"))
+        # Include UTF-8, double XML escaping, DIDL/SOAP wrappers and the
+        # changing NumberReturned digit count in the actual wire budget.
+        overhead = len(_browse_response_xml(_didl_wrap(""), len(parts) + 1, total).encode("utf-8"))
+        if item_bytes + overhead > UPNP_MAX_BROWSE_RESPONSE_BYTES:
+            raise BrowseLimitError("SOAP response too large")
+        parts.append(item)
+    if not parts and len(_browse_response_xml(_didl_wrap(""), 0, total).encode("utf-8")) > UPNP_MAX_BROWSE_RESPONSE_BYTES:
+        raise BrowseLimitError("SOAP response too large")
+    return _didl_wrap("".join(parts)), len(parts), total
 
 # ─── UPnP HTTP Handler ────────────────────────────────────────────────────────
 
@@ -888,7 +936,7 @@ def _parse_soap_arg(body, name):
     return m.group(1).strip() if m else ""
 
 def _soap_action_header(headers):
-    sa = headers.get("SOAPACTION", "").strip('"')
+    sa = next((value for name, value in headers.items() if name.upper() == "SOAPACTION"), "").strip('"')
     if "#" in sa:
         return sa.split("#")[-1]
     return ""
@@ -916,19 +964,96 @@ def content_directory_allowed(client_ip, headers):
     return ip.is_loopback
 
 
+UPNP_CONNECTION_TIMEOUT = 5.0
+UPNP_REQUEST_TIMEOUT = 15.0
+UPNP_MAX_CONNECTIONS = 16
+UPNP_MAX_SOAP_BYTES = 64 * 1024
+UPNP_BROWSE_BATCH_SIZE = 32
+UPNP_MAX_BROWSE_RESPONSE_BYTES = 8 * 1024 * 1024
+UPNP_MAX_STARTING_INDEX = 2**32 - 1
+
+
+class BrowseLimitError(Exception):
+    pass
+
+
+class BoundedUPnPServer(ThreadingHTTPServer):
+    """Bound workers and connection lifetime, including slow-drip headers/body.
+
+    The existing accept loop also expires sockets; no timer/monitor thread is
+    created for each request. Slots stay held until the handler actually exits.
+    HTTP/1.0 closes each connection after one request.
+    """
+    def __init__(self, *args, **kwargs):
+        self._slots = threading.BoundedSemaphore(UPNP_MAX_CONNECTIONS)
+        self._connections = {}
+        self._connections_lock = threading.Lock()
+        super().__init__(*args, **kwargs)
+
+    def process_request(self, request, client_address):
+        if not self._slots.acquire(blocking=False):
+            # Deterministic refusal without blocking the accept loop on a send.
+            self.shutdown_request(request)
+            return
+        with self._connections_lock:
+            self._connections[request] = time.monotonic() + UPNP_REQUEST_TIMEOUT
+        try:
+            super().process_request(request, client_address)
+        except BaseException:
+            self._release_connection(request)
+            raise
+
+    def _release_connection(self, request):
+        with self._connections_lock:
+            self._connections.pop(request, None)
+        self._slots.release()
+
+    def process_request_thread(self, request, client_address):
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            self._release_connection(request)
+
+    def service_actions(self):
+        now = time.monotonic()
+        with self._connections_lock:
+            expired = [request for request, deadline in self._connections.items() if now >= deadline]
+        for request in expired:
+            try:
+                request.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+
+    def serve_forever(self, poll_interval=0.1):
+        super().serve_forever(poll_interval=poll_interval)
+
+
 class UPnPHandler(BaseHTTPRequestHandler):
+    def setup(self):
+        self.request.settimeout(UPNP_CONNECTION_TIMEOUT)
+        super().setup()
+
     def log_message(self, fmt, *args):
         pass  # Silence default HTTP logging
+
+    def handle(self):
+        try:
+            super().handle()
+        except (ConnectionError, TimeoutError):
+            self.close_connection = True
 
     def _send(self, code, content_type, body):
         if isinstance(body, str):
             body = body.encode("utf-8")
-        self.send_response(code)
-        self.send_header("Content-Type", content_type)
-        self.send_header("Content-Length", str(len(body)))
-        self.send_header("Server", "VELVET/1.0 UPnP/1.0")
-        self.end_headers()
-        self.wfile.write(body)
+        try:
+            self.send_response(code)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Server", "VELVET/1.0 UPnP/1.0")
+            self.end_headers()
+            self.wfile.write(body)
+        except (ConnectionError, TimeoutError):
+            self.close_connection = True
 
     def do_GET(self):
         p = self.path.split("?")[0]
@@ -947,8 +1072,39 @@ class UPnPHandler(BaseHTTPRequestHandler):
             if not content_directory_allowed(self.client_address[0], self.headers):
                 self._send(403, "text/plain", "Authenticated library access required")
                 return
-        length = int(self.headers.get("Content-Length", 0))
-        body   = self.rfile.read(length).decode("utf-8", errors="replace")
+        if p not in {"/upnp/control/ContentDirectory", "/upnp/control/ConnectionManager"}:
+            self._send(404, "text/plain", "Not found")
+            return
+        # SOAP uses a fixed-size body. Reject ambiguous/chunked framing before
+        # reading anything, and never allocate based on an unbounded length.
+        if self.headers.get("Transfer-Encoding"):
+            self._send(400, "text/plain", "Unsupported Transfer-Encoding")
+            return
+        lengths = (self.headers.get_all("Content-Length") if hasattr(self.headers, "get_all")
+                   else [self.headers.get("Content-Length")])
+        if not lengths or lengths == [None]:
+            self._send(411, "text/plain", "Content-Length required")
+            return
+        raw_length = lengths[0].strip()
+        if len(lengths) != 1 or not re.fullmatch(r"[0-9]{1,10}", raw_length):
+            self._send(400, "text/plain", "Invalid Content-Length")
+            return
+        length = int(raw_length)
+        if length > UPNP_MAX_SOAP_BYTES:
+            self._send(413, "text/plain", "SOAP body too large")
+            return
+        try:
+            data = self.rfile.read(length)
+        except TimeoutError:
+            self._send(408, "text/plain", "SOAP body read timed out")
+            return
+        except ConnectionError:
+            self.close_connection = True
+            return
+        if len(data) != length:
+            self._send(400, "text/plain", "Incomplete SOAP body")
+            return
+        body = data.decode("utf-8", errors="replace")
         action = _soap_action_header(dict(self.headers))
 
         if p == "/upnp/control/ContentDirectory":
@@ -970,21 +1126,25 @@ class UPnPHandler(BaseHTTPRequestHandler):
         if action == "Browse":
             oid      = _parse_soap_arg(body, "ObjectID") or "0"
             flag     = _parse_soap_arg(body, "BrowseFlag") or "BrowseDirectChildren"
-            start    = int(_parse_soap_arg(body, "StartingIndex") or "0")
-            count    = int(_parse_soap_arg(body, "RequestedCount") or "0")
-
+            try:
+                values = [_parse_soap_arg(body, name).strip() or "0"
+                          for name in ("StartingIndex", "RequestedCount")]
+                if any(not re.fullmatch(r"[0-9]{1,10}", value) for value in values):
+                    raise ValueError("Invalid paging argument")
+                start, count = map(int, values)
+                if start > UPNP_MAX_STARTING_INDEX or count > 2**32 - 1:
+                    raise ValueError("Paging argument exceeds ui4")
+            except ValueError:
+                self._send(500, "text/xml; charset=utf-8", _soap_fault(402, "Invalid Args"))
+                return
             try:
                 result, returned, total = browse(oid, flag, start, count)
-                # Escape DIDL for SOAP
-                result_esc = result.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-                resp = _soap_response(
-                    "service:ContentDirectory:1", "Browse",
-                    f"<Result>{result_esc}</Result>"
-                    f"<NumberReturned>{returned}</NumberReturned>"
-                    f"<TotalMatches>{total}</TotalMatches>"
-                    f"<UpdateID>1</UpdateID>"
-                )
+                resp = _browse_response_xml(result, returned, total)
+                if len(resp.encode("utf-8")) > UPNP_MAX_BROWSE_RESPONSE_BYTES:
+                    raise BrowseLimitError("SOAP response too large")
                 self._send(200, "text/xml; charset=utf-8", resp)
+            except BrowseLimitError:
+                self._send(500, "text/xml; charset=utf-8", _soap_fault(720, "Cannot process the request"))
             except Exception as e:
                 log.error(f"Browse error: {e}")
                 self._send(500, "text/xml; charset=utf-8", _soap_fault(501, "Action Failed"))
@@ -1142,7 +1302,7 @@ def run_ssdp():
             log.debug(f"SSDP recv error: {e}")
 
 def run_http():
-    server = HTTPServer(("0.0.0.0", UPNP_PORT), UPnPHandler)
+    server = BoundedUPnPServer(("0.0.0.0", UPNP_PORT), UPnPHandler)
     server.serve_forever()
 
 # ─── Entry Point ──────────────────────────────────────────────────────────────

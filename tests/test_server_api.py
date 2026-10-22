@@ -14,7 +14,7 @@ import types
 import unittest
 from contextlib import closing
 from pathlib import Path
-from unittest.mock import patch, AsyncMock
+from unittest.mock import patch, AsyncMock, MagicMock
 
 from fastapi.testclient import TestClient
 
@@ -1779,7 +1779,8 @@ class ServerApiTests(unittest.TestCase):
         self.assertEqual(transcoded.headers["content-type"], "audio/flac")
         compatible_path = self.root / "compatible.wav"
         compatible_path.write_bytes(b"RIFF" + b"\x00" * 4 + b"WAVE" + bytes(range(100)))
-        with patch.object(server, "_prepare_browser_dsp_file", AsyncMock(return_value=compatible_path)):
+        with patch.object(server, "_prepare_browser_dsp_file", AsyncMock(return_value=compatible_path)), \
+             patch.object(server, "_browser_dsp_cache_path", return_value=compatible_path):
             compatible = self.client.head(f"/api/stream/1?dsp={profile_id}&container=wav")
             probe = self.client.get(f"/api/stream/1?dsp={profile_id}&container=wav", headers={"Range":"bytes=0-1"})
             middle = self.client.get(f"/api/stream/1?dsp={profile_id}&container=wav", headers={"Range":"bytes=12-21"})
@@ -1793,7 +1794,8 @@ class ServerApiTests(unittest.TestCase):
         self.assertEqual(middle.content, bytes(range(10)))
         flac_path = self.root / "compatible.flac"
         flac_path.write_bytes(b"fLaC" + bytes(range(100)))
-        with patch.object(server, "_prepare_browser_dsp_file", AsyncMock(return_value=flac_path)) as prepare:
+        with patch.object(server, "_prepare_browser_dsp_file", AsyncMock(return_value=flac_path)) as prepare, \
+             patch.object(server, "_browser_dsp_cache_path", return_value=flac_path):
             head = self.client.head(f"/api/stream/1?dsp={profile_id}&seekable=1")
             probe = self.client.get(f"/api/stream/1?dsp={profile_id}&seekable=1", headers={"Range":"bytes=0-1"})
         self.assertEqual(head.headers["content-type"], "audio/flac")
@@ -1801,6 +1803,89 @@ class ServerApiTests(unittest.TestCase):
         self.assertEqual(probe.status_code, 206)
         self.assertEqual(probe.content, b"fL")
         self.assertEqual(prepare.call_args.kwargs["container"], "flac")
+
+    def test_cold_transcoded_head_never_prepares_audio(self):
+        self._allow_music_root()
+        with self._connect() as conn:
+            profile = conn.execute(
+                "INSERT INTO dsp_profiles (name, preamp_db) VALUES ('Cold HEAD', -3)").lastrowid
+            conn.execute("UPDATE tracks SET sample_rate=48000 WHERE id=1")
+            conn.commit()
+        with patch.object(server, "CACHE_DIR", self.root / "cache"), \
+             patch.object(server, "_prepare_browser_dsp_file", AsyncMock()) as prepare, \
+             patch.object(server, "_acquire_transcode_slot", AsyncMock()) as acquire, \
+             patch.object(server.asyncio, "create_subprocess_exec") as spawn:
+            for query, mime in [(f"dsp={profile}&seekable=true", "audio/flac"),
+                                (f"dsp={profile}&container=wav", "audio/wav"),
+                                (f"dsp={profile}", "audio/flac"),
+                                ("upsample=2x", "audio/wav")]:
+                for headers in ({}, {"Range": "bytes=0-1"}):
+                    with self.subTest(query=query, headers=headers):
+                        head = self.client.head(f"/api/stream/1?{query}", headers=headers)
+                        self.assertEqual(head.status_code, 200)
+                        self.assertEqual(head.content, b"")
+                        self.assertEqual(head.headers["content-type"], mime)
+                        self.assertNotIn("content-length", head.headers)
+                        self.assertEqual(head.headers["accept-ranges"], "none")
+            prepare.assert_not_called()
+            acquire.assert_not_called()
+            spawn.assert_not_called()
+            self.assertFalse((self.root / "cache").exists())
+
+    def test_concurrent_head_get_and_range_share_one_preparation(self):
+        self._allow_music_root()
+        with self._connect() as conn:
+            profile = conn.execute(
+                "INSERT INTO dsp_profiles (name, preamp_db) VALUES ('Concurrent', -3)").lastrowid
+            conn.commit()
+        for container in ("flac", "wav"):
+            with self.subTest(container=container):
+                started, release = threading.Event(), threading.Event()
+                audio = b"fLaC" + bytes(range(100)) if container == "flac" else b"RIFF" + bytes(range(100))
+                process = MagicMock(returncode=0)
+
+                async def spawn(cmd):
+                    output = Path(cmd[cmd.index("-loglevel") - 1])
+
+                    async def communicate():
+                        started.set()
+                        if not await asyncio.to_thread(release.wait, 5):
+                            raise AssertionError("test conversion was not released")
+                        output.write_bytes(audio)
+                        return b"", b""
+
+                    process.communicate = communicate
+                    return process
+
+                guard = MagicMock()
+                guard.spawn = AsyncMock(side_effect=spawn)
+                guard.finish = AsyncMock()
+                url = f"/api/stream/1?dsp={profile}&seekable=true&container={container}"
+                with patch.object(server, "CACHE_DIR", self.root / "cache"), \
+                     patch.object(server, "_acquire_transcode_slot", AsyncMock()) as acquire, \
+                     patch.object(server, "TranscodeGuard", return_value=guard), \
+                     TestClient(server.app) as client, \
+                     concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+                    full = pool.submit(client.get, url)
+                    try:
+                        self.assertTrue(started.wait(3))
+                        partial = pool.submit(client.get, url, headers={"Range": "bytes=0-1"})
+                        head = client.head(url, headers={"Range": "bytes=0-1"})
+                        self.assertEqual(head.status_code, 200)
+                        self.assertNotIn("content-length", head.headers)
+                    finally:
+                        release.set()
+                    self.assertEqual(full.result(timeout=5).content, audio)
+                    ranged = partial.result(timeout=5)
+                    self.assertEqual(ranged.status_code, 206)
+                    self.assertEqual(ranged.content, audio[:2])
+                    warm = client.head(url, headers={"Range": "bytes=0-1"})
+                    self.assertEqual(warm.status_code, 206)
+                    self.assertEqual(warm.headers["content-length"], "2")
+                    self.assertEqual(warm.headers["content-range"], f"bytes 0-1/{len(audio)}")
+                    self.assertEqual(warm.content, b"")
+                    guard.spawn.assert_awaited_once()
+                    acquire.assert_awaited_once()
 
     def test_renderer_urls_use_the_configured_server_port(self):
         self.assertEqual(upnp_server.MAIN_PORT, server.settings.port)
