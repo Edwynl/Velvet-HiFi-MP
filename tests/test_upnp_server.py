@@ -465,13 +465,12 @@ class LargeCatalogBrowseTests(unittest.TestCase):
         return [element.attrib["id"] for element in didl]
 
     def test_zero_and_large_counts_never_silently_truncate_large_catalog(self):
-        for oid in ("tracks", "albums", "ar_1"):
+        for oid, prefix in (("tracks", "t"), ("albums", "al_"), ("ar_1", "al_")):
             for count in (0, 1001, 1505, 2**32 - 1):
                 with self.subTest(oid=oid, count=count):
-                    status, soap = self.browse(oid, count=count)
-                    self.assertEqual(status, 500)
-                    self.assertEqual(soap.findtext(".//{*}errorCode"), "720")
-                    self.assertIsNone(soap.find(".//NumberReturned"))
+                    expected = min(count, 1505) if count else 1505
+                    ids = self.assert_page(oid, 0, count, expected)
+                    self.assertEqual(ids, [f"{prefix}{i}" for i in range(1, expected + 1)])
             self.assert_page(oid, 1000, 0, 505)
             self.assert_page(oid, 1000, 2000, 505)
             self.assert_page(oid, 1505, 0, 0)
@@ -490,10 +489,105 @@ class LargeCatalogBrowseTests(unittest.TestCase):
         with closing(sqlite3.connect(self.db_path)) as db:
             db.execute("UPDATE tracks SET album_id=1")
             db.commit()
-        status, soap = self.browse("al_1")
-        self.assertEqual(status, 500)
-        self.assertEqual(soap.findtext(".//{*}errorCode"), "720")
+        self.assert_page("al_1", 0, 0, 1505)
+        self.assert_page("al_1", 0, 1505, 1505)
         self.assert_page("al_1", 1000, 0, 505)
+
+    def test_large_browse_uses_batched_reads_instead_of_fetchall(self):
+        sizes = []
+        opened, closed = [], []
+        connect = sqlite3.connect
+
+        class ObservedCursor(sqlite3.Cursor):
+            def fetchmany(self, size):
+                sizes.append(size)
+                return super().fetchmany(size)
+
+            def fetchall(self):
+                if self.description and len(self.description) > 1:
+                    raise AssertionError("Browse rows must be fetched in batches")
+                return super().fetchall()
+
+        class ObservedConnection(sqlite3.Connection):
+            def execute(self, sql, params=()):
+                return self.cursor(factory=ObservedCursor).execute(sql, params)
+
+            def close(self):
+                closed.append(self)
+                super().close()
+
+        def observed_connect(*args, **kwargs):
+            conn = connect(*args, factory=ObservedConnection, **kwargs)
+            opened.append(conn)
+            return conn
+
+        with patch.object(upnp_server.sqlite3, "connect", side_effect=observed_connect):
+            self.assert_page("tracks", 0, 0, 1505)
+        self.assertGreater(len(sizes), 1)
+        self.assertEqual(set(sizes), {32})
+        self.assertEqual(opened, closed)
+
+    def test_actual_oversized_soap_faults_before_materializing_whole_result(self):
+        with closing(sqlite3.connect(self.db_path)) as db:
+            db.execute("UPDATE tracks SET title=?", ("樂<&" * 600,))
+            db.commit()
+        for count in (0, 1505):
+            with self.subTest(count=count), \
+                 patch.object(upnp_server, "track_xml", wraps=upnp_server.track_xml) as render:
+                status, soap = self.browse("tracks", count=count)
+                self.assertEqual(status, 500)
+                self.assertEqual(soap.findtext(".//{*}errorCode"), "720")
+                self.assertIsNone(soap.find(".//NumberReturned"))
+                self.assertLess(render.call_count, 1505)
+                self.assertGreater(render.call_count, 1)
+        # The fault released its DB cursor/connection; subsequent writes and
+        # normal-sized pages still work, with no partial-success response.
+        with closing(sqlite3.connect(self.db_path, timeout=0.2)) as db:
+            db.execute("UPDATE tracks SET title='Small title'")
+            db.commit()
+        self.assert_page("tracks", 0, 1505, 1505)
+
+    def test_byte_budget_includes_utf8_escaping_and_envelope_exactly(self):
+        with closing(sqlite3.connect(self.db_path)) as db:
+            db.execute("UPDATE tracks SET title=?", ('歌<&>"',))
+            db.commit()
+        status, soap = self.browse("tracks", count=10)
+        self.assertEqual(status, 200)
+        result = soap.findtext(".//Result")
+        # Independently serialize the existing SOAP template, including both
+        # levels of XML escaping; the exact boundary must succeed.
+        escaped = result.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+        response = upnp_server._soap_response(
+            "service:ContentDirectory:1", "Browse",
+            f"<Result>{escaped}</Result><NumberReturned>10</NumberReturned>"
+            "<TotalMatches>1505</TotalMatches><UpdateID>1</UpdateID>")
+        size = len(response.encode("utf-8"))
+        with patch.object(upnp_server, "UPNP_MAX_BROWSE_RESPONSE_BYTES", size):
+            self.assert_page("tracks", 0, 10, 10)
+        with patch.object(upnp_server, "UPNP_MAX_BROWSE_RESPONSE_BYTES", size - 1):
+            status, fault = self.browse("tracks", count=10)
+        self.assertEqual(status, 500)
+        self.assertEqual(fault.findtext(".//{*}errorCode"), "720")
+
+    def test_duplicate_sort_fields_keep_id_tiebreakers_across_pages(self):
+        with closing(sqlite3.connect(self.db_path)) as db:
+            db.execute("UPDATE albums SET title='Same', year=2000")
+            db.execute("UPDATE tracks SET track_number=1, disc_number=1")
+            db.executemany("INSERT INTO artists(id, name, sort_name) VALUES(?, ?, 'Artist')",
+                           [(i, f"Artist {i}") for i in range(2, 6)])
+            db.commit()
+        self.assertEqual(self.assert_page("artists", 0, 0, 5, total=5),
+                         [f"ar_{i}" for i in range(1, 6)])
+        for oid, prefix in (("tracks", "t"), ("albums", "al_"), ("ar_1", "al_")):
+            ids = []
+            for start in range(0, 1505, 700):
+                ids.extend(self.assert_page(oid, start, 700, min(700, 1505 - start)))
+            self.assertEqual(ids, [f"{prefix}{i}" for i in range(1, 1506)])
+        with closing(sqlite3.connect(self.db_path)) as db:
+            db.execute("UPDATE tracks SET album_id=1")
+            db.commit()
+        self.assertEqual(self.assert_page("al_1", 700, 700, 700),
+                         [f"t{i}" for i in range(701, 1401)])
 
     def test_concurrent_browse_and_response_byte_limit(self):
         with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:

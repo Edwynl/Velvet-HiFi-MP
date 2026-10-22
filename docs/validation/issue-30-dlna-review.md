@@ -1,6 +1,6 @@
 # Issue #30: UPnP reliability follow-up
 
-Branch: `codex/dlna-request-reliability`; reviewed baseline: `5175bf7`.
+Branch: `codex/dlna-request-reliability`; latest reviewed baseline: `73c473d`.
 Local Windows validation, 2026-10-22. No merge, deployment, PR creation or
 GitHub Actions dispatch is part of this change. The commit uses `[skip ci]`.
 Runtime: Python 3.12.10, pytest 9.1.1, using the project's existing virtualenv.
@@ -17,44 +17,57 @@ Runtime: Python 3.12.10, pytest 9.1.1, using the project's existing virtualenv.
   Production polling is 100 ms; the existing 5-second idle timeout still applies.
   No per-connection timer or watchdog threads are added. Disconnects and broken
   pipes are handled without unhandled worker exceptions.
-- Browse counts the matching children before loading rows. Zero means all
-  remaining children. Positive counts retain their requested meaning. If the
-  actual result would exceed 1000 items, it returns HTTP 500 / UPnP fault 720
-  (`Cannot process the request`), rather than a successful truncated result.
-  A request for a large positive count succeeds when fewer than 1001 matching
-  children remain. Oversized serialized SOAP replies (>8 MiB) also fault.
+- Browse counts the matching children and reads rows in batches of 32 using
+  one cursor. Zero means all remaining children; positive counts retain their
+  requested meaning. There is no item-count cap: 1505-item track and album
+  responses succeed when they fit within the 8 MiB response budget.
+  Each item is checked against the actual UTF-8 SOAP size, including double XML
+  escaping, DIDL/SOAP wrappers and NumberReturned digits, before it is retained.
+  An oversized response faults with HTTP 500 / UPnP 720 and immediately closes
+  the row iterator/connection. It never sends successful incomplete results.
+  SQL ordering includes ID tie-breakers for equal names, years and track numbers.
   `StartingIndex`, `NumberReturned`, `TotalMatches` and BrowseMetadata remain
   covered. Catalog counts use SQL COUNT rather than loading every ID.
 
 ## Regression evidence
 
-Three regression cases were executed against the in-memory source of reviewed
+During the initial follow-up, three regression cases ran against the source of
 commit `5175bf7`, without altering this checkout: slow-drip headers/body,
 connection saturation, and real 1505-item catalog browsing. They produced
 15 expected failed assertions/subtests and no test errors on that baseline.
+The item-count fault introduced in that follow-up was rejected in the review of
+`73c473d`; this revision removes it and tests successful complete large results.
+The updated real-SQL/HTTP large-container test was executed against the in-memory
+source of `73c473d`: it produced 12 expected failed assertions/subtests, with no
+test errors. The same test succeeds on this revision. Instrumented SQLite
+cursors also verify fetchmany(32), no fetchall for item rows, and closed
+connections; oversized responses stop rendering before consuming all 1505 rows.
 
 New tests use ephemeral loopback ports and temporary SQLite databases. They
 cover total deadlines despite continuous input, normal-latency SOAP, overload
 refusal and recovery, worker-start failure, broken pipes, incomplete input,
 concurrent Browse, 1505 tracks/albums, zero/positive counts, sequential pages,
-BrowseMetadata and the serialized response size limit. Existing body/framing,
+BrowseMetadata, batched DB reads/cleanup, stable paging across tied sort fields,
+actual oversized metadata, and exact UTF-8/escaping/envelope byte boundaries.
+Existing body/framing,
 authentication and DSP HEAD/GET/Range regressions remain in place.
 
 ## Remaining risks and scope
 
 - Cambridge EXN100/StreamMagic, HEOS/M1 and BubbleUPnP have not been tested on
-  physical devices. Controllers receiving fault 720 must request smaller pages;
-  clients that never paginate cannot browse oversized containers in one reply.
+  physical devices. Only responses exceeding the actual byte budget receive
+  fault 720 and require smaller pages; 1505 items alone no longer cause failure.
 - Deadline enforcement closes the transport; it does not forcibly terminate a
   Python thread executing SQLite or serialization. Its concurrency slot stays
-  reserved until the handler really exits. Result rows are bounded before
-  fetching; the byte check is applied after serialization, so unusually large
-  metadata can temporarily allocate more than the wire response limit.
+  reserved until the handler really exits. Rows are fetched in batches of 32,
+  and retained serialized items stay within the byte budget. A single unusually
+  large metadata row or batch can still temporarily allocate more memory than
+  the wire limit; final joining/escaping/encoding also uses temporary buffers.
 - The pre-existing SSDP LOCATION/control-URL validation concern in Issue #30
   remains outside this P1 follow-up. Discovery, Tailscale, cast controls, DSP,
   streaming service 8765 and PWA sources are not changed.
 
-## Local results
+## Previous local results (`73c473d`)
 
 - Focused: `python -m pytest tests/test_upnp_server.py tests/test_server_api.py -q`
   — 127 passed, 131 subtests passed, 1 existing Starlette deprecation warning.
@@ -63,3 +76,16 @@ authentication and DSP HEAD/GET/Range regressions remain in place.
 - Full: `python -m pytest tests -q` — 564 passed, 817 subtests passed,
   no failures/skips, 1 existing Starlette deprecation warning (218.96 seconds).
 - Final UPnP-only check: 20 passed, 44 subtests passed.
+
+## Latest local results (large-library compatibility revision)
+
+- `python -m pytest tests/test_upnp_server.py -q` — 24 passed, 46 subtests
+  passed (12.37 seconds).
+- `python -m pytest tests/test_upnp_server.py tests/test_server_api.py -q` —
+  131 passed, 133 subtests passed, no failures/skips; 1 existing Starlette
+  deprecation warning (81.66 seconds).
+- `python -m pytest tests -q` — 568 passed, 819 subtests passed, no failures/skips;
+  1 existing Starlette deprecation warning (226.77 seconds).
+- `npm run test:pwa` — passed. Streaming and frontend/PWA sources have no diff
+  from `73c473d`.
+- `git diff --check` — passed.
