@@ -22,7 +22,7 @@ import xml.etree.ElementTree as ET
 import urllib.request
 import re
 from pathlib import Path
-from http.server import HTTPServer, BaseHTTPRequestHandler
+from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs, quote
 import logging
 import ipaddress
@@ -888,7 +888,7 @@ def _parse_soap_arg(body, name):
     return m.group(1).strip() if m else ""
 
 def _soap_action_header(headers):
-    sa = headers.get("SOAPACTION", "").strip('"')
+    sa = next((value for name, value in headers.items() if name.upper() == "SOAPACTION"), "").strip('"')
     if "#" in sa:
         return sa.split("#")[-1]
     return ""
@@ -916,7 +916,17 @@ def content_directory_allowed(client_ip, headers):
     return ip.is_loopback
 
 
+UPNP_CONNECTION_TIMEOUT = 5.0
+UPNP_MAX_SOAP_BYTES = 64 * 1024
+UPNP_MAX_BROWSE_COUNT = 1000
+UPNP_MAX_STARTING_INDEX = 2**32 - 1
+
+
 class UPnPHandler(BaseHTTPRequestHandler):
+    def setup(self):
+        self.request.settimeout(UPNP_CONNECTION_TIMEOUT)
+        super().setup()
+
     def log_message(self, fmt, *args):
         pass  # Silence default HTTP logging
 
@@ -947,8 +957,36 @@ class UPnPHandler(BaseHTTPRequestHandler):
             if not content_directory_allowed(self.client_address[0], self.headers):
                 self._send(403, "text/plain", "Authenticated library access required")
                 return
-        length = int(self.headers.get("Content-Length", 0))
-        body   = self.rfile.read(length).decode("utf-8", errors="replace")
+        if p not in {"/upnp/control/ContentDirectory", "/upnp/control/ConnectionManager"}:
+            self._send(404, "text/plain", "Not found")
+            return
+        # SOAP uses a fixed-size body. Reject ambiguous/chunked framing before
+        # reading anything, and never allocate based on an unbounded length.
+        if self.headers.get("Transfer-Encoding"):
+            self._send(400, "text/plain", "Unsupported Transfer-Encoding")
+            return
+        lengths = (self.headers.get_all("Content-Length") if hasattr(self.headers, "get_all")
+                   else [self.headers.get("Content-Length")])
+        if not lengths or lengths == [None]:
+            self._send(411, "text/plain", "Content-Length required")
+            return
+        raw_length = lengths[0].strip()
+        if len(lengths) != 1 or not re.fullmatch(r"[0-9]{1,10}", raw_length):
+            self._send(400, "text/plain", "Invalid Content-Length")
+            return
+        length = int(raw_length)
+        if length > UPNP_MAX_SOAP_BYTES:
+            self._send(413, "text/plain", "SOAP body too large")
+            return
+        try:
+            data = self.rfile.read(length)
+        except TimeoutError:
+            self._send(408, "text/plain", "SOAP body read timed out")
+            return
+        if len(data) != length:
+            self._send(400, "text/plain", "Incomplete SOAP body")
+            return
+        body = data.decode("utf-8", errors="replace")
         action = _soap_action_header(dict(self.headers))
 
         if p == "/upnp/control/ContentDirectory":
@@ -970,8 +1008,20 @@ class UPnPHandler(BaseHTTPRequestHandler):
         if action == "Browse":
             oid      = _parse_soap_arg(body, "ObjectID") or "0"
             flag     = _parse_soap_arg(body, "BrowseFlag") or "BrowseDirectChildren"
-            start    = int(_parse_soap_arg(body, "StartingIndex") or "0")
-            count    = int(_parse_soap_arg(body, "RequestedCount") or "0")
+            try:
+                values = [_parse_soap_arg(body, name).strip() or "0"
+                          for name in ("StartingIndex", "RequestedCount")]
+                if any(not re.fullmatch(r"[0-9]{1,10}", value) for value in values):
+                    raise ValueError("Invalid paging argument")
+                start, count = map(int, values)
+                if start > UPNP_MAX_STARTING_INDEX or count > 2**32 - 1:
+                    raise ValueError("Paging argument exceeds ui4")
+            except ValueError:
+                self._send(500, "text/xml; charset=utf-8", _soap_fault(402, "Invalid Args"))
+                return
+            # UPnP count=0 requests all remaining entries; return a bounded
+            # page with TotalMatches so clients can continue browsing.
+            count = min(count, UPNP_MAX_BROWSE_COUNT) if count else UPNP_MAX_BROWSE_COUNT
 
             try:
                 result, returned, total = browse(oid, flag, start, count)
@@ -1142,7 +1192,7 @@ def run_ssdp():
             log.debug(f"SSDP recv error: {e}")
 
 def run_http():
-    server = HTTPServer(("0.0.0.0", UPNP_PORT), UPnPHandler)
+    server = ThreadingHTTPServer(("0.0.0.0", UPNP_PORT), UPnPHandler)
     server.serve_forever()
 
 # ─── Entry Point ──────────────────────────────────────────────────────────────

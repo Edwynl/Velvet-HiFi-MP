@@ -2664,6 +2664,16 @@ def _prune_browser_dsp_cache(folder: Path, current: Path) -> None:
             pass
 
 
+def _browser_dsp_cache_path(file_path: str, dsp_filter: str,
+                            start_seconds: float = 0, container: str = "wav") -> Path:
+    """Locate a finalized resource without creating directories or starting work."""
+    source = Path(filesystem_path(file_path))
+    stat = source.stat()
+    key = hashlib.sha256(json.dumps([str(source.resolve()), stat.st_mtime_ns, stat.st_size,
+                                    dsp_filter, start_seconds, container, "seekable-v1"]).encode()).hexdigest()
+    return CACHE_DIR / "browser-dsp" / f"{key}.{container}"
+
+
 async def _prepare_browser_dsp_file(file_path: str, dsp_filter: str, timeout_seconds: int,
                                     start_seconds: float = 0, container: str = "wav") -> Path:
     """A finalized lossless file with sample count, length, and HTTP Range.
@@ -2673,13 +2683,10 @@ async def _prepare_browser_dsp_file(file_path: str, dsp_filter: str, timeout_sec
     unchanged. Range probes reuse the same file and concurrent requests share
     one conversion. Source files and the music library are never rewritten.
     """
-    source = Path(filesystem_path(file_path))
-    stat = source.stat()
-    key = hashlib.sha256(json.dumps([str(source.resolve()), stat.st_mtime_ns, stat.st_size,
-                                    dsp_filter, start_seconds, container, "seekable-v1"]).encode()).hexdigest()
-    folder = CACHE_DIR / "browser-dsp"
+    target = _browser_dsp_cache_path(file_path, dsp_filter, start_seconds, container)
+    key = target.stem
+    folder = target.parent
     folder.mkdir(parents=True, exist_ok=True)
-    target = folder / f"{key}.{container}"
     if target.exists():
         target.touch()
         return target
@@ -2854,16 +2861,27 @@ async def stream_track(
         raise HTTPException(422, "Unsupported upsampling quality")
     if start and not (target_rate or dsp_filter):
         raise HTTPException(422, "start applies only to transcoded (DSP or upsampled) streams")
+    if request.method == "HEAD" and (target_rate or dsp_filter):
+        if (container == "wav" or seekable) and dsp_filter and not target_rate:
+            output = _browser_dsp_cache_path(fp, dsp_filter, start, container)
+            if output.is_file():
+                response = _stream_file_direct(str(output), request, container.upper())
+                response.headers["X-Output-Mode"] = "DSP"
+                return response
+        # Only GET prepares seekable audio. A cold HEAD neither starts nor
+        # waits for a conversion, even with Range. Its length is unknown;
+        # Response's automatic zero Content-Length would describe it wrongly.
+        response = Response(
+            media_type="audio/wav" if target_rate or container == "wav" else "audio/flac",
+            headers={"Cache-Control": "no-cache", "Accept-Ranges": "none"})
+        del response.headers["content-length"]
+        return response
     if (container == "wav" or seekable) and dsp_filter and not target_rate:
         limit = _transcode_time_limit_seconds(track["duration"], timeout_minutes)
         output = await _prepare_browser_dsp_file(fp, dsp_filter, limit, start_seconds=start, container=container)
         response = _stream_file_direct(str(output), request, container.upper())
         response.headers["X-Output-Mode"] = "DSP"
         return response
-    if request.method == "HEAD" and (target_rate or dsp_filter):
-        # Describe the transcoded stream without starting FFmpeg.
-        return Response(media_type="audio/wav" if target_rate or container == "wav" else "audio/flac",
-                        headers={"Cache-Control": "no-cache"})
     if target_rate:
         limit = _transcode_time_limit_seconds(track["duration"], timeout_minutes)
         return await _stream_upsampled(fp, target_rate, quality, limit, dsp_filter, start_seconds=start)
