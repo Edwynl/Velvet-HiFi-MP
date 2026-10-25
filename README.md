@@ -29,6 +29,8 @@ VELVET is a premium, minimalist personal music server designed for audiophiles. 
 
 ## Quick Start
 
+For Edwyn's existing worktree setup, use `start-main.bat` (desktop shortcut: **VELVET main**) to run the main worktree on port 8765. See [启动本机 main](docs/START_MAIN.md). The original checkout can still be on a feature branch.
+
 ### Windows
 
 1. **Download/clone** this repository.
