@@ -73,6 +73,12 @@ TAILNET_STATUS_TTL = 30
 # of its end (or after last being seen PLAYING that close to it).
 MONITOR_INTERVAL = 1.0
 END_TOLERANCE = 4.0
+# The renderer's own RelTime this close to the end means it reached it.
+REPORTED_END = 1.0
+# Monitor interval plus SOAP latency: how early a STOPPED may come and still
+# count as the end when the renderer resets RelTime on STOPPED.
+TIMING_SLACK = 1.5
+MAX_ADVANCE_RETRIES = 4
 SNAPSHOT_FRESH = 1.2
 MAX_QUEUE = 5000
 REPEAT_MODES = frozenset({'none', 'all', 'one'})
@@ -89,7 +95,7 @@ CAST_RE = re.compile(r'^/api/cast/([^/]+)$')
 CAST_CONTROL_RE = re.compile(r'^/api/cast/control/([^/]+)/(Play|Pause|Stop)$')
 CAST_STATUS_RE = re.compile(r'^/api/cast/status/([^/]+)$')
 CAST_RESULT_RE = re.compile(r'^/api/cast/result/([^/]+)/([^/]+)$')
-BRIDGE_SESSION_RE = re.compile(r'^/bridge/session/([^/]+)$')
+BRIDGE_SESSION_RE = re.compile(r'^/bridge/session(?:/([^/]+))?$')
 BRIDGE_QUEUE_RE = re.compile(r'^/bridge/queue/([^/]+)$')
 MEDIA_RE = re.compile(r'^/media/([A-Za-z0-9_-]{24,120})/(\d+)\.([a-z0-9]{2,5})$')
 COVER_RE = re.compile(r'^/media/([A-Za-z0-9_-]{24,120})/cover\.jpg$')
@@ -361,7 +367,13 @@ class QueueSession:
     duration: float = 0.0
     was_playing: bool = False
     last_position: float = 0.0
+    last_seen: float = 0.0  # Bridge.clock() of the last PLAYING read
     idle: bool = False  # stopped, or the queue ended: nothing to advance or keep awake
+    revision: int = 0  # bumped by every change of track or queue (other pages follow)
+    skipped: tuple[tuple[int, str], ...] = ()  # (track, reason) passed over on the way here
+    error: str | None = None  # why the bridge stopped advancing
+    failures: int = 0  # parent unreachable while advancing (bounded retries)
+    retry_after: float = 0.0
 
 
 class HTTPFailure(Exception):
@@ -393,6 +405,8 @@ class Bridge:
         self.inflight: dict[str, int] = {}
         self.sessions: dict[str, QueueSession] = {}
         self.advance_counter = 0
+        self.revision_counter = 0
+        self.clock = time.monotonic  # tests drive the monitor's sense of time
         # (monotonic time, state, position, duration, TrackURI) from the monitor.
         self.snapshots: dict[str, tuple[float, str, float, float, str]] = {}
         self.locks: dict[str, threading.RLock] = {}
@@ -527,6 +541,8 @@ class Bridge:
         if cookie:
             headers['Cookie'] = cookie
         with self.upstream(path, headers=headers, timeout=15) as response:
+            if response.status == 404:
+                raise HTTPFailure(404, 'Not found in the parent Velvet library')
             if response.status != 200:
                 raise HTTPFailure(401 if response.status in (401, 403) else 502,
                                   'Parent Velvet rejected authentication or request')
@@ -1068,13 +1084,15 @@ class Bridge:
         phone, owns what plays next."""
         with self.lock:
             previous = self.sessions.get(udn)
+            self.revision_counter += 1
             if auto:
                 self.advance_counter += 1
             advance_seq = self.advance_counter if auto else (previous.advance_seq if previous else 0)
             self.sessions[udn] = QueueSession(
                 ids=queue.ids, index=queue.index, repeat=queue.repeat, credential=credential,
                 token=token, track_id=track_id, advance_seq=advance_seq,
-                auto_pending=(track_id, queue.index) if auto else None, duration=duration)
+                auto_pending=(track_id, queue.index) if auto else None, duration=duration,
+                revision=self.revision_counter)
 
     def update_queue(self, udn: str, payload: dict, credential: str, cookie: str = '') -> dict:
         """The UI's queue changed (added, removed, reordered, repeat mode) while
@@ -1088,27 +1106,66 @@ class Bridge:
             session = self.sessions.get(udn)
             if session is None or session.track_id != track_id:
                 return {'success': False, 'stale': True}  # describes another track
-            session.ids, session.index, session.repeat = queue.ids, queue.index, queue.repeat
+            if (session.ids, session.index, session.repeat) != (queue.ids, queue.index, queue.repeat):
+                session.ids, session.index, session.repeat = queue.ids, queue.index, queue.repeat
+                self.revision_counter += 1
+                session.revision = self.revision_counter
         return {'success': True}
 
-    def session_info(self, udn: str, credential: str, cookie: str = '') -> dict:
+    def session_info(self, udn: str | None, credential: str, cookie: str = '') -> dict:
+        """A renderer's queue session, or with no `udn` the most recent one
+        still playing or paused: what a freshly loaded page reattaches to."""
         self.authenticate(credential, cookie)
         with self.lock:
-            session = self.sessions.get(udn)
-            if session is None:
+            if udn is None:
+                live = [(s.revision, u) for u, s in self.sessions.items() if not s.idle]
+                udn = max(live)[1] if live else None
+            session = self.sessions.get(udn) if udn else None
+            device = self.devices.get(udn) if udn else None
+            if session is None or device is None:
                 return {'active': False}
-            return {'active': True, 'track_id': session.track_id, 'queue_index': session.index,
-                    'queue_length': len(session.ids), 'repeat': session.repeat,
-                    'advance_seq': session.advance_seq, 'idle': session.idle}
+            snapshot = self.snapshots.get(udn)
+        if (snapshot is None or f'/media/{session.token}/' not in snapshot[4]
+                or time.monotonic() - snapshot[0] >= SNAPSHOT_FRESH):
+            # Read of another stream (e.g. the previous track's end, just
+            # before the advance), or old: a reattaching page must show what
+            # plays now.
+            state, (position, _, _) = self.transport(device), self.position(device)
+        else:
+            state, position = snapshot[1], snapshot[2]
+        with self.lock:
+            return {'active': True, 'udn': udn, 'name': device.name, 'track_id': session.track_id,
+                    'queue_index': session.index, 'queue_length': len(session.ids), 'ids': list(session.ids),
+                    'repeat': session.repeat, 'revision': session.revision,
+                    'advance_seq': session.advance_seq, 'idle': session.idle, 'state': state,
+                    'position': position, 'skipped': [{'track_id': t, 'error': e} for t, e in session.skipped],
+                    'error': session.error}
 
     @staticmethod
-    def next_index(session: QueueSession) -> int | None:
-        """Velvet's cast-mode playNext(): the following track, wrapping only
-        on repeat 'all' (its cast path plays on for 'one' as well)."""
-        following = session.index + 1
+    def next_index(session: QueueSession, after: int | None = None) -> int | None:
+        """Velvet's cast-mode playNext(): the entry after `after` (default:
+        the current one), wrapping only on repeat 'all' (its cast path plays
+        on for 'one' as well)."""
+        following = (session.index if after is None else after) + 1
         if following < len(session.ids):
             return following
         return 0 if session.repeat == 'all' else None
+
+    def track_finished(self, session: QueueSession, position: float, duration: float) -> bool:
+        """STOPPED at the natural end, as opposed to a Stop pressed on the
+        EXN100 or in StreamMagic near the end. UPnP gives no stop reason:
+        either the renderer reports the end itself, or (for renderers that
+        reset RelTime on STOPPED) enough time has passed since the last
+        PLAYING read for the rest of the track to have played. A Stop within
+        TIMING_SLACK of the end cannot be told apart and counts as the end."""
+        length = duration or session.duration
+        if length <= 0:
+            return False
+        if position >= length - REPORTED_END:
+            return True
+        remaining = length - session.last_position
+        return (remaining <= END_TOLERANCE and
+                self.clock() - session.last_seen >= remaining - TIMING_SLACK)
 
     def monitor_once(self, udn: str) -> None:
         """One look at a renderer with a session; advance once at the end of a
@@ -1120,6 +1177,7 @@ class Bridge:
             return
         state = self.transport(device)
         position, duration, uri = self.position(device)
+        now = self.clock()
         with self.lock:
             self.snapshots[udn] = (time.monotonic(), state, position, duration, uri)
         match = MEDIA_RE.fullmatch(urlparse(uri).path) if uri else None
@@ -1138,38 +1196,81 @@ class Bridge:
                 if state == 'PLAYING':
                     session.was_playing = True
                     session.last_position = max(session.last_position, position)
+                    session.last_seen = now
                     session.duration = duration or session.duration
                 return
             if state not in ('STOPPED', 'NO_MEDIA_PRESENT') or not session.was_playing:
                 return  # paused (stays awake), an unknown/failed read, or never started
-            length = duration or session.duration
-            finished = length > 0 and max(position, session.last_position) >= length - END_TOLERANCE
-            if not finished:
-                session.was_playing, session.idle = False, True  # stopped mid-track elsewhere
+            if not self.track_finished(session, position, duration):
+                session.was_playing, session.idle = False, True  # stopped by hand, not at the end
                 return
             following = self.next_index(session)
             if following is None:
                 session.was_playing, session.idle = False, True  # end of the queue
                 return
+            if now < session.retry_after:
+                return  # the parent was unreachable a moment ago; wait before retrying
             if self.inflight.get(udn):
                 return  # a user's cast or control is on its way; look again next tick
+            # Decide and take the arrival number in this one critical section:
+            # a Stop or cast entering in_flight() after this point is numbered
+            # after the advance, so the user's command always has the last word.
+            generation = self.arrive(udn)
+            self.commit(udn, generation, 'Cast')
             session.was_playing = False
-            expect, next_track = session.token, session.ids[following]
-            queue = QueueSpec(session.ids, following, session.repeat)
+            expect = session.token
             credential = session.credential
-        generation = self.arrive(udn)
-        self.commit(udn, generation, 'Cast')
-        try:
-            result = self._play(udn, device, next_track, credential, generation,
-                                queue=queue, expect_token=expect)
-        except HTTPFailure as exc:
-            LOG.warning('Auto-advance to the next track failed: %s', exc.reason)
-            with self.lock:
-                if self.sessions.get(udn) is session:
-                    session.idle = True
-            return
-        if result.get('success'):
-            LOG.info('Advanced to queue position %d', following + 1)
+        self.advance(udn, device, session, following, generation, expect, credential)
+
+    def advance(self, udn: str, device: Renderer, session: QueueSession, following: int,
+                generation: int, expect: str, credential: str) -> None:
+        """Play queue entry `following`, skipping entries that cannot play
+        (missing from the parent, unsupported, refused by the renderer), at
+        most once round the queue. If the parent cannot be reached, retry a
+        few times with a growing pause, then stop with an error."""
+        candidate, skipped = following, []
+        for _ in range(len(session.ids)):
+            track_id = session.ids[candidate]
+            queue = QueueSpec(session.ids, candidate, session.repeat)
+            try:
+                result = self._play(udn, device, track_id, credential, generation,
+                                    queue=queue, expect_token=expect)
+            except HTTPFailure as exc:
+                if exc.status not in (404, 415):
+                    # Parent unreachable or failing (Tailscale, restart): not
+                    # this track's fault, so do not skip it; retry later.
+                    with self.lock:
+                        if self.sessions.get(udn) is session:
+                            session.failures += 1
+                            if session.failures >= MAX_ADVANCE_RETRIES:
+                                session.idle, session.error = True, f'Next track unavailable: {exc.reason}'
+                            else:
+                                session.was_playing = True  # the end is still pending
+                                session.retry_after = self.clock() + 2 ** session.failures
+                    LOG.warning('Auto-advance failed (%s); %s', exc.reason,
+                                'giving up' if session.idle else 'will retry')
+                    return
+                result = {'success': False, 'error': exc.reason}
+            if result.get('superseded'):
+                return  # the user stopped or chose another track meanwhile
+            if result.get('success'):
+                with self.lock:
+                    current = self.sessions.get(udn)
+                    if current is not None and skipped:
+                        current.skipped = tuple(skipped)
+                LOG.info('Advanced to queue position %d%s', candidate + 1,
+                         f' (skipped {len(skipped)} unplayable)' if skipped else '')
+                return
+            skipped.append((track_id, str(result.get('error') or 'Cannot be played')))
+            LOG.warning('Skipping queue position %d: %s', candidate + 1, skipped[-1][1])
+            after = self.next_index(session, candidate)
+            if after is None:
+                break  # end of the queue (repeat 'all' is bounded by the loop: once round)
+            candidate = after
+        with self.lock:
+            if self.sessions.get(udn) is session:
+                session.idle, session.skipped = True, tuple(skipped)
+                session.error = 'No playable track left in the queue'
 
     def wants_awake(self) -> bool:
         """Keep Windows awake while any renderer is playing or paused in a
@@ -1420,7 +1521,8 @@ class BridgeHandler(BaseHTTPRequestHandler):
             return self.respond_bytes(QUEUE_SYNC_JS.read_bytes(), 'text/javascript; charset=utf-8')
         match = BRIDGE_SESSION_RE.fullmatch(path)
         if match and self.command == 'GET':
-            return self.respond_json(bridge.session_info(unquote(match.group(1)), credential, cookie))
+            udn = unquote(match.group(1)) if match.group(1) else None
+            return self.respond_json(bridge.session_info(udn, credential, cookie))
         match = BRIDGE_QUEUE_RE.fullmatch(path)
         if match and self.command == 'POST':
             return self.respond_json(bridge.update_queue(unquote(match.group(1)), self.read_json(),

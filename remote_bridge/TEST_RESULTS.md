@@ -1,5 +1,40 @@
 # Velvet Remote Bridge — Validation
 
+## 0.1.5 (fifth review: two P1 + P2) — 2026-10-25
+
+- `python -m unittest discover -s tests -v`: **81 tests passed**, five consecutive runs;
+  `node tests/queue_sync.test.mjs`: **13/13**; `tests/manual_e2e_real_main.py`: 20/20.
+- **P1-A user command vs auto-advance.** The monitor now checks for users' requests in
+  flight and takes its arrival number in one critical section. Barrier tests reproduce the
+  review's interleaving (monitor decides -> user Stop / new cast arrives and waits in its
+  admin check -> monitor numbers its advance): on 0.1.4 (`519b1a3`) the Stop is answered
+  `superseded` and the next track plays; now the Stop stops the renderer and ends the
+  session, and the new track plays.
+- **P1-B cold Safari/PWA reload.** `GET /bridge/session` returns the newest playing or paused
+  session (renderer, track, queue ids, index, state, position); `queue_sync.js` reattaches a
+  fresh page that has not chosen an output or played anything, filling track details from
+  the parent, without any cast. Following the bridge (its own advance, or another phone's
+  change) now also sets the page state directly, never re-casting. Node tests: reattach,
+  never after the user takes over, idle/absent sessions ignored, another phone followed,
+  stale revisions ignored. **Real browser** (`tests/manual_browser_stack.py`, 4 x 15 s
+  FLACs): Play All, page discarded, two unattended advances, fresh page opened: it showed
+  the EXN100 zone, Song 3 playing, the album queue with titles; then followed to Song 4;
+  then switching to Local Web Player stopped the renderer and ended the session. Renderer
+  log: one load per song, no load from the reattach.
+- **P2 Stop near the end.** End of track = the renderer reports RelTime within 1 s of the end,
+  or enough wall time passed since the last PLAYING read for the remainder to have played
+  (renderers that reset RelTime). Tests (injected clock): Stop 3 s before the end, RelTime
+  kept or reset -> no advance; natural end with reset RelTime, or reported end -> advance.
+  A Stop within ~1.5 s of the end stays indistinguishable (documented).
+- **P2 unplayable track.** 404 / unsupported format / renderer refusal: skipped, reported via
+  the session (`skipped`, `error`) and a toast; at most once round the queue (test: whole
+  queue gone with repeat 'all' looks each track up once). Parent unreachable (502): not
+  skipped; retried 4 times with growing pauses, then stops with an error (test: recovers
+  on retry; gives up after the retries). `upstream_json` now keeps the parent's 404.
+- **P2 reproducible browser acceptance:** `tests/manual_browser_stack.py` with the steps.
+- Mutation check of the new logic: any-near-end-stop, never-skip, stale snapshot, no retry
+  backoff, and a looser skip bound each fail a test; a redundant bound was removed.
+
 ## 0.1.4 (fourth review: bridge-owned queue + three P2) — 2026-10-25
 
 - `python -m unittest discover -s tests -v`: **71 tests passed**, three consecutive runs;

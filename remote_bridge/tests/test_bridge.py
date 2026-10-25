@@ -62,15 +62,16 @@ class ParentHandler(BaseHTTPRequestHandler):
                             'album_title': 'Album', 'album_id': 9, 'duration': 210, 'format': 'FLAC',
                             'file_size': len(AUDIO), 'channels': 2,
                             'sample_rate': 96000, 'bit_depth': 24, 'file_path': 'D:/Music/t.flac'})
-        elif re.fullmatch(r'/api/tracks/(6|7|8)', self.path):
+        elif re.fullmatch(r'/api/tracks/(6|7|8|98)', self.path):
             # The rest of the album, for queue tests (track 8 lasts over an hour).
             if self.headers.get('X-API-Key') != CREDENTIAL:
                 self.reply({'error': 'Unauthorized'}, 401)
                 return
             tid = int(self.path.rsplit('/', 1)[1])
             self.reply({'id': tid, 'title': f'Track {tid}', 'artist_name': '徐佳莹', 'album_title': 'Album',
-                        'album_id': 9, 'duration': 4000 if tid == 8 else 200, 'format': 'FLAC',
-                        'sample_rate': 44100, 'bit_depth': 16, 'file_path': f'D:/Music/{tid}.flac'})
+                        'album_id': 9, 'duration': 4000 if tid == 8 else 200,
+                        'format': 'DSF' if tid == 98 else 'FLAC',  # 98: a format the bridge refuses
+                        'sample_rate': 44100, 'bit_depth': 16, 'file_path': f'D:/Music/{tid}.' + ('dsf' if tid == 98 else 'flac')})
         elif self.path.startswith('/api/stream/5'):
             if self.headers.get('X-API-Key') != CREDENTIAL:
                 self.reply({'error': 'Unauthorized'}, 401)
@@ -1030,6 +1031,199 @@ class ServerFixture(unittest.TestCase):
         self.assertIn(b'bridge_queue', script)
         _, _, data = self.request('/api/tracks/5', headers={'X-API-Key': CREDENTIAL})
         self.assertNotIn(b'queue-sync', data)  # only the page itself
+
+    # ── Review 5 / P1-A: a user's command is never beaten by the auto-advance ──
+
+    def user_command_in_the_monitor_gap(self, path, body=None):
+        """Track 5 ends; between the monitor's decision to advance and its
+        arrival number, the user sends `path`, which then waits in its admin
+        check until the monitor has finished. Returns the fake renderer."""
+        renderer = self.fake_renderer()
+        self.cast_queue([5, 6, 7], 0)
+        renderer.playing(100, 200)
+        self.core.monitor_once(self.UDN)
+        renderer.finish()
+        entered, release = threading.Event(), threading.Event()
+        real_auth, real_arrive = self.core.authorize_control, self.core.arrive
+        def held_auth(*args, **kwargs):
+            entered.set()
+            release.wait(10)
+            return real_auth(*args, **kwargs)
+        user, first = [], [True]
+        def send():
+            user.append(self.request(path, method='POST', body=body,
+                                     headers={'X-API-Key': CREDENTIAL, 'Cookie': COOKIE}))
+        def arrive(udn):
+            if first[0]:  # the monitor's arrival: let the user's command in first
+                first[0] = False
+                threading.Thread(target=send, daemon=True).start()
+                # 0.1.4 took this number after releasing the lock, so the user's
+                # command arrived (and was numbered) here. Now the monitor still
+                # holds the lock: the command cannot arrive until it is done.
+                entered.wait(1)
+            return real_arrive(udn)
+        with patch.object(self.core, 'authorize_control', side_effect=held_auth), \
+             patch.object(self.core, 'arrive', side_effect=arrive):
+            self.core.monitor_once(self.UDN)
+            self.assertTrue(entered.wait(5), 'the user command never reached its admin check')
+            release.set()
+            self.wait_for(lambda: user, 'the user command never finished')
+        self.assertEqual(user[0][0], 200, user[0][2])
+        return renderer, json.loads(user[0][2])
+
+    def test_stop_in_the_monitor_gap_wins(self):
+        renderer, answer = self.user_command_in_the_monitor_gap(f'/api/cast/control/{self.UDN}/Stop')
+        self.assertEqual(answer, {'success': True})  # not {'superseded': True}
+        self.assertEqual(renderer.actions[-1], 'Stop')
+        self.assertEqual(renderer.state, 'STOPPED')
+        self.assertNotIn(self.UDN, self.core.sessions)
+
+    def test_new_track_in_the_monitor_gap_wins(self):
+        renderer, answer = self.user_command_in_the_monitor_gap(
+            f'/api/cast/{self.UDN}', {'track_id': 7, 'bridge_queue': {'ids': [5, 6, 7], 'index': 2}})
+        self.assertTrue(answer['success'])
+        self.assertNotIn('superseded', answer)
+        self.assertEqual(renderer.tracks()[-1], 7)
+        self.assertEqual(self.core.sessions[self.UDN].track_id, 7)
+
+    # ── Review 5 / P2-1: a Stop pressed near the end is not the end ──
+
+    def stop_near_the_end(self, *, stopped_after: float, position_on_stop: float):
+        clock = [1000.0]
+        self.core.clock = lambda: clock[0]
+        self.addCleanup(setattr, self.core, 'clock', time.monotonic)
+        renderer = self.fake_renderer()
+        self.cast_queue([5, 6, 7], 0)
+        renderer.playing(197, 200)  # last read: 3 s left
+        self.core.monitor_once(self.UDN)
+        clock[0] += stopped_after
+        renderer.state, renderer.position = 'STOPPED', position_on_stop
+        self.core.monitor_once(self.UDN)
+        return renderer
+
+    def test_stop_on_the_exn100_three_seconds_before_the_end_does_not_advance(self):
+        for position in (197, 0):  # renderers keep RelTime on Stop, or reset it
+            self.setUp()
+            renderer = self.stop_near_the_end(stopped_after=1, position_on_stop=position)
+            self.assertEqual(renderer.tracks(), [5], position)
+            self.assertFalse(self.core.wants_awake())
+
+    def test_natural_end_still_advances(self):
+        # Reset RelTime, but the rest of the track has had time to play.
+        renderer = self.stop_near_the_end(stopped_after=3, position_on_stop=0)
+        self.assertEqual(renderer.tracks(), [5, 6])
+        self.setUp()
+        # The renderer itself reports the end, however soon it is seen.
+        renderer = self.stop_near_the_end(stopped_after=0.2, position_on_stop=200)
+        self.assertEqual(renderer.tracks(), [5, 6])
+
+    # ── Review 5 / P2-2: an unplayable track is skipped, not the album ──
+
+    def test_missing_middle_track_is_skipped_and_reported(self):
+        renderer = self.fake_renderer()
+        self.cast_queue([5, 99, 6], 0)  # 99: gone from the parent library (404)
+        self.play_through(renderer)
+        self.assertEqual(renderer.tracks(), [5, 6])
+        status, _, data = self.request(f'/bridge/session/{self.UDN}', headers={'X-API-Key': CREDENTIAL})
+        info = json.loads(data)
+        self.assertEqual([s['track_id'] for s in info['skipped']], [99])
+        self.assertIsNone(info['error'])
+
+    def test_unsupported_and_refused_tracks_are_skipped(self):
+        renderer = self.fake_renderer()
+        real_soap = renderer.soap
+        def soap(device, action, values=None):
+            if action == 'SetAVTransportURI' and values['CurrentURI'].endswith('/7.flac'):
+                return None  # the EXN100 refuses this one
+            return real_soap(device, action, values)
+        self.core.soap = soap
+        self.cast_queue([5, 98, 7, 6], 0)  # 98: DSF, which the bridge does not stream
+        self.play_through(renderer)
+        self.assertEqual(renderer.tracks(), [5, 6])
+        self.assertEqual([t for t, _ in self.core.sessions[self.UDN].skipped], [98, 7])
+
+    def test_nothing_playable_left_ends_with_an_error(self):
+        renderer = self.fake_renderer()
+        self.cast_queue([5, 99, 98], 0, repeat='all')  # wraps back to 5 once, never loops
+        self.play_through(renderer)
+        self.assertEqual(renderer.tracks(), [5, 5])
+        self.setUp()
+        renderer = self.fake_renderer()
+        self.cast_queue([5, 99, 98], 0)
+        self.play_through(renderer)
+        self.assertEqual(renderer.tracks(), [5])
+        session = self.core.sessions[self.UDN]
+        self.assertEqual((session.idle, session.error), (True, 'No playable track left in the queue'))
+
+    def test_whole_queue_gone_with_repeat_all_stops_after_one_round(self):
+        renderer = self.fake_renderer()
+        self.cast_queue([5, 99, 98], 0, repeat='all')
+        real_json = self.core.upstream_json
+        lookups = []
+        def upstream_json(path, *args, **kwargs):
+            lookups.append(path)
+            if path == '/api/tracks/5':  # removed from the library while it played
+                raise bridge.HTTPFailure(404, 'Not found in the parent Velvet library')
+            return real_json(path, *args, **kwargs)
+        with patch.object(self.core, 'upstream_json', side_effect=upstream_json):
+            self.play_through(renderer)
+        self.assertEqual(renderer.tracks(), [5])
+        self.assertEqual([p for p in lookups if p.startswith('/api/tracks/')],
+                         ['/api/tracks/99', '/api/tracks/98', '/api/tracks/5'])  # once round, no loop
+        self.assertEqual(self.core.sessions[self.UDN].error, 'No playable track left in the queue')
+
+    def test_unreachable_parent_retries_then_gives_up_without_skipping(self):
+        clock = [1000.0]
+        self.core.clock = lambda: clock[0]
+        self.addCleanup(setattr, self.core, 'clock', time.monotonic)
+        renderer = self.fake_renderer()
+        self.cast_queue([5, 6, 7], 0)
+        real_json = self.core.upstream_json
+        down = [True]
+        def upstream_json(path, *args, **kwargs):
+            if down[0] and path == '/api/tracks/6':
+                raise bridge.HTTPFailure(502, 'Parent Velvet is unavailable over Tailscale')
+            return real_json(path, *args, **kwargs)
+        with patch.object(self.core, 'upstream_json', side_effect=upstream_json):
+            self.play_through(renderer)  # first try fails
+            self.core.monitor_once(self.UDN)  # too soon to retry
+            self.assertEqual(self.core.sessions[self.UDN].failures, 1)
+            clock[0] += 3
+            down[0] = False  # Tailscale is back
+            self.core.monitor_once(self.UDN)
+        self.assertEqual(renderer.tracks(), [5, 6])  # track 6 was not skipped
+        self.setUp()
+        renderer = self.fake_renderer()
+        self.cast_queue([5, 6, 7], 0)
+        with patch.object(self.core, 'upstream_json', side_effect=upstream_json):
+            down[0] = True
+            self.play_through(renderer)
+            for _ in range(bridge.MAX_ADVANCE_RETRIES):
+                clock[0] += 60
+                self.core.monitor_once(self.UDN)
+        session = self.core.sessions[self.UDN]
+        self.assertEqual(renderer.tracks(), [5])
+        self.assertTrue(session.idle)
+        self.assertIn('unavailable', session.error)
+
+    # ── Review 5 / P1-B: what a reloaded page reattaches to ──
+
+    def test_session_discovery_for_a_reloaded_page(self):
+        renderer = self.fake_renderer()
+        self.cast_queue([5, 6, 7], 0)
+        self.play_through(renderer)
+        self.play_through(renderer)  # two unattended advances
+        status, _, data = self.request('/bridge/session', headers={'X-API-Key': CREDENTIAL})
+        info = json.loads(data)
+        self.assertEqual((status, info['active'], info['udn'], info['track_id'], info['queue_index'], info['ids']),
+                         (200, True, self.UDN, 7, 2, [5, 6, 7]))
+        self.assertEqual((info['name'], info['state']), ('EXN100 Living Room', 'PLAYING'))
+        loads = len(renderer.loaded)
+        self.request(f'/api/cast/control/{self.UDN}/Stop', method='POST',
+                     headers={'X-API-Key': CREDENTIAL, 'Cookie': COOKIE})
+        _, _, data = self.request('/bridge/session', headers={'X-API-Key': CREDENTIAL})
+        self.assertEqual(json.loads(data), {'active': False})
+        self.assertEqual(len(renderer.loaded), loads)  # asking never loads anything
 
     def test_monitor_thread_holds_keep_awake_for_the_session(self):
         renderer = self.fake_renderer()
