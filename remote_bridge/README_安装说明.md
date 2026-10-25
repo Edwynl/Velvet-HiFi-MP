@@ -2,7 +2,7 @@
 
 **用途：** 父母家的 Velvet 是唯一音乐服务器、唯一搜索索引和唯一 FLAC 文件所在地。你家 Windows 只运行这个轻量 Bridge；iPhone 打开 Bridge 提供的 Velvet 页面，用原来的 Artist / Album / Track 搜索和播放列表，选择本地 Cambridge Audio EXN100 作为输出。**不需要 StreamMagic 整理曲库，不需要 AirPlay，不需要 USB，不复制音乐文件。**
 
-> 版本：0.1.6，测试版。已完成模拟父服务器 / 模拟 DLNA 设备离线测试。**尚未在真实 Windows + Tailscale + EXN100 上验收**。首次播放需要做实体设备测试。
+> 版本：0.1.7，测试版。已完成模拟父服务器 / 模拟 DLNA 设备离线测试。**尚未在真实 Windows + Tailscale + EXN100 上验收**。首次播放需要做实体设备测试。
 
 ## 网络拓扑
 
@@ -36,7 +36,8 @@
      "lan_ip": "auto",
      "media_port": 8878,
      "renderer_network": "auto",
-     "preferred_renderer": "EXN100"
+     "preferred_renderer": "EXN100",
+     "stay_awake": true
    }
    ```
 
@@ -50,7 +51,19 @@
    New-NetFirewallRule -DisplayName "Velvet Bridge control (Tailscale)" -Direction Inbound -Protocol TCP -LocalPort 8877 -InterfaceAlias Tailscale -Action Allow
    ```
 
-7. **开机自启（可选）：** 任务计划程序 → 创建任务 → 触发器"登录时" → 操作"启动程序"选 `start_bridge.bat`，"起始于"填 Bridge 所在文件夹。Bridge 在播放队列进行中（播放、暂停、曲间切换）会阻止这台 Windows 自动睡眠，停止播放或队列播完后恢复正常电源策略；父母家那台 Windows 也不能在听歌时睡眠，请在其电源设置中设为"从不睡眠"或保持 Velvet 主机常开。
+7. **让你家 Windows 随时可被远程使用（必需）。** 从手机远程开始播放时，手机要先通过 Tailscale 连上这台 Windows；它一旦因空闲睡着，第一次播放就无法开始（Bridge 收不到任何请求，也无法自己唤醒）。所以这台 Windows 平时无人使用时也必须醒着、Tailscale 在线、Bridge 在运行：
+   - **电源（Bridge 已默认处理空闲睡眠）：** `config.json` 的 `"stay_awake": true`（默认）表示只要 Bridge 在运行，就阻止 Windows 因空闲进入睡眠（屏幕仍可照常关闭）。它挡不住：开始菜单里的"睡眠"、按电源键、笔记本合盖、Windows 更新后的自动重启。建议再把电源计划设为接通电源时从不睡眠、从不休眠（管理员 PowerShell）：
+
+     ```powershell
+     powercfg /change standby-timeout-ac 0
+     powercfg /change hibernate-timeout-ac 0
+     ```
+
+     笔记本请在"选择关闭盖子的功能"中把"接通电源"设为"不采取任何操作"。**检查方法：** Bridge 运行时，在管理员 PowerShell 执行 `powercfg /requests`，`SYSTEM:` 一栏下应能看到 `python.exe`。
+   - **Tailscale 无人值守：** 任务栏 Tailscale 图标 → Preferences → 勾选 **Run unattended**。否则这台 Windows 注销或重启后、没人登录时，就不在 tailnet 上，手机连不上。
+   - **开机自启：** 任务计划程序 → 创建任务 → 触发器"登录时" → 操作"启动程序"选 `start_bridge.bat`，"起始于"填 Bridge 所在文件夹。Windows 重启后需要有用户登录才会启动 Bridge：可用 `netplwiz` 设置自动登录；或把任务设为"不管用户是否登录都要运行"（这样不会出现防火墙弹窗，请先用上一步的命令建好防火墙规则）。
+   - 若把 `stay_awake` 设为 `false`，Bridge 只在播放或暂停期间阻止睡眠（旧版行为）；空闲后 Windows 可能睡着，手机就无法远程开始播放，除非你已把电源计划设为从不睡眠。
+   - 父母家那台 Windows 同样不能睡眠：请在其电源设置中设为"从不睡眠"，保持 Velvet 主机常开。
 
 > **自动 IP 选择错误时：** Bridge 会优先使用默认路由（通常是 Wi-Fi 或以太网）的地址，不会再误选 Hyper-V / WSL / Docker 虚拟网卡；启动日志中的 `EXN100 media (LAN)` 地址应与 `ipconfig` 里 Wi-Fi/以太网的 IPv4 一致。若开启了 Tailscale 出口节点（exit node）或仍然不对，请手动设置。 用 Windows `ipconfig` 查看你家 Windows 的 Wi-Fi/以太网 IPv4 地址，把 `lan_ip` 从 `auto` 改为该地址（如 `192.168.1.20`）。用 `tailscale ip -4` 查看你家 Windows 的 Tailscale IP，把 `control_bind` 改为该地址（如 `100.110.120.130`）。`renderer_network` 默认按 LAN IP 的 `/24` 子网计算；若 EXN100 使用非 `/24` LAN，请改为实际网段，如 `192.168.0.0/23`。
 
@@ -71,6 +84,8 @@
 **Safari / PWA 被系统完全重新加载后**（iOS 有时会丢弃后台页面），重新打开 Bridge 地址时，页面会自动接回正在播放（或暂停）的 EXN100：显示当前曲目和整张队列，可直接暂停、切歌、停止，不会重新起播。只有在这个新页面上你还没有选择输出、也没有播放任何东西时才会自动接回；一旦你自己选了输出（比如本机播放器）或播放了别的，就不会再被接管。接回时也会恢复"重复"模式（例如全部循环），并且只是显示、不会改动 Bridge 上的队列。另一台手机换了歌，这台手机也会跟着显示。
 
 **手机和平板同时使用时**，一台设备对队列的修改（随机播放、重复模式、增删曲目）会在约 2 秒内出现在另一台上，即使正在播的是同一首歌。两台设备几乎同时修改时，各改各的部分（比如一台打乱顺序、另一台切换重复）会合并保留；如果两台都改了曲目顺序，以先到 Bridge 的为准，后到的设备会显示"The queue was changed on another device"并切换为那个版本，不会悄悄覆盖。每台设备第一次修改队列时，若该浏览器会话还没输入过管理员密码，会弹出 Administrator Verification。
+
+**一台设备停止，所有设备都停止。** 手机 A 停止 EXN100（例如把输出切回本机播放器）后，Bridge 立刻结束这次播放；手机 B 会在约 2 秒内显示"EXN100 stopped playing"并停止跟随，即使停止发生在一首歌的最后几秒，也不会有任何设备自动接着播下一首。同样，如果有人在 StreamMagic 里用 EXN100 播别的内容，所有 Velvet 页面都会显示已停止，不会把它抢回来。之后在任意设备上点一首歌即可重新投放；只按播放键会提示"Playback was stopped: choose a track to play it again"。自动下一首只由 Bridge 决定，网页本身不再在曲终时自行投放。
 
 **队列中某首无法播放时**（父母家曲库里已删除、格式不支持，或 EXN100 拒绝），Bridge 会跳过它继续播下一首，并在页面上提示跳过了几首；最多绕队列一圈，不会无限循环。父母家 Velvet 暂时连不上（Tailscale 断线、重启）时不会跳歌，而是逐渐拉长间隔重试 4 次，仍失败才停下并提示原因。
 

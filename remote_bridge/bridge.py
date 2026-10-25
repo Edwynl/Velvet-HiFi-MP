@@ -83,6 +83,9 @@ MAX_ADVANCE_RETRIES = 4
 # for this tick (the end stays pending; the next tick tries again).
 MAX_ADVANCE_EDITS = 8
 SNAPSHOT_FRESH = 1.2
+# A session lookup reads the renderer outside the lock; this many tries when
+# a Stop or cast keeps replacing the session meanwhile.
+SESSION_READ_TRIES = 3
 MAX_QUEUE = 5000
 REPEAT_MODES = frozenset({'none', 'all', 'one'})
 MAX_HTML = 4 * 1024 * 1024
@@ -221,6 +224,10 @@ class BridgeConfig:
     # Tailscale IPs or login names allowed to use :8877. Empty: only devices
     # of the Tailscale user who owns this bridge PC.
     allowed_peers: tuple[str, ...] = ()
+    # Hold Windows out of idle sleep for as long as the bridge runs: a phone
+    # can only start playback remotely if this PC still answers on Tailscale.
+    # False: only while a renderer plays or is paused.
+    stay_awake: bool = True
 
     @classmethod
     def load(cls, path: Path) -> 'BridgeConfig':
@@ -255,10 +262,13 @@ class BridgeConfig:
         peers = raw.get('allowed_peers', [])
         if not isinstance(peers, list) or not all(isinstance(x, str) and x.strip() for x in peers):
             raise ValueError('allowed_peers must be a list of Tailscale IPs or login names.')
+        stay_awake = raw.get('stay_awake', True)
+        if type(stay_awake) is not bool:
+            raise ValueError('stay_awake must be true or false.')
         return cls(url, control, cp, lan_ip, mp, network,
                    str(raw.get('preferred_renderer', 'EXN100')),
                    tuple(h.strip().rstrip('.').lower() for h in hosts),
-                   tuple(x.strip().lower() for x in peers))
+                   tuple(x.strip().lower() for x in peers), stay_awake)
 
     def host_allowed(self, host_header: str) -> bool:
         """Refuse DNS-rebinding hosts: the parent trusts every bridge request."""
@@ -1136,32 +1146,46 @@ class Bridge:
 
     def session_info(self, udn: str | None, credential: str, cookie: str = '') -> dict:
         """A renderer's queue session, or with no `udn` the most recent one
-        still playing or paused: what a freshly loaded page reattaches to."""
+        still playing or paused: what a freshly loaded page reattaches to.
+
+        The renderer is read without the lock; a Stop or a new cast meanwhile
+        ends or replaces the session, so the answer is built only if the
+        session read is still the renderer's, else the lookup starts again."""
         self.authenticate(credential, cookie)
-        with self.lock:
-            if udn is None:
-                live = [(s.revision, u) for u, s in self.sessions.items() if not s.idle]
-                udn = max(live)[1] if live else None
-            session = self.sessions.get(udn) if udn else None
-            device = self.devices.get(udn) if udn else None
-            if session is None or device is None:
-                return {'active': False}
-            snapshot = self.snapshots.get(udn)
-        if (snapshot is None or f'/media/{session.token}/' not in snapshot[4]
-                or time.monotonic() - snapshot[0] >= SNAPSHOT_FRESH):
-            # Read of another stream (e.g. the previous track's end, just
-            # before the advance), or old: a reattaching page must show what
-            # plays now.
-            state, (position, _, _) = self.transport(device), self.position(device)
-        else:
-            state, position = snapshot[1], snapshot[2]
-        with self.lock:
-            return {'active': True, 'udn': udn, 'name': device.name, 'track_id': session.track_id,
-                    'queue_index': session.index, 'queue_length': len(session.ids), 'ids': list(session.ids),
-                    'repeat': session.repeat, 'revision': session.revision,
-                    'advance_seq': session.advance_seq, 'idle': session.idle, 'state': state,
-                    'position': position, 'skipped': [{'track_id': t, 'error': e} for t, e in session.skipped],
-                    'error': session.error}
+        wanted = udn
+        for _ in range(SESSION_READ_TRIES):
+            with self.lock:
+                udn = wanted
+                if udn is None:
+                    live = [(s.revision, u) for u, s in self.sessions.items() if not s.idle]
+                    udn = max(live)[1] if live else None
+                session = self.sessions.get(udn) if udn else None
+                device = self.devices.get(udn) if udn else None
+                if session is None or device is None:
+                    return {'active': False}
+                snapshot = self.snapshots.get(udn)
+            if (snapshot is None or f'/media/{session.token}/' not in snapshot[4]
+                    or time.monotonic() - snapshot[0] >= SNAPSHOT_FRESH):
+                # Read of another stream (e.g. the previous track's end, just
+                # before the advance), or old: a reattaching page must show what
+                # plays now.
+                state, (position, _, _) = self.transport(device), self.position(device)
+            else:
+                state, position = snapshot[1], snapshot[2]
+            with self.lock:
+                if self.sessions.get(udn) is session:
+                    return self._session_answer(udn, device, session, state, position)
+        # Changing faster than the renderer answers: the page asks again later.
+        raise HTTPFailure(503, 'Playback changed while reading it; try again')
+
+    @staticmethod
+    def _session_answer(udn: str, device: Renderer, session: QueueSession, state: str, position: float) -> dict:
+        return {'active': True, 'udn': udn, 'name': device.name, 'track_id': session.track_id,
+                'queue_index': session.index, 'queue_length': len(session.ids), 'ids': list(session.ids),
+                'repeat': session.repeat, 'revision': session.revision,
+                'advance_seq': session.advance_seq, 'idle': session.idle, 'state': state,
+                'position': position, 'skipped': [{'track_id': t, 'error': e} for t, e in session.skipped],
+                'error': session.error}
 
     @staticmethod
     def next_index(session: QueueSession | QueueSpec, after: int | None = None) -> int | None:
@@ -1338,7 +1362,7 @@ class Bridge:
                     self.monitor_once(udn)
                 except Exception:
                     LOG.exception('Queue monitor error')
-            wanted = self.wants_awake()
+            wanted = self.cfg.stay_awake or self.wants_awake()
             if wanted != awake:
                 keep_awake(wanted)  # this long-lived thread holds the request
                 awake = wanted
@@ -1354,6 +1378,13 @@ class Bridge:
                 if not self.claim_turn(udn, seq):
                     # Newer playback already reached the renderer; it stands.
                     return {'success': True, 'superseded': True}
+                with self.lock:
+                    stopped = udn not in self.sessions
+                if action == 'Play' and stopped:
+                    # Nothing of ours is loaded: a Stop (from any device) revoked
+                    # it, or another source took the renderer. Play would only
+                    # retry a dead stream or resume someone else's.
+                    return {'success': False, 'error': 'Playback was stopped: choose a track to play it again'}
                 success = self.soap(device, action, {'Speed': '1'} if action == 'Play' else {}) is not None
                 # The user left this renderer: revoke even if it did not answer,
                 # cut relays already open, and end the queue session.
@@ -1368,7 +1399,9 @@ class Bridge:
         self.authenticate(credential, cookie)
         device = self.ensure_device(udn)
         with self.lock:
-            snapshot = self.snapshots.get(udn)
+            # The monitor reads only renderers with a session: after a Stop
+            # or another source taking over, its last read is out of date.
+            snapshot = self.snapshots.get(udn) if udn in self.sessions else None
         if snapshot and time.monotonic() - snapshot[0] < SNAPSHOT_FRESH:
             # The monitor read it a moment ago: spare the renderer a second poll.
             _, state, position, duration, uri = snapshot
@@ -1382,6 +1415,12 @@ class Bridge:
             # Polling the loaded stream keeps its grant alive through a pause.
             with contextlib.suppress(HTTPFailure):
                 track_id = self.grant_for(tok, int(tid), ext, device.ip).track_id
+        if state in ('STOPPED', 'NO_MEDIA_PRESENT'):
+            # The bridge alone plays what follows (monitor_once). Velvet's page
+            # would also cast its next track on STOPPED near the end, and a
+            # page that missed another device's Stop (or StreamMagic taking
+            # the renderer) would restart playback; at 0 it never does.
+            position = 0.0
         return {'state': state, 'position': position, 'duration': duration,
                 'track_id': track_id, 'is_playing': state == 'PLAYING'}
 
@@ -1725,6 +1764,10 @@ def serve(cfg: BridgeConfig):
         LOG.info('EXN100 media (LAN): http://%s:%d', cfg.lan_ip, cfg.media_port)
         LOG.info('Parent Velvet: %s', cfg.upstream_url)
         LOG.info('No audio files or music library index will be copied.')
+        if cfg.stay_awake:
+            LOG.info('Keeping Windows awake while the bridge runs (stay_awake), so a phone can start '
+                     'playback at any time. Sleep from the Start menu, the power button or a closed lid '
+                     'still stops the bridge.')
         if cfg.control_bind == '127.0.0.1':
             LOG.warning('Tailscale IP not detected. Phone cannot connect until control_bind is configured '
                         'or Tailscale Serve is enabled. NEVER enable Tailscale Funnel for the bridge: '

@@ -7,5 +7,6 @@
   "renderer_network": "auto",
   "preferred_renderer": "EXN100",
   "allowed_hosts": [],
-  "allowed_peers": []
+  "allowed_peers": [],
+  "stay_awake": true
 }

@@ -11,6 +11,9 @@
  *   - takes in changes from elsewhere (the bridge's own auto-next, another
  *     phone's cast or queue edit), merged with this page's unsent edits,
  *     without casting anything;
+ *   - when that session stops elsewhere (another device's Stop, the end of
+ *     the queue, another source on the renderer), shows it stopped and
+ *     disarms Velvet's own cast auto-next, so this page never casts over it;
  *   - on a freshly loaded page (Safari or the PWA reloaded it), reattaches to
  *     the session still playing, repeat mode included, again without casting
  *     or changing anything.
@@ -97,6 +100,7 @@
           init = { ...init, body: JSON.stringify({ ...body, bridge_queue: queue }) };
           // The cast sets the bridge's queue: later edits are relative to it.
           base = { udn: decodeURIComponent(cast[1]), revision: null, ids: queue.ids, repeat: queue.repeat };
+          released = false;
         }
       }
     } catch {
@@ -276,6 +280,22 @@
     base = { udn, revision: session.revision, ids: session.ids, repeat: session.repeat };
   }
 
+  // The session this page shows stopped elsewhere: another device's Stop,
+  // the end of the queue, a Stop on the renderer, or another source (e.g.
+  // StreamMagic) took the renderer. Show it stopped and take away Velvet's
+  // own cast polling and auto-next, which could otherwise cast the next
+  // track over that Stop; send nothing. Choosing a track casts again.
+  let released = false;
+  function release() {
+    released = true;
+    state.castAutoNextArmed = false;
+    state.castPlaybackUnverified = true; // Velvet: no progress or auto-next from a status until a new cast
+    state.playing = false;
+    if (typeof stopCastPolling === 'function') stopCastPolling();
+    if (typeof updatePlayBtnUI === 'function') updatePlayBtnUI();
+    if (typeof showToast === 'function') showToast(`${state.castDevice.name || 'The renderer'} stopped playing`, 5000);
+  }
+
   let seenSkips = '';
   let refused = ''; // an edit whose administrator prompt the user cancelled
   let resyncing = false; // the last post was refused (409): no second immediate retry
@@ -305,15 +325,28 @@
       }
       const udn = state.castDevice.udn;
       const session = await getJson(`/api/bridge/session/${udn}`);
-      if (!session || !session.active) return;
-      reportSkips(session);
+      if (!session) return;
+      if (session.active) reportSkips(session);
       if (state.castPending || state.castControlPending) return; // our own request decides
       const ours = base && base.udn === udn ? base : null;
+      if (!session.active || session.idle) {
+        if (ours && ours.revision !== null && !released) release();
+        if (!session.active) base = null; // nothing left to edit against
+        return;
+      }
       if (ours && ours.revision !== null && session.revision < ours.revision) return; // an older answer
+      const current = state.currentTrack ? state.currentTrack.id : null;
+      if (released) {
+        // Playing again (Play on the renderer, or another device's cast): follow it afresh.
+        if (await adopt(session, reconcile(ours, current === null ? null : queueFor(current), session))) {
+          released = false;
+          agree(udn, session);
+        }
+        return;
+      }
       if (!ours || session.revision !== ours.revision) {
         // A change this page has not seen: the bridge's own advance, or
         // another phone's cast or queue edit. Keep this page's own edits.
-        const current = state.currentTrack ? state.currentTrack.id : null;
         const local = current === null ? null : queueFor(current);
         const merged = reconcile(ours, local, session);
         if (session.track_id !== current) {

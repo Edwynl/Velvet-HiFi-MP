@@ -54,7 +54,7 @@ function page({ queue = [5, 6, 7], index = 0, current = 5, casting = true, sessi
     currentTrack: current === null ? null : { id: current, title: `T${current}` },
     repeatMode: 'none',
     outputMode: casting ? 'cast' : 'browser',
-    castDevice: casting ? { udn: 'uuid:EXN100' } : null,
+    castDevice: casting ? { udn: 'uuid:EXN100', name: 'EXN100' } : null,
     castPending: false,
     castControlPending: null,
     castSeq: 0,
@@ -72,6 +72,7 @@ function page({ queue = [5, 6, 7], index = 0, current = 5, casting = true, sessi
     updatePlayerUI() {},
     updatePlayBtnUI() {},
     startCastPolling() { context.polling = true; },
+    stopCastPolling() { context.polling = false; },
     showToast(message) { context.toasts.push(message); },
     toasts: [],
     location: { href: 'http://100.80.1.2:8877/', origin: 'http://100.80.1.2:8877' },
@@ -364,6 +365,57 @@ test('a cancelled administrator prompt is not repeated for the same edit', async
   state.repeatMode = 'one'; // another edit: ask again
   await api.sync();
   assert.equal(prompts, 2);
+});
+
+// ── Review 7 / P1: another device's Stop is final on every page ──
+
+test('a Stop from another device disarms this page\'s cast auto-next and polling, sending nothing', async () => {
+  const { api, state, context, calls, bridge } = page({ session: advanced });
+  await api.sync(); // following the session on track 6
+  state.castAutoNextArmed = true;
+  context.polling = true;
+  const before = calls.length;
+  bridge.session = null; // phone A stopped the EXN100: /api/bridge/session says {active: false}
+  await api.sync();
+  await api.sync();
+  assert.equal(state.castAutoNextArmed, false);
+  assert.equal(state.castPlaybackUnverified, true);
+  assert.equal(state.playing, false);
+  assert.equal(context.polling, false);
+  assert.deepEqual(context.toasts, ['EXN100 stopped playing'], 'told once');
+  assert.deepEqual(calls.slice(before).map(c => c.url), ['/api/bridge/session/uuid:EXN100', '/api/bridge/session/uuid:EXN100']);
+});
+
+test('an idle session (end of queue, Stop on the renderer) is shown stopped, then followed when it plays again', async () => {
+  const { api, state, context, bridge } = page({ session: advanced });
+  await api.sync();
+  bridge.session = { ...advanced, idle: true, state: 'STOPPED' };
+  await api.sync();
+  assert.equal(state.castAutoNextArmed, false);
+  assert.equal(context.polling, false);
+  bridge.session = { ...advanced, idle: false, state: 'PLAYING' }; // Play pressed on the EXN100
+  await api.sync();
+  assert.equal(context.polling, true);
+  assert.equal(state.castAutoNextArmed, true);
+  assert.equal(state.castPlaybackUnverified, false);
+  assert.equal(state.currentTrack.id, 6);
+});
+
+test('after a Stop, another device\'s new cast is followed again', async () => {
+  const { api, state, context, bridge } = page({ session: advanced });
+  await api.sync();
+  bridge.session = null;
+  await api.sync();
+  bridge.session = { ...advanced, track_id: 7, queue_index: 2, revision: 12 };
+  await api.sync();
+  assert.equal(state.currentTrack.id, 7);
+  assert.equal(context.polling, true);
+});
+
+test('a page that never saw its session play is not told it stopped', async () => {
+  const { api, context } = page({ session: { active: false } }); // e.g. its first cast failed
+  await api.sync();
+  assert.deepEqual(context.toasts, []);
 });
 
 // ── Review 6 / P2: a reattached queue does not fetch every track ──

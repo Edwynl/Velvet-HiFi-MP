@@ -1,5 +1,67 @@
 # Velvet Remote Bridge — Validation
 
+## 0.1.7 (seventh review: one P1 + two P2) — 2026-10-25
+
+- `python -m unittest discover -s tests -v`: **97 tests passed**, five consecutive runs;
+  `node tests/queue_sync.test.mjs`: **26/26**; `tests/manual_e2e_real_main.py`: **20/20**. Repository suites (unchanged by
+  this PR): pytest 568 passed; frontend Node 23/23 (`frontend-contract` only from a path
+  without spaces: it does not decode `%20` in its own path).
+- **Real browser, administrator password set, two devices** (`manual_browser_stack.py` +
+  `manual_admin_two_devices.mjs`; the fake EXN100 now keeps RelTime on Stop, as some
+  renderers do, and can be taken over by "another source"): **all checks passed in three runs on fresh stacks** (34 or 35 checks: when Shuffle
+  puts the playing song last, one extra same-track edit moves it first so a next song
+  exists; an earlier run without that step failed only because the queue correctly ended).
+  The same driver against 0.1.6 (`4a4cbbe`) reproduces the review's P1: 2.3 s after phone
+  A's Stop, tablet B cast Song 4 (`load` + `play` on the renderer), and when the other
+  source's song ended a page cast Song 4 over it (30/35).
+- **P1 a Stop from one device is final for all.** Two layers:
+  1. Bridge (independent of any page's timers): `/api/cast/status` reports a STOPPED /
+     NO_MEDIA_PRESENT renderer at position 0. Velvet's own cast auto-next fires only on
+     STOPPED with position >= duration - 2, so no page can cast the next track over
+     another device's Stop, an external source, or the bridge's own advance. The bridge
+     monitor alone plays what follows (it already did, unattended). Status also stops
+     serving the monitor's last read once the session has ended (it was up to 1.2 s old,
+     from before the Stop). `Play` with no bridge session (after a Stop, or with another
+     source on the renderer) is refused with "choose a track" instead of resuming a revoked
+     stream or someone else's.
+  2. Page: when its session disappears or goes idle, queue_sync.js disarms
+     `castAutoNextArmed`, marks the cast unverified, stops Velvet's cast polling, shows
+     "<renderer> stopped playing" once, and sends nothing; a later cast from any device
+     (or Play on the renderer) is followed again.
+  Python: B at 198/200 s, A stops, renderer keeps RelTime 198 with the revoked TrackURI:
+  three status polls report STOPPED/0/no track, session inactive, zero SOAP actions;
+  Play afterwards restarts nothing, a chosen track plays; StreamMagic taking the renderer
+  mid-song ends the session and its song's end (RelTime kept) reports 0. Node: Stop
+  disarms and stops polling, toast once, only session reads sent; idle then playing again
+  is followed; a new cast after a Stop is followed; a page that never saw its session is
+  not told. Browser: song within 2.4 s of its end, phone A switches output (Velvet sends
+  Stop), the tablet's queue sync cut off (its `/api/bridge/session` requests aborted) so
+  only Velvet's own polling runs there: no load, no Play, no cast for 9 s past the song's
+  end; with sync restored the tablet shows stopped, auto-next disarmed, polling ended; 4 s
+  later still nothing. Then phone casts again and the tablet follows; another source takes
+  the EXN100: session ends, both pages disarm, nothing casts over it before or after its
+  song ends.
+- **P2 session read across a Stop or cast.** `session_info` answers only if the session it
+  read is still the renderer's after the (unlocked) renderer reads, else looks again (3
+  tries, then 503 so the page simply retries). Tests hold the renderer read: a concurrent
+  Stop gives `{active: false}`, a concurrent new cast gives the new track.
+- **P2 Windows asleep before the first remote cast.** New `stay_awake` (default true): the
+  monitor thread holds `ES_SYSTEM_REQUIRED` for as long as the bridge runs, not only during
+  a session. Tests: requested with no session, released at shutdown; config default,
+  false, invalid value. On this PC `SetThreadExecutionState` returned the held
+  `ES_CONTINUOUS|ES_SYSTEM_REQUIRED`; `powercfg /requests` needs an elevated prompt (not
+  available here) and another process already held the system flag, so the per-process view
+  remains a hardware-acceptance item. The README now lists the required host setup:
+  `stay_awake`, power plan never sleep/hibernate on AC, lid action, Tailscale *Run
+  unattended*, start at logon with auto-logon or "run whether user is logged on or not";
+  what `stay_awake` cannot prevent (Start-menu sleep, power button, lid, update restarts).
+- Mutation check: status keeping the end position, no session re-check, stale snapshot
+  after Stop, blind Play, `stay_awake` ignored (Python); no release, release leaving
+  auto-next armed, no re-follow (Node): each makes at least one test fail.
+- Not covered here: physical EXN100 (including whether it keeps RelTime on Stop), real
+  Tailscale LAN/WAN, iPhone/PWA lock and reload, 30-minute pause, FLAC 44.1/96/192 kHz on
+  hardware, Windows power settings on the real host.
+
 ## 0.1.6 (sixth review: four P1 + P2) — 2026-10-25
 
 - `python -m unittest discover -s tests -v`: **90 tests passed**, five consecutive runs;

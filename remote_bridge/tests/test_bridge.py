@@ -754,7 +754,13 @@ class ServerFixture(unittest.TestCase):
 
     CONTROL = '/api/cast/control/uuid:EXN100-test/'
 
+    def loaded_session(self):
+        """What a cast leaves: Velvet sends Play/Pause only for a track it cast."""
+        self.core.sessions['uuid:EXN100-test'] = bridge.QueueSession(
+            ids=(5,), index=0, repeat='none', credential=CREDENTIAL, token='loaded', track_id=5)
+
     def test_older_pause_does_not_undo_newer_play(self):
+        self.loaded_session()
         actions, answers = self.first_request_held_in_admin_check(
             (self.CONTROL + 'Pause',), (self.CONTROL + 'Play',))
         self.assertEqual(actions, ['Play'])  # the renderer ends up playing
@@ -762,6 +768,7 @@ class ServerFixture(unittest.TestCase):
         self.assertEqual(answers['second'], (200, {'success': True}))
 
     def test_older_play_does_not_undo_newer_pause(self):
+        self.loaded_session()
         actions, _ = self.first_request_held_in_admin_check(
             (self.CONTROL + 'Play',), (self.CONTROL + 'Pause',))
         self.assertEqual(actions, ['Pause'])
@@ -784,6 +791,7 @@ class ServerFixture(unittest.TestCase):
     def test_controls_in_order_all_run(self):
         # No race: Pause then Play, then Stop, each reaches the renderer.
         actions = []
+        self.loaded_session()
         with patch.object(self.core, 'soap', side_effect=lambda d, a, v=None: actions.append(a) or b'<ok/>'):
             for action in ('Pause', 'Play', 'Stop'):
                 status, _, data = self.request(self.CONTROL + action, method='POST',
@@ -804,18 +812,20 @@ class ServerFixture(unittest.TestCase):
         status, _, data = self.request(path, role='media', headers={'Range': 'bytes=100-'})
         self.assertEqual((status, data), (206, AUDIO[100:]))
 
-    def test_status_at_natural_end_lets_the_ui_auto_advance(self):
-        # Velvet plays the next track when a confirmed cast reports STOPPED
-        # with position >= duration - 2 and its own track_id.
+    def test_status_never_hands_the_ui_a_natural_end(self):
+        # Velvet casts its next track itself when a confirmed cast reports
+        # STOPPED at position >= duration - 2. The bridge plays the queue on
+        # (monitor_once), so a stopped renderer is reported at 0: a page
+        # never casts over the bridge's advance or another device's Stop.
         _, grant = self.cast_ok()
-        with patch.object(self.core, 'transport', return_value='STOPPED'), \
-             patch.object(self.core, 'position', return_value=(209.5, 210.0, grant.url(self.core.cfg))):
+        with patch.object(self.core, 'transport', return_value='STOPPED'),              patch.object(self.core, 'position', return_value=(209.5, 210.0, grant.url(self.core.cfg))):
             status, _, data = self.request('/api/cast/status/uuid:EXN100-test',
                                            headers={'X-API-Key': CREDENTIAL})
-        self.assertEqual(json.loads(data), {'state': 'STOPPED', 'position': 209.5, 'duration': 210.0,
+        self.assertEqual(json.loads(data), {'state': 'STOPPED', 'position': 0.0, 'duration': 210.0,
                                             'track_id': 5, 'is_playing': False})
-        soap, _ = self.cast_ok()  # the UI's next cast after that end still plays
-        self.assertIn('Play', [c.args[1] for c in soap.call_args_list])
+        with patch.object(self.core, 'transport', return_value='PAUSED_PLAYBACK'),              patch.object(self.core, 'position', return_value=(120.0, 210.0, grant.url(self.core.cfg))):
+            _, _, data = self.request('/api/cast/status/uuid:EXN100-test', headers={'X-API-Key': CREDENTIAL})
+        self.assertEqual(json.loads(data)['position'], 120.0)  # only a stop hides it
 
     # ── Review 3 / P2: Stop while the relay waits on a stalled parent ──
 
@@ -1423,6 +1433,8 @@ class ServerFixture(unittest.TestCase):
 
     def test_monitor_thread_holds_keep_awake_for_the_session(self):
         renderer = self.fake_renderer()
+        self.core.cfg = bridge.replace(self.core.cfg, stay_awake=False)  # only while playing
+        self.addCleanup(setattr, self.core, 'cfg', bridge.replace(self.core.cfg, stay_awake=True))
         calls, stop = [], threading.Event()
         with patch.object(bridge, 'MONITOR_INTERVAL', 0.05), \
              patch.object(bridge, 'keep_awake', side_effect=calls.append):
@@ -1439,6 +1451,129 @@ class ServerFixture(unittest.TestCase):
                 stop.set()
                 thread.join(5)
 
+
+    def test_stay_awake_holds_windows_awake_before_any_playback(self):
+        # Review 7 / P2: the first remote cast needs this PC already awake.
+        self.assertTrue(self.core.cfg.stay_awake)
+        calls, stop = [], threading.Event()
+        with patch.object(bridge, 'MONITOR_INTERVAL', 0.05), \
+             patch.object(bridge, 'keep_awake', side_effect=calls.append):
+            thread = threading.Thread(target=self.core.run_monitor, args=(stop,), daemon=True)
+            thread.start()
+            try:
+                self.wait_for(lambda: True in calls, 'keep-awake not requested with no session')
+                self.assertEqual(self.core.sessions, {})
+            finally:
+                stop.set()
+                thread.join(5)
+        self.assertEqual(calls[-1], False)  # released when the bridge stops
+
+    # ── Review 7 / P1: a Stop from one device is final for every device ──
+
+    def stop_near_the_end_from_another_device(self):
+        """Phone B follows track 5 at 198/200 s; phone A stops the EXN100,
+        which keeps RelTime on STOPPED (TrackURI still the revoked stream)."""
+        renderer = self.fake_renderer()
+        self.cast_queue([5, 6, 7], 0)
+        renderer.playing(198, 200)
+        self.core.monitor_once(self.UDN)
+        status, _, data = self.request(f'/api/cast/control/{self.UDN}/Stop', method='POST',
+                                       headers={'X-API-Key': CREDENTIAL, 'Cookie': COOKIE})
+        self.assertEqual((status, json.loads(data)), (200, {'success': True}))
+        renderer.state, renderer.position = 'STOPPED', 198.0
+        return renderer
+
+    def test_stop_near_the_end_gives_other_pages_no_next_track_and_no_session(self):
+        renderer = self.stop_near_the_end_from_another_device()
+        actions = len(renderer.actions)
+        for _ in range(3):  # B's Velvet polls, the monitor ticks
+            self.core.monitor_once(self.UDN)
+            status, _, data = self.request(f'/api/cast/status/{self.UDN}', headers={'X-API-Key': CREDENTIAL})
+            self.assertEqual(status, 200)
+            answer = json.loads(data)
+            # Velvet's auto-next needs position >= duration - 2: never offered.
+            self.assertEqual((answer['state'], answer['position'], answer['track_id']), ('STOPPED', 0.0, None))
+        _, _, data = self.request(f'/api/bridge/session/{self.UDN}', headers={'X-API-Key': CREDENTIAL})
+        self.assertEqual(json.loads(data), {'active': False})  # queue_sync.js releases B
+        self.assertEqual(renderer.actions[actions:], [], 'something was sent to the renderer after the Stop')
+        self.assertEqual(renderer.tracks(), [5])
+
+    def test_play_after_another_devices_stop_restarts_nothing(self):
+        renderer = self.stop_near_the_end_from_another_device()
+        actions = len(renderer.actions)
+        status, _, data = self.request(f'/api/cast/control/{self.UDN}/Play', method='POST',
+                                       headers={'X-API-Key': CREDENTIAL, 'Cookie': COOKIE})
+        answer = json.loads(data)
+        self.assertEqual((status, answer['success']), (200, False))
+        self.assertIn('choose a track', answer['error'])
+        self.assertEqual(renderer.actions[actions:], [])
+        # A track chosen afterwards plays as usual.
+        self.cast_queue([5, 6, 7], 1)
+        self.assertEqual(renderer.tracks(), [5, 6])
+
+    def test_streammagic_taking_the_exn100_mid_song_ends_the_session_for_every_page(self):
+        renderer = self.fake_renderer()
+        self.cast_queue([5, 6, 7], 0)
+        renderer.playing(60, 200)
+        self.core.monitor_once(self.UDN)
+        actions = len(renderer.actions)
+        renderer.uri, renderer.state, renderer.position, renderer.duration = (
+            'http://192.168.1.60:9000/disk/song.flac', 'PLAYING', 5.0, 180.0)
+        self.core.monitor_once(self.UDN)
+        self.assertNotIn(self.UDN, self.core.sessions)
+        renderer.state, renderer.position = 'STOPPED', 180.0  # its song ends, RelTime kept
+        for _ in range(2):
+            self.core.monitor_once(self.UDN)
+            _, _, data = self.request(f'/api/cast/status/{self.UDN}', headers={'X-API-Key': CREDENTIAL})
+            self.assertEqual(json.loads(data)['position'], 0.0)
+        _, _, data = self.request(f'/api/bridge/session/{self.UDN}', headers={'X-API-Key': CREDENTIAL})
+        self.assertEqual(json.loads(data), {'active': False})
+        self.assertEqual(renderer.actions[actions:], [])
+
+    # ── Review 7 / P2: a session read never outlives a Stop or a new cast ──
+
+    def session_read_during(self, change):
+        """GET /api/bridge/session while its renderer read is held, `change`
+        happening meanwhile. Returns (status, answer)."""
+        renderer = self.fake_renderer()
+        self.cast_queue([5, 6, 7], 0)
+        renderer.playing(30, 200)
+        with self.core.lock:
+            self.core.snapshots.clear()  # no fresh monitor read: the lookup asks the renderer
+        entered, release = threading.Event(), threading.Event()
+        real_transport = renderer.transport
+        def transport(device):
+            if not release.is_set():
+                entered.set()
+                release.wait(10)
+            return real_transport(device)
+        self.core.transport = transport
+        answers = []
+        reader = threading.Thread(target=lambda: answers.append(self.request(
+            f'/api/bridge/session/{self.UDN}', headers={'X-API-Key': CREDENTIAL})), daemon=True)
+        reader.start()
+        self.assertTrue(entered.wait(5))
+        change()
+        release.set()
+        reader.join(10)
+        status, _, data = answers[0]
+        return status, json.loads(data)
+
+    def test_session_read_across_a_stop_reports_no_session(self):
+        def stop():
+            threading.Thread(target=self.request, args=(f'/api/cast/control/{self.UDN}/Stop',),
+                             kwargs={'method': 'POST', 'headers': {'X-API-Key': CREDENTIAL, 'Cookie': COOKIE}},
+                             daemon=True).start()
+            self.wait_for(lambda: self.UDN not in self.core.sessions, 'Stop never ended the session')
+        self.assertEqual(self.session_read_during(stop), (200, {'active': False}))
+
+    def test_session_read_across_a_new_cast_reports_the_new_track(self):
+        def cast():
+            threading.Thread(target=self.cast_queue, args=([5, 6, 7], 2), daemon=True).start()
+            self.wait_for(lambda: self.UDN in self.core.sessions and self.core.sessions[self.UDN].track_id == 7,
+                          'the new cast never started')
+        status, answer = self.session_read_during(cast)
+        self.assertEqual((status, answer['active'], answer['track_id'], answer['queue_index']), (200, True, 7, 2))
 
 class ReviewP1UnitTests(unittest.TestCase):
     CFG = dict(upstream_url='http://100.100.100.100:8765', control_bind='100.80.1.2', control_port=8877,
@@ -1517,6 +1652,20 @@ class ReviewP1UnitTests(unittest.TestCase):
                                      'lan_ip': '192.168.1.3', 'allowed_peers': 'everyone'}))
             with self.assertRaises(ValueError):
                 bridge.BridgeConfig.load(p)
+
+    def test_config_stay_awake_defaults_on(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / 'config.json'
+            base = {'upstream_url': 'http://100.100.100.100:8765', 'control_bind': '127.0.0.1', 'lan_ip': '192.168.1.3'}
+            p.write_text(json.dumps(base))
+            self.assertTrue(bridge.BridgeConfig.load(p).stay_awake)
+            p.write_text(json.dumps({**base, 'stay_awake': False}))
+            self.assertFalse(bridge.BridgeConfig.load(p).stay_awake)
+            p.write_text(json.dumps({**base, 'stay_awake': 'yes'}))
+            with self.assertRaises(ValueError):
+                bridge.BridgeConfig.load(p)
+        example = json.loads(Path(bridge.__file__).with_name('config.example.json').read_text(encoding='utf-8'))
+        self.assertIs(example['stay_awake'], True)
 
     def test_slow_tv_does_not_hide_exn100_or_overrun_the_budget(self):
         silent = socket.socket()

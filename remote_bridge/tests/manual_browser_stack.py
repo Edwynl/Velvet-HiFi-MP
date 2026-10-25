@@ -18,7 +18,9 @@ READY, then in a browser open http://127.0.0.1:18877/ and:
      Expect the player on the EXN100 zone showing Song 3 with the album queue,
      and no extra "load" in the log; Song 4 then follows on the page too.
 
-The renderer log is JSON: load (title, URI tail), play, pause, stop, ended.
+The renderer log is JSON: load (title, URI tail), play, pause, stop, ended,
+external. GET http://127.0.0.2:18999/external/<seconds> makes another source
+take the renderer (as StreamMagic would) and play that long.
 Stop with Ctrl+C.
 
 ADMIN_PASSWORD=<password> sets Velvet's administrator password (as on the
@@ -37,6 +39,9 @@ sys.path.insert(0, str(WT / 'remote_bridge'))
 import bridge  # noqa: E402
 
 PORT, TRACK_SECONDS = 18765, int(os.environ.get('TRACK_SECONDS', '15'))
+# Some renderers keep RelTime on Stop (the case that let a stale page see a
+# natural end); set RENDERER_KEEPS_POSITION=0 for one that resets it.
+KEEPS_POSITION = os.environ.get('RENDERER_KEEPS_POSITION', '1') == '1'
 tmp = Path(tempfile.mkdtemp(prefix='velvet-queue-'))
 album = tmp / 'music' / 'Queue Artist' / 'Queue Album'
 album.mkdir(parents=True)
@@ -110,6 +115,14 @@ class Renderer(BaseHTTPRequestHandler):
 
     def do_GET(self):
         with lock:
+            seconds = re.fullmatch(r'/external/(\d+)', self.path)
+            if seconds:
+                # Another source takes the renderer (StreamMagic playing a
+                # file from elsewhere on the LAN), for that many seconds.
+                r.update(uri='http://192.168.1.60:9000/disk/other.flac', state='PLAYING',
+                         started=time.monotonic(), offset=0.0, duration=float(seconds.group(1)))
+                log.append({'t': round(time.time(), 1), 'event': 'external'})
+            position()  # the clock runs while nobody polls: log a song's end when due
             body = json.dumps(log, indent=1).encode()
         self.send_response(200)
         self.send_header('Content-Type', 'application/json')
@@ -141,7 +154,8 @@ class Renderer(BaseHTTPRequestHandler):
                 r['state'] = 'PAUSED_PLAYBACK'
                 log.append({'t': round(time.time(), 1), 'event': 'pause'})
             elif action == 'Stop':
-                r['state'], r['offset'] = 'STOPPED', 0.0
+                r['offset'] = position() if KEEPS_POSITION else 0.0
+                r['state'] = 'STOPPED'
                 log.append({'t': round(time.time(), 1), 'event': 'stop'})
             elif action == 'GetTransportInfo':
                 position()
