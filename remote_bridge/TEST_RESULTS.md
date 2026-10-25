@@ -1,5 +1,32 @@
 # Velvet Remote Bridge — Validation
 
+## 0.1.3 (third review: two P1 + stalled-source P2) — 2026-10-25
+
+- `python -m unittest discover -s tests -v`: **55 tests passed**, three consecutive runs.
+  The four control-race tests fail on 0.1.2 (`8174af5`) as the review describes; the
+  security tests need the new verification hooks and error there.
+- P1-A identity: a direct tailnet peer (parents' tablet, 100.80.1.20) sending
+  `Tailscale-User-Login: <owner>` is refused (0.1.2 allowed it — reproduced). Identity
+  comes only from the TCP source IP via `tailscale status`; the header counts only on a
+  loopback connection while `tailscale serve status` shows a proxy to the control port
+  and no Funnel. Loopback requests with `X-Forwarded-For`/`Forwarded`/`Tailscale-*` but
+  no verified Serve get 403. `Tailscale-*`, `Forwarded`, `X-Real-IP`, `X-Forwarded-*`
+  are stripped before the parent.
+- P1-B ordering, each with the older request held in its admin check: Pause→Play ends
+  playing (renderer saw only `Play`; the old Pause answers `superseded`), Play→Pause ends
+  paused, Play→Stop stays stopped with the ticket revoked, Stop→Cast keeps the new track
+  playing with its ticket. Uncontended Pause, Play, Stop all still reach the renderer.
+- Kept behaviour: Cast then Pause/Play then a Range GET on the same stream (206); status at
+  natural end reports STOPPED, position ≥ duration − 2 and the track_id (the UI's
+  auto-next condition), and the following cast plays; cast-vs-Pause races from 0.1.2 pass.
+- P2 stalled parent: with the relay blocked in `upstream.read()` on a parent that stopped
+  sending, Stop frees the relay and the renderer sees EOF in under 3 s (not the 60 s read
+  timeout): revoke now closes the parent connection (C-level close; on Windows a
+  cross-thread `shutdown()` wakes neither a blocked recv nor a blocked send — measured).
+- Found while testing: the relay used `read(128 KiB)`, which waits for the full amount;
+  it now uses `read1()`, forwarding audio as it arrives on a slow link.
+- `tests/manual_e2e_real_main.py` against real `main` `server.py`: 20/20.
+
 ## 0.1.2 (second review: six P1 fixes) — 2026-10-25
 
 - `python -m unittest discover -s tests -v`: **42 tests passed**, three consecutive runs (Python 3.11).

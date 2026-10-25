@@ -30,6 +30,7 @@ class Parent:
     # main treats a tailnet peer (the bridge) as a passwordless listener
     passwordless = False
     seen_headers = []
+    track_headers = {}  # what the parent last received for /api/tracks/5
 
 
 class ParentHandler(BaseHTTPRequestHandler):
@@ -51,6 +52,7 @@ class ParentHandler(BaseHTTPRequestHandler):
             else:
                 self.reply({'tracks': 1})
         elif self.path == '/api/tracks/5':
+            Parent.track_headers = {k.lower(): v for k, v in self.headers.items()}
             if self.headers.get('X-API-Key') != CREDENTIAL:
                 self.reply({'error': 'Unauthorized'}, 401)
             else:
@@ -175,6 +177,7 @@ class ServerFixture(unittest.TestCase):
             self.core._auth_cache.clear()
             self.core.arrivals.clear()
             self.core.intents.clear()
+            self.core.executed.clear()
             self.core.streams.clear()
             self.core.peer_streams.clear()
 
@@ -384,6 +387,7 @@ class ServerFixture(unittest.TestCase):
                 if self.reads > 1:
                     raise TimeoutError('timed out')
                 return self.response.read(100)
+            read1 = read
         stalling = patch.object(self.core, 'upstream',
                                 side_effect=lambda *a, **k: Stalling(real_upstream(*a, **k)))
         with stalling:
@@ -602,6 +606,168 @@ class ServerFixture(unittest.TestCase):
                 self.assertEqual(status, 403, path)
         self.assertEqual(self.request('/api/tracks/5', headers={'X-API-Key': CREDENTIAL})[0], 200)
 
+    # ── Review 3 / P1-A: identity headers are claims, not identity ──
+
+    def test_forged_identity_headers_refused_without_verified_serve(self):
+        with patch.object(self.core, 'serve_proxies_here', return_value=False):
+            for header in ({'Tailscale-User-Login': 'edwyn@example.com'},
+                           {'X-Forwarded-For': '100.80.1.10'}, {'Forwarded': 'for=100.80.1.10'}):
+                status, _, _ = self.request('/api/tracks/5', headers={'X-API-Key': CREDENTIAL, **header})
+                self.assertEqual(status, 403, header)
+
+    def test_verified_serve_identity_is_stripped_before_the_parent(self):
+        status_json = {'Self': {'UserID': 1}, 'User': {'1': {'LoginName': 'edwyn@example.com'}}}
+        with patch.object(self.core, 'serve_proxies_here', return_value=True), \
+             patch.object(self.core, 'tailnet_status', return_value=status_json):
+            status, _, _ = self.request('/api/tracks/5', headers={
+                'X-API-Key': CREDENTIAL, 'Tailscale-User-Login': 'edwyn@example.com',
+                'Tailscale-User-Name': 'Edwyn', 'X-Forwarded-For': '100.80.1.10'})
+            self.assertEqual(status, 200)
+            forwarded = {k for k in Parent.track_headers if k.startswith('tailscale-') or 'forward' in k}
+            self.assertEqual(forwarded, set())
+            status, _, _ = self.request('/api/tracks/5', headers={
+                'X-API-Key': CREDENTIAL, 'Tailscale-User-Login': 'mum@example.com'})
+            self.assertEqual(status, 403)
+
+    # ── Review 3 / P1-B: an older Play/Pause/Stop never undoes a newer one ──
+
+    def first_request_held_in_admin_check(self, first, second, soap_result=b'<ok/>'):
+        """Send `first`, hold it inside its admin check, run `second` to the
+        end, release `first`. Returns (SOAP actions in order, both answers)."""
+        actions, entered, release = [], threading.Event(), threading.Event()
+        real_auth, calls = self.core.authorize_control, []
+        def held_auth(*a, **k):
+            calls.append(1)
+            if len(calls) == 1:
+                entered.set()
+                release.wait(10)
+            return real_auth(*a, **k)
+        def soap(device, action, values=None):
+            actions.append(action)
+            return soap_result
+        answers = {}
+        def send(name, path, body=None):
+            answers[name] = self.request(path, method='POST', body=body,
+                                         headers={'X-API-Key': CREDENTIAL, 'Cookie': COOKIE})
+        with patch.object(self.core, 'authorize_control', side_effect=held_auth), \
+             patch.object(self.core, 'soap', side_effect=soap), \
+             patch.object(self.core, 'transport', return_value='PLAYING'):
+            t = threading.Thread(target=send, args=('first', *first))
+            t.start()
+            self.assertTrue(entered.wait(5), 'first request never reached its admin check')
+            send('second', *second)
+            release.set()
+            t.join(10)
+        return actions, {k: (v[0], json.loads(v[2])) for k, v in answers.items()}
+
+    CONTROL = '/api/cast/control/uuid:EXN100-test/'
+
+    def test_older_pause_does_not_undo_newer_play(self):
+        actions, answers = self.first_request_held_in_admin_check(
+            (self.CONTROL + 'Pause',), (self.CONTROL + 'Play',))
+        self.assertEqual(actions, ['Play'])  # the renderer ends up playing
+        self.assertEqual(answers['first'], (200, {'success': True, 'superseded': True}))
+        self.assertEqual(answers['second'], (200, {'success': True}))
+
+    def test_older_play_does_not_undo_newer_pause(self):
+        actions, _ = self.first_request_held_in_admin_check(
+            (self.CONTROL + 'Play',), (self.CONTROL + 'Pause',))
+        self.assertEqual(actions, ['Pause'])
+
+    def test_older_play_does_not_restart_after_newer_stop(self):
+        _, grant = self.cast_ok()
+        actions, _ = self.first_request_held_in_admin_check(
+            (self.CONTROL + 'Play',), (self.CONTROL + 'Stop',))
+        self.assertEqual(actions, ['Stop'])
+        self.assertNotIn(grant.token, self.core.grants)
+
+    def test_older_stop_does_not_kill_newer_cast(self):
+        actions, answers = self.first_request_held_in_admin_check(
+            (self.CONTROL + 'Stop',), ('/api/cast/uuid:EXN100-test', {'track_id': 5}))
+        self.assertNotIn('Stop', actions)
+        self.assertEqual(actions[-1], 'Play')
+        self.assertTrue(answers['second'][1]['success'])
+        self.assertEqual(len(self.core.grants), 1, 'the new track lost its ticket')
+
+    def test_controls_in_order_all_run(self):
+        # No race: Pause then Play, then Stop, each reaches the renderer.
+        actions = []
+        with patch.object(self.core, 'soap', side_effect=lambda d, a, v=None: actions.append(a) or b'<ok/>'):
+            for action in ('Pause', 'Play', 'Stop'):
+                status, _, data = self.request(self.CONTROL + action, method='POST',
+                                               headers={'X-API-Key': CREDENTIAL, 'Cookie': COOKIE})
+                self.assertEqual((status, json.loads(data)), (200, {'success': True}))
+        self.assertEqual(actions, ['Pause', 'Play', 'Stop'])
+
+    # ── Existing behaviour the ordering must keep ──
+
+    def test_pause_then_resume_keeps_the_stream_usable(self):
+        _, grant = self.cast_ok()
+        with patch.object(self.core, 'soap', return_value=b'<ok/>'):
+            for action in ('Pause', 'Play'):
+                status, _, data = self.request(self.CONTROL + action, method='POST',
+                                               headers={'X-API-Key': CREDENTIAL, 'Cookie': COOKIE})
+                self.assertEqual(json.loads(data), {'success': True})
+        path = f'/media/{grant.token}/{grant.track_id}.{grant.extension}'
+        status, _, data = self.request(path, role='media', headers={'Range': 'bytes=100-'})
+        self.assertEqual((status, data), (206, AUDIO[100:]))
+
+    def test_status_at_natural_end_lets_the_ui_auto_advance(self):
+        # Velvet plays the next track when a confirmed cast reports STOPPED
+        # with position >= duration - 2 and its own track_id.
+        _, grant = self.cast_ok()
+        with patch.object(self.core, 'transport', return_value='STOPPED'), \
+             patch.object(self.core, 'position', return_value=(209.5, 210.0, grant.url(self.core.cfg))):
+            status, _, data = self.request('/api/cast/status/uuid:EXN100-test',
+                                           headers={'X-API-Key': CREDENTIAL})
+        self.assertEqual(json.loads(data), {'state': 'STOPPED', 'position': 209.5, 'duration': 210.0,
+                                            'track_id': 5, 'is_playing': False})
+        soap, _ = self.cast_ok()  # the UI's next cast after that end still plays
+        self.assertIn('Play', [c.args[1] for c in soap.call_args_list])
+
+    # ── Review 3 / P2: Stop while the relay waits on a stalled parent ──
+
+    def test_stop_cuts_a_relay_blocked_reading_the_parent(self):
+        _, grant = self.cast_ok()
+        stall = socket.socket()
+        stall.bind(('127.0.0.1', 0))
+        stall.listen()
+        def stalled_parent():
+            conn, _ = stall.accept()
+            with conn:
+                conn.recv(4096)
+                conn.sendall(b'HTTP/1.0 200 OK\r\nContent-Type: audio/flac\r\n'
+                             b'Content-Length: 100000000\r\n\r\n' + b'f' * 1000)
+                time.sleep(20)  # then nothing: the relay blocks in read()
+        threading.Thread(target=stalled_parent, daemon=True).start()
+        real_upstream = self.core.upstream
+        stall_url = f'http://127.0.0.1:{stall.getsockname()[1]}/'
+        def upstream(path, *a, **k):
+            if path.startswith('/api/stream/'):
+                return bridge.OPENER.open(Request(stall_url), timeout=60)
+            return real_upstream(path, *a, **k)
+        try:
+            with patch.object(self.core, 'upstream', side_effect=upstream):
+                sock = socket.create_connection(('127.0.0.1', self.media.server_port), timeout=10)
+                with sock:
+                    sock.sendall(f'GET /media/{grant.token}/{grant.track_id}.{grant.extension} HTTP/1.1\r\n'
+                                 'Host: x\r\n\r\n'.encode())
+                    received = b''
+                    while b'f' * 1000 not in received:
+                        received += sock.recv(4096)
+                    self.wait_for(lambda: grant.token in self.core.streams, 'relay never registered')
+                    time.sleep(0.3)  # now blocked inside upstream.read()
+                    started = time.monotonic()
+                    with patch.object(self.core, 'soap', return_value=b'<ok/>'):
+                        self.request(self.CONTROL + 'Stop', method='POST',
+                                     headers={'X-API-Key': CREDENTIAL, 'Cookie': COOKIE})
+                    self.wait_for(lambda: not self.core.peer_streams, 'relay still blocked on the parent',
+                                  timeout=3)
+                    self.assertLess(time.monotonic() - started, 3)  # not the 60 s read timeout
+                    self.assertTrue(self.drained_to_eof(sock, timeout=3))
+        finally:
+            stall.close()
+
 
 class ReviewP1UnitTests(unittest.TestCase):
     CFG = dict(upstream_url='http://100.100.100.100:8765', control_bind='100.80.1.2', control_port=8877,
@@ -625,9 +791,38 @@ class ReviewP1UnitTests(unittest.TestCase):
         self.assertFalse(core.peer_allowed('100.80.1.30'))
         self.assertFalse(core.peer_allowed('100.80.1.99'))  # not in the tailnet map
         self.assertTrue(core.peer_allowed('127.0.0.1'))
-        # Tailscale Serve: loopback peer, identity in the header.
-        self.assertTrue(core.peer_allowed('127.0.0.1', 'edwyn@example.com'))
-        self.assertFalse(core.peer_allowed('127.0.0.1', 'mum@example.com'))
+        # Tailscale Serve: loopback peer, identity in the header, counted only
+        # while this PC's Serve verifiably proxies to the bridge.
+        with patch.object(core, 'serve_proxies_here', return_value=True):
+            self.assertTrue(core.peer_allowed('127.0.0.1', 'edwyn@example.com'))
+            self.assertFalse(core.peer_allowed('127.0.0.1', 'mum@example.com'))
+        with patch.object(core, 'serve_proxies_here', return_value=False):
+            self.assertFalse(core.peer_allowed('127.0.0.1', 'edwyn@example.com'))
+
+    def test_direct_peer_cannot_claim_the_owner_login(self):
+        # Review 3: the parents' tablet sends the owner's login header itself.
+        core = self.core()
+        with patch.object(core, 'serve_proxies_here', return_value=True):
+            self.assertFalse(core.peer_allowed('100.80.1.20', 'edwyn@example.com'))
+            self.assertFalse(core.peer_allowed('100.80.1.20', 'edwyn@example.com', proxied=True))
+            self.assertFalse(core.peer_allowed('100.80.1.99', 'edwyn@example.com'))
+            self.assertTrue(core.peer_allowed('100.80.1.10', 'mum@example.com'))  # the IP decides
+
+    def test_loopback_forwarded_without_login_refused(self):
+        core = self.core()
+        with patch.object(core, 'serve_proxies_here', return_value=True):
+            self.assertFalse(core.peer_allowed('127.0.0.1', '', proxied=True))
+
+    def test_serve_verification_requires_proxy_here_and_no_funnel(self):
+        core = self.core()
+        here = {'Web': {'pc.tail.ts.net:443': {'Handlers': {'/': {'Proxy': 'http://127.0.0.1:8877'}}}}}
+        cases = [(here, True),
+                 ({**here, 'AllowFunnel': {'pc.tail.ts.net:443': True}}, False),
+                 ({'Web': {'pc.tail.ts.net:443': {'Handlers': {'/': {'Proxy': 'http://127.0.0.1:9999'}}}}}, False),
+                 ({}, False)]
+        for config, expected in cases:
+            with patch.object(core, '_tailscale_json', return_value=config):
+                self.assertEqual(core.serve_proxies_here(), expected, config)
 
     def test_peer_policy_allowlist(self):
         core = self.core(allowed_peers=('mum@example.com', '100.80.1.30'))

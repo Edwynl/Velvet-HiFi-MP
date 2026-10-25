@@ -2,7 +2,7 @@
 
 **用途：** 父母家的 Velvet 是唯一音乐服务器、唯一搜索索引和唯一 FLAC 文件所在地。你家 Windows 只运行这个轻量 Bridge；iPhone 打开 Bridge 提供的 Velvet 页面，用原来的 Artist / Album / Track 搜索和播放列表，选择本地 Cambridge Audio EXN100 作为输出。**不需要 StreamMagic 整理曲库，不需要 AirPlay，不需要 USB，不复制音乐文件。**
 
-> 版本：0.1.2，测试版。已完成模拟父服务器 / 模拟 DLNA 设备离线测试。**尚未在真实 Windows + Tailscale + EXN100 上验收**。首次播放需要做实体设备测试。
+> 版本：0.1.3，测试版。已完成模拟父服务器 / 模拟 DLNA 设备离线测试。**尚未在真实 Windows + Tailscale + EXN100 上验收**。首次播放需要做实体设备测试。
 
 ## 网络拓扑
 
@@ -72,7 +72,7 @@
 - 当前版本不支持远程的 Velvet DSP/EQ 和 ReplayGain，也**不保证 DSD/DoP bit-perfect**。某些非 FLAC 音频容器的 DLNA 兼容性仍需验证。
 - **无第二套音乐库、无 SMB 映射、无本地曲库扫描**。Bridge 不在磁盘写入音乐文件、数据库或 API 密钥；播放时只在内存保存短期播放授权。
 - 控制入口默认只监听你家 Windows 的 **Tailscale IPv4**（检测不到时退回 `127.0.0.1`），**不会**默认开放到整个 LAN；音频入口只监听你家 Windows 的 LAN IPv4 且媒体 URL 只能从被选中的 EXN100 IP 使用。
-- 父母家 Velvet 信任 Bridge 转发的每一个请求（它是 tailnet 内的设备）。所以 Bridge 自己会检查是**哪台 tailnet 设备**在访问 `:8877`：默认只允许与这台 Bridge 电脑**同一个 Tailscale 账号**的设备（你的 iPhone / iPad）；父母或其他账号的设备、tag 设备一律拒绝（403）。如需放行，在 `config.json` 的 `allowed_peers` 写入对方的 Tailscale 登录名或 Tailscale IP，例如 `"allowed_peers": ["you@example.com", "100.101.1.20"]`（写了列表后只认列表）。读不到 `tailscale status` 时一律拒绝，只有本机浏览器例外。也建议在 Tailscale 管理后台的 ACL 里把 `:8877` 限定给自己的设备。**绝对不要**对 Bridge 开启 Tailscale **Funnel**（公网发布），否则任何人都能收听整个曲库。Bridge 只接受以 Tailscale IP、本机名 / MagicDNS 名或 `allowed_hosts` 访问，防止恶意网页通过 DNS rebinding 借道。
+- 父母家 Velvet 信任 Bridge 转发的每一个请求（它是 tailnet 内的设备）。所以 Bridge 自己会检查是**哪台 tailnet 设备**在访问 `:8877`：默认只允许与这台 Bridge 电脑**同一个 Tailscale 账号**的设备（你的 iPhone / iPad）；父母或其他账号的设备、tag 设备一律拒绝（403）。如需放行，在 `config.json` 的 `allowed_peers` 写入对方的 Tailscale 登录名或 Tailscale IP，例如 `"allowed_peers": ["you@example.com", "100.101.1.20"]`（写了列表后只认列表）。读不到 `tailscale status` 时一律拒绝，只有本机浏览器例外。身份只按真实 TCP 来源 IP 在 tailnet 中查找；请求自带的 `Tailscale-User-Login`、`X-Forwarded-For` 等头一律不作数，只有本机 Tailscale Serve 确实代理到 8877（且未开 Funnel）时，才采信 Serve 注入的登录名。这些头也不会转发给父母家 Velvet。也建议在 Tailscale 管理后台的 ACL 里把 `:8877` 限定给自己的设备。**绝对不要**对 Bridge 开启 Tailscale **Funnel**（公网发布），否则任何人都能收听整个曲库。Bridge 只接受以 Tailscale IP、本机名 / MagicDNS 名或 `allowed_hosts` 访问，防止恶意网页通过 DNS rebinding 借道。
 - 局域网内任意设备都能回应 SSDP 自称是播放器；Bridge 会去掉设备名中的 HTML 字符，防止恶意设备名在 Velvet 页面里执行脚本。
 - **不要**为 `8877/8878` 配置路由器端口转发或公网开放规则。Windows 防火墙建议把 `8878` TCP 入站限定为 EXN100 的局域网 IP，只选 Private 网络。
 - 网络需要父母家的**上传带宽**能够持续支持 FLAC 码率；高解析和多房间同时播放需要更高带宽。
