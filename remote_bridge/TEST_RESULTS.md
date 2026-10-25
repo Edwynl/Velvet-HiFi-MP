@@ -1,5 +1,38 @@
 # Velvet Remote Bridge — Validation
 
+## 0.1.8 (eighth review: two P2) — 2026-10-26
+
+- `run_tests.bat --no-pause` (both suites): **100 Python + 28 Node, ALL TESTS PASSED, exit 0**;
+  Python suite five consecutive runs (100 each); `tests/manual_e2e_real_main.py`: **20/20**; two-device admin browser run:
+  **34/34 in three runs on fresh stacks** (unchanged scenarios: cookie path, Repeat
+  All reattach, two-device CAS, edit-safe auto-next, near-end Stop with B's sync cut off,
+  StreamMagic takeover). Repository suites (unchanged by this PR): pytest 568 passed; frontend Node 23/23 (`frontend-contract` from a path without
+  spaces).
+- **P2-1 test launcher.** `run_tests.bat` runs the Python suite, then
+  `node tests/queue_sync.test.mjs` (always, even after a Python failure), prints
+  `ALL TESTS PASSED` / `TESTS FAILED` and exits 0 / 1; Node missing is reported and counts as
+  a failure. A double-click still pauses at the end; `--no-pause` for scripts. Checked here:
+  both pass -> exit 0; Node removed from PATH -> message, exit 1; a deliberately failing
+  Python test -> Node still ran (26 then), exit 1.
+- **P2-2 bounded session reads.** All renderer reads of one `/api/bridge/session` lookup
+  share `SESSION_READ_BUDGET` (2.5 s): each SOAP read gets only the time left (`soap()`,
+  `transport()`, `position()` take a timeout; `SOAP_TIMEOUT` 8 s elsewhere), and a read that
+  gets no answer (no transport state, or no TrackURI while playing/paused) ends the lookup
+  with 503 at once instead of a guessed state. Before: up to 3 tries x 2 reads x 8 s = 48 s.
+  queue_sync.js abandons any bridge request after 6 s (AbortController; Velvet's
+  `managementFetch` gets the same timeout, its admin prompt is not timed), so `busy` is
+  released and the next sync asks again.
+  Python (SOAP timeout cut to 1 s, budget 0.8 s): silent renderer -> 503 in < 1.5 s, the
+  renderer given <= 0.85 s in total; state answers but position hangs -> 503 within the
+  budget; Stop while a lookup waits on the silent renderer -> the Stop still ends the session
+  and revokes its tickets, the waiting lookup never returns the stopped session, the next
+  lookup answers `{active: false}` at once. Node: a session read that never answers is
+  abandoned and the next sync adopts the bridge's change; a queue post that never answers is
+  abandoned and sent again.
+- Mutation check: transport or position read without the budget, guessing on no answer
+  (either check), no request timeout, signal not passed: each makes a test fail (or, for
+  the missing timeout, hang).
+
 ## 0.1.7 (seventh review: one P1 + two P2) — 2026-10-25
 
 - `python -m unittest discover -s tests -v`: **97 tests passed**, five consecutive runs;

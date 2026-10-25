@@ -2,7 +2,7 @@
 
 **用途：** 父母家的 Velvet 是唯一音乐服务器、唯一搜索索引和唯一 FLAC 文件所在地。你家 Windows 只运行这个轻量 Bridge；iPhone 打开 Bridge 提供的 Velvet 页面，用原来的 Artist / Album / Track 搜索和播放列表，选择本地 Cambridge Audio EXN100 作为输出。**不需要 StreamMagic 整理曲库，不需要 AirPlay，不需要 USB，不复制音乐文件。**
 
-> 版本：0.1.7，测试版。已完成模拟父服务器 / 模拟 DLNA 设备离线测试。**尚未在真实 Windows + Tailscale + EXN100 上验收**。首次播放需要做实体设备测试。
+> 版本：0.1.8，测试版。已完成模拟父服务器 / 模拟 DLNA 设备离线测试。**尚未在真实 Windows + Tailscale + EXN100 上验收**。首次播放需要做实体设备测试。
 
 ## 网络拓扑
 
@@ -130,19 +130,14 @@ python build_zip.py
 ```
 
 
-在 Windows PowerShell 或终端进入目录，运行：
+双击 **`run_tests.bat`**，或在终端进入目录运行 `run_tests.bat --no-pause`。它依次运行两套测试：Bridge 本身（Python）和注入 Velvet 页面的队列同步脚本（Node.js 18 或更新版本，无需安装任何包；没装 Node 会提示并算作失败）。两套都通过才显示 `ALL TESTS PASSED` 并返回退出码 0，否则显示 `TESTS FAILED` 并返回 1，方便脚本判断。也可分开运行：
 
 ```powershell
 python -m unittest discover -s tests -v
-```
-
-浏览器手动验收（真实 Velvet 页面 + 按真实时间播放的模拟 EXN100，步骤写在脚本开头）：`python -I tests/manual_browser_stack.py <仓库根目录> <venv 的 python> <ffmpeg>`
-
-页面注入脚本的单元测试（可选，需要 Node 18+，无需安装任何包）：
-
-```powershell
 node tests/queue_sync.test.mjs
 ```
+
+浏览器手动验收（真实 Velvet 页面 + 按真实时间播放的模拟 EXN100，步骤写在脚本开头）：`python -I tests/manual_browser_stack.py <仓库根目录> <venv 的 python> <ffmpeg>`；加上 `ADMIN_PASSWORD` 后再运行 `node tests/manual_admin_two_devices.mjs`，可自动完成启用管理员密码的双设备验收。
 
 此测试无需真实 EXN100，覆盖控制接口、主服务器认证、管理员验证、反向代理、局域网设备解析、媒体字节一致性、HEAD、Range、短时播放票据权限、停止播放后撤销授权。真实 EXN100 的 DLNA 兼容性与 Windows 防火墙仍需现场验收。
 

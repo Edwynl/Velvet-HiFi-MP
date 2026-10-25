@@ -32,6 +32,9 @@
   // the others load when the queue panel shows them.
   const METADATA_BEFORE = 5;
   const METADATA_AFTER = 40;
+  // A bridge request still unanswered after this is abandoned, and the next
+  // sync asks again (the bridge itself gives up on a silent renderer sooner).
+  const REQUEST_MS = 6000;
   const CAST_PATH = /^\/api\/cast\/([^/]+)$/;
   const REPEAT_MODES = ['none', 'all', 'one'];
   const realFetch = window.fetch.bind(window);
@@ -83,8 +86,21 @@
     return result;
   }
 
+  // `send(url, init)` abandoned after REQUEST_MS, so a hung request never
+  // stalls the sync loop. Velvet's managementFetch takes its own timeout as a
+  // third argument (it waits for an admin password prompt in between).
+  async function within(send, url, init) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), REQUEST_MS);
+    try {
+      return await send(url, { ...init, signal: controller.signal }, REQUEST_MS);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
   async function getJson(url) {
-    const response = await realFetch(url, { headers: headers(), cache: 'no-store' });
+    const response = await within(realFetch, url, { headers: headers(), cache: 'no-store' });
     return response.ok ? response.json() : null;
   }
 
@@ -367,7 +383,7 @@
       // Velvet's managementFetch asks for the administrator password if this
       // browser session has not unlocked it yet, then sends again.
       const send = typeof managementFetch === 'function' ? managementFetch : realFetch;
-      const sent = await send(`/api/bridge/queue/${udn}`, {
+      const sent = await within(send, `/api/bridge/queue/${udn}`, {
         method: 'POST',
         headers: headers({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({ track_id: session.track_id, ...queue, expected_revision: base.revision }),

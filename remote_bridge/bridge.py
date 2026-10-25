@@ -86,6 +86,12 @@ SNAPSHOT_FRESH = 1.2
 # A session lookup reads the renderer outside the lock; this many tries when
 # a Stop or cast keeps replacing the session meanwhile.
 SESSION_READ_TRIES = 3
+# Seconds a renderer has to answer one SOAP request.
+SOAP_TIMEOUT = 8
+# Wall-clock budget of one session lookup's renderer reads, all tries
+# together: a page syncs every 2 s and asks again, so a renderer that does not
+# answer gets a quick 503, not up to 3 x 2 x SOAP_TIMEOUT of waiting.
+SESSION_READ_BUDGET = 2.5
 MAX_QUEUE = 5000
 REPEAT_MODES = frozenset({'none', 'all', 'one'})
 MAX_HTML = 4 * 1024 * 1024
@@ -734,7 +740,8 @@ class Bridge:
         return OPENER.open(Request(url, data=data, headers=headers or {},
                                    method='POST' if data is not None else 'GET'), timeout=timeout)
 
-    def soap(self, device: Renderer, action: str, values: dict[str, str] | None = None) -> bytes | None:
+    def soap(self, device: Renderer, action: str, values: dict[str, str] | None = None, *,
+             timeout: float | None = None) -> bytes | None:
         service = 'urn:schemas-upnp-org:service:AVTransport:1'
         fields = '<InstanceID>0</InstanceID>' + ''.join(
             f'<{k}>{html.escape(str(v), quote=True)}</{k}>' for k, v in (values or {}).items())
@@ -745,7 +752,8 @@ class Bridge:
         try:
             with self.upnp_open(device.control_url, data=body.encode('utf-8'),
                                 headers={'Content-Type': 'text/xml; charset="utf-8"',
-                                         'SOAPACTION': f'"{service}#{action}"'}, timeout=8) as response:
+                                         'SOAPACTION': f'"{service}#{action}"'},
+                                timeout=SOAP_TIMEOUT if timeout is None else timeout) as response:
                 data = response.read(128 * 1024)
                 if b'<Fault' in data or b':Fault>' in data or b'<faultcode>' in data:
                     return None
@@ -754,8 +762,8 @@ class Bridge:
             LOG.warning('Renderer %s rejected %s (%s)', device.name, action, type(exc).__name__)
             return None
 
-    def soap_value(self, device: Renderer, action: str, name: str) -> str:
-        result = self.soap(device, action)
+    def soap_value(self, device: Renderer, action: str, name: str, *, timeout: float | None = None) -> str:
+        result = self.soap(device, action, timeout=timeout)
         if not result:
             return ''
         try:
@@ -763,11 +771,11 @@ class Bridge:
         except ET.ParseError:
             return ''
 
-    def transport(self, device: Renderer) -> str:
-        return self.soap_value(device, 'GetTransportInfo', 'CurrentTransportState') or 'UNKNOWN'
+    def transport(self, device: Renderer, *, timeout: float | None = None) -> str:
+        return self.soap_value(device, 'GetTransportInfo', 'CurrentTransportState', timeout=timeout) or 'UNKNOWN'
 
-    def position(self, device: Renderer) -> tuple[float, float, str]:
-        result = self.soap(device, 'GetPositionInfo')
+    def position(self, device: Renderer, *, timeout: float | None = None) -> tuple[float, float, str]:
+        result = self.soap(device, 'GetPositionInfo', timeout=timeout)
         if not result:
             return 0.0, 0.0, ''
         try:
@@ -1150,9 +1158,11 @@ class Bridge:
 
         The renderer is read without the lock; a Stop or a new cast meanwhile
         ends or replaces the session, so the answer is built only if the
-        session read is still the renderer's, else the lookup starts again."""
+        session read is still the renderer's, else the lookup starts again.
+        All renderer reads share SESSION_READ_BUDGET; past it, 503 at once."""
         self.authenticate(credential, cookie)
         wanted = udn
+        deadline = time.monotonic() + SESSION_READ_BUDGET
         for _ in range(SESSION_READ_TRIES):
             with self.lock:
                 udn = wanted
@@ -1169,14 +1179,24 @@ class Bridge:
                 # Read of another stream (e.g. the previous track's end, just
                 # before the advance), or old: a reattaching page must show what
                 # plays now.
-                state, (position, _, _) = self.transport(device), self.position(device)
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                state = self.transport(device, timeout=remaining)
+                remaining = deadline - time.monotonic()
+                if state == 'UNKNOWN' or remaining <= 0:
+                    break  # no answer: not worth a guess at what plays
+                position, _, uri = self.position(device, timeout=remaining)
+                if not uri and state in ('PLAYING', 'PAUSED_PLAYBACK', 'TRANSITIONING'):
+                    break  # a loaded stream always has a TrackURI: this read got no answer
             else:
                 state, position = snapshot[1], snapshot[2]
             with self.lock:
                 if self.sessions.get(udn) is session:
                     return self._session_answer(udn, device, session, state, position)
-        # Changing faster than the renderer answers: the page asks again later.
-        raise HTTPFailure(503, 'Playback changed while reading it; try again')
+        # The renderer is not answering, or playback changes faster than it
+        # answers: the page asks again on its next sync.
+        raise HTTPFailure(503, 'The renderer did not answer in time; try again')
 
     @staticmethod
     def _session_answer(udn: str, device: Renderer, session: QueueSession, state: str, position: float) -> dict:

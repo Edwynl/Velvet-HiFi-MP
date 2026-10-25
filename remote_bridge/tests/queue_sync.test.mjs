@@ -43,7 +43,7 @@ function element() {
 }
 
 function page({ queue = [5, 6, 7], index = 0, current = 5, casting = true, session = null, bridge = null,
-  managementFetch = null } = {}) {
+  managementFetch = null, hang = () => false, fastTimers = false } = {}) {
   const calls = [];
   const played = [];
   const zones = [];
@@ -79,7 +79,10 @@ function page({ queue = [5, 6, 7], index = 0, current = 5, casting = true, sessi
     document: { visibilityState: 'visible', addEventListener() {}, getElementById: id => elements[id] || null },
     addEventListener() {},
     setInterval() {},
-    setTimeout,
+    // fastTimers: the script's long waits (its request timeout) take 5 ms.
+    setTimeout: fastTimers ? (fn, ms, ...args) => setTimeout(fn, ms >= 1000 ? 5 : ms, ...args) : setTimeout,
+    clearTimeout,
+    AbortController,
     URL,
     JSON,
     Number,
@@ -90,6 +93,10 @@ function page({ queue = [5, 6, 7], index = 0, current = 5, casting = true, sessi
     fetch: async (url, init) => {
       calls.push({ url: String(url), init });
       const path = String(url);
+      if (hang(path, init)) {
+        // A request nobody answers: it ends only when the caller aborts it.
+        return new Promise((_, reject) => init.signal.addEventListener('abort', () => reject(new Error('aborted'))));
+      }
       if (path === '/api/bridge/session' || path.startsWith('/api/bridge/session/')) return respond(200, bridge.get());
       if (path.startsWith('/api/bridge/queue/')) return respond(...bridge.post(JSON.parse(init.body)));
       const track = path.match(/^\/api\/tracks\/(\d+)$/);
@@ -416,6 +423,36 @@ test('a page that never saw its session play is not told it stopped', async () =
   const { api, context } = page({ session: { active: false } }); // e.g. its first cast failed
   await api.sync();
   assert.deepEqual(context.toasts, []);
+});
+
+// ── Review 8 / P2: a request the bridge never answers does not stall the sync ──
+
+test('a session read that never answers is abandoned, and the next sync goes ahead', async () => {
+  let silent = true;
+  const { api, state, calls } = page({ session: advanced, fastTimers: true,
+    hang: path => silent && path.startsWith('/api/bridge/session/') });
+  await api.sync(); // returns once the request is abandoned
+  assert.ok(calls[0].init.signal, 'sent without a way to abandon it');
+  assert.equal(calls[0].init.signal.aborted, true);
+  assert.equal(state.currentTrack.id, 5); // nothing guessed meanwhile
+  silent = false;
+  await api.sync(); // not still `busy` with the first one
+  assert.equal(state.currentTrack.id, 6);
+});
+
+test('a queue post that never answers is abandoned, then sent again', async () => {
+  let silent = true;
+  const { api, state, posts, bridge } = page({ session: { ...advanced, track_id: 5, queue_index: 0, revision: 0 },
+    fastTimers: true, hang: (path, init) => silent && path.startsWith('/api/bridge/queue/') });
+  await api.sync();
+  state.repeatMode = 'all';
+  await api.sync();
+  assert.equal(posts().length, 1);
+  assert.equal(bridge.session.repeat, 'none');
+  silent = false;
+  await api.sync();
+  assert.equal(posts().length, 2);
+  assert.equal(bridge.session.repeat, 'all');
 });
 
 // ── Review 6 / P2: a reattached queue does not fetch every track ──

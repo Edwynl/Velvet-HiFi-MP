@@ -877,9 +877,9 @@ class ServerFixture(unittest.TestCase):
                 elif action == 'Stop':
                     self.state = 'STOPPED'
                 return b'<ok/>'
-            def transport(self, device):
+            def transport(self, device, timeout=None):
                 return self.state
-            def read_position(self, device):
+            def read_position(self, device, timeout=None):
                 return self.position, self.duration, self.uri
             def playing(self, position, duration):
                 self.state, self.position, self.duration = 'PLAYING', position, duration
@@ -1542,7 +1542,7 @@ class ServerFixture(unittest.TestCase):
             self.core.snapshots.clear()  # no fresh monitor read: the lookup asks the renderer
         entered, release = threading.Event(), threading.Event()
         real_transport = renderer.transport
-        def transport(device):
+        def transport(device, timeout=None):
             if not release.is_set():
                 entered.set()
                 release.wait(10)
@@ -1574,6 +1574,82 @@ class ServerFixture(unittest.TestCase):
                           'the new cast never started')
         status, answer = self.session_read_during(cast)
         self.assertEqual((status, answer['active'], answer['track_id'], answer['queue_index']), (200, True, 7, 2))
+
+    # ── Review 8 / P2: a renderer that does not answer cannot hold a session read ──
+
+    def silent_renderer(self, *, answers_transport=False):
+        """Track 5 casts, then the renderer stops answering (but for
+        GetTransportInfo if `answers_transport`): every other SOAP request
+        waits out its whole timeout (bridge.SOAP_TIMEOUT, cut to 1 s here)
+        and fails. Returns the timeouts the renderer was given."""
+        self.fake_renderer()
+        self.cast_queue([5, 6, 7], 0)
+        with self.core.lock:
+            self.core.snapshots.clear()  # no fresh monitor read: the lookup asks the renderer
+        waits = []
+        def silent(timeout):
+            waits.append(bridge.SOAP_TIMEOUT if timeout is None else timeout)
+            time.sleep(waits[-1])
+        def soap(device, action, values=None, timeout=None):
+            silent(timeout)
+            return None
+        def transport(device, timeout=None):
+            if answers_transport:
+                return 'PLAYING'
+            silent(timeout)
+            return 'UNKNOWN'
+        def position(device, timeout=None):
+            silent(timeout)
+            return 0.0, 0.0, ''
+        for name, fake in (('soap', soap), ('transport', transport), ('position', position)):
+            patcher = patch.object(self.core, name, side_effect=fake)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        for name, value in (('SOAP_TIMEOUT', 1.0), ('SESSION_READ_BUDGET', 0.8)):
+            patcher = patch.object(bridge, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        return waits
+
+    def timed_session_read(self):
+        started = time.monotonic()
+        status, _, data = self.request(f'/api/bridge/session/{self.UDN}', headers={'X-API-Key': CREDENTIAL})
+        return status, json.loads(data), time.monotonic() - started
+
+    def test_unresponsive_renderer_fails_a_session_read_within_its_budget(self):
+        waits = self.silent_renderer()
+        status, answer, took = self.timed_session_read()
+        self.assertEqual(status, 503)
+        self.assertIn('try again', answer['error'])
+        # 0.8 s budget; three tries of two 1 s reads used to wait up to 6 s.
+        self.assertLess(took, 1.5)
+        self.assertLessEqual(sum(waits), 0.8 + 0.05)
+
+    def test_position_read_hanging_after_the_state_answers_stays_within_the_budget(self):
+        waits = self.silent_renderer(answers_transport=True)
+        status, _, took = self.timed_session_read()
+        self.assertEqual(status, 503)
+        self.assertLess(took, 1.5)
+        self.assertLessEqual(sum(waits), 0.8 + 0.05)
+
+    def test_stop_during_a_stalled_session_read_ends_the_session_for_the_next_read(self):
+        self.silent_renderer()
+        reads = []
+        reader = threading.Thread(target=lambda: reads.append(self.timed_session_read()), daemon=True)
+        reader.start()
+        time.sleep(0.2)  # the read now waits on the renderer
+        status, _, data = self.request(f'/api/cast/control/{self.UDN}/Stop', method='POST',
+                                       headers={'X-API-Key': CREDENTIAL, 'Cookie': COOKIE})
+        self.assertEqual((status, json.loads(data)), (200, {'success': False}))  # the renderer never answered
+        self.assertNotIn(self.UDN, self.core.sessions)  # the Stop still ends the session
+        self.assertEqual(self.core.grants, {})
+        reader.join(5)
+        status, answer, took = reads[0]
+        self.assertIn((status, answer.get('active')), ((503, None), (200, False)))  # never the stopped session
+        self.assertLess(took, 1.5)
+        status, answer, took = self.timed_session_read()
+        self.assertEqual((status, answer), (200, {'active': False}))
+        self.assertLess(took, 0.5)  # nothing left to ask the renderer
 
 class ReviewP1UnitTests(unittest.TestCase):
     CFG = dict(upstream_url='http://100.100.100.100:8765', control_bind='100.80.1.2', control_port=8877,
