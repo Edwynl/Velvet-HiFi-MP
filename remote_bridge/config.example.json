@@ -1,0 +1,9 @@
+{
+  "upstream_url": "http://100.REPLACE_WITH_PARENTS_TAILSCALE_IP:8765",
+  "control_bind": "auto",
+  "control_port": 8877,
+  "lan_ip": "auto",
+  "media_port": 8878,
+  "renderer_network": "auto",
+  "preferred_renderer": "EXN100"
+}

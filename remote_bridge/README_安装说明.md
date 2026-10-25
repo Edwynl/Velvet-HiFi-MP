@@ -1,0 +1,94 @@
+# Velvet Remote Bridge（Windows）— 安装和使用
+
+**用途：** 父母家的 Velvet 是唯一音乐服务器、唯一搜索索引和唯一 FLAC 文件所在地。你家 Windows 只运行这个轻量 Bridge；iPhone 打开 Bridge 提供的 Velvet 页面，用原来的 Artist / Album / Track 搜索和播放列表，选择本地 Cambridge Audio EXN100 作为输出。**不需要 StreamMagic 整理曲库，不需要 AirPlay，不需要 USB，不复制音乐文件。**
+
+> 版本：0.1.0，测试版。已完成模拟父服务器 / 模拟 DLNA 设备离线测试。**尚未在真实 Windows + Tailscale + EXN100 上验收**。首次播放需要做实体设备测试。
+
+## 网络拓扑
+
+```
+父母家 Windows                         你家 Windows                              EXN100
+  Velvet :8765 -- Tailscale 加密 -->   Remote Bridge 控制 :8877
+  唯一 FLAC 和数据库                    Remote Bridge 音频 :8878  -- 家用 LAN -->  原生 FLAC 解码
+                                             ^
+                                             |
+                                       iPhone 的 Safari
+                                   使用 Velvet 搜索、排队、选 EXN100
+```
+
+## 一、安装准备
+
+1. **父母家 Windows：** Velvet 已正常运行，曲库可通过 Tailscale 访问。记下父母家 Windows 的 Tailscale IP（例如 `100.101.102.103`），一般 Velvet 端口为 `8765`。必须先在父母家 Velvet 主机上设置好登录密码。
+2. **你家 Windows：** 安装并登录 [Tailscale](https://tailscale.com/download)，加入与父母家相同的 tailnet。安装 **Python 3.10 或更新版本**（[python.org](https://www.python.org/downloads/windows/)；安装时勾选 *Add python.exe to PATH*）。无其他 Python 包依赖。
+3. **EXN100：** 通过 Wi-Fi 或 Ethernet 接入你家网络，且与 Windows 的局域网网卡可互访（避免访客隔离或不同 VLAN）。Windows 防火墙允许 Python 在 **Private/专用网络** 通信。不要在路由器上做公网端口映射。
+
+## 二、在你家 Windows 启动
+
+1. 解压整个 `Velvet-Remote-Bridge` 文件夹，例如 `C:\Velvet-Remote-Bridge`。
+2. 双击 **`start_bridge.bat`**。第一次会创建 `config.json` 并打开记事本。
+3. 把 `upstream_url` 改成父母家的真实 Velvet 地址。例如：
+
+   ```json
+   {
+     "upstream_url": "http://100.101.102.103:8765",
+     "control_bind": "auto",
+     "control_port": 8877,
+     "lan_ip": "auto",
+     "media_port": 8878,
+     "renderer_network": "auto",
+     "preferred_renderer": "EXN100"
+   }
+   ```
+
+4. 保存记事本，关闭记事本窗口。`start_bridge.bat` 会继续运行。看到日志中的 `Control UI`、`EXN100 media (LAN)`、`Parent Velvet` 即表示两个监听端口已启动。
+5. 在你家 Windows 浏览器打开 `http://127.0.0.1:8877/bridge/health`（如果 `control_bind=auto` 选择的是 Tailscale IP，则需打开 `http://你家Windows的TailscaleIP:8877/bridge/health`）。确认有正常 JSON。
+
+> **自动 IP 选择错误时：** 用 Windows `ipconfig` 查看你家 Windows 的 Wi-Fi/以太网 IPv4 地址，把 `lan_ip` 从 `auto` 改为该地址（如 `192.168.1.20`）。用 `tailscale ip -4` 查看你家 Windows 的 Tailscale IP，把 `control_bind` 改为该地址（如 `100.110.120.130`）。`renderer_network` 默认按 LAN IP 的 `/24` 子网计算；若 EXN100 使用非 `/24` LAN，请改为实际网段，如 `192.168.0.0/23`。
+
+## 三、在 iPhone 通过 Velvet 搜索和播放
+
+1. iPhone 开启 Tailscale，并连接与 Windows 相同的 tailnet。
+2. 打开 Safari：`http://你家Windows的TailscaleIP:8877`，例如 `http://100.110.120.130:8877`。
+3. 你会看到**原来的 Velvet 网页**，无需新增一个音乐库。登录父母家 Velvet 的原有账号；如果弹出 Administrator Verification，请输入主服务器的管理员密码。
+4. 打开 Velvet 的 **输出 Zones/设备选择**，等待约 2 秒的局域网设备扫描，找到 **EXN100**（或 Cambridge Audio 型号名）。
+5. 把 **DSP/EQ 设为 Off，ReplayGain 设为 Off**。这版只支持原始音乐文件直传，不做音频转码。
+6. 从 Velvet 搜索歌手、专辑或曲目并点击播放；EXN100 通过局域网直接向你家 Windows 请求音频，你家 Windows 再从父母家 Velvet 流式读取原始 FLAC。
+
+**StreamMagic 无需用于搜索。** 它仍可用于观察 EXN100 的播放状态以及设备设置。手机是遥控器，不承担 FLAC 音频中转。
+
+## 四、音质和安全说明
+
+- 对 **FLAC**：Bridge 不解码、不重新编码、不重采样，仅逐字节转发父母家 Velvet 的原始 HTTP 音频流。支持 DLNA 常见 `HEAD`、`GET`、`Range`；EXN100 的实际播放格式仍需在设备上实测。
+- 当前版本不支持远程的 Velvet DSP/EQ 和 ReplayGain，也**不保证 DSD/DoP bit-perfect**。某些非 FLAC 音频容器的 DLNA 兼容性仍需验证。
+- **无第二套音乐库、无 SMB 映射、无本地曲库扫描**。Bridge 不在磁盘写入音乐文件、数据库或 API 密钥；播放时只在内存保存短期播放授权。
+- 控制入口默认只监听你家 Windows 的 **Tailscale IPv4**（检测不到时退回 `127.0.0.1`），**不会**默认开放到整个 LAN；音频入口只监听你家 Windows 的 LAN IPv4 且媒体 URL 只能从被选中的 EXN100 IP 使用。
+- **不要**为 `8877/8878` 配置路由器端口转发或公网开放规则。Windows 防火墙建议把 `8878` TCP 入站限定为 EXN100 的局域网 IP，只选 Private 网络。
+- 网络需要父母家的**上传带宽**能够持续支持 FLAC 码率；高解析和多房间同时播放需要更高带宽。
+- 这是正常的在线串流；父母家断网、Velvet 停止或任一台 Windows 睡眠，播放就会中断。两台 Windows 在听歌时均须保持开机。
+- iOS Safari 通过 HTTP 的 Tailscale IP 可作为网页访问，但完整 PWA/Service Worker 要求 HTTPS 安全来源；本测试版不自动部署 HTTPS。
+
+## 五、排查问题
+
+| 现象 | 检查项目 |
+|---|---|
+| Safari 无法打开 Bridge | `start_bridge.bat` 是否运行？`control_bind` 是不是你家 Windows 的 Tailscale IPv4？iPhone 是否已连接 Tailscale？|
+| 登录 Velvet 失败 | 父母家的 `http://100.xxx.xxx.xxx:8765` 是否可在你家 Windows 浏览器打开？主服务器是否已初始化密码？|
+| 找不到 EXN100 | 确保 EXN100 和 Windows 在同一 LAN/VLAN；Windows 防火墙允许 UDP 1900 出站与回应；检查 `lan_ip`、`renderer_network`。|
+| EXN100 显示设备但无法播放 | Windows 防火墙允许 `8878/TCP` 的来自 EXN100 的入站连接；关闭 DSP/EQ 和 ReplayGain；确认媒体流从父母家 Velvet 可读取。|
+| 出现 `Administrator verification required` | 在 Bridge 的 Velvet 网页完成主服务器管理员验证后重试。|
+| 播放较长歌曲中断 | 检查父母家上传速度、Tailscale 稳定性、Windows 电源设置、父母家 Velvet 服务状态。|
+| 封面、收藏或播放历史不同步 | 正常情况下它们仍由父母家唯一 Velvet 数据库提供；如果出现不同步，先检查 Bridge 是否打开了正确的父母家 `upstream_url`。|
+
+## 六、开发与本地测试
+
+在 Windows PowerShell 或终端进入目录，运行：
+
+```powershell
+python -m unittest discover -s tests -v
+```
+
+此测试无需真实 EXN100，覆盖控制接口、主服务器认证、管理员验证、反向代理、局域网设备解析、媒体字节一致性、HEAD、Range、短时播放票据权限、停止播放后撤销授权。真实 EXN100 的 DLNA 兼容性与 Windows 防火墙仍需现场验收。
+
+## 设计和版本边界
+
+此 Bridge 是一个**独立可下载目录**，**没有修改父母家 Velvet 原有的 Python 服务或数据库**，通过与当前 `Velvet-HiFi-MP` `main` 的 HTTP API 兼容来实现。新版 Velvet 如果重构 `/api/zones` 或 `/api/cast` 等接口，Bridge 可能需要同步升级。
