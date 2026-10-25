@@ -2,7 +2,7 @@
 
 **用途：** 父母家的 Velvet 是唯一音乐服务器、唯一搜索索引和唯一 FLAC 文件所在地。你家 Windows 只运行这个轻量 Bridge；iPhone 打开 Bridge 提供的 Velvet 页面，用原来的 Artist / Album / Track 搜索和播放列表，选择本地 Cambridge Audio EXN100 作为输出。**不需要 StreamMagic 整理曲库，不需要 AirPlay，不需要 USB，不复制音乐文件。**
 
-> 版本：0.1.3，测试版。已完成模拟父服务器 / 模拟 DLNA 设备离线测试。**尚未在真实 Windows + Tailscale + EXN100 上验收**。首次播放需要做实体设备测试。
+> 版本：0.1.4，测试版。已完成模拟父服务器 / 模拟 DLNA 设备离线测试。**尚未在真实 Windows + Tailscale + EXN100 上验收**。首次播放需要做实体设备测试。
 
 ## 网络拓扑
 
@@ -50,7 +50,7 @@
    New-NetFirewallRule -DisplayName "Velvet Bridge control (Tailscale)" -Direction Inbound -Protocol TCP -LocalPort 8877 -InterfaceAlias Tailscale -Action Allow
    ```
 
-7. **开机自启（可选）：** 任务计划程序 → 创建任务 → 触发器"登录时" → 操作"启动程序"选 `start_bridge.bat`，"起始于"填 Bridge 所在文件夹。Bridge 在 EXN100 拉取音频期间会阻止 Windows 自动睡眠；但父母家那台 Windows 同样不能睡眠。
+7. **开机自启（可选）：** 任务计划程序 → 创建任务 → 触发器"登录时" → 操作"启动程序"选 `start_bridge.bat`，"起始于"填 Bridge 所在文件夹。Bridge 在播放队列进行中（播放、暂停、曲间切换）会阻止这台 Windows 自动睡眠，停止播放或队列播完后恢复正常电源策略；父母家那台 Windows 也不能在听歌时睡眠，请在其电源设置中设为"从不睡眠"或保持 Velvet 主机常开。
 
 > **自动 IP 选择错误时：** Bridge 会优先使用默认路由（通常是 Wi-Fi 或以太网）的地址，不会再误选 Hyper-V / WSL / Docker 虚拟网卡；启动日志中的 `EXN100 media (LAN)` 地址应与 `ipconfig` 里 Wi-Fi/以太网的 IPv4 一致。若开启了 Tailscale 出口节点（exit node）或仍然不对，请手动设置。 用 Windows `ipconfig` 查看你家 Windows 的 Wi-Fi/以太网 IPv4 地址，把 `lan_ip` 从 `auto` 改为该地址（如 `192.168.1.20`）。用 `tailscale ip -4` 查看你家 Windows 的 Tailscale IP，把 `control_bind` 改为该地址（如 `100.110.120.130`）。`renderer_network` 默认按 LAN IP 的 `/24` 子网计算；若 EXN100 使用非 `/24` LAN，请改为实际网段，如 `192.168.0.0/23`。
 
@@ -65,6 +65,8 @@
 6. 从 Velvet 搜索歌手、专辑或曲目并点击播放；EXN100 通过局域网直接向你家 Windows 请求音频，你家 Windows 再从父母家 Velvet 流式读取原始 FLAC。
 
 **StreamMagic 无需用于搜索。** 它仍可用于观察 EXN100 的播放状态以及设备设置。手机是遥控器，不承担 FLAC 音频中转。
+
+**锁屏后整张专辑 / 歌单照样连续播放。** iPhone 锁屏后 Safari 会暂停网页，Velvet 网页自己的"自动下一首"也就停了。因此 Bridge 在转发 Velvet 页面时加入了一个小脚本（`/bridge/queue-sync.js`），把当前播放队列（只有曲目 ID、位置和重复模式）告诉 Bridge；由你家的 Windows Bridge 检测 EXN100 一首播完，再把下一首交给 EXN100。手机重新打开时，页面会自动跳到 EXN100 正在播的那首，不会重新起播。队列只保存在 Bridge 内存里，不建第二套曲库。顺序与 Velvet 投放时一致：播到队列末尾停止；"全部循环"回到第一首；"单曲循环"在投放模式下与 Velvet 相同，继续下一首。在 Velvet 里点停止、换歌、上一首/下一首，Bridge 会立即跟随。
 
 ## 四、音质和安全说明
 
@@ -91,16 +93,30 @@
 | 页面显示 `421` | 用 Tailscale IP 打开 Bridge，或把所用的名字加入 `allowed_hosts`。|
 | 页面显示 `This Tailscale device may not use the bridge` | 该设备不属于 Bridge 电脑的 Tailscale 账号；把它的登录名或 IP 加入 `allowed_peers`，并确认 `tailscale status` 在 Bridge 电脑上可用。|
 | 暂停很久后继续播放没声音 | 渲染器 5 分钟不读取数据，Bridge 会断开该连接（避免线程长期挂起）；正常的 DLNA 播放器继续时会用 Range 重新请求。如果 EXN100 实测不能恢复，请记录下来反馈。|
+| 锁屏后播完一首就停 | 确认是用 Bridge 地址（`:8877`）打开的 Velvet，而不是直接打开父母家的 `:8765`；Bridge 日志在切歌时会显示 `Advanced to queue position N`。|
 | 选了 DSP/EQ 预设后无法投放 | 这版只直传原始文件；把该 Zone 的 DSP/EQ 设为 Off、ReplayGain 设为 Off。|
 | 播放较长歌曲中断 | 检查父母家上传速度、Tailscale 稳定性、Windows 电源设置、父母家 Velvet 服务状态。|
 | 封面、收藏或播放历史不同步 | 正常情况下它们仍由父母家唯一 Velvet 数据库提供；如果出现不同步，先检查 Bridge 是否打开了正确的父母家 `upstream_url`。|
 
 ## 六、开发与本地测试
 
+打包下载用 ZIP（只打包已提交的文件，文件名带版本号和提交号，旧 ZIP 不会被误当成新版）：
+
+```powershell
+python build_zip.py
+```
+
+
 在 Windows PowerShell 或终端进入目录，运行：
 
 ```powershell
 python -m unittest discover -s tests -v
+```
+
+页面注入脚本的单元测试（可选，需要 Node 18+，无需安装任何包）：
+
+```powershell
+node tests/queue_sync.test.mjs
 ```
 
 此测试无需真实 EXN100，覆盖控制接口、主服务器认证、管理员验证、反向代理、局域网设备解析、媒体字节一致性、HEAD、Range、短时播放票据权限、停止播放后撤销授权。真实 EXN100 的 DLNA 兼容性与 Windows 防火墙仍需现场验收。

@@ -4,6 +4,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import ipaddress
 import io
 import json
+import re
 import os
 from pathlib import Path
 import socket
@@ -12,6 +13,7 @@ import sys
 import tempfile
 import threading
 import time
+import types
 import unittest
 from unittest.mock import patch
 from urllib.error import HTTPError
@@ -60,6 +62,15 @@ class ParentHandler(BaseHTTPRequestHandler):
                             'album_title': 'Album', 'album_id': 9, 'duration': 210, 'format': 'FLAC',
                             'file_size': len(AUDIO), 'channels': 2,
                             'sample_rate': 96000, 'bit_depth': 24, 'file_path': 'D:/Music/t.flac'})
+        elif re.fullmatch(r'/api/tracks/(6|7|8)', self.path):
+            # The rest of the album, for queue tests (track 8 lasts over an hour).
+            if self.headers.get('X-API-Key') != CREDENTIAL:
+                self.reply({'error': 'Unauthorized'}, 401)
+                return
+            tid = int(self.path.rsplit('/', 1)[1])
+            self.reply({'id': tid, 'title': f'Track {tid}', 'artist_name': '徐佳莹', 'album_title': 'Album',
+                        'album_id': 9, 'duration': 4000 if tid == 8 else 200, 'format': 'FLAC',
+                        'sample_rate': 44100, 'bit_depth': 16, 'file_path': f'D:/Music/{tid}.flac'})
         elif self.path.startswith('/api/stream/5'):
             if self.headers.get('X-API-Key') != CREDENTIAL:
                 self.reply({'error': 'Unauthorized'}, 401)
@@ -178,6 +189,9 @@ class ServerFixture(unittest.TestCase):
             self.core.arrivals.clear()
             self.core.intents.clear()
             self.core.executed.clear()
+            self.core.sessions.clear()
+            self.core.snapshots.clear()
+            self.core.inflight.clear()
             self.core.streams.clear()
             self.core.peer_streams.clear()
 
@@ -371,7 +385,7 @@ class ServerFixture(unittest.TestCase):
 
     def test_upstream_drop_mid_stream_never_splices_json_into_audio(self):
         _, grant = self.cast_ok()
-        real_upstream = self.core.upstream
+        real_open = self.core.open_media
         class Stalling:
             # The parent link times out after the first chunk (Tailscale drop).
             def __init__(self, response):
@@ -388,8 +402,11 @@ class ServerFixture(unittest.TestCase):
                     raise TimeoutError('timed out')
                 return self.response.read(100)
             read1 = read
-        stalling = patch.object(self.core, 'upstream',
-                                side_effect=lambda *a, **k: Stalling(real_upstream(*a, **k)))
+        @contextlib.contextmanager
+        def open_stalling(*args):
+            with real_open(*args) as response:
+                yield Stalling(response)
+        stalling = patch.object(self.core, 'open_media', side_effect=open_stalling)
         with stalling:
             sock = socket.create_connection(('127.0.0.1', self.media.server_port), timeout=10)
             with sock:
@@ -510,7 +527,6 @@ class ServerFixture(unittest.TestCase):
 
     def endless_stream(self):
         """Patch the parent's stream to never end, as a long FLAC would."""
-        real_upstream = self.core.upstream
         class Endless:
             status, code = 200, 200
             headers = {'Content-Type': 'audio/flac'}
@@ -520,9 +536,44 @@ class ServerFixture(unittest.TestCase):
                 return False
             def read(self, n):
                 return b'\0' * n
-        def upstream(path, *a, **k):
-            return Endless() if path.startswith('/api/stream/') else real_upstream(path, *a, **k)
-        return patch.object(self.core, 'upstream', side_effect=upstream)
+        @contextlib.contextmanager
+        def open_media(*args):
+            yield Endless()
+        return patch.object(self.core, 'open_media', side_effect=open_media)
+
+    @contextlib.contextmanager
+    def stalled_parent(self, send_headers: bool):
+        """Media requests go, over the real cancellable connection, to a parent
+        that accepts and then stalls (before or after its first 1000 bytes)."""
+        stall = socket.socket()
+        stall.bind(('127.0.0.1', 0))
+        stall.listen()
+        def serve():
+            with contextlib.suppress(OSError):
+                conn, _ = stall.accept()
+                with conn:
+                    conn.recv(4096)
+                    if send_headers:
+                        conn.sendall(b'HTTP/1.0 200 OK\r\nContent-Type: audio/flac\r\n'
+                                     b'Content-Length: 100000000\r\n\r\n' + b'f' * 1000)
+                    time.sleep(20)
+        threading.Thread(target=serve, daemon=True).start()
+        stalled_cfg = bridge.replace(self.core.cfg, upstream_url=f'http://127.0.0.1:{stall.getsockname()[1]}')
+        def open_media(*args):
+            return bridge.Bridge.open_media(types.SimpleNamespace(cfg=stalled_cfg), *args)
+        try:
+            with patch.object(self.core, 'open_media', side_effect=open_media):
+                yield
+        finally:
+            stall.close()
+
+    def stop_and_time_release(self):
+        started = time.monotonic()
+        with patch.object(self.core, 'soap', return_value=b'<ok/>'):
+            self.request(self.CONTROL + 'Stop', method='POST',
+                         headers={'X-API-Key': CREDENTIAL, 'Cookie': COOKIE})
+        self.wait_for(lambda: not self.core.peer_streams, 'relay still blocked on the parent', timeout=3)
+        return time.monotonic() - started
 
     def open_stalled_reader(self, grant):
         """A renderer that reads the headers, then stops reading."""
@@ -729,44 +780,274 @@ class ServerFixture(unittest.TestCase):
 
     def test_stop_cuts_a_relay_blocked_reading_the_parent(self):
         _, grant = self.cast_ok()
-        stall = socket.socket()
-        stall.bind(('127.0.0.1', 0))
-        stall.listen()
-        def stalled_parent():
-            conn, _ = stall.accept()
-            with conn:
-                conn.recv(4096)
-                conn.sendall(b'HTTP/1.0 200 OK\r\nContent-Type: audio/flac\r\n'
-                             b'Content-Length: 100000000\r\n\r\n' + b'f' * 1000)
-                time.sleep(20)  # then nothing: the relay blocks in read()
-        threading.Thread(target=stalled_parent, daemon=True).start()
-        real_upstream = self.core.upstream
-        stall_url = f'http://127.0.0.1:{stall.getsockname()[1]}/'
-        def upstream(path, *a, **k):
-            if path.startswith('/api/stream/'):
-                return bridge.OPENER.open(Request(stall_url), timeout=60)
-            return real_upstream(path, *a, **k)
-        try:
-            with patch.object(self.core, 'upstream', side_effect=upstream):
-                sock = socket.create_connection(('127.0.0.1', self.media.server_port), timeout=10)
-                with sock:
-                    sock.sendall(f'GET /media/{grant.token}/{grant.track_id}.{grant.extension} HTTP/1.1\r\n'
-                                 'Host: x\r\n\r\n'.encode())
-                    received = b''
-                    while b'f' * 1000 not in received:
-                        received += sock.recv(4096)
-                    self.wait_for(lambda: grant.token in self.core.streams, 'relay never registered')
-                    time.sleep(0.3)  # now blocked inside upstream.read()
-                    started = time.monotonic()
-                    with patch.object(self.core, 'soap', return_value=b'<ok/>'):
-                        self.request(self.CONTROL + 'Stop', method='POST',
-                                     headers={'X-API-Key': CREDENTIAL, 'Cookie': COOKIE})
-                    self.wait_for(lambda: not self.core.peer_streams, 'relay still blocked on the parent',
-                                  timeout=3)
-                    self.assertLess(time.monotonic() - started, 3)  # not the 60 s read timeout
-                    self.assertTrue(self.drained_to_eof(sock, timeout=3))
-        finally:
-            stall.close()
+        with self.stalled_parent(send_headers=True):
+            sock = socket.create_connection(('127.0.0.1', self.media.server_port), timeout=10)
+            with sock:
+                sock.sendall(f'GET /media/{grant.token}/{grant.track_id}.{grant.extension} HTTP/1.1\r\n'
+                             'Host: x\r\n\r\n'.encode())
+                received = b''
+                while b'f' * 1000 not in received:
+                    received += sock.recv(4096)
+                time.sleep(0.3)  # now blocked inside upstream.read1()
+                self.assertLess(self.stop_and_time_release(), 3)  # not the 60 s read timeout
+                self.assertTrue(self.drained_to_eof(sock, timeout=3))
+
+    def test_stop_cuts_a_relay_waiting_for_parent_headers(self):
+        # Review 4 / P2: the parent link hangs before answering at all.
+        _, grant = self.cast_ok()
+        with self.stalled_parent(send_headers=False):
+            sock = socket.create_connection(('127.0.0.1', self.media.server_port), timeout=10)
+            with sock:
+                sock.sendall(f'GET /media/{grant.token}/{grant.track_id}.{grant.extension} HTTP/1.1\r\n'
+                             'Host: x\r\n\r\n'.encode())
+                self.wait_for(lambda: grant.token in self.core.streams, 'relay never registered')
+                time.sleep(0.3)  # now waiting for the parent's response headers
+                self.assertLess(self.stop_and_time_release(), 3)  # not MEDIA_OPEN_TIMEOUT
+                self.assertTrue(self.drained_to_eof(sock, timeout=3))
+
+    # ── Review 4 / P1: the bridge plays the queue on with the phone locked ──
+
+    def fake_renderer(self):
+        """A renderer state machine; the monitor is then driven tick by tick
+        with no client requests at all (Safari suspended)."""
+        class FakeRenderer:
+            def __init__(self):
+                self.uri, self.state, self.position, self.duration = '', 'NO_MEDIA_PRESENT', 0.0, 0.0
+                self.actions, self.loaded = [], []
+            def soap(self, device, action, values=None):
+                self.actions.append(action)
+                if action == 'SetAVTransportURI':
+                    self.loaded.append(values['CurrentURI'])
+                    self.uri, self.state, self.position = values['CurrentURI'], 'STOPPED', 0.0
+                elif action == 'Play':
+                    self.state = 'PLAYING'
+                elif action == 'Pause':
+                    self.state = 'PAUSED_PLAYBACK'
+                elif action == 'Stop':
+                    self.state = 'STOPPED'
+                return b'<ok/>'
+            def transport(self, device):
+                return self.state
+            def read_position(self, device):
+                return self.position, self.duration, self.uri
+            def playing(self, position, duration):
+                self.state, self.position, self.duration = 'PLAYING', position, duration
+            def finish(self, *, report_zero=False):
+                # Some renderers keep RelTime at the end on STOPPED, some reset it.
+                self.state, self.position = 'STOPPED', 0.0 if report_zero else self.duration
+            def tracks(self):
+                """Track ids the renderer was handed, in order."""
+                return [int(bridge.MEDIA_RE.fullmatch(bridge.urlparse(u).path).group(2)) for u in self.loaded]
+        renderer = FakeRenderer()
+        patches = patch.multiple(self.core, soap=renderer.soap, transport=renderer.transport,
+                                 position=renderer.read_position)
+        patches.start()
+        self.addCleanup(patches.stop)
+        return renderer
+
+    UDN = 'uuid:EXN100-test'
+
+    def cast_queue(self, ids, index, repeat='none', **extra):
+        status, _, data = self.request(f'/api/cast/{self.UDN}', method='POST', body={
+            'track_id': ids[index], 'bridge_queue': {'ids': ids, 'index': index, 'repeat': repeat}, **extra},
+            headers={'X-API-Key': CREDENTIAL, 'Cookie': COOKIE})
+        self.assertEqual(status, 200, data)
+        return json.loads(data)
+
+    def play_through(self, renderer, position=100, duration=200, **finish):
+        """The renderer plays the current track to its end, unattended."""
+        renderer.playing(position, duration)
+        self.core.monitor_once(self.UDN)
+        renderer.finish(**finish)
+        self.core.monitor_once(self.UDN)
+
+    def test_locked_phone_album_plays_on_exactly_once_per_track(self):
+        renderer = self.fake_renderer()
+        self.cast_queue([5, 6, 7], 0)
+        self.play_through(renderer, duration=210)
+        self.assertEqual(renderer.tracks(), [5, 6])
+        # More ticks, the renderer still on track 6 (and a stale STOPPED read
+        # right after the advance): never a second advance.
+        renderer.state = 'STOPPED'
+        for _ in range(3):
+            self.core.monitor_once(self.UDN)
+        renderer.state = 'PLAYING'
+        self.core.monitor_once(self.UDN)
+        self.assertEqual(renderer.tracks(), [5, 6])
+        self.play_through(renderer)
+        self.assertEqual(renderer.tracks(), [5, 6, 7])
+        self.assertEqual(renderer.state, 'PLAYING')
+        # End of the queue: nothing more, and the PC may sleep again.
+        self.assertTrue(self.core.wants_awake())
+        self.play_through(renderer)
+        self.assertEqual(renderer.tracks(), [5, 6, 7])
+        self.assertFalse(self.core.wants_awake())
+
+    def test_ui_catching_up_does_not_restart_the_advanced_track(self):
+        renderer = self.fake_renderer()
+        self.cast_queue([5, 6, 7], 0)
+        self.play_through(renderer)
+        actions = len(renderer.actions)
+        # Safari wakes: queue_sync.js (or Velvet's own late auto-next) casts 6.
+        result = self.cast_queue([5, 6, 7], 1)
+        self.assertEqual((result['success'], result['transport'], result.get('absorbed')), (True, 'playing', True))
+        self.assertEqual(len(renderer.actions), actions, 'the track was sent to the renderer again')
+        self.assertEqual(renderer.tracks(), [5, 6])
+        # A deliberate replay of the same track afterwards does restart it.
+        self.cast_queue([5, 6, 7], 1)
+        self.assertEqual(renderer.tracks(), [5, 6, 6])
+
+    def test_ui_auto_next_first_then_bridge_does_not_double_advance(self):
+        renderer = self.fake_renderer()
+        self.cast_queue([5, 6, 7], 0)
+        renderer.playing(100, 200)
+        self.core.monitor_once(self.UDN)
+        renderer.finish()
+        self.cast_queue([5, 6, 7], 1)  # the awake page advanced before the monitor looked
+        self.core.monitor_once(self.UDN)
+        self.core.monitor_once(self.UDN)
+        self.assertEqual(renderer.tracks(), [5, 6])
+
+    def test_monitor_waits_for_a_users_cast_in_flight(self):
+        renderer = self.fake_renderer()
+        self.cast_queue([5, 6, 7], 0)
+        renderer.playing(100, 200)
+        self.core.monitor_once(self.UDN)
+        renderer.finish()
+        with self.core.in_flight(self.UDN):  # e.g. the user picked track 7, still in its admin check
+            self.core.monitor_once(self.UDN)
+        self.assertEqual(renderer.tracks(), [5])
+        self.cast_queue([5, 6, 7], 2)
+        self.core.monitor_once(self.UDN)
+        self.assertEqual(renderer.tracks(), [5, 7])
+
+    def test_stop_ends_the_queue(self):
+        renderer = self.fake_renderer()
+        self.cast_queue([5, 6, 7], 0)
+        renderer.playing(100, 200)
+        self.core.monitor_once(self.UDN)
+        self.request(f'/api/cast/control/{self.UDN}/Stop', method='POST',
+                     headers={'X-API-Key': CREDENTIAL, 'Cookie': COOKIE})
+        renderer.finish()
+        self.core.monitor_once(self.UDN)
+        self.assertEqual(renderer.tracks(), [5])
+        self.assertNotIn(self.UDN, self.core.sessions)
+        self.assertFalse(self.core.wants_awake())
+
+    def test_long_pause_keeps_awake_and_mid_track_stop_does_not_advance(self):
+        renderer = self.fake_renderer()
+        self.cast_queue([5, 6, 7], 0)
+        renderer.playing(50, 200)
+        self.core.monitor_once(self.UDN)
+        renderer.state = 'PAUSED_PLAYBACK'  # paused for half an hour
+        for _ in range(3):
+            self.core.monitor_once(self.UDN)
+        self.assertTrue(self.core.wants_awake())
+        renderer.state = 'PLAYING'
+        self.core.monitor_once(self.UDN)
+        renderer.state = 'STOPPED'  # stopped on the EXN100 itself, mid-track
+        self.core.monitor_once(self.UDN)
+        self.assertEqual(renderer.tracks(), [5])
+        self.assertFalse(self.core.wants_awake())
+
+    def test_lagging_track_uri_after_an_advance_is_not_counted(self):
+        renderer = self.fake_renderer()
+        self.cast_queue([5, 6, 7], 0)
+        self.play_through(renderer)
+        old_uri, new_uri = renderer.loaded[0], renderer.loaded[1]
+        # One read still describes the old stream near its end...
+        renderer.uri, renderer.state, renderer.position, renderer.duration = old_uri, 'PLAYING', 199, 200
+        self.core.monitor_once(self.UDN)
+        # ...then track 6 plays and is stopped on the EXN100 at 0:30.
+        renderer.uri = new_uri
+        renderer.playing(30, 200)
+        self.core.monitor_once(self.UDN)
+        renderer.state = 'STOPPED'
+        self.core.monitor_once(self.UDN)
+        self.assertEqual(renderer.tracks(), [5, 6], 'the old position made a mid-track stop look finished')
+
+    def test_manual_jump_then_repeat_all_wraps(self):
+        renderer = self.fake_renderer()
+        self.cast_queue([5, 6, 7], 2, repeat='all')  # the user jumped to the last track
+        self.play_through(renderer)
+        self.assertEqual(renderer.tracks(), [7, 5])
+
+    def test_hour_long_track_with_position_reset_on_stop(self):
+        renderer = self.fake_renderer()
+        self.cast_queue([8, 5], 0)
+        self.play_through(renderer, position=3998.5, duration=4000, report_zero=True)
+        self.assertEqual(renderer.tracks(), [8, 5])
+
+    def test_another_source_on_the_renderer_ends_the_session(self):
+        renderer = self.fake_renderer()
+        self.cast_queue([5, 6], 0)
+        renderer.playing(10, 200)
+        self.core.monitor_once(self.UDN)
+        renderer.uri = 'http://192.168.1.60/radio.mp3'  # StreamMagic took over
+        self.core.monitor_once(self.UDN)
+        self.assertNotIn(self.UDN, self.core.sessions)
+
+    def test_queue_updates_and_limits(self):
+        renderer = self.fake_renderer()
+        self.cast_queue([5, 6, 7], 0)
+        def post(body):
+            status, _, data = self.request(f'/bridge/queue/{self.UDN}', method='POST', body=body,
+                                           headers={'X-API-Key': CREDENTIAL, 'Cookie': COOKIE})
+            return status, json.loads(data)
+        self.assertEqual(post({'track_id': 5, 'ids': [5, 7], 'index': 0}), (200, {'success': True}))
+        self.assertEqual(post({'track_id': 6, 'ids': [6, 7], 'index': 0}), (200, {'success': False, 'stale': True}))
+        self.assertEqual(post({'track_id': 5, 'ids': [5] * 5001, 'index': 0})[0], 422)
+        self.assertEqual(post({'track_id': 5, 'ids': [5, 'x'], 'index': 0})[0], 422)
+        self.assertEqual(post({'track_id': 5, 'ids': [5, 6], 'index': 1})[0], 422)  # index is not track 5
+        self.play_through(renderer)
+        self.assertEqual(renderer.tracks(), [5, 7])  # the edited queue, not the original
+
+    def test_cast_with_malformed_queue_still_plays_alone(self):
+        renderer = self.fake_renderer()
+        result = self.cast_queue([5, 6], 1, bridge_queue={'ids': 'all of them'})
+        self.assertTrue(result['success'])
+        self.assertEqual(self.core.sessions[self.UDN].ids, (6,))
+        self.play_through(renderer)
+        self.assertEqual(renderer.tracks(), [6])  # nothing known to follow it
+
+    def test_session_endpoint_reports_bridge_advances(self):
+        renderer = self.fake_renderer()
+        self.cast_queue([5, 6, 7], 0)
+        self.play_through(renderer)
+        status, _, data = self.request(f'/bridge/session/{self.UDN}', headers={'X-API-Key': CREDENTIAL})
+        info = json.loads(data)
+        self.assertEqual((status, info['active'], info['track_id'], info['queue_index'], info['queue_length']),
+                         (200, True, 6, 1, 3))
+        self.assertGreater(info['advance_seq'], 0)
+
+    def test_velvet_page_gets_the_queue_script(self):
+        status, hdr, page = self.request('/')
+        self.assertEqual(status, 200)
+        self.assertIn(bridge.QUEUE_SYNC_TAG + b'</body>', page)
+        self.assertEqual(int(hdr['Content-Length']), len(page))
+        status, hdr, script = self.request('/bridge/queue-sync.js')
+        self.assertEqual((status, hdr['Content-Type']), (200, 'text/javascript; charset=utf-8'))
+        self.assertIn(b'bridge_queue', script)
+        _, _, data = self.request('/api/tracks/5', headers={'X-API-Key': CREDENTIAL})
+        self.assertNotIn(b'queue-sync', data)  # only the page itself
+
+    def test_monitor_thread_holds_keep_awake_for_the_session(self):
+        renderer = self.fake_renderer()
+        calls, stop = [], threading.Event()
+        with patch.object(bridge, 'MONITOR_INTERVAL', 0.05), \
+             patch.object(bridge, 'keep_awake', side_effect=calls.append):
+            thread = threading.Thread(target=self.core.run_monitor, args=(stop,), daemon=True)
+            thread.start()
+            try:
+                self.cast_queue([5, 6], 0)
+                renderer.playing(10, 200)
+                self.wait_for(lambda: True in calls, 'keep-awake never requested')
+                self.request(f'/api/cast/control/{self.UDN}/Stop', method='POST',
+                             headers={'X-API-Key': CREDENTIAL, 'Cookie': COOKIE})
+                self.wait_for(lambda: calls[-1] is False, 'keep-awake never released')
+            finally:
+                stop.set()
+                thread.join(5)
 
 
 class ReviewP1UnitTests(unittest.TestCase):

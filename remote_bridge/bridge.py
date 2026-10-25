@@ -25,6 +25,7 @@ import re
 import secrets
 import socket
 import _socket
+import ssl
 import subprocess
 import sys
 import threading
@@ -58,12 +59,27 @@ MAX_SSDP_LOCATIONS = 32
 # all of them, stay within this.
 SCAN_BUDGET = 5.0
 SSDP_WINDOW = 2.0
+# Connect plus response headers from the parent, for a media request.
+MEDIA_OPEN_TIMEOUT = 15
+MEDIA_READ_TIMEOUT = 60
 # A renderer that stops reading this long is dropped; on resume it opens a
 # fresh Range GET (the grant is still valid), so pause is not a held thread.
 MEDIA_STALL_TIMEOUT = 300
 MAX_MEDIA_STREAMS_PER_IP = 4
 MAX_MEDIA_STREAMS = 16
 TAILNET_STATUS_TTL = 30
+# Bridge-owned queue: the monitor looks at each renderer with a session this
+# often; a track counts as finished when STOPPED within END_TOLERANCE seconds
+# of its end (or after last being seen PLAYING that close to it).
+MONITOR_INTERVAL = 1.0
+END_TOLERANCE = 4.0
+SNAPSHOT_FRESH = 1.2
+MAX_QUEUE = 5000
+REPEAT_MODES = frozenset({'none', 'all', 'one'})
+MAX_HTML = 4 * 1024 * 1024
+QUEUE_SYNC_JS = Path(__file__).with_name('queue_sync.js')
+QUEUE_SYNC_TAG = b'<script src="/bridge/queue-sync.js"></script>'
+VELVET_PAGES = frozenset({'/', '/index.html', '/static/index.html'})
 PROXY_IDENTITY_HEADERS = frozenset({'x-forwarded-for', 'x-forwarded-host', 'x-forwarded-proto',
                                     'forwarded', 'x-real-ip'})
 # Shown by Velvet's front-end with innerHTML: allow no markup characters.
@@ -73,6 +89,8 @@ CAST_RE = re.compile(r'^/api/cast/([^/]+)$')
 CAST_CONTROL_RE = re.compile(r'^/api/cast/control/([^/]+)/(Play|Pause|Stop)$')
 CAST_STATUS_RE = re.compile(r'^/api/cast/status/([^/]+)$')
 CAST_RESULT_RE = re.compile(r'^/api/cast/result/([^/]+)/([^/]+)$')
+BRIDGE_SESSION_RE = re.compile(r'^/bridge/session/([^/]+)$')
+BRIDGE_QUEUE_RE = re.compile(r'^/bridge/queue/([^/]+)$')
 MEDIA_RE = re.compile(r'^/media/([A-Za-z0-9_-]{24,120})/(\d+)\.([a-z0-9]{2,5})$')
 COVER_RE = re.compile(r'^/media/([A-Za-z0-9_-]{24,120})/cover\.jpg$')
 MIME = {'flac': 'audio/flac', 'wav': 'audio/wav', 'aiff': 'audio/aiff',
@@ -271,22 +289,11 @@ class MediaGrant:
         return f'http://{cfg.lan_ip}:{cfg.media_port}/media/{self.token}/cover.jpg' if self.album_id else ''
 
 
-def source_socket(response) -> socket.socket | None:
-    """The TCP socket under a urllib response (HTTPError -> HTTPResponse ->
-    BufferedReader -> SocketIO -> socket)."""
-    obj = response
-    for _ in range(6):
-        if isinstance(obj, socket.socket):
-            return obj
-        obj = next((getattr(obj, name) for name in ('fp', 'raw', '_sock')
-                    if getattr(obj, name, None) is not None), None)
-    return None
-
-
 class ActiveStream:
     """One open media relay. cancel() ends it from any thread: the send loop
     sees the event within a second, and closing the parent connection wakes
-    a read blocked on a stalled parent at once (a cross-thread shutdown()
+    a connect, header wait or read blocked on a stalled parent at once (a
+    cross-thread shutdown()
     wakes neither a blocked send nor a blocked recv on Windows)."""
 
     def __init__(self):
@@ -294,12 +301,15 @@ class ActiveStream:
         self._source: socket.socket | None = None
         self._lock = threading.Lock()
 
-    def attach(self, upstream) -> None:
+    def attach(self, sock: socket.socket) -> None:
+        """Register the parent connection before it connects, so a Stop also
+        ends a connect or a header wait on a hung Tailscale link."""
         with self._lock:
-            self._source = source_socket(upstream)
+            self._source = sock
             cancelled = self.cancelled.is_set()
         if cancelled:
             self.cancel()
+            raise ConnectionAbortedError('media grant revoked')
 
     def cancel(self) -> None:
         with self._lock:
@@ -313,6 +323,45 @@ class ActiveStream:
             # later close by the relay thread is a no-op, never a reused fd.
             with contextlib.suppress(OSError):
                 _socket.socket.close(sock)
+
+
+@dataclass(frozen=True)
+class QueueSpec:
+    ids: tuple[int, ...]
+    index: int
+    repeat: str
+
+
+def parse_queue(raw, track_id) -> QueueSpec | None:
+    """A queue from the UI ({ids, index, repeat}) whose current entry is
+    `track_id`, within limits; None otherwise."""
+    if not isinstance(raw, dict):
+        return None
+    ids, index, repeat = raw.get('ids'), raw.get('index'), raw.get('repeat', 'none')
+    if (not isinstance(ids, list) or not 1 <= len(ids) <= MAX_QUEUE
+            or not all(type(i) is int and 0 < i < 2 ** 31 for i in ids)
+            or type(index) is not int or not 0 <= index < len(ids) or ids[index] != track_id
+            or repeat not in REPEAT_MODES):
+        return None
+    return QueueSpec(tuple(ids), index, repeat)
+
+
+@dataclass
+class QueueSession:
+    """What a renderer plays and what follows, in memory only (no library
+    copy: track ids of the parent's one database)."""
+    ids: tuple[int, ...]
+    index: int
+    repeat: str
+    credential: str
+    token: str  # the grant of the stream the renderer should be playing
+    track_id: int
+    advance_seq: int = 0  # bumped by each bridge-made advance (UI follows it)
+    auto_pending: tuple[int, int] | None = None  # (track, index) the UI has yet to confirm
+    duration: float = 0.0
+    was_playing: bool = False
+    last_position: float = 0.0
+    idle: bool = False  # stopped, or the queue ended: nothing to advance or keep awake
 
 
 class HTTPFailure(Exception):
@@ -340,6 +389,12 @@ class Bridge:
         self.intents: dict[str, tuple[int, str]] = {}
         # The newest arrival number that has reached the renderer.
         self.executed: dict[str, int] = {}
+        # Users' casts/controls in progress, per renderer (the monitor waits).
+        self.inflight: dict[str, int] = {}
+        self.sessions: dict[str, QueueSession] = {}
+        self.advance_counter = 0
+        # (monotonic time, state, position, duration, TrackURI) from the monitor.
+        self.snapshots: dict[str, tuple[float, str, float, float, str]] = {}
         self.locks: dict[str, threading.RLock] = {}
         self.lock = threading.RLock()
         self.last_scan = 0.0
@@ -433,6 +488,39 @@ class Bridge:
         except (URLError, TimeoutError, OSError) as exc:
             LOG.warning('Upstream request failed for %s', path.split('?', 1)[0])
             raise HTTPFailure(502, 'Parent Velvet is unavailable over Tailscale') from exc
+
+    @contextlib.contextmanager
+    def open_media(self, path: str, method: str, headers: dict, stream: ActiveStream):
+        """The parent's response for a media relay, over a socket `stream` can
+        close at any point: connecting, waiting for headers, or reading."""
+        parsed = urlparse(self.cfg.upstream_url)
+        https = parsed.scheme == 'https'
+        host, port = parsed.hostname, parsed.port or (443 if https else 80)
+        connection = (http.client.HTTPSConnection if https else http.client.HTTPConnection)(
+            host, port, timeout=MEDIA_OPEN_TIMEOUT)
+        try:
+            try:
+                family, kind, proto, _, address = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)[0]
+                sock = socket.socket(family, kind, proto)
+                stream.attach(sock)
+                sock.settimeout(MEDIA_OPEN_TIMEOUT)
+                sock.connect(address)
+                if https:
+                    sock = ssl.create_default_context().wrap_socket(sock, server_hostname=host)
+                    stream.attach(sock)
+                connection.sock = sock
+                connection.request(method, path, headers=headers)
+                response = connection.getresponse()
+            except OSError as exc:
+                if stream.cancelled.is_set():
+                    raise ConnectionAbortedError('media grant revoked') from exc
+                LOG.warning('Upstream media request failed')
+                raise HTTPFailure(502, 'Parent Velvet is unavailable over Tailscale') from exc
+            sock.settimeout(MEDIA_READ_TIMEOUT)
+            with response:
+                yield response
+        finally:
+            connection.close()
 
     def upstream_json(self, path: str, credential: str, *, cookie: str = '') -> dict:
         headers = {'X-API-Key': credential} if credential else {}
@@ -818,41 +906,65 @@ class Bridge:
                 f'<res {res}>{uri}</res>'
                 '</item></DIDL-Lite>')
 
-    def cast(self, udn: str, payload: dict, credential: str, *, cookie: str = '') -> dict:
-        generation = self.arrive(udn)
-        self.authorize_control(credential, cookie)
-        device = self.ensure_device(udn)
-        raw_id = payload.get('track_id')
-        if type(raw_id) is not int or raw_id < 1:
-            raise HTTPFailure(400, 'Invalid track_id')
-        rid = payload.get('request_id')
-        if rid is not None and (not isinstance(rid, str) or len(rid) not in range(1, 65)):
-            raise HTTPFailure(422, 'Invalid request_id')
-        if payload.get('dsp_profile_id') not in (None, 0, False):
-            raise HTTPFailure(422, 'Remote Bridge v0.1 streams original files only: disable Velvet DSP/EQ')
-        if payload.get('replaygain', 'off') != 'off':
-            raise HTTPFailure(422, 'Remote Bridge v0.1: disable ReplayGain for original-file output')
-        start = payload.get('start_seconds', 0)
-        if isinstance(start, bool) or not isinstance(start, (int, float)) or not 0 <= start <= 720 * 60:
-            raise HTTPFailure(422, 'Invalid start_seconds')
-        recast = payload.get('recast', False)
-        if type(recast) is not bool:
-            raise HTTPFailure(422, 'Invalid recast')
-        self.commit(udn, generation, 'Cast')
-        if rid:
+    @contextlib.contextmanager
+    def in_flight(self, udn: str):
+        """A user's cast or control is being handled: the monitor must not
+        auto-advance under it (it would supersede the user's choice)."""
+        with self.lock:
+            self.inflight[udn] = self.inflight.get(udn, 0) + 1
+        try:
+            yield
+        finally:
             with self.lock:
-                self.cast_results[(udn, rid)] = None
+                self.inflight[udn] -= 1
+
+    def cast(self, udn: str, payload: dict, credential: str, *, cookie: str = '') -> dict:
+        with self.in_flight(udn):
+            generation = self.arrive(udn)
+            self.authorize_control(credential, cookie)
+            device = self.ensure_device(udn)
+            raw_id = payload.get('track_id')
+            if type(raw_id) is not int or raw_id < 1:
+                raise HTTPFailure(400, 'Invalid track_id')
+            rid = payload.get('request_id')
+            if rid is not None and (not isinstance(rid, str) or len(rid) not in range(1, 65)):
+                raise HTTPFailure(422, 'Invalid request_id')
+            if payload.get('dsp_profile_id') not in (None, 0, False):
+                raise HTTPFailure(422, 'Remote Bridge v0.1 streams original files only: disable Velvet DSP/EQ')
+            if payload.get('replaygain', 'off') != 'off':
+                raise HTTPFailure(422, 'Remote Bridge v0.1: disable ReplayGain for original-file output')
+            start = payload.get('start_seconds', 0)
+            if isinstance(start, bool) or not isinstance(start, (int, float)) or not 0 <= start <= 720 * 60:
+                raise HTTPFailure(422, 'Invalid start_seconds')
+            recast = payload.get('recast', False)
+            if type(recast) is not bool:
+                raise HTTPFailure(422, 'Invalid recast')
+            # Sent by queue_sync.js with each cast; a malformed one only costs
+            # the auto-advance (the cast itself still plays).
+            queue = parse_queue(payload.get('bridge_queue'), raw_id)
+            self.commit(udn, generation, 'Cast')
+            if rid:
+                with self.lock:
+                    self.cast_results[(udn, rid)] = None
+            return self._play(udn, device, raw_id, credential, generation,
+                              start=start, recast=recast, rid=rid, queue=queue)
+
+    def _play(self, udn: str, device: Renderer, track_id: int, credential: str, generation: int, *,
+              start: float = 0, recast: bool = False, rid: str | None = None,
+              queue: QueueSpec | None = None, expect_token: str | None = None) -> dict:
+        """Load and play one track: a user's cast, or (with `expect_token`,
+        the stream that just ended) the bridge's own advance to the next."""
         grant = None
         set_uri_accepted = False
         try:
-            track = self.upstream_json(f'/api/tracks/{raw_id}', credential)
+            track = self.upstream_json(f'/api/tracks/{track_id}', credential)
             ext = str(track.get('format') or '').lower().lstrip('.')
             if ext not in MIME:
                 filename = str(track.get('file_path') or '')
                 ext = os.path.splitext(filename)[-1].lower().lstrip('.')
             if ext not in MIME:
                 raise HTTPFailure(415, 'This track format is not yet supported by the remote bridge')
-            if int(track.get('id', 0)) != raw_id:
+            if int(track.get('id', 0)) != track_id:
                 raise HTTPFailure(502, 'Parent Velvet returned the wrong track')
             with self.lock_for(udn):
                 with self.lock:
@@ -860,12 +972,25 @@ class Bridge:
                         result = {'success': False, 'superseded': True}
                         self._store_result(udn, rid, result)
                         return result
+                    session = self.sessions.get(udn)
+                    if expect_token is not None and (session is None or session.token != expect_token):
+                        return {'success': False, 'superseded': True}  # the user moved on meanwhile
                     # Still the newest cast: it runs even after a newer
                     # Play/Pause (honouring that Pause below), and every
                     # control older than it is void from now on.
                     self.executed[udn] = max(self.executed.get(udn, 0), generation)
+                    if (expect_token is None and queue and not recast and not start and session
+                            and session.auto_pending == (track_id, queue.index) and session.token in self.grants):
+                        # The UI catching up with an advance the bridge already
+                        # made (its own auto-next, or queue_sync.js following
+                        # the session): confirm it, never restart the track.
+                        session.auto_pending = None
+                        session.ids, session.index, session.repeat = queue.ids, queue.index, queue.repeat
+                        result = self._play_result('playing', None, absorbed=True)
+                        self._store_result(udn, rid, result)
+                        return result
                 # This ticket exists only in RAM, and is bound to the EXN100 IP.
-                grant = self._new_grant(raw_id, device, credential, ext, int(track.get('album_id') or 0))
+                grant = self._new_grant(track_id, device, credential, ext, int(track.get('album_id') or 0))
                 url = grant.url(self.cfg)
                 metadata = self.render_didl(track, grant)
                 # Capture pause state BEFORE loading a new URI; SetURI may reset it.
@@ -906,14 +1031,13 @@ class Bridge:
                         'Unit': 'REL_TIME',
                         'Target': f'{seek_time // 3600:02d}:{seek_time // 60 % 60:02d}:{seek_time % 60:02d}'}) is not None
                 with self.lock:
-                    self.last_track[udn] = raw_id
+                    self.last_track[udn] = track_id
                 if transport in ('playing', 'loaded'):
                     self.retire_older_grants(device.ip, grant.token)
-                result = {'success': transport in ('playing', 'loaded'), 'transport': transport,
-                          'start_offset': 0, 'position_restored': sought,
-                          'dsp': {'requested_profile_id': None, 'effective_profile_id': None,
-                                  'status': 'off', 'reason': 'VELVET DSP off', 'stream': 'direct'},
-                          'replaygain': {'mode': 'off', 'applied_db': 0}}
+                    self._start_session(udn, track_id, credential, grant.token,
+                                        queue or QueueSpec((track_id,), 0, 'none'), auto=expect_token is not None,
+                                        duration=float(track.get('duration') or 0))
+                result = self._play_result(transport, sought)
                 self._store_result(udn, rid, result)
                 return result
         except HTTPFailure as exc:
@@ -930,29 +1054,174 @@ class Bridge:
             self._store_result(udn, rid, {'success': False, 'error': 'Cast failed'})
             raise
 
-    def control(self, udn: str, action: str, credential: str, *, cookie: str = '') -> dict:
-        seq = self.arrive(udn)
+    @staticmethod
+    def _play_result(transport: str, sought: bool | None, **extra) -> dict:
+        return {'success': transport in ('playing', 'loaded'), 'transport': transport,
+                'start_offset': 0, 'position_restored': sought,
+                'dsp': {'requested_profile_id': None, 'effective_profile_id': None,
+                        'status': 'off', 'reason': 'VELVET DSP off', 'stream': 'direct'},
+                'replaygain': {'mode': 'off', 'applied_db': 0}, **extra}
+
+    def _start_session(self, udn: str, track_id: int, credential: str, token: str,
+                       queue: QueueSpec, *, auto: bool, duration: float) -> None:
+        """The renderer now plays `token`: from here the bridge, not the
+        phone, owns what plays next."""
+        with self.lock:
+            previous = self.sessions.get(udn)
+            if auto:
+                self.advance_counter += 1
+            advance_seq = self.advance_counter if auto else (previous.advance_seq if previous else 0)
+            self.sessions[udn] = QueueSession(
+                ids=queue.ids, index=queue.index, repeat=queue.repeat, credential=credential,
+                token=token, track_id=track_id, advance_seq=advance_seq,
+                auto_pending=(track_id, queue.index) if auto else None, duration=duration)
+
+    def update_queue(self, udn: str, payload: dict, credential: str, cookie: str = '') -> dict:
+        """The UI's queue changed (added, removed, reordered, repeat mode) while
+        the renderer plays: what the bridge advances to must follow it."""
         self.authorize_control(credential, cookie)
-        device = self.ensure_device(udn)
-        self.commit(udn, seq, action)
-        with self.lock_for(udn):
-            if not self.claim_turn(udn, seq):
-                # Newer playback already reached the renderer; it stands.
-                return {'success': True, 'superseded': True}
-            success = self.soap(device, action, {'Speed': '1'} if action == 'Play' else {}) is not None
-            # The user left this renderer: revoke even if it did not answer,
-            # and cut relays already open, so the stream really stops.
-            if action == 'Stop':
-                with self.lock:
-                    self.last_track.pop(udn, None)
-                self.retire_older_grants(device.ip)
-            return {'success': success}
+        track_id = payload.get('track_id')
+        queue = parse_queue(payload, track_id) if type(track_id) is int else None
+        if queue is None:
+            raise HTTPFailure(422, 'Invalid queue')
+        with self.lock:
+            session = self.sessions.get(udn)
+            if session is None or session.track_id != track_id:
+                return {'success': False, 'stale': True}  # describes another track
+            session.ids, session.index, session.repeat = queue.ids, queue.index, queue.repeat
+        return {'success': True}
+
+    def session_info(self, udn: str, credential: str, cookie: str = '') -> dict:
+        self.authenticate(credential, cookie)
+        with self.lock:
+            session = self.sessions.get(udn)
+            if session is None:
+                return {'active': False}
+            return {'active': True, 'track_id': session.track_id, 'queue_index': session.index,
+                    'queue_length': len(session.ids), 'repeat': session.repeat,
+                    'advance_seq': session.advance_seq, 'idle': session.idle}
+
+    @staticmethod
+    def next_index(session: QueueSession) -> int | None:
+        """Velvet's cast-mode playNext(): the following track, wrapping only
+        on repeat 'all' (its cast path plays on for 'one' as well)."""
+        following = session.index + 1
+        if following < len(session.ids):
+            return following
+        return 0 if session.repeat == 'all' else None
+
+    def monitor_once(self, udn: str) -> None:
+        """One look at a renderer with a session; advance once at the end of a
+        track, with no phone involved (Safari may be suspended)."""
+        with self.lock:
+            session = self.sessions.get(udn)
+            device = self.devices.get(udn)
+        if session is None or device is None:
+            return
+        state = self.transport(device)
+        position, duration, uri = self.position(device)
+        with self.lock:
+            self.snapshots[udn] = (time.monotonic(), state, position, duration, uri)
+        match = MEDIA_RE.fullmatch(urlparse(uri).path) if uri else None
+        token = match.group(1) if match else None
+        with self.lock:
+            if self.sessions.get(udn) is not session:
+                return
+            if uri and token is None:
+                # Another source took the renderer (StreamMagic, radio...).
+                del self.sessions[udn]
+                return
+            if token is not None and token != session.token:
+                return  # one of our newer streams is being loaded: not ours to judge
+            if state in ('PLAYING', 'TRANSITIONING'):
+                session.idle = False
+                if state == 'PLAYING':
+                    session.was_playing = True
+                    session.last_position = max(session.last_position, position)
+                    session.duration = duration or session.duration
+                return
+            if state not in ('STOPPED', 'NO_MEDIA_PRESENT') or not session.was_playing:
+                return  # paused (stays awake), an unknown/failed read, or never started
+            length = duration or session.duration
+            finished = length > 0 and max(position, session.last_position) >= length - END_TOLERANCE
+            if not finished:
+                session.was_playing, session.idle = False, True  # stopped mid-track elsewhere
+                return
+            following = self.next_index(session)
+            if following is None:
+                session.was_playing, session.idle = False, True  # end of the queue
+                return
+            if self.inflight.get(udn):
+                return  # a user's cast or control is on its way; look again next tick
+            session.was_playing = False
+            expect, next_track = session.token, session.ids[following]
+            queue = QueueSpec(session.ids, following, session.repeat)
+            credential = session.credential
+        generation = self.arrive(udn)
+        self.commit(udn, generation, 'Cast')
+        try:
+            result = self._play(udn, device, next_track, credential, generation,
+                                queue=queue, expect_token=expect)
+        except HTTPFailure as exc:
+            LOG.warning('Auto-advance to the next track failed: %s', exc.reason)
+            with self.lock:
+                if self.sessions.get(udn) is session:
+                    session.idle = True
+            return
+        if result.get('success'):
+            LOG.info('Advanced to queue position %d', following + 1)
+
+    def wants_awake(self) -> bool:
+        """Keep Windows awake while any renderer is playing or paused in a
+        session, including the gaps between tracks and a long Pause."""
+        with self.lock:
+            return any(not s.idle for s in self.sessions.values())
+
+    def run_monitor(self, stop: threading.Event) -> None:
+        awake = False
+        while not stop.wait(MONITOR_INTERVAL):
+            for udn in list(self.sessions):
+                try:
+                    self.monitor_once(udn)
+                except Exception:
+                    LOG.exception('Queue monitor error')
+            wanted = self.wants_awake()
+            if wanted != awake:
+                keep_awake(wanted)  # this long-lived thread holds the request
+                awake = wanted
+        keep_awake(False)
+
+    def control(self, udn: str, action: str, credential: str, *, cookie: str = '') -> dict:
+        with self.in_flight(udn):
+            seq = self.arrive(udn)
+            self.authorize_control(credential, cookie)
+            device = self.ensure_device(udn)
+            self.commit(udn, seq, action)
+            with self.lock_for(udn):
+                if not self.claim_turn(udn, seq):
+                    # Newer playback already reached the renderer; it stands.
+                    return {'success': True, 'superseded': True}
+                success = self.soap(device, action, {'Speed': '1'} if action == 'Play' else {}) is not None
+                # The user left this renderer: revoke even if it did not answer,
+                # cut relays already open, and end the queue session.
+                if action == 'Stop':
+                    with self.lock:
+                        self.last_track.pop(udn, None)
+                        self.sessions.pop(udn, None)
+                    self.retire_older_grants(device.ip)
+                return {'success': success}
 
     def status(self, udn: str, credential: str, cookie: str = '') -> dict:
         self.authenticate(credential, cookie)
         device = self.ensure_device(udn)
-        state = self.transport(device)
-        position, duration, uri = self.position(device)
+        with self.lock:
+            snapshot = self.snapshots.get(udn)
+        if snapshot and time.monotonic() - snapshot[0] < SNAPSHOT_FRESH:
+            # The monitor read it a moment ago: spare the renderer a second poll.
+            _, state, position, duration, uri = snapshot
+        else:
+            state = self.transport(device)
+            position, duration, uri = self.position(device)
         track_id = None
         match = MEDIA_RE.fullmatch(urlparse(uri).path) if uri else None
         if match:
@@ -962,7 +1231,6 @@ class Bridge:
                 track_id = self.grant_for(tok, int(tid), ext, device.ip).track_id
         return {'state': state, 'position': position, 'duration': duration,
                 'track_id': track_id, 'is_playing': state == 'PLAYING'}
-
 
 def is_identity_header(name: str) -> bool:
     """A proxy's forwarding or Tailscale identity claim."""
@@ -1021,6 +1289,16 @@ class BridgeHandler(BaseHTTPRequestHandler):
 
     def do_OPTIONS(self):
         self.dispatch()
+
+    def respond_bytes(self, content: bytes, content_type: str):
+        self.send_response(200)
+        self.send_header('Content-Type', content_type)
+        self.send_header('Content-Length', str(len(content)))
+        self.send_header('Cache-Control', 'no-cache')
+        self.send_header('X-Content-Type-Options', 'nosniff')
+        self.end_headers()
+        if self.command != 'HEAD':
+            self.wfile.write(content)
 
     def respond_json(self, payload: dict | list, status: int = 200):
         if self.headers_sent:
@@ -1095,12 +1373,20 @@ class BridgeHandler(BaseHTTPRequestHandler):
             keep_awake(True)
             try:
                 # Relay original FLAC bytes, with Range/HEAD support and NO transcoding.
-                with bridge.upstream(f'/api/stream/{grant.track_id}?upsample=none&replaygain=off',
-                                     method=self.command, headers=headers, timeout=60) as upstream:
-                    stream.attach(upstream)
+                with bridge.open_media(f'/api/stream/{grant.track_id}?upsample=none&replaygain=off',
+                                       self.command, headers, stream) as upstream:
                     self.relay(upstream, stream_timeout=MEDIA_STALL_TIMEOUT, cancelled=stream.cancelled)
             finally:
                 keep_awake(False)
+
+    def read_json(self) -> dict:
+        try:
+            payload = json.loads(self.read_body())
+            if not isinstance(payload, dict):
+                raise ValueError('Expected JSON object')
+        except (ValueError, UnicodeDecodeError) as exc:
+            raise HTTPFailure(400, 'Invalid cast JSON') from exc
+        return payload
 
     def read_body(self) -> bytes:
         try:
@@ -1130,6 +1416,15 @@ class BridgeHandler(BaseHTTPRequestHandler):
         cookie = self.headers.get('Cookie', '')
         if self.command not in ('GET', 'HEAD', 'OPTIONS'):
             self.check_local_origin()
+        if path == '/bridge/queue-sync.js' and self.command in ('GET', 'HEAD'):
+            return self.respond_bytes(QUEUE_SYNC_JS.read_bytes(), 'text/javascript; charset=utf-8')
+        match = BRIDGE_SESSION_RE.fullmatch(path)
+        if match and self.command == 'GET':
+            return self.respond_json(bridge.session_info(unquote(match.group(1)), credential, cookie))
+        match = BRIDGE_QUEUE_RE.fullmatch(path)
+        if match and self.command == 'POST':
+            return self.respond_json(bridge.update_queue(unquote(match.group(1)), self.read_json(),
+                                                         credential, cookie))
         if path in ('/api/zones', '/api/devices') and self.command == 'GET':
             bridge.authenticate(credential, cookie)
             devices = bridge.discover(force='refresh=true' in self.path.lower())
@@ -1143,13 +1438,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
                                       'network': {'devices': [d.ui() for d in devices]}})
         match = CAST_RE.fullmatch(path)
         if match and self.command == 'POST':
-            try:
-                payload = json.loads(self.read_body())
-                if not isinstance(payload, dict):
-                    raise ValueError('Expected JSON object')
-            except (ValueError, UnicodeDecodeError) as exc:
-                raise HTTPFailure(400, 'Invalid cast JSON') from exc
-            return self.respond_json(bridge.cast(unquote(match.group(1)), payload, credential,
+            return self.respond_json(bridge.cast(unquote(match.group(1)), self.read_json(), credential,
                                                  cookie=cookie))
         match = CAST_CONTROL_RE.fullmatch(path)
         if match and self.command == 'POST':
@@ -1186,7 +1475,31 @@ class BridgeHandler(BaseHTTPRequestHandler):
             headers['Origin'] = bridge.cfg.upstream_url
         body = self.read_body() if self.command not in ('GET', 'HEAD') else None
         with bridge.upstream(path, method=self.command, headers=headers, data=body) as upstream:
+            status = getattr(upstream, 'status', None) or upstream.code
+            if (self.command == 'GET' and status == 200 and urlparse(path).path in VELVET_PAGES
+                    and 'text/html' in upstream.headers.get('Content-Type', '')
+                    and not upstream.headers.get('Content-Encoding')):
+                return self.relay_page(upstream, status)
             self.relay(upstream)
+
+    def relay_page(self, upstream, status: int):
+        """Velvet's page with queue_sync.js added, so the bridge learns the
+        queue and can play on while Safari is suspended."""
+        page = upstream.read(MAX_HTML + 1)
+        if len(page) > MAX_HTML:
+            raise HTTPFailure(502, 'Parent page too large')
+        end = page.lower().rfind(b'</body>')
+        page = page[:end] + QUEUE_SYNC_TAG + page[end:] if end >= 0 else page + QUEUE_SYNC_TAG
+        self.send_response(status)
+        for key, value in upstream.headers.items():
+            if key.lower() in HOP_HEADERS or key.lower() in {
+                    'content-length', 'etag', 'last-modified', 'server', 'date', 'x-content-type-options'}:
+                continue
+            self.send_header(key, value)
+        self.send_header('Content-Length', str(len(page)))
+        self.send_header('X-Content-Type-Options', 'nosniff')
+        self.end_headers()
+        self.wfile.write(page)
 
     def relay(self, upstream, stream_timeout: float = CONTROL_STREAM_TIMEOUT,
               cancelled: threading.Event | None = None):
@@ -1250,6 +1563,9 @@ def serve(cfg: BridgeConfig):
         raise
     t = threading.Thread(target=media.serve_forever, daemon=True, name='media-relay')
     t.start()
+    stop_monitor = threading.Event()
+    threading.Thread(target=bridge.run_monitor, args=(stop_monitor,), daemon=True,
+                     name='queue-monitor').start()
     try:
         LOG.info('Control UI: http://%s:%d', cfg.control_bind, cfg.control_port)
         LOG.info('EXN100 media (LAN): http://%s:%d', cfg.lan_ip, cfg.media_port)
@@ -1263,6 +1579,7 @@ def serve(cfg: BridgeConfig):
     except KeyboardInterrupt:
         LOG.info('Stopping bridge')
     finally:
+        stop_monitor.set()
         control.shutdown()
         media.shutdown()
         control.server_close()

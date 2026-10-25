@@ -1,5 +1,42 @@
 # Velvet Remote Bridge — Validation
 
+## 0.1.4 (fourth review: bridge-owned queue + three P2) — 2026-10-25
+
+- `python -m unittest discover -s tests -v`: **71 tests passed**, three consecutive runs;
+  `node tests/queue_sync.test.mjs`: **8/8** (no packages needed).
+- **P1 unattended auto-next.** The bridge adds `/bridge/queue-sync.js` to the relayed Velvet
+  page; it sends the queue (track ids, index, repeat) with each cast and on queue edits.
+  A monitor thread (1 s) advances at the end of a track with no client involved, mirroring
+  Velvet's cast-mode `playNext()`. Deterministic tests, monitor driven tick by tick with no
+  client requests: album plays on exactly once per track (stale STOPPED reads included),
+  queue end stops, Stop ends the queue, Pause and a stop on the device mid-track never
+  advance, manual jump + repeat 'all' wraps, 4000 s track with RelTime reset to 0 on STOPPED,
+  another source taking the renderer ends the session, queue edits and input limits (5000
+  ids, ints, index must name the track), malformed queue still plays alone, the UI's
+  catch-up cast is confirmed without restarting the track, the page's own late auto-next
+  and the monitor never both advance, the monitor waits for a user's cast in flight, and
+  a lagging TrackURI read after an advance is not counted. Mutation check: removing each
+  of absorb / in-flight wait / end-of-track test / TrackURI identity / Stop-ends-session /
+  repeat-all makes at least one test fail.
+- **Real browser, real Velvet UI** (`main` server.py + bridge + a fake EXN100 that plays in
+  real time, three 6 s FLACs, built-in browser): selected the EXN100 zone and pressed
+  *Play All*, then
+  1. navigated the tab away (no Velvet JS at all): the renderer loaded Song 1, 2, 3 once
+     each, ~0.1 s apart, and stopped at the end of the queue;
+  2. kept the page open: same single loads; the UI showed 1 → 2 → 3, never "unverified";
+  3. froze the page's JS for 16 s (as iOS suspends it) during Song 1: the bridge played
+     2 and 3; on wake the UI went straight to Song 3, confirmed, with no extra load.
+- **P2 sleep:** the monitor thread holds the Windows keep-awake request while any queue
+  session is playing or paused (gaps between tracks and long pauses included) and releases
+  it on Stop / queue end (tested with the real monitor thread).
+- **P2 connect/header wait:** media requests now use a socket registered for cancellation
+  before it connects; Stop while the parent never answers frees the relay in under 3 s
+  (open timeout 15 s, read timeout 60 s).
+- **P2 packaging:** `build_zip.py` builds `Velvet-Remote-Bridge-<version>-<commit>.zip` from
+  committed files only (refuses with uncommitted changes); the extracted package's own
+  tests were run. Old 0.1.0 ZIPs are obsolete; no package is published before review.
+- `tests/manual_e2e_real_main.py` against real `main` `server.py`: 20/20.
+
 ## 0.1.3 (third review: two P1 + stalled-source P2) — 2026-10-25
 
 - `python -m unittest discover -s tests -v`: **55 tests passed**, three consecutive runs.
