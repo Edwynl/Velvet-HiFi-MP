@@ -79,6 +79,9 @@ REPORTED_END = 1.0
 # count as the end when the renderer resets RelTime on STOPPED.
 TIMING_SLACK = 1.5
 MAX_ADVANCE_RETRIES = 4
+# Queue edits landing during one advance's track lookups before it gives up
+# for this tick (the end stays pending; the next tick tries again).
+MAX_ADVANCE_EDITS = 8
 SNAPSHOT_FRESH = 1.2
 MAX_QUEUE = 5000
 REPEAT_MODES = frozenset({'none', 'all', 'one'})
@@ -95,8 +98,10 @@ CAST_RE = re.compile(r'^/api/cast/([^/]+)$')
 CAST_CONTROL_RE = re.compile(r'^/api/cast/control/([^/]+)/(Play|Pause|Stop)$')
 CAST_STATUS_RE = re.compile(r'^/api/cast/status/([^/]+)$')
 CAST_RESULT_RE = re.compile(r'^/api/cast/result/([^/]+)/([^/]+)$')
-BRIDGE_SESSION_RE = re.compile(r'^/bridge/session(?:/([^/]+))?$')
-BRIDGE_QUEUE_RE = re.compile(r'^/bridge/queue/([^/]+)$')
+# Under /api: Velvet's admin cookie is Path=/api, so a browser sends it only
+# there. The bridge answers these itself; the parent never sees them.
+BRIDGE_SESSION_RE = re.compile(r'^/api/bridge/session(?:/([^/]+))?$')
+BRIDGE_QUEUE_RE = re.compile(r'^/api/bridge/queue/([^/]+)$')
 MEDIA_RE = re.compile(r'^/media/([A-Za-z0-9_-]{24,120})/(\d+)\.([a-z0-9]{2,5})$')
 COVER_RE = re.compile(r'^/media/([A-Za-z0-9_-]{24,120})/cover\.jpg$')
 MIME = {'flac': 'audio/flac', 'wav': 'audio/wav', 'aiff': 'audio/aiff',
@@ -967,9 +972,11 @@ class Bridge:
 
     def _play(self, udn: str, device: Renderer, track_id: int, credential: str, generation: int, *,
               start: float = 0, recast: bool = False, rid: str | None = None,
-              queue: QueueSpec | None = None, expect_token: str | None = None) -> dict:
+              queue: QueueSpec | None = None, expect_token: str | None = None,
+              expect_revision: int | None = None) -> dict:
         """Load and play one track: a user's cast, or (with `expect_token`,
-        the stream that just ended) the bridge's own advance to the next."""
+        the stream that just ended, and `expect_revision`, the session
+        revision `queue` was taken from) the bridge's own advance to the next."""
         grant = None
         set_uri_accepted = False
         try:
@@ -991,6 +998,12 @@ class Bridge:
                     session = self.sessions.get(udn)
                     if expect_token is not None and (session is None or session.token != expect_token):
                         return {'success': False, 'superseded': True}  # the user moved on meanwhile
+                    if expect_revision is not None and session.revision != expect_revision:
+                        # The queue was edited during the track lookup: the
+                        # advance chooses again. From here to the new session
+                        # update_queue waits for the renderer lock, so the
+                        # queue cannot change under this advance any more.
+                        return {'success': False, 'stale': True}
                     # Still the newest cast: it runs even after a newer
                     # Play/Pause (honouring that Pause below), and every
                     # control older than it is void from now on.
@@ -1000,8 +1013,10 @@ class Bridge:
                         # The UI catching up with an advance the bridge already
                         # made (its own auto-next, or queue_sync.js following
                         # the session): confirm it, never restart the track.
+                        # The session's queue stands: the page's copy may
+                        # predate another page's edit (its own edits follow
+                        # through /api/bridge/queue).
                         session.auto_pending = None
-                        session.ids, session.index, session.repeat = queue.ids, queue.index, queue.repeat
                         result = self._play_result('playing', None, absorbed=True)
                         self._store_result(udn, rid, result)
                         return result
@@ -1096,21 +1111,28 @@ class Bridge:
 
     def update_queue(self, udn: str, payload: dict, credential: str, cookie: str = '') -> dict:
         """The UI's queue changed (added, removed, reordered, repeat mode) while
-        the renderer plays: what the bridge advances to must follow it."""
+        the renderer plays: what the bridge advances to must follow it.
+
+        Compare-and-swap on `expected_revision`, the session revision the
+        page last saw: an edit made before another page's (or the bridge's
+        own advance) is refused with `conflict`, never written over it."""
         self.authorize_control(credential, cookie)
-        track_id = payload.get('track_id')
+        track_id, expected = payload.get('track_id'), payload.get('expected_revision')
         queue = parse_queue(payload, track_id) if type(track_id) is int else None
-        if queue is None:
+        if queue is None or type(expected) is not int:
             raise HTTPFailure(422, 'Invalid queue')
-        with self.lock:
+        # The renderer lock as well: an advance holds it from its revision
+        # check to its new session, so an edit never lands in between.
+        with self.lock_for(udn), self.lock:
             session = self.sessions.get(udn)
-            if session is None or session.track_id != track_id:
-                return {'success': False, 'stale': True}  # describes another track
+            if session is None or session.track_id != track_id or session.revision != expected:
+                return {'success': False, 'conflict': True,
+                        'revision': session.revision if session else None}
             if (session.ids, session.index, session.repeat) != (queue.ids, queue.index, queue.repeat):
                 session.ids, session.index, session.repeat = queue.ids, queue.index, queue.repeat
                 self.revision_counter += 1
                 session.revision = self.revision_counter
-        return {'success': True}
+            return {'success': True, 'revision': session.revision}
 
     def session_info(self, udn: str | None, credential: str, cookie: str = '') -> dict:
         """A renderer's queue session, or with no `udn` the most recent one
@@ -1142,7 +1164,7 @@ class Bridge:
                     'error': session.error}
 
     @staticmethod
-    def next_index(session: QueueSession, after: int | None = None) -> int | None:
+    def next_index(session: QueueSession | QueueSpec, after: int | None = None) -> int | None:
         """Velvet's cast-mode playNext(): the entry after `after` (default:
         the current one), wrapping only on repeat 'all' (its cast path plays
         on for 'one' as well)."""
@@ -1220,39 +1242,69 @@ class Bridge:
             session.was_playing = False
             expect = session.token
             credential = session.credential
-        self.advance(udn, device, session, following, generation, expect, credential)
+            snapshot = (QueueSpec(session.ids, session.index, session.repeat), session.revision)
+        try:
+            self.advance(udn, device, session, following, generation, expect, credential, *snapshot)
+        except Exception as exc:
+            # Never leave the end unhandled for good (was_playing is already
+            # off): retry like an unreachable parent, then stop with an error.
+            self._advance_failed(udn, session, f'Next track failed ({type(exc).__name__})')
+            raise
+
+    def _advance_failed(self, udn: str, session: QueueSession, reason: str) -> None:
+        """An advance could not complete, through no fault of the next track:
+        keep the end pending and retry with a growing pause, a few times."""
+        with self.lock:
+            if self.sessions.get(udn) is session:
+                session.failures += 1
+                if session.failures >= MAX_ADVANCE_RETRIES:
+                    session.idle, session.error = True, reason
+                else:
+                    session.was_playing = True  # the end is still pending
+                    session.retry_after = self.clock() + 2 ** session.failures
+        LOG.warning('Auto-advance failed (%s); %s', reason, 'giving up' if session.idle else 'will retry')
 
     def advance(self, udn: str, device: Renderer, session: QueueSession, following: int,
-                generation: int, expect: str, credential: str) -> None:
-        """Play queue entry `following`, skipping entries that cannot play
-        (missing from the parent, unsupported, refused by the renderer), at
-        most once round the queue. If the parent cannot be reached, retry a
-        few times with a growing pause, then stop with an error."""
-        candidate, skipped = following, []
-        for _ in range(len(session.ids)):
-            track_id = session.ids[candidate]
-            queue = QueueSpec(session.ids, candidate, session.repeat)
+                generation: int, expect: str, credential: str, queue: QueueSpec, revision: int) -> None:
+        """Play entry `following` of `queue` (the session's queue at
+        `revision`), skipping entries that cannot play (missing from the
+        parent, unsupported, refused by the renderer), at most once round the
+        queue. If the parent cannot be reached, retry a few times with a
+        growing pause, then stop with an error. If the queue is edited while
+        a track is looked up, choose again from the edited queue: never play
+        a removed entry, nor restore the old queue."""
+        candidate, skipped, tries, edits = following, [], 0, 0
+        while tries < len(queue.ids):
+            tries += 1
+            track_id = queue.ids[candidate]
             try:
                 result = self._play(udn, device, track_id, credential, generation,
-                                    queue=queue, expect_token=expect)
+                                    queue=replace(queue, index=candidate), expect_token=expect,
+                                    expect_revision=revision)
             except HTTPFailure as exc:
                 if exc.status not in (404, 415):
                     # Parent unreachable or failing (Tailscale, restart): not
                     # this track's fault, so do not skip it; retry later.
-                    with self.lock:
-                        if self.sessions.get(udn) is session:
-                            session.failures += 1
-                            if session.failures >= MAX_ADVANCE_RETRIES:
-                                session.idle, session.error = True, f'Next track unavailable: {exc.reason}'
-                            else:
-                                session.was_playing = True  # the end is still pending
-                                session.retry_after = self.clock() + 2 ** session.failures
-                    LOG.warning('Auto-advance failed (%s); %s', exc.reason,
-                                'giving up' if session.idle else 'will retry')
+                    self._advance_failed(udn, session, f'Next track unavailable: {exc.reason}')
                     return
                 result = {'success': False, 'error': exc.reason}
             if result.get('superseded'):
                 return  # the user stopped or chose another track meanwhile
+            if result.get('stale'):
+                edits += 1
+                with self.lock:
+                    if self.sessions.get(udn) is not session or session.token != expect:
+                        return
+                    if edits > MAX_ADVANCE_EDITS:
+                        session.was_playing = True  # still at the end: the next tick tries again
+                        return
+                    queue, revision = QueueSpec(session.ids, session.index, session.repeat), session.revision
+                    following = self.next_index(session)
+                    if following is None:
+                        session.idle = True  # the edit left nothing after the track that ended
+                        return
+                candidate, tries = following, 0
+                continue
             if result.get('success'):
                 with self.lock:
                     current = self.sessions.get(udn)
@@ -1263,7 +1315,7 @@ class Bridge:
                 return
             skipped.append((track_id, str(result.get('error') or 'Cannot be played')))
             LOG.warning('Skipping queue position %d: %s', candidate + 1, skipped[-1][1])
-            after = self.next_index(session, candidate)
+            after = self.next_index(queue, candidate)
             if after is None:
                 break  # end of the queue (repeat 'all' is bounded by the loop: once round)
             candidate = after
@@ -1525,8 +1577,8 @@ class BridgeHandler(BaseHTTPRequestHandler):
             return self.respond_json(bridge.session_info(udn, credential, cookie))
         match = BRIDGE_QUEUE_RE.fullmatch(path)
         if match and self.command == 'POST':
-            return self.respond_json(bridge.update_queue(unquote(match.group(1)), self.read_json(),
-                                                         credential, cookie))
+            result = bridge.update_queue(unquote(match.group(1)), self.read_json(), credential, cookie)
+            return self.respond_json(result, 409 if result.get('conflict') else 200)
         if path in ('/api/zones', '/api/devices') and self.command == 'GET':
             bridge.authenticate(credential, cookie)
             devices = bridge.discover(force='refresh=true' in self.path.lower())

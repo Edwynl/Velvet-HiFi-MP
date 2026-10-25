@@ -1,5 +1,66 @@
 # Velvet Remote Bridge — Validation
 
+## 0.1.6 (sixth review: four P1 + P2) — 2026-10-25
+
+- `python -m unittest discover -s tests -v`: **90 tests passed**, five consecutive runs;
+  `node tests/queue_sync.test.mjs`: **22/22**; `tests/manual_e2e_real_main.py`: **20/20**.
+- **Real browser, administrator password set** (`tests/manual_browser_stack.py` with
+  `ADMIN_PASSWORD`, driven by `tests/manual_admin_two_devices.mjs`: real `main` server.py, the
+  bridge, a fake EXN100 playing 4 x 25 s FLACs in real time, two Chromium sessions with
+  separate cookie jars as phone and tablet): **23/23 checks, three runs on separate stacks**.
+  The same script against 0.1.5 (`0116da0`) fails from the first queue edit: every
+  `/bridge/queue` POST answered 403, the cold tablet page showed Repeat off and itself tried to
+  post the queue.
+- **P1-1 admin cookie path.** Velvet's admin cookie is `Path=/api`, so the session and queue
+  endpoints moved to `/api/bridge/session[/udn]` and `/api/bridge/queue/{udn}` (answered by the
+  bridge, never proxied); same admin and Origin checks. Test with a real `http.cookiejar`:
+  login through the bridge's proxy, cast, then a queue edit return 200, no Cookie header added
+  by hand; the jar sends the cookie to `/api/bridge/queue/x` and not to `/bridge/queue/x`.
+  queue_sync.js posts through Velvet's `managementFetch`, so a second device's first edit
+  opens Velvet's admin dialog (browser check) instead of failing silently; a cancelled prompt
+  is not repeated for the same edit.
+- **P1-2 repeat on reattach.** The reattached page takes the session's repeat mode and
+  repeat-button colour, and records the session as its starting point, so attaching sends
+  nothing. Browser: tablet cold page shows Repeat All, two cycles later the bridge revision
+  is unchanged; phone set Repeat All, cold reload, still All on screen and on the bridge, then
+  a jump to the last song wraps to the first.
+- **P1-3 two devices.** `update_queue` is a compare-and-swap: `expected_revision` (required)
+  must equal the session revision, else 409 with the current revision and nothing changes.
+  queue_sync.js keeps the revision it last agreed with; a newer session revision is taken in
+  even when the current song is the same, merged three-way with the page's unsent edits
+  (each side's change kept where only it changed; both changing the tracks: the bridge's
+  version stands and the page says so). Node tests with two pages on a CAS fake bridge:
+  removal taken in and kept by a later repeat toggle; toggle before seeing the removal merged;
+  a change landing between look and post refused then merged; conflicting reorders; edit
+  across the bridge's own advance. Browser: phone removes an upcoming track, tablet shows it
+  while the song plays on; tablet's repeat toggle keeps the removal; simultaneous phone
+  Shuffle and tablet Repeat both kept and both pages converge.
+- **P1-4 edits vs auto-advance.** Each advance try plays from a snapshot of one queue
+  revision; `_play` re-checks the revision under the renderer lock before SetAVTransportURI
+  and returns `stale`, and the advance chooses again from the edited queue (bounded).
+  `update_queue` takes the renderer lock, so no edit lands between that check and the new
+  session; an edit of the old track arriving then gets 409 and the page merges it. Any
+  unexpected error in an advance now keeps the end pending and retries (bounded) instead of
+  stranding the queue. The UI's catch-up cast no longer replaces the session's queue with
+  the page's copy. Barrier tests (held `/api/tracks/6` lookup): next track removed ->
+  plays 7; reordered -> plays the new next; queue cut to the current track -> ends cleanly,
+  no exception; repeat changed -> kept and wraps; edit during SetAVTransportURI waits and
+  gets 409. Browser: the bridge's advance played the next track of the edited queue and
+  never loaded the removed one; both pages followed.
+- **P2 metadata on reattach.** The current track first, then 5 before / 40 after it in
+  the background (4 at a time); others load as their rows scroll into view in the queue
+  panel (IntersectionObserver, rows updated in place). Loading stops once the page shows
+  another queue. Node: a 5000-entry reattach makes at most 46 track requests.
+- Mutation check: each of no revision re-check, unserialized edit, no CAS, no stuck guard,
+  absorb overwriting, old `/bridge/queue` path (Python), and no repeat on adopt, no
+  same-track adoption, fixed revision, merge dropping a side, unbounded or uncancelled
+  loading, repeated admin prompt, no conflict detection, no resync after 409 (Node) makes
+  at least one test fail.
+- Not covered here: physical EXN100, real Tailscale LAN/WAN, 30-minute pause, FLAC
+  44.1/96/192 kHz on hardware (separate acceptance gate). The fake renderer does not fetch
+  audio bytes; byte/Range fidelity stays covered by the unit tests and
+  `manual_e2e_real_main.py`.
+
 ## 0.1.5 (fifth review: two P1 + P2) — 2026-10-25
 
 - `python -m unittest discover -s tests -v`: **81 tests passed**, five consecutive runs;

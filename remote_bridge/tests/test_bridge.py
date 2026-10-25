@@ -1,5 +1,6 @@
 """Offline unit and integration tests; no EXN100 or Tailscale required."""
 import contextlib
+import http.cookiejar
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import ipaddress
 import io
@@ -17,7 +18,7 @@ import types
 import unittest
 from unittest.mock import patch
 from urllib.error import HTTPError
-from urllib.request import Request, build_opener, HTTPHandler
+from urllib.request import Request, build_opener, HTTPCookieProcessor, HTTPHandler
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import bridge
@@ -126,16 +127,20 @@ class ParentHandler(BaseHTTPRequestHandler):
         if self.path == '/api/security/admin-login':
             n = int(self.headers.get('Content-Length', '0'))
             payload = json.loads(self.rfile.read(n))
-            self.reply({'success': payload.get('password') == 'admin-password'},
-                       200 if payload.get('password') == 'admin-password' else 403)
+            ok = payload.get('password') == 'admin-password'
+            # As main's unlock_admin: a session cookie scoped to /api only.
+            self.reply({'success': ok}, 200 if ok else 403,
+                       {'Set-Cookie': f'{COOKIE}; Path=/api; HttpOnly; SameSite=Strict'} if ok else None)
         else:
             self.reply({'detail': 'Not found'}, 404)
 
-    def reply(self, obj, status=200):
+    def reply(self, obj, status=200, headers=None):
         data = json.dumps(obj, ensure_ascii=False).encode('utf-8')
         self.send_response(status)
         self.send_header('Content-Length', str(len(data)))
         self.send_header('Content-Type', 'application/json')
+        for key, value in (headers or {}).items():
+            self.send_header(key, value)
         self.end_headers()
         if self.command != 'HEAD':
             self.wfile.write(data)
@@ -237,6 +242,41 @@ class ServerFixture(unittest.TestCase):
         self.assertEqual(status, 403)
         # Velvet's managementFetch opens its admin dialog only for this code.
         self.assertEqual(json.loads(data)['code'], 'admin_password_required')
+
+    # ── Review 6 / P1-1: what a browser's own cookie handling sends ──
+
+    def test_admin_cookie_from_a_real_cookie_jar_reaches_cast_and_queue_edits(self):
+        self.fake_renderer()
+        jar = http.cookiejar.CookieJar()
+        browser = build_opener(HTTPHandler(), HTTPCookieProcessor(jar))
+        def call(path, body=None):
+            req = Request(self.control_base + path, method='GET' if body is None else 'POST',
+                          data=None if body is None else json.dumps(body).encode(),
+                          headers={'X-API-Key': CREDENTIAL, 'Content-Type': 'application/json',
+                                   'Origin': self.control_base})
+            try:
+                with browser.open(req, timeout=10) as res:
+                    return res.status, json.loads(res.read())
+            except HTTPError as err:
+                return err.code, json.loads(err.read())
+        cast = {'track_id': 5, 'bridge_queue': {'ids': [5, 6, 7], 'index': 0, 'repeat': 'none'}}
+        self.assertEqual(call(f'/api/cast/{self.UDN}', cast)[0], 403)  # not unlocked yet
+        # The login goes through the bridge's proxy; the parent's cookie says Path=/api.
+        self.assertEqual(call('/api/security/admin-login', {'password': 'admin-password'}), (200, {'success': True}))
+        status, result = call(f'/api/cast/{self.UDN}', cast)
+        self.assertEqual((status, result['success']), (200, True))
+        status, info = call(f'/api/bridge/session/{self.UDN}')
+        self.assertEqual((status, info['repeat']), (200, 'none'))
+        status, answer = call(f'/api/bridge/queue/{self.UDN}', {'track_id': 5, 'ids': [5, 7], 'index': 0,
+                                                                'repeat': 'all', 'expected_revision': info['revision']})
+        self.assertEqual((status, answer['success']), (200, True))
+        session = self.core.sessions[self.UDN]
+        self.assertEqual((session.ids, session.repeat), ((5, 7), 'all'))
+        # Why 0.1.5's /bridge/queue answered 403 in every real browser:
+        for path, sent in (('/api/bridge/queue/x', True), ('/bridge/queue/x', False)):
+            probe = Request(self.control_base + path)
+            jar.add_cookie_header(probe)
+            self.assertEqual(probe.has_header('Cookie'), sent, path)
 
     def test_cast_then_lossless_media_range_head_and_status(self):
         saw = []
@@ -988,20 +1028,176 @@ class ServerFixture(unittest.TestCase):
         self.core.monitor_once(self.UDN)
         self.assertNotIn(self.UDN, self.core.sessions)
 
+    def post_queue(self, body):
+        status, _, data = self.request(f'/api/bridge/queue/{self.UDN}', method='POST', body=body,
+                                       headers={'X-API-Key': CREDENTIAL, 'Cookie': COOKIE})
+        return status, json.loads(data)
+
     def test_queue_updates_and_limits(self):
         renderer = self.fake_renderer()
         self.cast_queue([5, 6, 7], 0)
-        def post(body):
-            status, _, data = self.request(f'/bridge/queue/{self.UDN}', method='POST', body=body,
-                                           headers={'X-API-Key': CREDENTIAL, 'Cookie': COOKIE})
-            return status, json.loads(data)
-        self.assertEqual(post({'track_id': 5, 'ids': [5, 7], 'index': 0}), (200, {'success': True}))
-        self.assertEqual(post({'track_id': 6, 'ids': [6, 7], 'index': 0}), (200, {'success': False, 'stale': True}))
+        rev = self.core.sessions[self.UDN].revision
+        post = lambda body: self.post_queue({'expected_revision': rev, **body})
+        status, answer = post({'track_id': 5, 'ids': [5, 7], 'index': 0})
+        self.assertEqual((status, answer['success']), (200, True))
+        self.assertGreater(answer['revision'], rev)
+        self.assertEqual(post({'track_id': 6, 'ids': [6, 7], 'index': 0, 'expected_revision': answer['revision']}),
+                         (409, {'success': False, 'conflict': True, 'revision': answer['revision']}))  # another track
         self.assertEqual(post({'track_id': 5, 'ids': [5] * 5001, 'index': 0})[0], 422)
         self.assertEqual(post({'track_id': 5, 'ids': [5, 'x'], 'index': 0})[0], 422)
         self.assertEqual(post({'track_id': 5, 'ids': [5, 6], 'index': 1})[0], 422)  # index is not track 5
+        self.assertEqual(self.post_queue({'track_id': 5, 'ids': [5, 6], 'index': 0})[0], 422)  # no revision
         self.play_through(renderer)
         self.assertEqual(renderer.tracks(), [5, 7])  # the edited queue, not the original
+
+    # ── Review 6 / P1-3: a page's stale edit never overwrites a newer one ──
+
+    def test_stale_queue_edit_is_refused_and_changes_nothing(self):
+        self.fake_renderer()
+        self.cast_queue([5, 6, 7, 8], 0)
+        seen = self.core.sessions[self.UDN].revision
+        # Phone A removes track 7 (the current song stays 5)...
+        status, answer = self.post_queue({'track_id': 5, 'ids': [5, 6, 8], 'index': 0, 'expected_revision': seen})
+        self.assertEqual(status, 200)
+        # ...then phone B, which has not seen that, toggles repeat with its old queue.
+        status, refused = self.post_queue({'track_id': 5, 'ids': [5, 6, 7, 8], 'index': 0, 'repeat': 'all',
+                                           'expected_revision': seen})
+        self.assertEqual((status, refused), (409, {'success': False, 'conflict': True, 'revision': answer['revision']}))
+        session = self.core.sessions[self.UDN]
+        self.assertEqual((session.ids, session.repeat), ((5, 6, 8), 'none'))
+        # B merges and retries against the revision it now knows.
+        status, _ = self.post_queue({'track_id': 5, 'ids': [5, 6, 8], 'index': 0, 'repeat': 'all',
+                                     'expected_revision': answer['revision']})
+        self.assertEqual(status, 200)
+        self.assertEqual((session.ids, session.repeat), ((5, 6, 8), 'all'))
+
+    def test_ui_catch_up_cast_keeps_the_sessions_newer_queue(self):
+        renderer = self.fake_renderer()
+        self.cast_queue([5, 6, 7, 8], 0)
+        self.play_through(renderer)  # the bridge advanced to 6 on its own
+        session = self.core.sessions[self.UDN]
+        self.post_queue({'track_id': 6, 'ids': [5, 6, 8], 'index': 1, 'expected_revision': session.revision})
+        # A page that slept through both now catches up with its old queue.
+        result = self.cast_queue([5, 6, 7, 8], 1)
+        self.assertTrue(result.get('absorbed'))
+        self.assertEqual(self.core.sessions[self.UDN].ids, (5, 6, 8))
+
+    # ── Review 6 / P1-4: queue edits during an auto-advance ──
+
+    def advance_with_edit_during_lookup(self, ids, edit, *, held='/api/tracks/6'):
+        """Track 5 ends; while the advance looks up `held`, `edit` (a queue
+        update of the still-current track 5) is posted and answered; then the
+        lookup returns. Returns the fake renderer and the edit's answer."""
+        renderer = self.fake_renderer()
+        self.cast_queue(ids, 0)
+        renderer.playing(100, 200)
+        self.core.monitor_once(self.UDN)
+        renderer.finish()
+        entered, release = threading.Event(), threading.Event()
+        real_json = self.core.upstream_json
+        def upstream_json(path, *args, **kwargs):
+            if path == held and not release.is_set():
+                entered.set()
+                release.wait(10)
+            return real_json(path, *args, **kwargs)
+        errors = []
+        def monitor():
+            try:
+                self.core.monitor_once(self.UDN)
+            except Exception as exc:  # what used to escape the monitor
+                errors.append(exc)
+        with patch.object(self.core, 'upstream_json', side_effect=upstream_json):
+            thread = threading.Thread(target=monitor, daemon=True)
+            thread.start()
+            self.assertTrue(entered.wait(5), 'the advance never looked the next track up')
+            revision = self.core.sessions[self.UDN].revision
+            answer = self.post_queue({'track_id': 5, 'expected_revision': revision, **edit})
+            release.set()
+            thread.join(10)
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(errors, [])
+        return renderer, answer
+
+    def test_next_track_removed_during_its_lookup_is_not_played(self):
+        renderer, answer = self.advance_with_edit_during_lookup([5, 6, 7], {'ids': [5, 7], 'index': 0})
+        self.assertEqual(answer[0], 200)
+        self.assertEqual(renderer.tracks(), [5, 7])
+        self.assertEqual(self.core.sessions[self.UDN].ids, (5, 7))  # the edit stands
+
+    def test_next_track_moved_during_its_lookup_plays_the_new_next(self):
+        renderer, _ = self.advance_with_edit_during_lookup([5, 6, 7, 8], {'ids': [5, 8, 7, 6], 'index': 0})
+        self.assertEqual(renderer.tracks(), [5, 8])
+        self.assertEqual(self.core.sessions[self.UDN].ids, (5, 8, 7, 6))
+
+    def test_queue_cut_to_the_current_track_during_the_lookup_ends_cleanly(self):
+        renderer, _ = self.advance_with_edit_during_lookup([5, 6, 7], {'ids': [5], 'index': 0})
+        self.assertEqual(renderer.tracks(), [5])
+        session = self.core.sessions[self.UDN]
+        self.assertEqual((session.ids, session.idle), ((5,), True))
+        self.assertFalse(self.core.wants_awake())
+
+    def test_repeat_change_during_the_lookup_is_kept(self):
+        renderer, _ = self.advance_with_edit_during_lookup([5, 6], {'ids': [5, 6], 'index': 0, 'repeat': 'all'})
+        self.assertEqual(renderer.tracks(), [5, 6])
+        self.assertEqual(self.core.sessions[self.UDN].repeat, 'all')
+        self.play_through(renderer)
+        self.assertEqual(renderer.tracks(), [5, 6, 5])  # wraps: the edit was not dropped
+
+    def test_edit_while_the_next_track_is_being_loaded_waits_then_conflicts(self):
+        renderer = self.fake_renderer()
+        self.cast_queue([5, 6, 7], 0)
+        renderer.playing(100, 200)
+        self.core.monitor_once(self.UDN)
+        renderer.finish()
+        loading, release = threading.Event(), threading.Event()
+        real_soap = renderer.soap
+        def soap(device, action, values=None):
+            if action == 'SetAVTransportURI' and not release.is_set():
+                loading.set()
+                release.wait(10)
+            return real_soap(device, action, values)
+        self.core.soap = soap
+        thread = threading.Thread(target=self.core.monitor_once, args=(self.UDN,), daemon=True)
+        thread.start()
+        self.assertTrue(loading.wait(5))
+        revision = self.core.sessions[self.UDN].revision
+        answers = []
+        poster = threading.Thread(target=lambda: answers.append(self.post_queue(
+            {'track_id': 5, 'ids': [5, 7], 'index': 0, 'expected_revision': revision})), daemon=True)
+        poster.start()
+        poster.join(0.5)
+        self.assertTrue(poster.is_alive(), 'the edit landed in the middle of the advance')
+        release.set()
+        thread.join(10)
+        poster.join(10)
+        # The renderer moved on to 6 first: the edit (of track 5) is refused, so
+        # the page merges it with the new session instead of losing it silently.
+        self.assertEqual(renderer.tracks(), [5, 6])
+        self.assertEqual(answers[0][0], 409)
+        self.assertEqual(self.core.sessions[self.UDN].ids, (5, 6, 7))
+
+    def test_unexpected_error_in_an_advance_does_not_strand_the_queue(self):
+        clock = [1000.0]
+        self.core.clock = lambda: clock[0]
+        self.addCleanup(setattr, self.core, 'clock', time.monotonic)
+        renderer = self.fake_renderer()
+        self.cast_queue([5, 6, 7], 0)
+        real_play = self.core._play
+        calls = [0]
+        def play(*args, **kwargs):
+            calls[0] += 1
+            if calls[0] == 1:
+                raise RuntimeError('simulated bug')
+            return real_play(*args, **kwargs)
+        with patch.object(self.core, '_play', side_effect=play):
+            renderer.playing(100, 200)
+            self.core.monitor_once(self.UDN)
+            renderer.finish()
+            with self.assertRaises(RuntimeError):
+                self.core.monitor_once(self.UDN)
+            clock[0] += 3
+            self.core.monitor_once(self.UDN)
+        self.assertEqual(renderer.tracks(), [5, 6])
 
     def test_cast_with_malformed_queue_still_plays_alone(self):
         renderer = self.fake_renderer()
@@ -1015,7 +1211,7 @@ class ServerFixture(unittest.TestCase):
         renderer = self.fake_renderer()
         self.cast_queue([5, 6, 7], 0)
         self.play_through(renderer)
-        status, _, data = self.request(f'/bridge/session/{self.UDN}', headers={'X-API-Key': CREDENTIAL})
+        status, _, data = self.request(f'/api/bridge/session/{self.UDN}', headers={'X-API-Key': CREDENTIAL})
         info = json.loads(data)
         self.assertEqual((status, info['active'], info['track_id'], info['queue_index'], info['queue_length']),
                          (200, True, 6, 1, 3))
@@ -1124,7 +1320,7 @@ class ServerFixture(unittest.TestCase):
         self.cast_queue([5, 99, 6], 0)  # 99: gone from the parent library (404)
         self.play_through(renderer)
         self.assertEqual(renderer.tracks(), [5, 6])
-        status, _, data = self.request(f'/bridge/session/{self.UDN}', headers={'X-API-Key': CREDENTIAL})
+        status, _, data = self.request(f'/api/bridge/session/{self.UDN}', headers={'X-API-Key': CREDENTIAL})
         info = json.loads(data)
         self.assertEqual([s['track_id'] for s in info['skipped']], [99])
         self.assertIsNone(info['error'])
@@ -1213,7 +1409,7 @@ class ServerFixture(unittest.TestCase):
         self.cast_queue([5, 6, 7], 0)
         self.play_through(renderer)
         self.play_through(renderer)  # two unattended advances
-        status, _, data = self.request('/bridge/session', headers={'X-API-Key': CREDENTIAL})
+        status, _, data = self.request('/api/bridge/session', headers={'X-API-Key': CREDENTIAL})
         info = json.loads(data)
         self.assertEqual((status, info['active'], info['udn'], info['track_id'], info['queue_index'], info['ids']),
                          (200, True, self.UDN, 7, 2, [5, 6, 7]))
@@ -1221,7 +1417,7 @@ class ServerFixture(unittest.TestCase):
         loads = len(renderer.loaded)
         self.request(f'/api/cast/control/{self.UDN}/Stop', method='POST',
                      headers={'X-API-Key': CREDENTIAL, 'Cookie': COOKIE})
-        _, _, data = self.request('/bridge/session', headers={'X-API-Key': CREDENTIAL})
+        _, _, data = self.request('/api/bridge/session', headers={'X-API-Key': CREDENTIAL})
         self.assertEqual(json.loads(data), {'active': False})
         self.assertEqual(len(renderer.loaded), loads)  # asking never loads anything
 

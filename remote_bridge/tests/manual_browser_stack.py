@@ -20,8 +20,14 @@ READY, then in a browser open http://127.0.0.1:18877/ and:
 
 The renderer log is JSON: load (title, URI tail), play, pause, stop, ended.
 Stop with Ctrl+C.
+
+ADMIN_PASSWORD=<password> sets Velvet's administrator password (as on the
+parents' PC): casting and queue edits then need the unlock dialog, as in
+production. tests/manual_admin_two_devices.mjs drives that, with two browser
+sessions, against this stack. The parent's security settings live in the
+temporary directory, never in the checkout's velvet_data/.
 """
-import html, ipaddress, json, os, re, subprocess, sys, tempfile, threading, time
+import hashlib, html, ipaddress, json, os, re, secrets, subprocess, sys, tempfile, threading, time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.request import Request, urlopen
@@ -42,8 +48,19 @@ for n, freq in ((1, 440), (2, 660), (3, 880), (4, 990)):
                     str(album / f'{n:02d} Song {n}.flac')], check=True)
 env = {**os.environ, 'VELVET_DATA_DIR': str(tmp / 'data'), 'VELVET_MUSIC_DIR': str(tmp / 'music'),
        'VELVET_PORT': str(PORT), 'PYTHONIOENCODING': 'utf-8'}
-server = subprocess.Popen([PY, '-m', 'uvicorn', 'server:app', '--host', '127.0.0.1', '--port', str(PORT),
-                           '--no-proxy-headers'], cwd=WT, env=env,
+# security.py keeps its settings next to itself; point it at the temporary
+# directory before server.py loads.
+security_dir = tmp / 'security'
+security_dir.mkdir()
+if os.environ.get('ADMIN_PASSWORD'):
+    salt = secrets.token_bytes(32)
+    digest = hashlib.pbkdf2_hmac('sha256', os.environ['ADMIN_PASSWORD'].encode(), salt, 600000)
+    (security_dir / 'admin-security.json').write_text(json.dumps(
+        {'version': 1, 'iterations': 600000, 'salt': salt.hex(), 'digest': digest.hex()}), encoding='utf-8')
+LAUNCH = ('import pathlib, sys, security; security.CONFIG_DIR = pathlib.Path(sys.argv[1]); '
+          "security.CONFIG_FILE = security.CONFIG_DIR / 'security.json'; import uvicorn; "
+          "uvicorn.run('server:app', host='127.0.0.1', port=int(sys.argv[2]), proxy_headers=False)")
+server = subprocess.Popen([PY, '-c', LAUNCH, str(security_dir), str(PORT)], cwd=WT, env=env,
                           stdout=open(tmp / 'server.log', 'wb'), stderr=subprocess.STDOUT)
 up = f'http://127.0.0.1:{PORT}'
 for _ in range(120):
@@ -52,7 +69,12 @@ for _ in range(120):
         break
     except Exception:
         time.sleep(0.5)
-urlopen(Request(up + '/api/scan', data=b'{}', method='POST', headers={'Content-Type': 'application/json'})).read()
+scan_headers = {'Content-Type': 'application/json'}
+if os.environ.get('ADMIN_PASSWORD'):  # a library scan is an administrator operation
+    with urlopen(Request(up + '/api/security/admin-login', method='POST', headers=scan_headers,
+                         data=json.dumps({'password': os.environ['ADMIN_PASSWORD']}).encode())) as login:
+        scan_headers['Cookie'] = login.headers['Set-Cookie'].split(';', 1)[0]
+urlopen(Request(up + '/api/scan', data=b'{}', method='POST', headers=scan_headers)).read()
 for _ in range(120):
     tracks = json.loads(urlopen(up + '/api/tracks').read())
     items = tracks if isinstance(tracks, list) else tracks.get('tracks') or tracks.get('items') or []
@@ -150,7 +172,8 @@ for s in (control, media):
     threading.Thread(target=s.serve_forever, daemon=True).start()
 stop = threading.Event()
 threading.Thread(target=core.run_monitor, args=(stop,), daemon=True).start()
-print('READY http://127.0.0.1:18877/  log http://127.0.0.2:18999/log  tmp', tmp, flush=True)
+print('READY http://127.0.0.1:18877/  log http://127.0.0.2:18999/log  tmp', tmp,
+      '(admin password set)' if os.environ.get('ADMIN_PASSWORD') else '', flush=True)
 try:
     while server.poll() is None:
         time.sleep(1)
