@@ -5,5 +5,6 @@
   "lan_ip": "auto",
   "media_port": 8878,
   "renderer_network": "auto",
-  "preferred_renderer": "EXN100"
+  "preferred_renderer": "EXN100",
+  "allowed_hosts": []
 }

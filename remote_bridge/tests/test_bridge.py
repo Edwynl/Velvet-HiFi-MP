@@ -21,6 +21,13 @@ import bridge
 AUDIO = b'fLaC' + bytes(range(256)) * 32
 CREDENTIAL = 'credential-for-testing'
 COOKIE = 'velvet_admin_session=test-cookie'
+COVER = bytes.fromhex('ffd8ffe0') + b'cover'
+
+
+class Parent:
+    # main treats a tailnet peer (the bridge) as a passwordless listener
+    passwordless = False
+    seen_headers = []
 
 
 class ParentHandler(BaseHTTPRequestHandler):
@@ -37,7 +44,7 @@ class ParentHandler(BaseHTTPRequestHandler):
         if self.path == '/api/security/status':
             self.reply({'admin_protected': True, 'admin_unlocked': COOKIE in self.headers.get('Cookie', '')})
         elif self.path == '/api/stats':
-            if self.headers.get('X-API-Key') != CREDENTIAL:
+            if self.headers.get('X-API-Key') != CREDENTIAL and not Parent.passwordless:
                 self.reply({'error': 'Unauthorized'}, 401)
             else:
                 self.reply({'tracks': 1})
@@ -46,13 +53,15 @@ class ParentHandler(BaseHTTPRequestHandler):
                 self.reply({'error': 'Unauthorized'}, 401)
             else:
                 self.reply({'id': 5, 'title': '测试 测试', 'artist_name': '徐佳莹',
-                            'album_title': 'Album', 'duration': 210, 'format': 'FLAC',
+                            'album_title': 'Album', 'album_id': 9, 'duration': 210, 'format': 'FLAC',
+                            'file_size': len(AUDIO), 'channels': 2,
                             'sample_rate': 96000, 'bit_depth': 24, 'file_path': 'D:/Music/t.flac'})
         elif self.path.startswith('/api/stream/5'):
             if self.headers.get('X-API-Key') != CREDENTIAL:
                 self.reply({'error': 'Unauthorized'}, 401)
                 return
             assert 'dsp=' not in self.path and 'upsample=none' in self.path
+            Parent.seen_headers.append(dict(self.headers))
             data = AUDIO
             status = 200
             range_value = self.headers.get('Range')
@@ -75,6 +84,16 @@ class ParentHandler(BaseHTTPRequestHandler):
             self.end_headers()
             if self.command != 'HEAD':
                 self.wfile.write(data)
+        elif self.path == '/api/covers/9/thumb?size=medium':
+            if self.headers.get('X-API-Key') != CREDENTIAL:
+                self.reply({'error': 'Unauthorized'}, 401)
+                return
+            self.send_response(200)
+            self.send_header('Content-Type', 'image/jpeg')
+            self.send_header('Content-Length', str(len(COVER)))
+            self.end_headers()
+            if self.command != 'HEAD':
+                self.wfile.write(COVER)
         elif self.path == '/':
             self.send_response(200)
             html = b'<html><body>Parent Velvet UI - Artist Album Track</body></html>'
@@ -138,11 +157,14 @@ class ServerFixture(unittest.TestCase):
             s.server_close()
 
     def setUp(self):
+        Parent.passwordless = False
+        Parent.seen_headers.clear()
         with self.core.lock:
             self.core.grants.clear()
             self.core.last_track.clear()
             self.core.cast_results.clear()
             self.core.generations.clear()
+            self.core._auth_cache.clear()
 
     def request(self, path, *, method='GET', body=None, headers=None, role='control'):
         url = (self.control_base if role == 'control' else self.media_base) + path
@@ -183,7 +205,8 @@ class ServerFixture(unittest.TestCase):
         status, _, data = self.request('/api/cast/uuid:EXN100-test', method='POST',
                                        body={'track_id': 5}, headers={'X-API-Key': CREDENTIAL})
         self.assertEqual(status, 403)
-        self.assertIn('Administrator verification', data.decode())
+        # Velvet's managementFetch opens its admin dialog only for this code.
+        self.assertEqual(json.loads(data)['code'], 'admin_password_required')
 
     def test_cast_then_lossless_media_range_head_and_status(self):
         saw = []
@@ -237,6 +260,14 @@ class ServerFixture(unittest.TestCase):
             status, _, _ = self.request(path, role='media')
             self.assertEqual(status, 403)
 
+    def test_stop_revokes_ticket_even_if_renderer_silent(self):
+        _, grant = self.cast_ok()
+        with patch.object(self.core, 'soap', return_value=None):
+            status, _, data = self.request('/api/cast/control/uuid:EXN100-test/Stop', method='POST',
+                                           headers={'X-API-Key': CREDENTIAL, 'Cookie': COOKIE})
+        self.assertEqual((status, json.loads(data)['success']), (200, False))
+        self.assertNotIn(grant.token, self.core.grants)
+
     def test_expired_ticket_and_wrong_track_rejected(self):
         with self.core.lock:
             self.core.grants['A' * 36] = bridge.MediaGrant('A' * 36, 5, '127.0.0.1',
@@ -266,8 +297,172 @@ class ServerFixture(unittest.TestCase):
                                     headers={'X-API-Key': CREDENTIAL, 'Cookie': COOKIE})
         self.assertEqual(status, 400)
 
+    def cast_ok(self, **extra):
+        with patch.object(self.core, 'soap', return_value=b'<ok/>') as soap:
+            status, _, data = self.request('/api/cast/uuid:EXN100-test', method='POST',
+                                           body={'track_id': 5, **extra},
+                                           headers={'X-API-Key': CREDENTIAL, 'Cookie': COOKIE})
+        self.assertEqual(status, 200, data)
+        return soap, next(iter(self.core.grants.values()))
+
+    def test_passwordless_parent_lists_renderers_without_api_key(self):
+        # Through the bridge, main reports passwordless_listening and the UI
+        # never obtains a key: zones must still come back.
+        Parent.passwordless = True
+        status, _, data = self.request('/api/zones')
+        self.assertEqual(status, 200, data)
+        self.assertEqual(json.loads(data)['network']['devices'][0]['udn'], 'uuid:EXN100-test')
+
+    def test_rebinding_host_rejected(self):
+        status, _, _ = self.request('/api/zones', headers={'X-API-Key': CREDENTIAL,
+                                                           'Host': 'evil.example:8877'})
+        self.assertEqual(status, 421)
+        status, _, _ = self.request('/', headers={'Host': 'evil.example'})
+        self.assertEqual(status, 421)
+
+    def test_didl_advertises_byte_seek_format_and_cover(self):
+        soap, grant = self.cast_ok()
+        meta = next(c.args[2]['CurrentURIMetaData'] for c in soap.call_args_list
+                    if c.args[1] == 'SetAVTransportURI')
+        self.assertIn('DLNA.ORG_OP=01', meta)
+        self.assertIn('sampleFrequency="96000" bitsPerSample="24"', meta)
+        self.assertIn(f'size="{len(AUDIO)}"', meta)
+        self.assertIn(f'/media/{grant.token}/cover.jpg</upnp:albumArtURI>', meta)
+        status, hdr, data = self.request(f'/media/{grant.token}/cover.jpg', role='media')
+        self.assertEqual((status, data, hdr['Content-Type']), (200, COVER, 'image/jpeg'))
+
+    def test_dlna_content_features_request_forwarded(self):
+        _, grant = self.cast_ok()
+        path = f'/media/{grant.token}/{grant.track_id}.{grant.extension}'
+        status, _, _ = self.request(path, role='media', method='HEAD',
+                                    headers={'getcontentFeatures.dlna.org': '1'})
+        self.assertEqual(status, 200)
+        sent = {k.lower(): v for k, v in Parent.seen_headers[-1].items()}
+        self.assertEqual(sent.get('getcontentfeatures.dlna.org'), '1')
+
+    def test_unparseable_range_served_whole(self):
+        _, grant = self.cast_ok()
+        path = f'/media/{grant.token}/{grant.track_id}.{grant.extension}'
+        status, _, data = self.request(path, role='media', headers={'Range': 'bytes=0-1,4-5'})
+        self.assertEqual((status, data), (200, AUDIO))
+
+    def test_single_relay_header_set(self):
+        _, grant = self.cast_ok()
+        path = f'/media/{grant.token}/{grant.track_id}.{grant.extension}'
+        url = self.media_base + path
+        with build_opener(HTTPHandler()).open(Request(url, method='HEAD'), timeout=10) as res:
+            self.assertEqual(len(res.headers.get_all('Date')), 1)
+            self.assertEqual(len(res.headers.get_all('Server')), 1)
+
+    def test_upstream_drop_mid_stream_never_splices_json_into_audio(self):
+        _, grant = self.cast_ok()
+        real_upstream = self.core.upstream
+        class Stalling:
+            # The parent link times out after the first chunk (Tailscale drop).
+            def __init__(self, response):
+                self.response, self.reads = response, 0
+            def __getattr__(self, name):
+                return getattr(self.response, name)
+            def __enter__(self):
+                return self
+            def __exit__(self, *exc):
+                self.response.close()
+            def read(self, n):
+                self.reads += 1
+                if self.reads > 1:
+                    raise TimeoutError('timed out')
+                return self.response.read(100)
+        stalling = patch.object(self.core, 'upstream',
+                                side_effect=lambda *a, **k: Stalling(real_upstream(*a, **k)))
+        with stalling:
+            sock = socket.create_connection(('127.0.0.1', self.media.server_port), timeout=10)
+            with sock:
+                sock.sendall(f'GET /media/{grant.token}/{grant.track_id}.{grant.extension} HTTP/1.1\r\n'
+                             'Host: x\r\n\r\n'.encode())
+                raw = b''
+                while chunk := sock.recv(65536):
+                    raw += chunk
+        head, body = raw.split(b'\r\n\r\n', 1)
+        self.assertTrue(head.startswith(b'HTTP/1.0 200'))
+        self.assertEqual(body, AUDIO[:100])
+        self.assertNotIn(b'HTTP/1.0 ', body)
+
+    def test_grant_renewed_by_media_reads(self):
+        _, grant = self.cast_ok()
+        with self.core.lock:
+            self.core.grants[grant.token] = bridge.replace(grant, expires_at=time.time() + 5)
+        path = f'/media/{grant.token}/{grant.track_id}.{grant.extension}'
+        self.assertEqual(self.request(path, role='media', method='HEAD')[0], 200)
+        self.assertGreater(self.core.grants[grant.token].expires_at, time.time() + 3600)
+
+    def test_renderer_rejecting_uri_stops_then_retries(self):
+        calls = []
+        def soap(device, action, values=None):
+            calls.append((action, (values or {}).get('CurrentURIMetaData')))
+            if action == 'SetAVTransportURI' and 'Stop' not in [c[0] for c in calls]:
+                return None
+            return b'<ok/>'
+        with patch.object(self.core, 'soap', side_effect=soap), patch.object(bridge.time, 'sleep'):
+            status, _, data = self.request('/api/cast/uuid:EXN100-test', method='POST', body={'track_id': 5},
+                                           headers={'X-API-Key': CREDENTIAL, 'Cookie': COOKIE})
+        self.assertEqual(status, 200, data)
+        self.assertEqual([c[0] for c in calls], ['SetAVTransportURI', 'SetAVTransportURI', 'Stop',
+                                                 'SetAVTransportURI', 'Play'])
+        self.assertTrue(json.loads(data)['success'])
+
+    def test_renderer_refusal_reported_like_main(self):
+        def soap(device, action, values=None):
+            return None if action == 'SetAVTransportURI' else b'<ok/>'
+        with patch.object(self.core, 'soap', side_effect=soap), patch.object(bridge.time, 'sleep'):
+            status, _, data = self.request('/api/cast/uuid:EXN100-test', method='POST',
+                                           body={'track_id': 5, 'request_id': 'r-fail'},
+                                           headers={'X-API-Key': CREDENTIAL, 'Cookie': COOKIE})
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(data)['success'], False)
+        self.assertFalse(self.core.grants)
+        self.assertTrue(self.core.request_result('uuid:EXN100-test', 'r-fail')['done'])
+
 
 class ValidationTests(unittest.TestCase):
+    def test_hostile_friendly_name_cannot_inject_markup(self):
+        cfg = bridge.BridgeConfig('http://100.100.100.100:8765', '127.0.0.1', 8877,
+                                  '192.168.1.22', 8878, ipaddress.ip_network('192.168.1.0/24'))
+        core = bridge.Bridge(cfg)
+        def desc(name, udn='uuid:exn'):
+            return (f'<root><device><friendlyName>{name}</friendlyName><UDN>{udn}</UDN><serviceList><service>'
+                    '<serviceType>urn:schemas-upnp-org:service:AVTransport:1</serviceType>'
+                    '<controlURL>/c</controlURL></service></serviceList></device></root>').encode()
+        loc = 'http://192.168.1.45:4321/d.xml'
+        dev = core.parse_renderer(desc('EXN100&lt;img src=x onerror=alert(1)&gt;'), loc, '192.168.1.45')
+        self.assertNotRegex(dev.name, r'[<>&"\']')
+        self.assertIsNone(core.parse_renderer(desc('EXN100', 'uuid:a/../b'), loc, '192.168.1.45'))
+
+    def test_auto_lan_ip_prefers_default_route_over_hyperv_switch(self):
+        class Probe:
+            def __enter__(self):
+                return self
+            def __exit__(self, *exc):
+                return False
+            def connect(self, addr):
+                pass
+            def getsockname(self):
+                return ('192.168.0.12', 50000)
+        with patch.object(bridge.socket, 'socket', return_value=Probe()), \
+             patch.object(bridge.socket, 'gethostbyname_ex', return_value=('pc', [], ['192.168.48.1', '192.168.0.12'])), \
+             patch.object(bridge.socket, 'getaddrinfo', return_value=[]):
+            self.assertEqual(bridge.auto_lan_ip(), '192.168.0.12')
+
+    def test_host_allowlist(self):
+        cfg = bridge.BridgeConfig('http://100.100.100.100:8765', '100.80.1.2', 8877,
+                                  '192.168.1.22', 8878, ipaddress.ip_network('192.168.1.0/24'),
+                                  allowed_hosts=('home-bridge',))
+        machine = socket.gethostname().lower()
+        for ok in ('100.80.1.2:8877', 'localhost:8877', 'home-bridge:8877', f'{machine}:8877',
+                   f'{machine}.tail1234.ts.net:8877'):
+            self.assertTrue(cfg.host_allowed(ok), ok)
+        for bad in ('evil.example:8877', '', f'{machine}.evil.example', '100.80.1.3:8877'):
+            self.assertFalse(cfg.host_allowed(bad), bad)
+
     def test_renderer_rejects_external_location_and_accepts_lan_upnp(self):
         cfg = bridge.BridgeConfig('http://100.100.100.100:8765', '127.0.0.1', 8877,
                                   '192.168.1.22', 8878, ipaddress.ip_network('192.168.1.0/24'))
@@ -332,7 +527,7 @@ class ValidationTests(unittest.TestCase):
                                   '192.168.1.2', 8878, ipaddress.ip_network('192.168.1.0/24'))
         core = bridge.Bridge(cfg)
         dev = bridge.Renderer('udn', 'EXN100', '192.168.1.45', 'http://192.168.1.45:80/control')
-        token = core._new_grant(5, dev, CREDENTIAL, 200, 'flac')
+        token = core._new_grant(5, dev, CREDENTIAL, 'flac')
         with self.assertRaises(bridge.HTTPFailure):
             core.grant_for(token.token, 5, 'flac', '192.168.1.46')
         self.assertEqual(core.grant_for(token.token, 5, 'flac', '192.168.1.45').track_id, 5)

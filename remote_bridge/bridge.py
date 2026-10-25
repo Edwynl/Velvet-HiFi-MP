@@ -8,6 +8,9 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import ctypes
+from dataclasses import replace
+import http.client
 from dataclasses import dataclass
 import html
 import hashlib
@@ -41,11 +44,23 @@ MAX_DEVICE_XML = 128 * 1024
 MAX_API_RESPONSE = 2 * 1024 * 1024
 UPSTREAM_TIMEOUT = 25
 SOCKET_CHUNK = 128 * 1024
+# Slow or silent clients may hold a thread only this long before a request.
+REQUEST_TIMEOUT = 30
+# A paused renderer stops reading; give the browser's proxied audio as long.
+CONTROL_STREAM_TIMEOUT = 600
+# Sliding: every media read or status poll for the current URI renews it,
+# so a long pause works while a forgotten ticket still dies.
+GRANT_IDLE_TTL = 6 * 3600
+MAX_SSDP_LOCATIONS = 32
+# Shown by Velvet's front-end with innerHTML: allow no markup characters.
+UNSAFE_NAME_RE = re.compile(r'[<>&"\'`\x00-\x1f\x7f]')
+SAFE_UDN_RE = re.compile(r'[A-Za-z0-9:._-]{1,128}')
 CAST_RE = re.compile(r'^/api/cast/([^/]+)$')
 CAST_CONTROL_RE = re.compile(r'^/api/cast/control/([^/]+)/(Play|Pause|Stop)$')
 CAST_STATUS_RE = re.compile(r'^/api/cast/status/([^/]+)$')
 CAST_RESULT_RE = re.compile(r'^/api/cast/result/([^/]+)/([^/]+)$')
 MEDIA_RE = re.compile(r'^/media/([A-Za-z0-9_-]{24,120})/(\d+)\.([a-z0-9]{2,5})$')
+COVER_RE = re.compile(r'^/media/([A-Za-z0-9_-]{24,120})/cover\.jpg$')
 MIME = {'flac': 'audio/flac', 'wav': 'audio/wav', 'aiff': 'audio/aiff',
         'aif': 'audio/aiff', 'mp3': 'audio/mpeg', 'm4a': 'audio/mp4',
         'alac': 'audio/mp4', 'aac': 'audio/aac', 'ogg': 'audio/ogg'}
@@ -57,6 +72,16 @@ class NoRedirect(HTTPRedirectHandler):
 
 
 OPENER = build_opener(HTTPHandler(), HTTPSHandler(), NoRedirect())
+
+
+def keep_awake(active: bool) -> None:
+    """Hold off Windows idle sleep while this thread relays audio."""
+    if sys.platform != 'win32':
+        return
+    es_continuous, es_system_required = 0x80000000, 0x00000001
+    flags = es_continuous | (es_system_required if active else 0)
+    with contextlib.suppress(AttributeError, OSError):
+        ctypes.windll.kernel32.SetThreadExecutionState(flags)
 
 
 def leaf(tag: str) -> str:
@@ -99,6 +124,12 @@ def auto_tailscale_ip() -> str | None:
 
 def auto_lan_ip() -> str:
     choices: list[str] = []
+    # The default route's source address first: Windows also lists Hyper-V,
+    # WSL and Docker switches (e.g. 192.168.48.1), on which no EXN100 lives.
+    # A UDP connect sends nothing.
+    with contextlib.suppress(OSError), socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
+        probe.connect(('192.0.2.1', 9))
+        choices.append(probe.getsockname()[0])
     with contextlib.suppress(OSError):
         choices.extend(socket.gethostbyname_ex(socket.gethostname())[2])
     with contextlib.suppress(OSError):
@@ -133,6 +164,8 @@ class BridgeConfig:
     media_port: int
     renderer_network: ipaddress.IPv4Network
     preferred_renderer: str = 'EXN100'
+    # Extra Host names (e.g. a MagicDNS name) the phone may use for :8877.
+    allowed_hosts: tuple[str, ...] = ()
 
     @classmethod
     def load(cls, path: Path) -> 'BridgeConfig':
@@ -161,8 +194,22 @@ class BridgeConfig:
         mp = int(raw.get('media_port', 8878))
         if not 1024 <= cp <= 65535 or not 1024 <= mp <= 65535 or cp == mp:
             raise ValueError('control_port and media_port must differ and be >=1024.')
+        hosts = raw.get('allowed_hosts', [])
+        if not isinstance(hosts, list) or not all(isinstance(h, str) and h for h in hosts):
+            raise ValueError('allowed_hosts must be a list of host names.')
         return cls(url, control, cp, lan_ip, mp, network,
-                   str(raw.get('preferred_renderer', 'EXN100')))
+                   str(raw.get('preferred_renderer', 'EXN100')),
+                   tuple(h.strip().rstrip('.').lower() for h in hosts))
+
+    def host_allowed(self, host_header: str) -> bool:
+        """Refuse DNS-rebinding hosts: the parent trusts every bridge request."""
+        host = urlparse(f'//{host_header}').hostname or ''
+        host = host.rstrip('.').lower()
+        if host in {self.control_bind, '127.0.0.1', 'localhost', *self.allowed_hosts}:
+            return True
+        # MagicDNS names cannot be pointed elsewhere by a web page.
+        machine = socket.gethostname().lower()
+        return host == machine or (host.startswith(machine + '.') and host.endswith('.ts.net'))
 
 
 @dataclass(frozen=True)
@@ -185,16 +232,22 @@ class MediaGrant:
     credential: str
     mime: str
     extension: str
+    album_id: int = 0
 
     def url(self, cfg: BridgeConfig) -> str:
         return f'http://{cfg.lan_ip}:{cfg.media_port}/media/{self.token}/{self.track_id}.{self.extension}'
 
+    def cover_url(self, cfg: BridgeConfig) -> str:
+        return f'http://{cfg.lan_ip}:{cfg.media_port}/media/{self.token}/cover.jpg' if self.album_id else ''
+
 
 class HTTPFailure(Exception):
-    def __init__(self, status: int, reason: str):
+    def __init__(self, status: int, reason: str, code: str | None = None):
         super().__init__(reason)
         self.status = status
         self.reason = reason
+        # Velvet's front-end acts on `code` (e.g. opens its admin dialog).
+        self.code = code
 
 
 class Bridge:
@@ -227,7 +280,7 @@ class Bridge:
             raise HTTPFailure(502, 'Parent Velvet is unavailable over Tailscale') from exc
 
     def upstream_json(self, path: str, credential: str, *, cookie: str = '') -> dict:
-        headers = {'X-API-Key': credential}
+        headers = {'X-API-Key': credential} if credential else {}
         if cookie:
             headers['Cookie'] = cookie
         with self.upstream(path, headers=headers, timeout=15) as response:
@@ -244,14 +297,15 @@ class Bridge:
             except (ValueError, UnicodeDecodeError) as exc:
                 raise HTTPFailure(502, 'Invalid response from parent Velvet') from exc
 
-    def authenticate(self, credential: str) -> None:
-        if not credential:
-            raise HTTPFailure(401, 'Log into Velvet before using the bridge')
-        digest = hashlib.sha256(credential.encode('utf-8')).digest()
+    def authenticate(self, credential: str, cookie: str = '') -> None:
+        # The parent decides, as for any proxied request. On main it treats
+        # this tailnet peer as a passwordless listener, so its front-end
+        # sends no X-API-Key at all; demanding one here hid every renderer.
+        digest = hashlib.sha256(f'{credential}\0{cookie}'.encode('utf-8')).digest()
         with self.lock:
             if self._auth_cache.get(digest, 0) > time.monotonic():
                 return
-        self.upstream_json('/api/stats', credential)
+        self.upstream_json('/api/stats', credential, cookie=cookie)
         with self.lock:
             self._auth_cache[digest] = time.monotonic() + 8
             if len(self._auth_cache) > 32:
@@ -260,10 +314,13 @@ class Bridge:
 
     def authorize_control(self, credential: str, cookie: str = '') -> None:
         """Respect Velvet's separate administrator gate on playback mutations."""
-        self.authenticate(credential)
+        self.authenticate(credential, cookie)
         security_status = self.upstream_json('/api/security/status', credential, cookie=cookie)
         if security_status.get('admin_protected') and not security_status.get('admin_unlocked'):
-            raise HTTPFailure(403, 'Administrator verification required in Velvet')
+            # The same answer as the parent's own gate, so the UI asks for the
+            # admin password and retries instead of only failing the cast.
+            raise HTTPFailure(403, 'Unlock administrator access for this session.',
+                              code='admin_password_required')
 
     def valid_renderer_ip(self, ip: str) -> bool:
         try:
@@ -285,7 +342,11 @@ class Bridge:
             if dev is None:
                 return None
             name, udn = child_text(dev, 'friendlyName'), child_text(dev, 'UDN')
-            if not name or not udn or len(udn) > 256:
+            # Any LAN device can answer SSDP. Velvet renders the name with
+            # innerHTML and puts the UDN in /api/cast/{udn} paths, so a
+            # crafted name would run script with the user's admin session.
+            name = UNSAFE_NAME_RE.sub('', name).strip()[:80]
+            if not name or not SAFE_UDN_RE.fullmatch(udn):
                 return None
             # A responder may contain multiple services; require AVTransport.
             service = next((x for x in dev.iter() if leaf(x.tag) == 'service' and
@@ -324,6 +385,10 @@ class Bridge:
                            'MAN: "ssdp:discover"\r\nMX: 2\r\n'
                            f'ST: {target}\r\n\r\n').encode('ascii')
                     s.sendto(msg, SSDP_GROUP)
+                # Collect first, fetch afterwards: ssdp:all draws several replies
+                # per LAN device, and fetching each inline (5 s timeout) both
+                # repeated work and let the 2 s window run long.
+                locations: dict[str, str] = {}
                 until = time.monotonic() + 2.0
                 while time.monotonic() < until:
                     try:
@@ -341,16 +406,19 @@ class Bridge:
                     loc = urlparse(location)
                     if loc.scheme != 'http' or loc.hostname != addr[0]:
                         continue
-                    try:
-                        with self.upnp_open(location) as response:
-                            payload = response.read(MAX_DEVICE_XML + 1)
-                        if len(payload) > MAX_DEVICE_XML:
-                            continue
-                        item = self.parse_renderer(payload, location, addr[0])
-                        if item:
-                            found[item.udn] = item
-                    except (URLError, HTTPError, TimeoutError, OSError, ValueError):
+                    if location not in locations and len(locations) < MAX_SSDP_LOCATIONS:
+                        locations[location] = addr[0]
+            for location, responder in locations.items():
+                try:
+                    with self.upnp_open(location, timeout=3) as response:
+                        payload = response.read(MAX_DEVICE_XML + 1)
+                    if len(payload) > MAX_DEVICE_XML:
                         continue
+                    item = self.parse_renderer(payload, location, responder)
+                    if item:
+                        found[item.udn] = item
+                except (URLError, HTTPError, TimeoutError, OSError, ValueError, HTTPFailure):
+                    continue
         except OSError as exc:
             LOG.warning('UPnP discovery error: %s', exc)
         finally:
@@ -454,11 +522,10 @@ class Bridge:
                     self.cast_results.pop(next(iter(self.cast_results)))
 
     def _new_grant(self, track_id: int, device: Renderer, credential: str,
-                   duration: float, ext: str) -> MediaGrant:
-        ttl = min(12 * 3600, max(3600, duration + 1800))
+                   ext: str, album_id: int = 0) -> MediaGrant:
         token = secrets.token_urlsafe(32)
-        grant = MediaGrant(token, track_id, device.ip, time.time() + ttl,
-                           credential, MIME[ext], ext)
+        grant = MediaGrant(token, track_id, device.ip, time.time() + GRANT_IDLE_TTL,
+                           credential, MIME[ext], ext, album_id)
         with self.lock:
             for k, g in list(self.grants.items()):
                 if g.expires_at < time.time():
@@ -472,30 +539,48 @@ class Bridge:
                 if grant.renderer_ip == device_ip and key != keep_token:
                     del self.grants[key]
 
-    def grant_for(self, token: str, track_id: int, ext: str, peer_ip: str) -> MediaGrant:
+    def grant_for(self, token: str, track_id: int | None, ext: str | None, peer_ip: str) -> MediaGrant:
+        """The live grant for this renderer, renewed by the use (None: any track)."""
         with self.lock:
             grant = self.grants.get(token)
-        if (not grant or grant.track_id != track_id or grant.extension != ext or
-                grant.expires_at <= time.time() or peer_ip != grant.renderer_ip):
-            raise HTTPFailure(403, 'Media ticket invalid, expired or wrong renderer')
+            if (not grant or track_id not in (None, grant.track_id) or ext not in (None, grant.extension) or
+                    grant.expires_at <= time.time() or peer_ip != grant.renderer_ip):
+                raise HTTPFailure(403, 'Media ticket invalid, expired or wrong renderer')
+            grant = self.grants[token] = replace(grant, expires_at=time.time() + GRANT_IDLE_TTL)
         return grant
 
-    def render_didl(self, track: dict, media_url: str, mime: str) -> str:
+    def render_didl(self, track: dict, grant: MediaGrant) -> str:
         title = html.escape(str(track.get('title') or 'Unknown Track'))
         artist = html.escape(str(track.get('artist_name') or 'Unknown Artist'))
         album = html.escape(str(track.get('album_title') or 'Unknown Album'))
-        uri = html.escape(media_url, quote=True)
+        uri = html.escape(grant.url(self.cfg), quote=True)
         duration = max(0, float(track.get('duration') or 0))
         seconds = int(duration)
         dstr = f'{seconds // 3600:02d}:{(seconds // 60) % 60:02d}:{seconds % 60:02d}'
+        # As main's upnp_server: DLNA.ORG_OP=01 advertises byte seeking (the
+        # relay passes Range through), and the rate/depth let the renderer
+        # show the source format. Main's DLNA profile names, by extension.
+        profile = {'flac': 'FLAC', 'mp3': 'MP3', 'm4a': 'M4A', 'alac': 'M4A', 'aac': 'M4A',
+                   'ogg': 'OGG', 'wav': 'LPCM', 'aiff': 'LPCM', 'aif': 'LPCM'}[grant.extension]
+        res = (f'protocolInfo="http-get:*:{grant.mime}:DLNA.ORG_PN={profile};DLNA.ORG_OP=01;'
+               'DLNA.ORG_FLAGS=01700000000000000000000000000000" '
+               f'duration="{dstr}"')
+        if int(track.get('file_size') or 0) > 0:
+            res += f' size="{int(track["file_size"])}"'
+        if grant.extension in ('flac', 'wav', 'aiff', 'aif'):
+            res += (f' sampleFrequency="{int(track.get("sample_rate") or 44100)}"'
+                    f' bitsPerSample="{int(track.get("bit_depth") or 16)}"'
+                    f' nrAudioChannels="{int(track.get("channels") or 2)}"')
+        cover = grant.cover_url(self.cfg)
+        art = f'<upnp:albumArtURI>{html.escape(cover, quote=True)}</upnp:albumArtURI>' if cover else ''
         return ('<DIDL-Lite xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/" '
                 'xmlns:dc="http://purl.org/dc/elements/1.1/" '
                 'xmlns:upnp="urn:schemas-upnp-org:metadata-1-0/upnp/">'
-                f'<item id="{int(track["id"])}" parentID="0" restricted="1">'
-                f'<dc:title>{title}</dc:title><upnp:artist>{artist}</upnp:artist>'
-                f'<upnp:album>{album}</upnp:album>'
+                f'<item id="t{int(track["id"])}" parentID="0" restricted="1">'
+                f'<dc:title>{title}</dc:title><dc:creator>{artist}</dc:creator>'
+                f'<upnp:artist>{artist}</upnp:artist><upnp:album>{album}</upnp:album>{art}'
                 '<upnp:class>object.item.audioItem.musicTrack</upnp:class>'
-                f'<res protocolInfo="http-get:*:{mime}:*" duration="{dstr}">{uri}</res>'
+                f'<res {res}>{uri}</res>'
                 '</item></DIDL-Lite>')
 
     def cast(self, udn: str, payload: dict, credential: str, *, cookie: str = '') -> dict:
@@ -540,22 +625,38 @@ class Bridge:
                         self._store_result(udn, rid, result)
                         return result
                 # This ticket exists only in RAM, and is bound to the EXN100 IP.
-                grant = self._new_grant(raw_id, device, credential, float(track.get('duration') or 0), ext)
+                grant = self._new_grant(raw_id, device, credential, ext, int(track.get('album_id') or 0))
                 url = grant.url(self.cfg)
-                metadata = self.render_didl(track, url, grant.mime)
+                metadata = self.render_didl(track, grant)
                 # Capture pause state BEFORE loading a new URI; SetURI may reset it.
                 paused = recast and self.transport(device) == 'PAUSED_PLAYBACK'
-                if self.soap(device, 'SetAVTransportURI', {
-                    'CurrentURI': url, 'CurrentURIMetaData': metadata}) is None:
-                    # Some UPnP renderers reject nonempty DIDL metadata.
-                    if self.soap(device, 'SetAVTransportURI', {
-                        'CurrentURI': url, 'CurrentURIMetaData': ''}) is None:
-                        raise HTTPFailure(502, 'EXN100 rejected DLNA stream URL')
-                set_uri_accepted = True
+                def set_uri() -> bool:
+                    # Some renderers reject nonempty DIDL metadata.
+                    return any(self.soap(device, 'SetAVTransportURI', {
+                        'CurrentURI': url, 'CurrentURIMetaData': meta}) is not None
+                        for meta in (metadata, ''))
+                set_uri_accepted = set_uri()
+                if not set_uri_accepted:
+                    # As main's cast_track: a renderer busy with a stream may
+                    # take a new URI only once stopped.
+                    self.soap(device, 'Stop')
+                    time.sleep(0.5)
+                    set_uri_accepted = set_uri()
+                if not set_uri_accepted:
+                    # Main answers 200 with success false here; the UI rolls back.
+                    with self.lock:
+                        self.grants.pop(grant.token, None)
+                    result = {'success': False, 'transport': 'failed',
+                              'error': f'{device.name} rejected the stream URL'}
+                    self._store_result(udn, rid, result)
+                    return result
                 if paused:
                     transport = 'loaded'
                 else:
                     transport = 'playing' if self.soap(device, 'Play', {'Speed': '1'}) is not None else 'play_failed'
+                    if transport == 'play_failed':
+                        time.sleep(1)  # still opening the stream (main waits 2 s up front)
+                        transport = 'playing' if self.soap(device, 'Play', {'Speed': '1'}) is not None else 'play_failed'
                 sought = None
                 if start > 0 and transport != 'play_failed':
                     seek_time = int(start)
@@ -568,7 +669,8 @@ class Bridge:
                     self.retire_older_grants(device.ip, grant.token)
                 result = {'success': transport in ('playing', 'loaded'), 'transport': transport,
                           'start_offset': 0, 'position_restored': sought,
-                          'dsp': {'status': 'disabled', 'stream': 'direct', 'effective_profile_id': None},
+                          'dsp': {'requested_profile_id': None, 'effective_profile_id': None,
+                                  'status': 'off', 'reason': 'VELVET DSP off', 'stream': 'direct'},
                           'replaygain': {'mode': 'off', 'applied_db': 0}}
                 self._store_result(udn, rid, result)
                 return result
@@ -578,9 +680,13 @@ class Bridge:
                     self.grants.pop(grant.token, None)
             self._store_result(udn, rid, {'success': False, 'error': exc.reason})
             raise
-        except (TypeError, ValueError) as exc:
+        except (TypeError, ValueError, KeyError) as exc:
             self._store_result(udn, rid, {'success': False, 'error': 'Invalid track metadata'})
             raise HTTPFailure(502, 'Invalid track metadata') from exc
+        except Exception:
+            # Never leave /api/cast/result pending for the UI's 3-minute poll.
+            self._store_result(udn, rid, {'success': False, 'error': 'Cast failed'})
+            raise
 
     def control(self, udn: str, action: str, credential: str, *, cookie: str = '') -> dict:
         self.authorize_control(credential, cookie)
@@ -589,7 +695,9 @@ class Bridge:
             self.bump(udn)
         with self.lock_for(udn):
             success = self.soap(device, action, {'Speed': '1'} if action == 'Play' else {}) is not None
-            if success and action == 'Stop':
+            # The user left this renderer: revoke even if it did not answer,
+            # so a stale ticket cannot fetch more of the stream later.
+            if action == 'Stop':
                 with self.lock:
                     self.last_track.pop(udn, None)
                     for k, grant in list(self.grants.items()):
@@ -597,8 +705,8 @@ class Bridge:
                             del self.grants[k]
             return {'success': success}
 
-    def status(self, udn: str, credential: str) -> dict:
-        self.authenticate(credential)
+    def status(self, udn: str, credential: str, cookie: str = '') -> dict:
+        self.authenticate(credential, cookie)
         device = self.ensure_device(udn)
         state = self.transport(device)
         position, duration, uri = self.position(device)
@@ -606,10 +714,9 @@ class Bridge:
         match = MEDIA_RE.fullmatch(urlparse(uri).path) if uri else None
         if match:
             tok, tid, ext = match.groups()
-            with self.lock:
-                grant = self.grants.get(tok)
-                if grant and grant.track_id == int(tid) and grant.extension == ext:
-                    track_id = grant.track_id
+            # Polling the loaded stream keeps its grant alive through a pause.
+            with contextlib.suppress(HTTPFailure):
+                track_id = self.grant_for(tok, int(tid), ext, device.ip).track_id
         return {'state': state, 'position': position, 'duration': duration,
                 'track_id': track_id, 'is_playing': state == 'PLAYING'}
 
@@ -618,7 +725,7 @@ def strip_hops(headers, *, body: bool = False) -> dict[str, str]:
     out = {}
     connection_tokens = {x.strip().lower() for x in headers.get('Connection', '').split(',')}
     for k, value in headers.items():
-        if k.lower() in HOP_HEADERS | connection_tokens or k.lower() in {'content-length', 'accept-encoding', 'origin', 'referer', 'sec-fetch-site', 'x-forwarded-for', 'x-forwarded-host', 'x-forwarded-proto'}:
+        if k.lower() in HOP_HEADERS | connection_tokens or k.lower() in {'content-length', 'accept-encoding', 'origin', 'referer', 'x-forwarded-for', 'x-forwarded-host', 'x-forwarded-proto'}:
             continue
         out[k] = value
     return out
@@ -628,10 +735,19 @@ class BridgeHandler(BaseHTTPRequestHandler):
     server: BridgeHTTPServer
     protocol_version = 'HTTP/1.0'  # For responses without Content-Length, EOF is framing.
     server_version = 'VelvetRemoteBridge/0.1'
+    timeout = REQUEST_TIMEOUT
+    headers_sent = False
+
+    def log_request(self, code='-', size='-'):
+        # Never log URLs, whose media paths contain time-limited credentials.
+        LOG.info('%s %s %s', self.client_address[0], self.command, code)
 
     def log_message(self, fmt, *args):
-        # Never log URLs, whose media paths contain time-limited credentials.
-        LOG.info('%s - %s', self.client_address[0], fmt.split(' ')[0])
+        LOG.info('%s - request error', self.client_address[0])
+
+    def end_headers(self):
+        self.headers_sent = True
+        super().end_headers()
 
     def do_HEAD(self):
         self.dispatch()
@@ -655,6 +771,10 @@ class BridgeHandler(BaseHTTPRequestHandler):
         self.dispatch()
 
     def respond_json(self, payload: dict | list, status: int = 200):
+        if self.headers_sent:
+            # Mid-body: a JSON error here would be spliced into the audio.
+            self.close_connection = True
+            return
         content = json.dumps(payload, ensure_ascii=False).encode('utf-8')
         self.send_response(status)
         self.send_header('Content-Type', 'application/json; charset=utf-8')
@@ -671,9 +791,17 @@ class BridgeHandler(BaseHTTPRequestHandler):
                 return self.dispatch_media()
             return self.dispatch_control()
         except HTTPFailure as exc:
-            self.respond_json({'error': exc.reason, 'detail': exc.reason}, exc.status)
+            body = {'error': exc.reason, 'detail': exc.reason}
+            if exc.code:
+                body['code'] = exc.code
+            self.respond_json(body, exc.status)
         except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
             pass
+        except (OSError, http.client.HTTPException) as exc:
+            # Upstream stalled or dropped (Tailscale hiccup, parent restart).
+            LOG.warning('Relay interrupted: %s', type(exc).__name__)
+            with contextlib.suppress(OSError):
+                self.respond_json({'error': 'Parent Velvet stream interrupted'}, 502)
         except Exception:
             LOG.exception('Unexpected bridge error')
             with contextlib.suppress(OSError):
@@ -683,21 +811,42 @@ class BridgeHandler(BaseHTTPRequestHandler):
         if self.command not in ('GET', 'HEAD'):
             raise HTTPFailure(405, 'Media listener is read only')
         url = urlparse(self.path)
+        if url.query or url.fragment:
+            raise HTTPFailure(404, 'Unknown media path')
+        bridge = self.server.bridge
+        cover = COVER_RE.fullmatch(url.path)
+        if cover:
+            grant = bridge.grant_for(cover.group(1), None, None, self.client_address[0])
+            if not grant.album_id:
+                raise HTTPFailure(404, 'No album art')
+            with bridge.upstream(f'/api/covers/{grant.album_id}/thumb?size=medium', method=self.command,
+                                 headers={'X-API-Key': grant.credential} if grant.credential else {},
+                                 timeout=30) as upstream:
+                self.relay(upstream)
+            return
         match = MEDIA_RE.fullmatch(url.path)
-        if not match or url.query or url.fragment:
+        if not match:
             raise HTTPFailure(404, 'Unknown media path')
         token, track, ext = match.groups()
-        grant = self.server.bridge.grant_for(token, int(track), ext, self.client_address[0])
-        headers = {'X-API-Key': grant.credential, 'Accept': grant.mime}
-        if 'Range' in self.headers:
-            requested = self.headers['Range']
-            if not re.fullmatch(r'bytes=(?:\d+-\d*|-\d+)', requested):
-                raise HTTPFailure(416, 'Invalid byte range')
+        grant = bridge.grant_for(token, int(track), ext, self.client_address[0])
+        headers = {'Accept': grant.mime}
+        if grant.credential:
+            headers['X-API-Key'] = grant.credential
+        # Main adds contentFeatures/transferMode only for renderers that ask.
+        if self.headers.get('getcontentFeatures.dlna.org'):
+            headers['getcontentFeatures.dlna.org'] = self.headers['getcontentFeatures.dlna.org']
+        requested = self.headers.get('Range', '')
+        # An unparseable or multi-range header is ignored (RFC 9110): full 200.
+        if re.fullmatch(r'bytes=(?:\d+-\d*|-\d+)', requested):
             headers['Range'] = requested
-        # Relay original FLAC bytes, with Range/HEAD support and NO transcoding.
-        with self.server.bridge.upstream(f'/api/stream/{grant.track_id}?upsample=none&replaygain=off',
-                                         method=self.command, headers=headers, timeout=60) as upstream:
-            self.relay(upstream)
+        keep_awake(True)
+        try:
+            # Relay original FLAC bytes, with Range/HEAD support and NO transcoding.
+            with bridge.upstream(f'/api/stream/{grant.track_id}?upsample=none&replaygain=off',
+                                 method=self.command, headers=headers, timeout=60) as upstream:
+                self.relay(upstream, stream_timeout=None)
+        finally:
+            keep_awake(False)
 
     def read_body(self) -> bytes:
         try:
@@ -710,6 +859,9 @@ class BridgeHandler(BaseHTTPRequestHandler):
 
     def dispatch_control(self):
         bridge = self.server.bridge
+        if not bridge.cfg.host_allowed(self.headers.get('Host', '')):
+            raise HTTPFailure(421, 'Open the bridge by its Tailscale IP or MagicDNS name '
+                                   '(or add the name to allowed_hosts in config.json)')
         path = urlparse(self.path).path
         if path == '/bridge/health' and self.command == 'GET':
             return self.respond_json({'bridge': 'velvet-remote', 'upstream': bridge.cfg.upstream_url,
@@ -717,10 +869,11 @@ class BridgeHandler(BaseHTTPRequestHandler):
                                       'devices': [d.ui() for d in bridge.devices.values()]})
         # The original Velvet browser attaches X-API-Key to all /api requests.
         credential = self.headers.get('X-API-Key', '')
+        cookie = self.headers.get('Cookie', '')
         if self.command not in ('GET', 'HEAD', 'OPTIONS'):
             self.check_local_origin()
         if path in ('/api/zones', '/api/devices') and self.command == 'GET':
-            bridge.authenticate(credential)
+            bridge.authenticate(credential, cookie)
             devices = bridge.discover(force='refresh=true' in self.path.lower())
             if path == '/api/devices':
                 return self.respond_json([d.ui() for d in devices])
@@ -739,17 +892,17 @@ class BridgeHandler(BaseHTTPRequestHandler):
             except (ValueError, UnicodeDecodeError) as exc:
                 raise HTTPFailure(400, 'Invalid cast JSON') from exc
             return self.respond_json(bridge.cast(unquote(match.group(1)), payload, credential,
-                                                 cookie=self.headers.get('Cookie', '')))
+                                                 cookie=cookie))
         match = CAST_CONTROL_RE.fullmatch(path)
         if match and self.command == 'POST':
             return self.respond_json(bridge.control(unquote(match.group(1)), match.group(2), credential,
-                                                    cookie=self.headers.get('Cookie', '')))
+                                                    cookie=cookie))
         match = CAST_STATUS_RE.fullmatch(path)
         if match and self.command == 'GET':
-            return self.respond_json(bridge.status(unquote(match.group(1)), credential))
+            return self.respond_json(bridge.status(unquote(match.group(1)), credential, cookie))
         match = CAST_RESULT_RE.fullmatch(path)
         if match and self.command == 'GET':
-            bridge.authenticate(credential)
+            bridge.authenticate(credential, cookie)
             return self.respond_json(bridge.request_result(unquote(match.group(1)), unquote(match.group(2))))
         self.proxy()
 
@@ -777,17 +930,20 @@ class BridgeHandler(BaseHTTPRequestHandler):
         with bridge.upstream(path, method=self.command, headers=headers, data=body) as upstream:
             self.relay(upstream)
 
-    def relay(self, upstream):
+    def relay(self, upstream, stream_timeout: float | None = CONTROL_STREAM_TIMEOUT):
         status = getattr(upstream, 'status', None) or upstream.code
         self.send_response(status)
         for key, value in upstream.headers.items():
-            if key.lower() in HOP_HEADERS or key.lower() == 'x-content-type-options':
+            # send_response already wrote Server and Date: no duplicates.
+            if key.lower() in HOP_HEADERS or key.lower() in {'x-content-type-options', 'server', 'date'}:
                 # Preserve CSP, Content-Encoding and other security headers.
                 continue
             self.send_header(key, value)
         self.send_header('X-Content-Type-Options', 'nosniff')
         self.end_headers()
         if self.command != 'HEAD':
+            # Past the request: a paused renderer may stop reading for long.
+            self.connection.settimeout(stream_timeout)
             while True:
                 chunk = upstream.read(SOCKET_CHUNK)
                 if not chunk:
@@ -821,7 +977,9 @@ def serve(cfg: BridgeConfig):
         LOG.info('Parent Velvet: %s', cfg.upstream_url)
         LOG.info('No audio files or music library index will be copied.')
         if cfg.control_bind == '127.0.0.1':
-            LOG.warning('Tailscale IP not detected. Phone cannot connect until control_bind is configured or Tailscale Serve is enabled.')
+            LOG.warning('Tailscale IP not detected. Phone cannot connect until control_bind is configured '
+                        'or Tailscale Serve is enabled. NEVER enable Tailscale Funnel for the bridge: '
+                        'the parent Velvet trusts every request it relays.')
         control.serve_forever()
     except KeyboardInterrupt:
         LOG.info('Stopping bridge')
