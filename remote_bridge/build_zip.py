@@ -41,10 +41,13 @@ def main(argv=None) -> int:
     root = 'Velvet-Remote-Bridge'
     with zipfile.ZipFile(target, 'w', zipfile.ZIP_DEFLATED) as archive:
         for name in FILES:
-            # The committed bytes, not the working copy (line endings included).
-            archive.writestr(f'{root}/{name}', subprocess.run(
-                ['git', '-C', str(HERE), 'show', f'HEAD:remote_bridge/{name}'],
-                capture_output=True, check=True).stdout)
+            # The committed bytes, not the working copy.
+            data = subprocess.run(['git', '-C', str(HERE), 'show', f'HEAD:remote_bridge/{name}'],
+                                  capture_output=True, check=True).stdout
+            if name.endswith('.bat'):
+                # Git stores LF; cmd.exe misparses LF-only batch files.
+                data = data.replace(b'\r\n', b'\n').replace(b'\n', b'\r\n')
+            archive.writestr(f'{root}/{name}', data)
         archive.writestr(f'{root}/BUILD_INFO.txt',
                          f'Velvet Remote Bridge {version}\ncommit {git("rev-parse", "HEAD")}\n')
     print(target)
