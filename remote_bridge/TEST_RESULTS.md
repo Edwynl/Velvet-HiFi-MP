@@ -1,5 +1,32 @@
 # Velvet Remote Bridge — Validation
 
+## 0.1.2 (second review: six P1 fixes) — 2026-10-25
+
+- `python -m unittest discover -s tests -v`: **42 tests passed**, three consecutive runs (Python 3.11).
+  13 of the 14 new tests fail against 0.1.1 (`8a24f11`); the 14th, cast-after-Pause still plays,
+  is the control case and passes on both.
+- P1-1 proxy: a fresh interpreter with `http_proxy` pointing at a recording fake proxy — the
+  default urllib opener goes through it, the bridge never does; the proxy never sees `X-API-Key`.
+- P1-2 order: a Pause sent while a cast waits on a slow track lookup, and one sent while the
+  cast's admin check is slow: in both, SOAP shows `Pause, SetAVTransportURI` with no `Play`,
+  and the cast answers `transport: loaded`.
+- P1-3 discovery: 30 description URLs on a host that accepts but never answers plus one EXN100:
+  `describe()` returns the EXN100 within its 1 s deadline; total scan budget 5 s (< UI 8 s).
+- P1-4 peer policy: owner's device allowed; other tailnet user, tagged device, unknown IP,
+  Serve login of another user refused; `allowed_peers` by login and IP; fails closed with no
+  `tailscale status`; unauthorized peers get 403 on `/`, `/api/*`, `/bridge/health`.
+- P1-5 cancellation: Stop and a next-track cast end an already open, stalled media relay
+  (server slot released, client sees EOF).
+- P1-6 bounds: a reader that stops reading is dropped after the stall timeout, keep-awake is
+  released, and a fresh `Range: bytes=4096-` GET on the same URL resumes (206); a second open
+  stream over the per-renderer cap gets 503.
+- `tests/manual_e2e_real_main.py` against real `main` `server.py`: 20/20 still pass.
+- Real LAN: discovery 2.3 s (read-only); real `tailscale status --json` on this PC has the
+  `Self.UserID` / `User` fields the peer policy uses.
+
+**Still not verified:** EXN100 itself — in particular whether it resumes with a Range GET after
+a pause longer than `MEDIA_STALL_TIMEOUT` (300 s); real two-site Tailscale; iPhone Safari.
+
 ## 0.1.1 (Claude review follow-up) — 2026-10-25
 
 - `python -m unittest discover -s tests -v`: **28 tests passed** (Python 3.11);

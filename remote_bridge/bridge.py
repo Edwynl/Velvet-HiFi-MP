@@ -7,6 +7,7 @@ Requires Python 3.10+ only; tested against Velvet-HiFi-MP main APIs (Oct 2026).
 from __future__ import annotations
 
 import argparse
+import concurrent.futures
 import contextlib
 import ctypes
 from dataclasses import replace
@@ -31,7 +32,7 @@ from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import urljoin, urlparse, unquote
 from urllib.request import (HTTPHandler, HTTPSHandler, HTTPRedirectHandler,
-                            Request, build_opener)
+                            ProxyHandler, Request, build_opener)
 import xml.etree.ElementTree as ET
 
 LOG = logging.getLogger('velvet.bridge')
@@ -52,6 +53,16 @@ CONTROL_STREAM_TIMEOUT = 600
 # so a long pause works while a forgotten ticket still dies.
 GRANT_IDLE_TTL = 6 * 3600
 MAX_SSDP_LOCATIONS = 32
+# Velvet's UI gives /api/zones 8 s: SSDP replies plus description fetches,
+# all of them, stay within this.
+SCAN_BUDGET = 5.0
+SSDP_WINDOW = 2.0
+# A renderer that stops reading this long is dropped; on resume it opens a
+# fresh Range GET (the grant is still valid), so pause is not a held thread.
+MEDIA_STALL_TIMEOUT = 300
+MAX_MEDIA_STREAMS_PER_IP = 4
+MAX_MEDIA_STREAMS = 16
+TAILNET_STATUS_TTL = 30
 # Shown by Velvet's front-end with innerHTML: allow no markup characters.
 UNSAFE_NAME_RE = re.compile(r'[<>&"\'`\x00-\x1f\x7f]')
 SAFE_UDN_RE = re.compile(r'[A-Za-z0-9:._-]{1,128}')
@@ -71,7 +82,9 @@ class NoRedirect(HTTPRedirectHandler):
         return None
 
 
-OPENER = build_opener(HTTPHandler(), HTTPSHandler(), NoRedirect())
+# ProxyHandler({}): never send the parent's X-API-Key through an HTTP proxy
+# from the environment or Windows settings; Tailscale is the only path.
+OPENER = build_opener(ProxyHandler({}), HTTPHandler(), HTTPSHandler(), NoRedirect())
 
 
 def keep_awake(active: bool) -> None:
@@ -106,19 +119,26 @@ def is_lan(ip: str) -> bool:
         a in ipaddress.ip_network('192.168.0.0/16'))
 
 
-def auto_tailscale_ip() -> str | None:
+def tailscale_cli(*args: str) -> str | None:
     paths = ['tailscale']
     if sys.platform == 'win32':
         paths.append(r'C:\Program Files\Tailscale\tailscale.exe')
     for executable in paths:
         try:
-            output = subprocess.run([executable, 'ip', '-4'], capture_output=True,
-                                    text=True, timeout=4, check=True).stdout.strip()
-            a = ipaddress.ip_address(output)
-            if a in ipaddress.ip_network('100.64.0.0/10'):
-                return output
-        except (OSError, subprocess.SubprocessError, ValueError):
+            return subprocess.run([executable, *args], capture_output=True,
+                                  text=True, timeout=4, check=True).stdout
+        except (OSError, subprocess.SubprocessError):
             pass
+    return None
+
+
+def auto_tailscale_ip() -> str | None:
+    output = (tailscale_cli('ip', '-4') or '').strip()
+    try:
+        if ipaddress.ip_address(output) in ipaddress.ip_network('100.64.0.0/10'):
+            return output
+    except ValueError:
+        pass
     return None
 
 
@@ -166,6 +186,9 @@ class BridgeConfig:
     preferred_renderer: str = 'EXN100'
     # Extra Host names (e.g. a MagicDNS name) the phone may use for :8877.
     allowed_hosts: tuple[str, ...] = ()
+    # Tailscale IPs or login names allowed to use :8877. Empty: only devices
+    # of the Tailscale user who owns this bridge PC.
+    allowed_peers: tuple[str, ...] = ()
 
     @classmethod
     def load(cls, path: Path) -> 'BridgeConfig':
@@ -197,9 +220,13 @@ class BridgeConfig:
         hosts = raw.get('allowed_hosts', [])
         if not isinstance(hosts, list) or not all(isinstance(h, str) and h for h in hosts):
             raise ValueError('allowed_hosts must be a list of host names.')
+        peers = raw.get('allowed_peers', [])
+        if not isinstance(peers, list) or not all(isinstance(x, str) and x.strip() for x in peers):
+            raise ValueError('allowed_peers must be a list of Tailscale IPs or login names.')
         return cls(url, control, cp, lan_ip, mp, network,
                    str(raw.get('preferred_renderer', 'EXN100')),
-                   tuple(h.strip().rstrip('.').lower() for h in hosts))
+                   tuple(h.strip().rstrip('.').lower() for h in hosts),
+                   tuple(x.strip().lower() for x in peers))
 
     def host_allowed(self, host_header: str) -> bool:
         """Refuse DNS-rebinding hosts: the parent trusts every bridge request."""
@@ -257,12 +284,63 @@ class Bridge:
         self.grants: dict[str, MediaGrant] = {}
         self.last_track: dict[str, int] = {}
         self.cast_results: dict[tuple[str, str], dict[str, Any] | None] = {}
+        # Per renderer, every cast and control takes an arrival number.
+        # generations: that of the newest cast or Stop (older casts skip);
+        # intents: the newest Play/Pause, which a cast that arrived before
+        # it must honour even if the cast reaches the renderer later.
+        self.arrivals: dict[str, int] = {}
         self.generations: dict[str, int] = {}
+        self.intents: dict[str, tuple[int, str]] = {}
         self.locks: dict[str, threading.RLock] = {}
         self.lock = threading.RLock()
         self.last_scan = 0.0
         self.scan_lock = threading.Lock()
         self._auth_cache: dict[bytes, float] = {}
+        # Open media relays by grant token; revoking a grant sets their
+        # events, which the relay's send loop checks at least every second.
+        self.streams: dict[str, set[threading.Event]] = {}
+        self.peer_streams: dict[str, int] = {}
+        self._tailnet: tuple[float, dict] = (0.0, {})
+
+    def tailnet_status(self) -> dict:
+        """`tailscale status --json`, cached briefly ({} if unavailable)."""
+        with self.lock:
+            if self._tailnet[0] > time.monotonic():
+                return self._tailnet[1]
+        try:
+            status = json.loads(tailscale_cli('status', '--json') or '{}')
+        except ValueError:
+            status = {}
+        with self.lock:
+            self._tailnet = (time.monotonic() + TAILNET_STATUS_TTL, status)
+        return status
+
+    def peer_allowed(self, ip: str, login: str = '') -> bool:
+        """May this control client use the parent through the bridge?
+
+        The parent sees every relayed request as this bridge, a verified
+        tailnet peer it serves passwordlessly, so the bridge must not widen
+        that to tailnet devices the parent's own ACL would refuse.
+        """
+        with contextlib.suppress(ValueError):
+            if ipaddress.ip_address(ip).is_loopback and not login:
+                return True  # a browser on this PC (Serve adds the login header)
+        allowed = self.cfg.allowed_peers
+        if ip.lower() in allowed:
+            return True
+        status = self.tailnet_status()
+        users = status.get('User') or {}
+        if not login:
+            peer = next((p for p in (status.get('Peer') or {}).values()
+                         if ip in (p.get('TailscaleIPs') or [])), None)
+            if peer is None:
+                return False
+            login = str((users.get(str(peer.get('UserID'))) or {}).get('LoginName') or '')
+        login = login.lower()
+        if allowed:
+            return bool(login) and login in allowed
+        owner = str((users.get(str((status.get('Self') or {}).get('UserID'))) or {}).get('LoginName') or '')
+        return bool(login) and login == owner.lower()
 
     def upstream(self, path: str, *, method='GET', headers: dict | None = None,
                  data: bytes | None = None, timeout=UPSTREAM_TIMEOUT):
@@ -372,6 +450,7 @@ class Bridge:
             with self.lock:
                 return list(self.devices.values())
         found: dict[str, Renderer] = {}
+        deadline = time.monotonic() + SCAN_BUDGET
         try:
             s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
             with s:
@@ -389,7 +468,7 @@ class Bridge:
                 # per LAN device, and fetching each inline (5 s timeout) both
                 # repeated work and let the 2 s window run long.
                 locations: dict[str, str] = {}
-                until = time.monotonic() + 2.0
+                until = time.monotonic() + SSDP_WINDOW
                 while time.monotonic() < until:
                     try:
                         data, addr = s.recvfrom(8192)
@@ -408,17 +487,7 @@ class Bridge:
                         continue
                     if location not in locations and len(locations) < MAX_SSDP_LOCATIONS:
                         locations[location] = addr[0]
-            for location, responder in locations.items():
-                try:
-                    with self.upnp_open(location, timeout=3) as response:
-                        payload = response.read(MAX_DEVICE_XML + 1)
-                    if len(payload) > MAX_DEVICE_XML:
-                        continue
-                    item = self.parse_renderer(payload, location, responder)
-                    if item:
-                        found[item.udn] = item
-                except (URLError, HTTPError, TimeoutError, OSError, ValueError, HTTPFailure):
-                    continue
+            found = self.describe(locations, deadline)
         except OSError as exc:
             LOG.warning('UPnP discovery error: %s', exc)
         finally:
@@ -430,6 +499,36 @@ class Bridge:
                 cached = list(self.devices.values())
             self.scan_lock.release()
         return sorted(cached, key=lambda d: (self.cfg.preferred_renderer.lower() not in d.name.lower(), d.name.lower()))
+
+    def describe(self, locations: dict[str, str], deadline: float) -> dict[str, Renderer]:
+        """Fetch device descriptions in parallel; whatever is not in by the
+        deadline is skipped, so one dead TV cannot hide the EXN100."""
+        def fetch(location: str, responder: str) -> Renderer | None:
+            timeout = max(0.2, deadline - time.monotonic())
+            try:
+                with self.upnp_open(location, timeout=timeout) as response:
+                    payload = response.read(MAX_DEVICE_XML + 1)
+            except (URLError, HTTPError, TimeoutError, OSError, ValueError, HTTPFailure):
+                return None
+            return None if len(payload) > MAX_DEVICE_XML else self.parse_renderer(payload, location, responder)
+
+        found: dict[str, Renderer] = {}
+        if not locations:
+            return found
+        # One worker per location (at most MAX_SSDP_LOCATIONS): a queue behind
+        # dead devices could push the EXN100 past the deadline.
+        pool = concurrent.futures.ThreadPoolExecutor(len(locations), thread_name_prefix='ssdp-describe')
+        try:
+            futures = [pool.submit(fetch, loc, ip) for loc, ip in locations.items()]
+            done, _ = concurrent.futures.wait(futures, timeout=max(0.0, deadline - time.monotonic()))
+            for future in done:
+                item = future.result()
+                if item:
+                    found[item.udn] = item
+        finally:
+            # Stragglers end on their own socket timeout; nobody waits for them.
+            pool.shutdown(wait=False, cancel_futures=True)
+        return found
 
     def upnp_open(self, url: str, *, data: bytes | None = None,
                   headers: dict | None = None, timeout=5):
@@ -499,11 +598,27 @@ class Bridge:
         with self.lock:
             return self.locks.setdefault(udn, threading.RLock())
 
-    def bump(self, udn: str) -> int:
+    def arrive(self, udn: str) -> int:
+        """Number a cast or control on arrival, before any upstream call (the
+        admin check alone can take a different time for each request)."""
         with self.lock:
-            gen = self.generations.get(udn, 0) + 1
-            self.generations[udn] = gen
-            return gen
+            seq = self.arrivals[udn] = self.arrivals.get(udn, 0) + 1
+            return seq
+
+    def commit(self, udn: str, seq: int, action: str) -> None:
+        """Apply an authorized request at its arrival position: a newer cast,
+        Stop or Play/Pause that committed first keeps precedence."""
+        with self.lock:
+            if action in ('Cast', 'Stop'):
+                self.generations[udn] = max(self.generations.get(udn, 0), seq)
+            elif seq > self.intents.get(udn, (0, ''))[0]:
+                self.intents[udn] = (seq, action)
+
+    def paused_after(self, udn: str, seq: int) -> bool:
+        """Did the user's newest Play/Pause, sent after `seq`, ask for Pause?"""
+        with self.lock:
+            intent_seq, action = self.intents.get(udn, (0, ''))
+        return intent_seq > seq and action == 'Pause'
 
     def request_result(self, udn: str, rid: str) -> dict:
         with self.lock:
@@ -533,11 +648,44 @@ class Bridge:
             self.grants[token] = grant
         return grant
 
-    def retire_older_grants(self, device_ip: str, keep_token: str) -> None:
+    def retire_older_grants(self, device_ip: str, keep_token: str | None = None) -> None:
+        """Revoke this renderer's grants (but `keep_token`) and end their open
+        relays: a revoked ticket must not keep streaming what it already opened."""
         with self.lock:
-            for key, grant in list(self.grants.items()):
-                if grant.renderer_ip == device_ip and key != keep_token:
-                    del self.grants[key]
+            tokens = [key for key, grant in self.grants.items()
+                      if grant.renderer_ip == device_ip and key != keep_token]
+            for key in tokens:
+                del self.grants[key]
+                for cancelled in self.streams.pop(key, ()):
+                    cancelled.set()
+
+    @contextlib.contextmanager
+    def track_stream(self, token: str, peer_ip: str):
+        """Register an open media relay; bounded per renderer and in total so
+        stalled clients cannot pile up threads (and keep-awake requests)."""
+        with self.lock:
+            if (sum(self.peer_streams.values()) >= MAX_MEDIA_STREAMS or
+                    self.peer_streams.get(peer_ip, 0) >= MAX_MEDIA_STREAMS_PER_IP):
+                raise HTTPFailure(503, 'Too many open media streams')
+            if token not in self.grants:  # revoked between check and register
+                raise HTTPFailure(403, 'Media ticket invalid, expired or wrong renderer')
+            cancelled = threading.Event()
+            self.streams.setdefault(token, set()).add(cancelled)
+            self.peer_streams[peer_ip] = self.peer_streams.get(peer_ip, 0) + 1
+        try:
+            yield cancelled
+        finally:
+            with self.lock:
+                left = self.peer_streams.get(peer_ip, 0) - 1
+                if left > 0:
+                    self.peer_streams[peer_ip] = left
+                else:
+                    self.peer_streams.pop(peer_ip, None)
+                events = self.streams.get(token)
+                if events is not None:
+                    events.discard(cancelled)
+                    if not events:
+                        del self.streams[token]
 
     def grant_for(self, token: str, track_id: int | None, ext: str | None, peer_ip: str) -> MediaGrant:
         """The live grant for this renderer, renewed by the use (None: any track)."""
@@ -584,6 +732,7 @@ class Bridge:
                 '</item></DIDL-Lite>')
 
     def cast(self, udn: str, payload: dict, credential: str, *, cookie: str = '') -> dict:
+        generation = self.arrive(udn)
         self.authorize_control(credential, cookie)
         device = self.ensure_device(udn)
         raw_id = payload.get('track_id')
@@ -602,7 +751,7 @@ class Bridge:
         recast = payload.get('recast', False)
         if type(recast) is not bool:
             raise HTTPFailure(422, 'Invalid recast')
-        generation = self.bump(udn)
+        self.commit(udn, generation, 'Cast')
         if rid:
             with self.lock:
                 self.cast_results[(udn, rid)] = None
@@ -650,7 +799,9 @@ class Bridge:
                               'error': f'{device.name} rejected the stream URL'}
                     self._store_result(udn, rid, result)
                     return result
-                if paused:
+                # A Pause sent after this cast may already have run (it did not
+                # wait for the track lookup): load the stream but do not Play.
+                if paused or self.paused_after(udn, generation):
                     transport = 'loaded'
                 else:
                     transport = 'playing' if self.soap(device, 'Play', {'Speed': '1'}) is not None else 'play_failed'
@@ -689,20 +840,18 @@ class Bridge:
             raise
 
     def control(self, udn: str, action: str, credential: str, *, cookie: str = '') -> dict:
+        seq = self.arrive(udn)
         self.authorize_control(credential, cookie)
         device = self.ensure_device(udn)
-        if action == 'Stop':
-            self.bump(udn)
+        self.commit(udn, seq, action)
         with self.lock_for(udn):
             success = self.soap(device, action, {'Speed': '1'} if action == 'Play' else {}) is not None
             # The user left this renderer: revoke even if it did not answer,
-            # so a stale ticket cannot fetch more of the stream later.
+            # and cut relays already open, so the stream really stops.
             if action == 'Stop':
                 with self.lock:
                     self.last_track.pop(udn, None)
-                    for k, grant in list(self.grants.items()):
-                        if grant.renderer_ip == device.ip:
-                            del self.grants[k]
+                self.retire_older_grants(device.ip)
             return {'success': success}
 
     def status(self, udn: str, credential: str, cookie: str = '') -> dict:
@@ -839,14 +988,15 @@ class BridgeHandler(BaseHTTPRequestHandler):
         # An unparseable or multi-range header is ignored (RFC 9110): full 200.
         if re.fullmatch(r'bytes=(?:\d+-\d*|-\d+)', requested):
             headers['Range'] = requested
-        keep_awake(True)
-        try:
-            # Relay original FLAC bytes, with Range/HEAD support and NO transcoding.
-            with bridge.upstream(f'/api/stream/{grant.track_id}?upsample=none&replaygain=off',
-                                 method=self.command, headers=headers, timeout=60) as upstream:
-                self.relay(upstream, stream_timeout=None)
-        finally:
-            keep_awake(False)
+        with bridge.track_stream(grant.token, self.client_address[0]) as cancelled:
+            keep_awake(True)
+            try:
+                # Relay original FLAC bytes, with Range/HEAD support and NO transcoding.
+                with bridge.upstream(f'/api/stream/{grant.track_id}?upsample=none&replaygain=off',
+                                     method=self.command, headers=headers, timeout=60) as upstream:
+                    self.relay(upstream, stream_timeout=MEDIA_STALL_TIMEOUT, cancelled=cancelled)
+            finally:
+                keep_awake(False)
 
     def read_body(self) -> bytes:
         try:
@@ -859,6 +1009,9 @@ class BridgeHandler(BaseHTTPRequestHandler):
 
     def dispatch_control(self):
         bridge = self.server.bridge
+        if not bridge.peer_allowed(self.client_address[0], self.headers.get('Tailscale-User-Login', '')):
+            raise HTTPFailure(403, 'This Tailscale device may not use the bridge '
+                                   '(add it to allowed_peers in config.json)')
         if not bridge.cfg.host_allowed(self.headers.get('Host', '')):
             raise HTTPFailure(421, 'Open the bridge by its Tailscale IP or MagicDNS name '
                                    '(or add the name to allowed_hosts in config.json)')
@@ -930,7 +1083,8 @@ class BridgeHandler(BaseHTTPRequestHandler):
         with bridge.upstream(path, method=self.command, headers=headers, data=body) as upstream:
             self.relay(upstream)
 
-    def relay(self, upstream, stream_timeout: float | None = CONTROL_STREAM_TIMEOUT):
+    def relay(self, upstream, stream_timeout: float = CONTROL_STREAM_TIMEOUT,
+              cancelled: threading.Event | None = None):
         status = getattr(upstream, 'status', None) or upstream.code
         self.send_response(status)
         for key, value in upstream.headers.items():
@@ -942,13 +1096,30 @@ class BridgeHandler(BaseHTTPRequestHandler):
         self.send_header('X-Content-Type-Options', 'nosniff')
         self.end_headers()
         if self.command != 'HEAD':
-            # Past the request: a paused renderer may stop reading for long.
-            self.connection.settimeout(stream_timeout)
+            # Short send slices: a blocked send cannot be interrupted from
+            # another thread on Windows, so the loop itself notices a revoked
+            # grant and a reader idle past `stream_timeout`.
+            self.connection.settimeout(min(1.0, stream_timeout))
             while True:
                 chunk = upstream.read(SOCKET_CHUNK)
                 if not chunk:
                     break
-                self.wfile.write(chunk)
+                self.send_body(chunk, stream_timeout, cancelled)
+
+    def send_body(self, chunk: bytes, stream_timeout: float, cancelled: threading.Event | None):
+        view = memoryview(chunk)
+        last_progress = time.monotonic()
+        while view:
+            if cancelled is not None and cancelled.is_set():
+                raise ConnectionAbortedError('media grant revoked')
+            try:
+                sent = self.connection.send(view)
+            except TimeoutError:
+                if time.monotonic() - last_progress >= stream_timeout:
+                    raise
+                continue
+            view = view[sent:]
+            last_progress = time.monotonic()
 
 
 class BridgeHTTPServer(ThreadingHTTPServer):

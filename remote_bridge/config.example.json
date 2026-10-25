@@ -6,5 +6,6 @@
   "media_port": 8878,
   "renderer_network": "auto",
   "preferred_renderer": "EXN100",
-  "allowed_hosts": []
+  "allowed_hosts": [],
+  "allowed_peers": []
 }

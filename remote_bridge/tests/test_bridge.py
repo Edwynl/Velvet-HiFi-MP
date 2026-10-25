@@ -4,8 +4,10 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import ipaddress
 import io
 import json
+import os
 from pathlib import Path
 import socket
+import subprocess
 import sys
 import tempfile
 import threading
@@ -156,6 +158,12 @@ class ServerFixture(unittest.TestCase):
             s.shutdown()
             s.server_close()
 
+    def tearDown(self):
+        # Let relays from this test finish before the next one resets state.
+        deadline = time.monotonic() + 8
+        while self.core.peer_streams and time.monotonic() < deadline:
+            time.sleep(0.05)
+
     def setUp(self):
         Parent.passwordless = False
         Parent.seen_headers.clear()
@@ -165,6 +173,10 @@ class ServerFixture(unittest.TestCase):
             self.core.cast_results.clear()
             self.core.generations.clear()
             self.core._auth_cache.clear()
+            self.core.arrivals.clear()
+            self.core.intents.clear()
+            self.core.streams.clear()
+            self.core.peer_streams.clear()
 
     def request(self, path, *, method='GET', body=None, headers=None, role='control'):
         url = (self.control_base if role == 'control' else self.media_base) + path
@@ -421,6 +433,307 @@ class ServerFixture(unittest.TestCase):
         self.assertEqual(json.loads(data)['success'], False)
         self.assertFalse(self.core.grants)
         self.assertTrue(self.core.request_result('uuid:EXN100-test', 'r-fail')['done'])
+
+    # ── Review 2 / P1-2: a Pause sent after a Cast is never undone by it ──
+
+    def cast_racing_pause(self, block_point):
+        """Cast blocked at `block_point` ('auth' or 'lookup'); Pause sent and
+        finished meanwhile; then the cast resumes. Returns SOAP order, result."""
+        actions, entered, release = [], threading.Event(), threading.Event()
+        real_json, real_auth = self.core.upstream_json, self.core.authorize_control
+        def slow_json(path, *a, **k):
+            if block_point == 'lookup' and path.startswith('/api/tracks/'):
+                entered.set()
+                release.wait(10)
+            return real_json(path, *a, **k)
+        def slow_auth(*a, **k):
+            if block_point == 'auth' and threading.current_thread().name == 'cast-request':
+                entered.set()
+                release.wait(10)
+            return real_auth(*a, **k)
+        def soap(device, action, values=None):
+            actions.append(action)
+            return b'<ok/>'
+        result = {}
+        def cast():
+            result['cast'] = self.request('/api/cast/uuid:EXN100-test', method='POST', body={'track_id': 5},
+                                          headers={'X-API-Key': CREDENTIAL, 'Cookie': COOKIE})
+        with patch.object(self.core, 'upstream_json', side_effect=slow_json), \
+             patch.object(self.core, 'authorize_control', side_effect=slow_auth), \
+             patch.object(self.core, 'soap', side_effect=soap), \
+             patch.object(self.core, 'transport', return_value='PLAYING'):
+            # The handler thread, not ours, runs the cast: name it via the request.
+            real_dispatch = bridge.BridgeHandler.dispatch_control
+            def named(handler):
+                if handler.path.startswith('/api/cast/uuid'):
+                    threading.current_thread().name = 'cast-request'
+                return real_dispatch(handler)
+            with patch.object(bridge.BridgeHandler, 'dispatch_control', named):
+                t = threading.Thread(target=cast)
+                t.start()
+                self.assertTrue(entered.wait(5), 'cast never reached the slow step')
+                status, _, data = self.request('/api/cast/control/uuid:EXN100-test/Pause', method='POST',
+                                               headers={'X-API-Key': CREDENTIAL, 'Cookie': COOKIE})
+                self.assertEqual((status, json.loads(data)['success']), (200, True))
+                release.set()
+                t.join(10)
+        status, _, data = result['cast']
+        self.assertEqual(status, 200, data)
+        return actions, json.loads(data)
+
+    def test_pause_during_slow_track_lookup_is_not_overridden_by_cast(self):
+        actions, res = self.cast_racing_pause('lookup')
+        self.assertEqual(actions[0], 'Pause')
+        self.assertIn('SetAVTransportURI', actions)
+        self.assertNotIn('Play', actions)
+        self.assertEqual(res['transport'], 'loaded')
+
+    def test_pause_during_slow_admin_check_is_not_overridden_by_cast(self):
+        # Numbered on arrival: the cast arrived first even though its admin
+        # check finished after the Pause was handled.
+        actions, res = self.cast_racing_pause('auth')
+        self.assertNotIn('Play', actions)
+        self.assertEqual(res['transport'], 'loaded')
+
+    def test_cast_after_pause_plays(self):
+        with patch.object(self.core, 'soap', return_value=b'<ok/>'):
+            self.request('/api/cast/control/uuid:EXN100-test/Pause', method='POST',
+                         headers={'X-API-Key': CREDENTIAL, 'Cookie': COOKIE})
+        soap, _ = self.cast_ok()
+        self.assertIn('Play', [c.args[1] for c in soap.call_args_list])
+
+    # ── Review 2 / P1-5 and P1-6: open relays are revoked and bounded ──
+
+    def endless_stream(self):
+        """Patch the parent's stream to never end, as a long FLAC would."""
+        real_upstream = self.core.upstream
+        class Endless:
+            status, code = 200, 200
+            headers = {'Content-Type': 'audio/flac'}
+            def __enter__(self):
+                return self
+            def __exit__(self, *exc):
+                return False
+            def read(self, n):
+                return b'\0' * n
+        def upstream(path, *a, **k):
+            return Endless() if path.startswith('/api/stream/') else real_upstream(path, *a, **k)
+        return patch.object(self.core, 'upstream', side_effect=upstream)
+
+    def open_stalled_reader(self, grant):
+        """A renderer that reads the headers, then stops reading."""
+        sock = socket.create_connection(('127.0.0.1', self.media.server_port), timeout=10)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4096)
+        sock.sendall(f'GET /media/{grant.token}/{grant.track_id}.{grant.extension} HTTP/1.1\r\n'
+                     'Host: x\r\n\r\n'.encode())
+        self.assertTrue(sock.recv(1024).startswith(b'HTTP/1.0 200'))
+        self.wait_for(lambda: grant.token in self.core.streams, 'relay never registered')
+        return sock
+
+    def wait_for(self, condition, message, timeout=8.0):
+        deadline = time.monotonic() + timeout
+        while not condition():
+            if time.monotonic() > deadline:
+                self.fail(message)
+            time.sleep(0.05)
+
+    def drained_to_eof(self, sock, timeout=8.0):
+        sock.settimeout(timeout)
+        try:
+            while sock.recv(1 << 20):
+                pass
+        except (ConnectionResetError, ConnectionAbortedError):
+            pass
+        return True
+
+    def test_stop_cuts_an_already_open_stream(self):
+        _, grant = self.cast_ok()
+        with self.endless_stream():
+            sock = self.open_stalled_reader(grant)
+            with sock, patch.object(self.core, 'soap', return_value=b'<ok/>'):
+                status, _, _ = self.request('/api/cast/control/uuid:EXN100-test/Stop', method='POST',
+                                            headers={'X-API-Key': CREDENTIAL, 'Cookie': COOKIE})
+                self.assertEqual(status, 200)
+                self.wait_for(lambda: not self.core.streams and not self.core.peer_streams,
+                              'relay kept running after Stop')
+                self.assertTrue(self.drained_to_eof(sock))
+
+    def test_next_track_cuts_the_previous_stream(self):
+        _, old = self.cast_ok()
+        with self.endless_stream():
+            sock = self.open_stalled_reader(old)
+            with sock:
+                _, new = self.cast_ok()
+                self.wait_for(lambda: old.token not in self.core.streams, 'old track kept streaming')
+                self.assertIn(new.token, self.core.grants)
+                self.assertTrue(self.drained_to_eof(sock))
+
+    def test_stalled_reader_released_then_resumes_with_range(self):
+        _, grant = self.cast_ok()
+        awake = []
+        with self.endless_stream(), patch.object(bridge, 'MEDIA_STALL_TIMEOUT', 0.5), \
+             patch.object(bridge, 'keep_awake', side_effect=awake.append):
+            sock = self.open_stalled_reader(grant)
+            with sock:
+                self.wait_for(lambda: not self.core.streams and not self.core.peer_streams,
+                              'stalled relay held its thread')
+        self.assertEqual(awake, [True, False], 'keep-awake not released')
+        # Resume after the pause: a fresh Range GET on the same, still valid URL.
+        path = f'/media/{grant.token}/{grant.track_id}.{grant.extension}'
+        status, _, data = self.request(path, role='media', headers={'Range': 'bytes=4096-'})
+        self.assertEqual((status, data), (206, AUDIO[4096:]))
+
+    def test_open_streams_capped_per_renderer(self):
+        _, grant = self.cast_ok()
+        with self.endless_stream(), patch.object(bridge, 'MAX_MEDIA_STREAMS_PER_IP', 1):
+            sock = self.open_stalled_reader(grant)
+            with sock:
+                path = f'/media/{grant.token}/{grant.track_id}.{grant.extension}'
+                self.assertEqual(self.request(path, role='media')[0], 503)
+                self.core.retire_older_grants('127.0.0.1')
+                self.wait_for(lambda: not self.core.peer_streams, 'cap slot not released')
+
+    # ── Review 2 / P1-4: only authorized tailnet devices reach the parent ──
+
+    def test_unauthorized_tailnet_peer_cannot_proxy(self):
+        with patch.object(self.core, 'peer_allowed', return_value=False):
+            for path in ('/', '/api/tracks/5', '/api/zones', '/bridge/health'):
+                status, _, _ = self.request(path, headers={'X-API-Key': CREDENTIAL})
+                self.assertEqual(status, 403, path)
+        self.assertEqual(self.request('/api/tracks/5', headers={'X-API-Key': CREDENTIAL})[0], 200)
+
+
+class ReviewP1UnitTests(unittest.TestCase):
+    CFG = dict(upstream_url='http://100.100.100.100:8765', control_bind='100.80.1.2', control_port=8877,
+               lan_ip='192.168.1.22', media_port=8878, renderer_network=ipaddress.ip_network('192.168.1.0/24'))
+    STATUS = {'Self': {'UserID': 1, 'TailscaleIPs': ['100.80.1.2']},
+              'Peer': {'a': {'UserID': 1, 'TailscaleIPs': ['100.80.1.10']},   # owner's iPhone
+                       'b': {'UserID': 2, 'TailscaleIPs': ['100.80.1.20']},   # parents' tablet
+                       'c': {'UserID': 3, 'TailscaleIPs': ['100.80.1.30']}},  # tagged server
+              'User': {'1': {'LoginName': 'Edwyn@example.com'}, '2': {'LoginName': 'mum@example.com'},
+                       '3': {'LoginName': 'tagged-devices'}}}
+
+    def core(self, **extra):
+        core = bridge.Bridge(bridge.BridgeConfig(**self.CFG, **extra))
+        core.tailnet_status = lambda: self.STATUS
+        return core
+
+    def test_peer_policy_defaults_to_bridge_owner(self):
+        core = self.core()
+        self.assertTrue(core.peer_allowed('100.80.1.10'))
+        self.assertFalse(core.peer_allowed('100.80.1.20'))
+        self.assertFalse(core.peer_allowed('100.80.1.30'))
+        self.assertFalse(core.peer_allowed('100.80.1.99'))  # not in the tailnet map
+        self.assertTrue(core.peer_allowed('127.0.0.1'))
+        # Tailscale Serve: loopback peer, identity in the header.
+        self.assertTrue(core.peer_allowed('127.0.0.1', 'edwyn@example.com'))
+        self.assertFalse(core.peer_allowed('127.0.0.1', 'mum@example.com'))
+
+    def test_peer_policy_allowlist(self):
+        core = self.core(allowed_peers=('mum@example.com', '100.80.1.30'))
+        self.assertTrue(core.peer_allowed('100.80.1.20'))
+        self.assertTrue(core.peer_allowed('100.80.1.30'))
+        self.assertFalse(core.peer_allowed('100.80.1.10'))  # the list replaces the owner rule
+
+    def test_peer_policy_fails_closed_without_tailscale(self):
+        core = bridge.Bridge(bridge.BridgeConfig(**self.CFG))
+        core.tailnet_status = lambda: {}
+        self.assertFalse(core.peer_allowed('100.80.1.10'))
+        self.assertTrue(core.peer_allowed('127.0.0.1'))
+
+    def test_config_parses_allowed_peers(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / 'config.json'
+            p.write_text(json.dumps({'upstream_url': 'http://100.100.100.100:8765', 'control_bind': '127.0.0.1',
+                                     'lan_ip': '192.168.1.3', 'allowed_peers': ['Mum@Example.com']}))
+            self.assertEqual(bridge.BridgeConfig.load(p).allowed_peers, ('mum@example.com',))
+            p.write_text(json.dumps({'upstream_url': 'http://100.100.100.100:8765', 'control_bind': '127.0.0.1',
+                                     'lan_ip': '192.168.1.3', 'allowed_peers': 'everyone'}))
+            with self.assertRaises(ValueError):
+                bridge.BridgeConfig.load(p)
+
+    def test_slow_tv_does_not_hide_exn100_or_overrun_the_budget(self):
+        silent = socket.socket()
+        silent.bind(('127.0.0.2', 0))
+        silent.listen(64)  # accepts connections, never answers
+        desc = (b'<root><device><friendlyName>EXN100</friendlyName><UDN>uuid:exn</UDN><serviceList><service>'
+                b'<serviceType>urn:schemas-upnp-org:service:AVTransport:1</serviceType>'
+                b'<controlURL>/c</controlURL></service></serviceList></device></root>')
+        class Desc(BaseHTTPRequestHandler):
+            def log_message(self, *a):
+                pass
+            def do_GET(self):
+                self.send_response(200)
+                self.send_header('Content-Length', str(len(desc)))
+                self.end_headers()
+                self.wfile.write(desc)
+        exn = ThreadingHTTPServer(('127.0.0.3', 0), Desc)
+        threading.Thread(target=exn.serve_forever, daemon=True).start()
+        try:
+            core = bridge.Bridge(bridge.BridgeConfig('http://100.100.100.100:8765', '127.0.0.1', 8877, '127.0.0.1',
+                                                     8878, ipaddress.ip_network('127.0.0.0/8')))
+            tv = f'http://127.0.0.2:{silent.getsockname()[1]}'
+            locations = {f'{tv}/tv{n}.xml': '127.0.0.2' for n in range(30)}
+            locations[f'http://127.0.0.3:{exn.server_port}/d.xml'] = '127.0.0.3'
+            started = time.monotonic()
+            found = core.describe(locations, started + 1.0)
+            self.assertLess(time.monotonic() - started, 1.6)
+            self.assertEqual([d.name for d in found.values()], ['EXN100'])
+        finally:
+            exn.shutdown()
+            exn.server_close()
+            silent.close()
+        # SSDP window plus description fetches stay inside Velvet's 8 s UI call.
+        self.assertLess(bridge.SCAN_BUDGET, 8)
+        self.assertLess(bridge.SSDP_WINDOW, bridge.SCAN_BUDGET)
+
+
+class ProxyEnvironmentTests(unittest.TestCase):
+    def test_parent_api_key_never_sent_through_environment_proxy(self):
+        seen = []
+        class Proxy(BaseHTTPRequestHandler):
+            def log_message(self, *a):
+                pass
+            def do_GET(self):
+                seen.append((self.path, self.headers.get('X-API-Key')))
+                self.send_response(502)
+                self.send_header('Content-Length', '0')
+                self.end_headers()
+        class Parent(BaseHTTPRequestHandler):
+            def log_message(self, *a):
+                pass
+            def do_GET(self):
+                body = b'{"tracks": 1}'
+                self.send_response(200)
+                self.send_header('Content-Length', str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+        servers = [ThreadingHTTPServer(('127.0.0.1', 0), h) for h in (Proxy, Parent)]
+        for s in servers:
+            threading.Thread(target=s.serve_forever, daemon=True).start()
+        proxy, parent = (f'http://127.0.0.1:{s.server_port}' for s in servers)
+        # A fresh interpreter, so the module-level opener is built with the
+        # proxy already in the environment (as on a PC with a proxy set).
+        code = (
+            'import sys, ipaddress, urllib.request; sys.path.insert(0, sys.argv[1]); import bridge\n'
+            'try: urllib.request.urlopen(sys.argv[2] + "/control", timeout=5)\n'
+            'except Exception: pass\n'
+            'cfg = bridge.BridgeConfig(sys.argv[2], "127.0.0.1", 1, "127.0.0.1", 2, ipaddress.ip_network("127.0.0.0/8"))\n'
+            'print(bridge.Bridge(cfg).upstream_json("/api/stats", "secret-key"))\n')
+        env = {k: v for k, v in os.environ.items() if k.lower() not in ('no_proxy', 'http_proxy', 'https_proxy')}
+        env.update(http_proxy=proxy, HTTP_PROXY=proxy)
+        try:
+            out = subprocess.run([sys.executable, '-c', code, str(Path(bridge.__file__).parent), parent],
+                                 env=env, capture_output=True, text=True, timeout=30)
+        finally:
+            for s in servers:
+                s.shutdown()
+                s.server_close()
+        self.assertIn("{'tracks': 1}", out.stdout, out.stderr)
+        # Control: the default urllib opener does go through the proxy...
+        self.assertIn((parent + '/control', None), seen)
+        # ...the bridge never does, so the proxy never saw the key.
+        self.assertFalse([s for s in seen if s[1]], seen)
 
 
 class ValidationTests(unittest.TestCase):
