@@ -47,6 +47,9 @@ BODY_LIMIT = 25 * 1024 * 1024
 # first, up to this size: closing a socket with unread data resets the
 # connection, and the client (on Windows at least) then loses the answer.
 DISCARD_LIMIT = 1024 * 1024
+# ...and only for this long, all reads together: a body that is not all there
+# by then (one byte of a claimed 300 KB, or a slow drip) is not waited for.
+DISCARD_BUDGET = 0.5
 MAX_DEVICE_XML = 128 * 1024
 MAX_API_RESPONSE = 2 * 1024 * 1024
 UPSTREAM_TIMEOUT = 25
@@ -97,7 +100,8 @@ SOAP_TIMEOUT = 8
 # answer gets a quick 503, not up to 3 x 2 x SOAP_TIMEOUT of waiting.
 SESSION_READ_BUDGET = 2.5
 # Renderer reads of session lookups that may be under way at once (each on
-# its own thread, so a lookup can stop waiting at its deadline).
+# its own thread, so a lookup can stop waiting at its deadline; at the
+# deadline its connection is closed, so the thread and its slot free at once).
 SESSION_READERS = 4
 MAX_QUEUE = 5000
 REPEAT_MODES = frozenset({'none', 'all', 'one'})
@@ -748,8 +752,33 @@ class Bridge:
         return OPENER.open(Request(url, data=data, headers=headers or {},
                                    method='POST' if data is not None else 'GET'), timeout=timeout)
 
+    def upnp_post_cancellable(self, url: str, data: bytes, headers: dict, timeout: float,
+                              cancel: ActiveStream) -> bytes:
+        """upnp_open's POST, over a socket `cancel` can close from another
+        thread: urllib's timeout bounds each socket operation, not the
+        exchange, and a renderer answering a byte at a time outlasts it."""
+        parsed = urlparse(url)
+        if parsed.scheme != 'http' or not parsed.hostname or not self.valid_renderer_ip(parsed.hostname):
+            raise HTTPFailure(403, 'Renderer endpoint is outside the home LAN')
+        port = parsed.port or 80
+        connection = http.client.HTTPConnection(parsed.hostname, port, timeout=timeout)
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            cancel.attach(sock)
+            sock.settimeout(timeout)
+            sock.connect((parsed.hostname, port))
+            connection.sock = sock
+            connection.request('POST', (parsed.path or '/') + (f'?{parsed.query}' if parsed.query else ''),
+                               body=data, headers=headers)
+            with connection.getresponse() as response:
+                if response.status >= 400:
+                    raise HTTPError(url, response.status, response.reason, response.headers, None)
+                return response.read(128 * 1024)
+        finally:
+            connection.close()
+
     def soap(self, device: Renderer, action: str, values: dict[str, str] | None = None, *,
-             timeout: float | None = None) -> bytes | None:
+             timeout: float | None = None, cancel: ActiveStream | None = None) -> bytes | None:
         service = 'urn:schemas-upnp-org:service:AVTransport:1'
         fields = '<InstanceID>0</InstanceID>' + ''.join(
             f'<{k}>{html.escape(str(v), quote=True)}</{k}>' for k, v in (values or {}).items())
@@ -757,21 +786,25 @@ class Bridge:
                 '<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" '
                 's:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/">'
                 f'<s:Body><u:{action} xmlns:u="{service}">{fields}</u:{action}></s:Body></s:Envelope>')
+        headers = {'Content-Type': 'text/xml; charset="utf-8"', 'SOAPACTION': f'"{service}#{action}"'}
+        timeout = SOAP_TIMEOUT if timeout is None else timeout
         try:
-            with self.upnp_open(device.control_url, data=body.encode('utf-8'),
-                                headers={'Content-Type': 'text/xml; charset="utf-8"',
-                                         'SOAPACTION': f'"{service}#{action}"'},
-                                timeout=SOAP_TIMEOUT if timeout is None else timeout) as response:
-                data = response.read(128 * 1024)
-                if b'<Fault' in data or b':Fault>' in data or b'<faultcode>' in data:
-                    return None
-                return data
+            if cancel is None:
+                with self.upnp_open(device.control_url, data=body.encode('utf-8'), headers=headers,
+                                    timeout=timeout) as response:
+                    data = response.read(128 * 1024)
+            else:
+                data = self.upnp_post_cancellable(device.control_url, body.encode('utf-8'), headers, timeout, cancel)
+            if b'<Fault' in data or b':Fault>' in data or b'<faultcode>' in data:
+                return None
+            return data
         except (HTTPError, URLError, TimeoutError, OSError, HTTPFailure) as exc:
             LOG.warning('Renderer %s rejected %s (%s)', device.name, action, type(exc).__name__)
             return None
 
-    def soap_value(self, device: Renderer, action: str, name: str, *, timeout: float | None = None) -> str:
-        result = self.soap(device, action, timeout=timeout)
+    def soap_value(self, device: Renderer, action: str, name: str, *, timeout: float | None = None,
+                   cancel: ActiveStream | None = None) -> str:
+        result = self.soap(device, action, timeout=timeout, cancel=cancel)
         if not result:
             return ''
         try:
@@ -779,11 +812,14 @@ class Bridge:
         except ET.ParseError:
             return ''
 
-    def transport(self, device: Renderer, *, timeout: float | None = None) -> str:
-        return self.soap_value(device, 'GetTransportInfo', 'CurrentTransportState', timeout=timeout) or 'UNKNOWN'
+    def transport(self, device: Renderer, *, timeout: float | None = None,
+                  cancel: ActiveStream | None = None) -> str:
+        return self.soap_value(device, 'GetTransportInfo', 'CurrentTransportState',
+                               timeout=timeout, cancel=cancel) or 'UNKNOWN'
 
-    def position(self, device: Renderer, *, timeout: float | None = None) -> tuple[float, float, str]:
-        result = self.soap(device, 'GetPositionInfo', timeout=timeout)
+    def position(self, device: Renderer, *, timeout: float | None = None,
+                 cancel: ActiveStream | None = None) -> tuple[float, float, str]:
+        result = self.soap(device, 'GetPositionInfo', timeout=timeout, cancel=cancel)
         if not result:
             return 0.0, 0.0, ''
         try:
@@ -1207,23 +1243,26 @@ class Bridge:
         raise HTTPFailure(503, 'The renderer did not answer in time; try again')
 
     def _read_by(self, deadline: float, read, device: Renderer):
-        """`read(device, timeout=...)` on a reader thread, waited for only
-        until `deadline`; None if it has not answered by then. The timeout
-        alone bounds each socket operation, not the read: a renderer sending
-        its answer a byte at a time could hold it far longer. The abandoned
-        thread ends on its own; SESSION_READERS caps how many can linger."""
+        """`read(device, timeout=..., cancel=...)` on a reader thread,
+        waited for only until `deadline`; None if it has not answered by then.
+        The timeout alone bounds each socket operation, not the read: a
+        renderer sending its answer a byte at a time could hold it far longer.
+        So at the deadline its connection is closed: the reader ends at once
+        and its SESSION_READERS slot is free for the next lookup."""
         remaining = deadline - time.monotonic()
         if remaining <= 0 or not self._session_readers.acquire(timeout=remaining):
             return None
-        answer = []
+        answer, cancel = [], ActiveStream()
         def run():
             try:
-                answer.append(read(device, timeout=max(0.05, deadline - time.monotonic())))
+                answer.append(read(device, timeout=max(0.05, deadline - time.monotonic()), cancel=cancel))
             finally:
                 self._session_readers.release()
         reader = threading.Thread(target=run, daemon=True, name='session-read')
         reader.start()
         reader.join(max(0.0, deadline - time.monotonic()))
+        if not answer:
+            cancel.cancel()
         return answer[0] if answer else None
 
     @staticmethod
@@ -1643,7 +1682,8 @@ class BridgeHandler(BaseHTTPRequestHandler):
 
     def discard_body(self) -> None:
         """Read and drop the body of a request refused before reading it
-        (e.g. a cross-site POST), so the refusal reaches the client."""
+        (e.g. a cross-site POST), so the refusal reaches the client: what
+        arrives within DISCARD_BUDGET, never more, never waiting longer."""
         if self.body_read:
             return
         try:
@@ -1653,11 +1693,23 @@ class BridgeHandler(BaseHTTPRequestHandler):
         if not 0 < n <= DISCARD_LIMIT:
             return  # nothing to read, or too much to bother: the client may see a reset
         self.body_read = True
-        while n > 0:
-            chunk = self.rfile.read(min(n, SOCKET_CHUNK))
-            if not chunk:
-                return
-            n -= len(chunk)
+        self.close_connection = True
+        deadline = time.monotonic() + DISCARD_BUDGET
+        try:
+            while n > 0:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return  # incomplete: answer now (the client may see a reset)
+                self.connection.settimeout(remaining)
+                # read1: what has arrived, at most one socket read; never waits for all n.
+                chunk = self.rfile.read1(min(n, SOCKET_CHUNK))
+                if not chunk:
+                    return
+                n -= len(chunk)
+        except OSError:
+            return  # nothing more within the budget
+        finally:
+            self.connection.settimeout(self.timeout)
 
     def dispatch_control(self):
         bridge = self.server.bridge

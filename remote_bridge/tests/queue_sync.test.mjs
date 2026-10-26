@@ -14,12 +14,16 @@ class FakeBridge {
     this.session = session;
     this.posts = [];
     this.beforePost = null; // runs before a POST is handled (another page's edit landing first)
+    this.locked = false; // true: edits need this browser session's administrator unlock
   }
   get() {
     return this.session ? structuredClone(this.session) : { active: false };
   }
   post(body) {
     this.posts.push(body);
+    if (this.locked) {
+      return [403, { code: 'admin_password_required', error: 'Unlock administrator access for this session.' }];
+    }
     if (this.beforePost) {
       const hook = this.beforePost;
       this.beforePost = null;
@@ -43,7 +47,7 @@ function element() {
 }
 
 function page({ queue = [5, 6, 7], index = 0, current = 5, casting = true, session = null, bridge = null,
-  managementFetch = null, hang = () => false, stallBody = () => false, fastTimers = false } = {}) {
+  ensureAdminSession = null, hang = () => false, stallBody = () => false, fastTimers = false } = {}) {
   const calls = [];
   const played = [];
   const zones = [];
@@ -108,7 +112,7 @@ function page({ queue = [5, 6, 7], index = 0, current = 5, casting = true, sessi
       return respond(200, { success: true });
     },
   };
-  if (managementFetch) context.managementFetch = (url, init) => managementFetch(context.fetch, url, init);
+  if (ensureAdminSession) context.ensureAdminSession = ensureAdminSession;
   context.window = context;
   vm.createContext(context);
   vm.runInContext(SOURCE, context);
@@ -361,21 +365,114 @@ test('an edit is merged across the bridge\'s own advance', async () => {
   assert.equal(bridge.session.track_id, 6);
 });
 
-test('a cancelled administrator prompt is not repeated for the same edit', async () => {
-  let prompts = 0;
-  const managementFetch = async (fetch, url, init) => {
-    prompts += 1;
-    return { ok: false, status: 403, adminCancelled: true, json: async () => ({ code: 'admin_password_required' }) };
+// Velvet's ensureAdminSession() as a person answers it: `answer(true|false)`
+// when they unlock or cancel, however long after it opened.
+function adminDialog() {
+  const dialog = { opened: 0, answer: null };
+  dialog.ensureAdminSession = () => {
+    dialog.opened += 1;
+    return new Promise(resolve => { dialog.answer = resolve; });
   };
-  const { api, state } = page({ session: { ...advanced, track_id: 5, queue_index: 0, revision: 0 }, managementFetch });
+  return dialog;
+}
+
+const lockedSession = { ...advanced, track_id: 5, queue_index: 0, revision: 0 };
+
+test('the admin dialog may stay open past the request timeout: one authorized post after unlock', async () => {
+  const dialog = adminDialog();
+  const bridge = new FakeBridge(lockedSession);
+  bridge.locked = true;
+  const { api, state, posts } = page({ bridge, fastTimers: true, ensureAdminSession: dialog.ensureAdminSession });
   await api.sync();
   state.repeatMode = 'all';
+  const editing = api.sync(); // posts, is refused for admin access, opens the dialog
+  await settle();
+  assert.equal(dialog.opened, 1);
+  for (let i = 0; i < 5; i++) { // many request timeouts and sync ticks while the person types
+    await api.sync();
+    await settle();
+  }
+  assert.equal(posts().length, 1, 'something was posted while the dialog was open');
+  assert.equal(dialog.opened, 1, 'the dialog was opened again');
+  bridge.locked = false; // unlocked: the browser now has the admin cookie
+  dialog.answer(true);
+  await editing;
+  await settle(); // the edit goes again, as one new request
+  assert.equal(posts().length, 2);
+  assert.equal(bridge.session.repeat, 'all');
+  assert.equal(bridge.session.revision, 1, 'applied more than once');
   await api.sync();
   await api.sync();
-  assert.equal(prompts, 1);
+  assert.equal(posts().length, 2);
+});
+
+test('a cancelled admin dialog sends nothing more, and opens again only for another edit', async () => {
+  const dialog = adminDialog();
+  const bridge = new FakeBridge(lockedSession);
+  bridge.locked = true;
+  const { api, state, posts, context } = page({ bridge, fastTimers: true, ensureAdminSession: dialog.ensureAdminSession });
+  await api.sync();
+  state.repeatMode = 'all';
+  const editing = api.sync();
+  await settle();
+  dialog.answer(false); // Cancel, long after it opened
+  await editing;
+  for (let i = 0; i < 3; i++) { // not awaited: a reopened dialog would wait for ever
+    api.sync();
+    await settle();
+  }
+  assert.equal(posts().length, 1);
+  assert.equal(dialog.opened, 1);
+  assert.equal(bridge.session.repeat, 'none');
+  assert.equal(state.repeatMode, 'none', 'the cancelled edit is still shown'); // dropped: the bridge's repeat again
+  assert.match(context.toasts.join(), /not saved/);
   state.repeatMode = 'one'; // another edit: ask again
+  const again = api.sync(); // waits for the person, as long as it takes
+  await settle();
+  assert.equal(dialog.opened, 2);
+  dialog.answer(false);
+  await again;
+});
+
+test('after a Cancel, the bridge moving on does not bring the dialog back', async () => {
+  const dialog = adminDialog();
+  const bridge = new FakeBridge(lockedSession);
+  bridge.locked = true;
+  const { api, state, posts } = page({ bridge, fastTimers: true, ensureAdminSession: dialog.ensureAdminSession });
   await api.sync();
-  assert.equal(prompts, 2);
+  state.repeatMode = 'all';
+  const editing = api.sync();
+  await settle();
+  dialog.answer(false);
+  await editing;
+  bridge.edit({ track_id: 6, queue_index: 1 }); // the bridge's own advance: a new revision
+  for (let i = 0; i < 3; i++) { // not awaited: a reopened dialog would wait for ever
+    api.sync();
+    await settle();
+  }
+  assert.equal(state.currentTrack.id, 6); // followed
+  assert.equal(dialog.opened, 1);
+  assert.equal(posts().length, 1);
+});
+
+test('after a long admin dialog the edit goes against the revision current by then', async () => {
+  const dialog = adminDialog();
+  const bridge = new FakeBridge({ ...lockedSession, ids: [5, 6, 7, 8] });
+  bridge.locked = true;
+  const { api, state, posts } = page({ queue: [5, 6, 7, 8], bridge, fastTimers: true,
+    ensureAdminSession: dialog.ensureAdminSession });
+  await api.sync();
+  state.repeatMode = 'all';
+  const editing = api.sync();
+  await settle();
+  bridge.edit({ ids: [5, 6, 8] }); // another device removed track 7 meanwhile
+  bridge.locked = false;
+  dialog.answer(true);
+  await editing;
+  await settle();
+  assert.deepEqual(posts().map(p => JSON.parse(p.init.body).expected_revision), [0, 1]);
+  assert.deepEqual(bridge.session.ids, [5, 6, 8]); // the other device's edit kept
+  assert.equal(bridge.session.repeat, 'all'); // this page's edit applied
 });
 
 // ── Review 7 / P1: another device's Stop is final on every page ──
@@ -472,12 +569,10 @@ test('a session answer whose body stalls is abandoned, and the next sync goes ah
   assert.equal(state.currentTrack.id, 6);
 });
 
-test('a queue post whose answer body stalls (even through managementFetch) is abandoned, then sent again', async () => {
+test('a queue post whose answer body stalls is abandoned, then sent again', async () => {
   let stalled = true;
-  // Velvet's managementFetch puts its own signal on the request: ours cannot cancel that body.
-  const managementFetch = (fetch, url, init) => fetch(url, { ...init, signal: new AbortController().signal });
   const { api, state, posts, bridge } = page({ session: { ...advanced, track_id: 5, queue_index: 0, revision: 0 },
-    fastTimers: true, managementFetch, stallBody: path => stalled && path.startsWith('/api/bridge/queue/') });
+    fastTimers: true, stallBody: path => stalled && path.startsWith('/api/bridge/queue/') });
   await api.sync();
   state.repeatMode = 'all';
   await api.sync();

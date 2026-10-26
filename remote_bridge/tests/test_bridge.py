@@ -389,6 +389,59 @@ class ServerFixture(unittest.TestCase):
                 return type(exc).__name__, time.monotonic() - started
         return answer.split(b'\r\n', 1)[0].decode(), time.monotonic() - started
 
+    def handler_threads(self):
+        return [t for t in threading.enumerate() if 'process_request_thread' in t.name]
+
+    def refused_partial_post(self, length, pieces, gap):
+        """A cross-site POST claiming `length` bytes of body, then sending
+        `pieces` one byte every `gap` seconds, the answer read as it comes.
+        Returns (first line of the answer or the error, seconds until the
+        bridge answered or closed)."""
+        head = (f'POST /api/cast/{self.UDN} HTTP/1.1\r\nHost: 127.0.0.1:{self.control.server_port}\r\n'
+                f'Origin: https://evil.example\r\nContent-Type: application/json\r\n'
+                f'Content-Length: {length}\r\n\r\n').encode()
+        stop = threading.Event()
+        started = time.monotonic()
+        with socket.create_connection(('127.0.0.1', self.control.server_port), timeout=10) as sock:
+            def send():
+                with contextlib.suppress(OSError):
+                    sock.sendall(head)
+                    for _ in range(pieces):
+                        if stop.is_set():
+                            return
+                        sock.sendall(b'x')
+                        time.sleep(gap)
+            sender = threading.Thread(target=send, daemon=True)
+            sender.start()
+            answer = b''
+            try:
+                while chunk := sock.recv(65536):
+                    answer += chunk
+                result = answer.split(b'\r\n', 1)[0].decode()
+            except OSError as exc:
+                result = type(exc).__name__
+            took = time.monotonic() - started
+            stop.set()
+            sender.join(5)
+        return result, took, answer
+
+    def test_refused_post_sending_one_byte_of_its_body_is_answered_within_the_budget(self):
+        baseline = len(self.handler_threads())
+        result, took, answer = self.refused_partial_post(300_000, pieces=1, gap=0)
+        self.assertEqual(result, 'HTTP/1.0 403 Forbidden')
+        self.assertIn(b'Cross-site modification is blocked', answer)  # the usual JSON refusal
+        self.assertLess(took, bridge.DISCARD_BUDGET + 1.0)  # not REQUEST_TIMEOUT (30 s)
+        self.wait_for(lambda: len(self.handler_threads()) <= baseline, 'the handler thread is still busy', 2)
+
+    def test_refused_post_dripping_its_body_is_cut_off_within_the_budget(self):
+        baseline = len(self.handler_threads())
+        # One byte every 20 ms for 10 s: every read gets data within any per-read
+        # timeout, the body never completes; only the overall budget ends it.
+        result, took, _ = self.refused_partial_post(300_000, pieces=500, gap=0.02)
+        self.assertIn(result, ('HTTP/1.0 403 Forbidden', 'ConnectionResetError', 'ConnectionAbortedError'))
+        self.assertLess(took, bridge.DISCARD_BUDGET + 1.0)
+        self.wait_for(lambda: len(self.handler_threads()) <= baseline, 'the handler thread is still busy', 2)
+
     def test_refused_post_with_a_large_body_still_gets_its_answer(self):
         # 300 KB: more than the request reader buffers, so some is still unread
         # in the socket when the refusal is sent. Without reading it first,
@@ -918,9 +971,9 @@ class ServerFixture(unittest.TestCase):
                 elif action == 'Stop':
                     self.state = 'STOPPED'
                 return b'<ok/>'
-            def transport(self, device, timeout=None):
+            def transport(self, device, timeout=None, cancel=None):
                 return self.state
-            def read_position(self, device, timeout=None):
+            def read_position(self, device, timeout=None, cancel=None):
                 return self.position, self.duration, self.uri
             def playing(self, position, duration):
                 self.state, self.position, self.duration = 'PLAYING', position, duration
@@ -1583,7 +1636,7 @@ class ServerFixture(unittest.TestCase):
             self.core.snapshots.clear()  # no fresh monitor read: the lookup asks the renderer
         entered, release = threading.Event(), threading.Event()
         real_transport = renderer.transport
-        def transport(device, timeout=None):
+        def transport(device, timeout=None, cancel=None):
             if not release.is_set():
                 entered.set()
                 release.wait(10)
@@ -1631,15 +1684,15 @@ class ServerFixture(unittest.TestCase):
         def silent(timeout):
             waits.append(bridge.SOAP_TIMEOUT if timeout is None else timeout)
             time.sleep(waits[-1])
-        def soap(device, action, values=None, timeout=None):
+        def soap(device, action, values=None, timeout=None, cancel=None):
             silent(timeout)
             return None
-        def transport(device, timeout=None):
+        def transport(device, timeout=None, cancel=None):
             if answers_transport:
                 return 'PLAYING'
             silent(timeout)
             return 'UNKNOWN'
-        def position(device, timeout=None):
+        def position(device, timeout=None, cancel=None):
             silent(timeout)
             return 0.0, 0.0, ''
         for name, fake in (('soap', soap), ('transport', transport), ('position', position)):
@@ -1694,12 +1747,14 @@ class ServerFixture(unittest.TestCase):
 
     # ── Review 9 / P2: the lookup deadline holds against a renderer that drips its answer ──
 
-    def dripping_renderer(self, gap=0.1):
+    def dripping_renderer(self, gap=0.1, behaviour=None):
         """A real HTTP renderer that sends its whole answer, status line and
         headers included, one byte every `gap` seconds (about 8 s): each byte
         well inside any socket timeout, the answer far past it. (A dripped
-        body alone would not do: read(amt) returns with the first bytes.)"""
+        body alone would not do: read(amt) returns with the first bytes.)
+        With `behaviour['drip']` false it answers at once, as a healthy one."""
         stop, asked = threading.Event(), []
+        behaviour = {'drip': True} if behaviour is None else behaviour
         class Drip(socketserver.BaseRequestHandler):
             def handle(self):
                 asked.append(1)
@@ -1708,6 +1763,20 @@ class ServerFixture(unittest.TestCase):
                 with contextlib.suppress(OSError):
                     while b'\r\n\r\n' not in data:
                         data += self.request.recv(4096)
+                    if not behaviour['drip']:
+                        # The whole request first: closing on unread data resets the connection.
+                        length = int(re.search(rb'(?i)content-length:\s*(\d+)', data).group(1))
+                        while len(data.split(b'\r\n\r\n', 1)[1]) < length:
+                            data += self.request.recv(4096)
+                        # One root element, as a real SOAP envelope.
+                        body = b'<Envelope>%s</Envelope>' % (
+                            b'<CurrentTransportState>PLAYING</CurrentTransportState>'
+                            if b'GetTransportInfo' in data else
+                            b'<RelTime>0:00:42</RelTime><TrackDuration>0:03:20</TrackDuration>'
+                            b'<TrackURI>http://127.0.0.1/media/loaded/5.flac</TrackURI>')
+                        self.request.sendall(b'HTTP/1.1 200 OK\r\nContent-Type: text/xml\r\n'
+                                             b'Content-Length: %d\r\nConnection: close\r\n\r\n' % len(body) + body)
+                        return
                     answer = (b'HTTP/1.1 200 OK\r\nContent-Type: text/xml\r\nConnection: close\r\n\r\n'
                               b'<CurrentTransportState>PLAYING</CurrentTransportState>')
                     for byte in answer[:80]:
@@ -1743,6 +1812,33 @@ class ServerFixture(unittest.TestCase):
                 # urllib's timeout covers each socket operation: on its own this read ran ~8 s.
                 self.assertLess(took, 1.5)
         self.assertGreaterEqual(len(asked), 1, 'the renderer was never asked')
+
+    # ── Review 10 / P2: four slow renderer reads do not lock out a recovered renderer ──
+
+    def test_renderer_recovering_after_four_dripping_reads_is_read_at_once(self):
+        behaviour = {'drip': True}
+        device, asked = self.dripping_renderer(behaviour=behaviour)
+        with self.core.lock:
+            self.core.devices[self.UDN] = device
+            self.core.sessions[self.UDN] = bridge.QueueSession(
+                ids=(5,), index=0, repeat='none', credential=CREDENTIAL, token='loaded', track_id=5)
+        self.addCleanup(self.core.devices.__setitem__, self.UDN, self.renderer)
+        readers = lambda: [t for t in threading.enumerate() if t.name == 'session-read']
+        with patch.object(bridge, 'SESSION_READ_BUDGET', 0.8):
+            for _ in range(bridge.SESSION_READERS):  # as many abandoned reads as there are slots
+                status, _, _ = self.request(f'/api/bridge/session/{self.UDN}', headers={'X-API-Key': CREDENTIAL})
+                self.assertEqual(status, 503)
+                # Its connection was closed at the deadline: the reader is gone, its slot free.
+                self.wait_for(lambda: not readers(), 'a reader outlived its deadline', timeout=1.0)
+            self.assertEqual(len(asked), bridge.SESSION_READERS)
+            behaviour['drip'] = False  # the EXN100 answers normally again
+            started = time.monotonic()
+            status, _, data = self.request(f'/api/bridge/session/{self.UDN}', headers={'X-API-Key': CREDENTIAL})
+            took = time.monotonic() - started
+        answer = json.loads(data)
+        self.assertEqual(status, 200, answer)
+        self.assertEqual((answer['state'], answer['position']), ('PLAYING', 42.0))
+        self.assertLess(took, 0.8)
 
 class ReviewP1UnitTests(unittest.TestCase):
     CFG = dict(upstream_url='http://100.100.100.100:8765', control_bind='100.80.1.2', control_port=8877,

@@ -47,6 +47,10 @@ const session = async () => (await fetch(`${BASE}/api/bridge/session/${UDN}`)).j
 const events = async () => (await fetch(LOG)).json();
 const loads = async () => (await events()).filter(e => e.event === 'load').map(e => e.title);
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+const NEXT_REPEAT = { none: 'all', all: 'one', one: 'none' }; // Velvet's repeat button cycle
+// queue_sync.js abandons a bridge request after this long (REQUEST_MS).
+const REQUEST_MS = 6000;
+const dialogOpen = page => page.evaluate(() => Boolean(document.getElementById('admin-verification')));
 
 // What a page shows: its queue (track ids), current track, repeat mode, zone.
 const view = page => page.evaluate(() => ({
@@ -131,25 +135,56 @@ try {
   t = await until(async () => { const v = await view(tablet.page); return same(v.ids, withoutThree) && v; });
   check('tablet: takes in the removal while the same song plays on', t && t.current === 1, await view(tablet.page));
 
-  // The tablet's own edit needs its own admin unlock (another browser session).
+  // ── Review 10 / P1-1: the tablet's own edit needs its own admin unlock, and
+  // the person may take longer than the 6 s request timeout to answer ──
+  const unedited = await session();
   await tablet.page.click('#btn-repeat'); // all -> one
-  check('tablet: its first edit opens Velvet\'s admin dialog (not a silent failure)', await unlockIfAsked(tablet.page, 6000));
+  const opened = await tablet.page.waitForSelector('#admin-verification-password', { timeout: 6000 }).catch(() => null);
+  check('tablet: its first edit opens Velvet\'s admin dialog (not a silent failure)', opened);
+  await sleep(REQUEST_MS + 1500); // the person is slow
+  s = await session();
+  check('tablet: dialog still open after the request timeout, nothing sent meanwhile',
+    await dialogOpen(tablet.page) && same(tablet.queuePosts, [403]) && s.repeat === 'all',
+    { posts: tablet.queuePosts, session: s });
+  await tablet.page.click('#admin-verification-cancel');
+  await sleep(REQUEST_MS); // three sync cycles and a request timeout
+  s = await session();
+  // The long dialog may have outlasted the song: an advance changes the revision, never the dialog.
+  check('tablet: after Cancel no edit, no second dialog, no late post',
+    !(await dialogOpen(tablet.page)) && same(tablet.queuePosts, [403])
+    && s.repeat === 'all' && s.ids.length === unedited.ids.length, { posts: tablet.queuePosts, session: s });
+  check('tablet: the cancelled edit is dropped, Repeat All shown again', (await view(tablet.page)).repeat === 'all',
+    await view(tablet.page));
+
+  await tablet.page.click('#btn-repeat'); // all -> one: another edit, asked again
+  await tablet.page.waitForSelector('#admin-verification-password', { timeout: 6000 });
+  await sleep(REQUEST_MS + 1500);
+  check('tablet: second dialog also held past the timeout with nothing sent',
+    await dialogOpen(tablet.page) && same(tablet.queuePosts, [403, 403]) && (await session()).repeat === 'all',
+    tablet.queuePosts);
+  await unlock(tablet.page);
   s = await until(async () => { const x = await session(); return x.repeat === 'one' && x; });
-  check('tablet: repeat toggle (after its unlock) reaches the bridge', s, await session());
+  check('tablet: after the unlock exactly one authorized edit reaches the bridge',
+    s && same(tablet.queuePosts, [403, 403, 200]),
+    { posts: tablet.queuePosts, session: await session() });
+  await sleep(4500);
+  check('tablet: no late or repeated post after it', same(tablet.queuePosts, [403, 403, 200])
+    && (await session()).repeat === 'one' && !(await dialogOpen(tablet.page)), tablet.queuePosts);
   check('tablet: its toggle did not bring the removed track back', s && same(s.ids, withoutThree), s);
 
   // ── Both edit at once: phone shuffles, tablet toggles repeat ──
-  await Promise.all([phone.page.click('#btn-shuffle'), tablet.page.click('#btn-repeat')]); // one -> none
+  const target = NEXT_REPEAT[(await view(tablet.page)).repeat];
+  await Promise.all([phone.page.click('#btn-shuffle'), tablet.page.click('#btn-repeat')]);
   const shuffled = (await view(phone.page)).ids;
   const converged = await until(async () => {
     const [x, p, q] = [await session(), await view(phone.page), await view(tablet.page)];
-    return x.repeat === 'none' && same(x.ids, shuffled) && same(p.ids, x.ids) && same(q.ids, x.ids)
-      && p.repeat === 'none' && q.repeat === 'none' && x;
+    return x.repeat === target && same(x.ids, shuffled) && same(p.ids, x.ids) && same(q.ids, x.ids)
+      && p.repeat === target && q.repeat === target && x;
   }, 10000);
   check('simultaneous shuffle (phone) and repeat (tablet): both kept, both pages agree', converged,
     { session: await session(), phone: await view(phone.page), tablet: await view(tablet.page) });
   check('no device was refused for admin access after unlocking',
-    !phone.queuePosts.includes(403) && tablet.queuePosts.filter(code => code === 403).length <= 1,
+    !phone.queuePosts.includes(403) && tablet.queuePosts.filter(code => code === 403).length === 2,
     { phone: phone.queuePosts, tablet: tablet.queuePosts });
 
   // ── P1-4: the bridge's own advance follows the edited queue ──
@@ -167,7 +202,8 @@ try {
     s = await session();
   }
   const next = s.ids[s.queue_index + 1];
-  const advanced = await until(async () => { const x = await session(); return x.track_id !== 1 && x; }, 40000);
+  const ending = s.track_id;
+  const advanced = await until(async () => { const x = await session(); return x.track_id !== ending && x; }, 40000);
   check('auto-next plays the next track of the edited queue', advanced && advanced.track_id === next,
     { expected: next, session: advanced });
   check('the removed track was never loaded', !(await loads()).includes('Song 3'), await loads());
@@ -178,7 +214,7 @@ try {
   check('both pages follow the advance', follows, { phone: await view(phone.page), tablet: await view(tablet.page) });
 
   // ── Reviewer's P1-2 regression: Repeat All, cold reload, wraps after the last song ──
-  await phone.page.click('#btn-repeat'); // none -> all
+  for (let i = 0; i < 3 && (await view(phone.page)).repeat !== 'all'; i++) await phone.page.click('#btn-repeat');
   s = await until(async () => { const x = await session(); return x.repeat === 'all' && x; });
   check('phone: Repeat All set again', s, await session());
   await phone.page.reload();

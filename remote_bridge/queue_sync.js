@@ -88,10 +88,9 @@
 
   // `read(await send(url, init))`, abandoned after REQUEST_MS: the request
   // and its response body together, so a response that stalls after its
-  // headers never holds the sync loop either. Racing the timer as well as
-  // aborting: Velvet's managementFetch puts its own signal on the request
-  // (it takes its timeout as a third argument, and waits for an admin
-  // password prompt in between), and that one no longer covers the body.
+  // headers never holds the sync loop either. The signal aborts the request;
+  // the race also covers a body read the abort cannot reach. Only network
+  // phases are timed: never a person (see the administrator dialog below).
   async function within(send, url, init, read) {
     const controller = new AbortController();
     let timer;
@@ -101,7 +100,7 @@
         reject(new Error('The bridge did not answer in time'));
       }, REQUEST_MS);
     });
-    const work = (async () => read(await send(url, { ...init, signal: controller.signal }, REQUEST_MS)))();
+    const work = (async () => read(await send(url, { ...init, signal: controller.signal })))();
     work.catch(() => {}); // settles after the timeout: nobody is waiting for it
     try {
       return await Promise.race([work, expired]);
@@ -324,7 +323,6 @@
   }
 
   let seenSkips = '';
-  let refused = ''; // an edit whose administrator prompt the user cancelled
   let resyncing = false; // the last post was refused (409): no second immediate retry
   let busy = false;
 
@@ -389,23 +387,32 @@
       if (!state.currentTrack || state.currentTrack.id !== session.track_id) return; // ours is on its way
       const queue = queueFor(session.track_id);
       if (!queue || (sameIds(queue.ids, base.ids) && queue.repeat === base.repeat)) return;
-      const signature = JSON.stringify([udn, base.revision, queue]);
-      if (signature === refused) return;
-      // Velvet's managementFetch asks for the administrator password if this
-      // browser session has not unlocked it yet, then sends again.
-      const send = typeof managementFetch === 'function' ? managementFetch : realFetch;
-      const { sent, answer } = await within(send, `/api/bridge/queue/${udn}`, {
+      // One network request, timed as a whole, and abandoned for good on a
+      // timeout (its own signal is aborted). The administrator password
+      // dialog, which waits for a person, comes after it and outside any
+      // timeout; this sync stays busy meanwhile, so nothing else is sent, and
+      // once unlocked the edit goes again as a new request against the
+      // revision current by then.
+      const { status, answer } = await within(realFetch, `/api/bridge/queue/${udn}`, {
         method: 'POST',
         headers: headers({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({ track_id: session.track_id, ...queue, expected_revision: base.revision }),
-      }, async response => ({ sent: response, answer: response.ok ? await response.json() : null }));
-      const conflicted = sent.status === 409;
-      if (answer) {
-        if (answer.success) base = { udn, revision: answer.revision, ids: queue.ids, repeat: queue.repeat };
+      }, async response => ({ status: response.status, answer: await response.json().catch(() => null) }));
+      const conflicted = status === 409;
+      if (status === 200) {
+        if (answer && answer.success) base = { udn, revision: answer.revision, ids: queue.ids, repeat: queue.repeat };
       } else if (conflicted && !resyncing) {
         setTimeout(sync, 0); // a change from elsewhere came first: merge it now (once; then every SYNC_MS)
-      } else if (sent.adminCancelled) {
-        refused = signature; // ask again only for another edit
+      } else if (status === 403 && answer && answer.code === 'admin_password_required') {
+        // Velvet's own dialog (one at a time, shared with its other requests).
+        if (typeof ensureAdminSession === 'function' && await ensureAdminSession()) {
+          setTimeout(sync, 0);
+        } else {
+          // Cancelled: the edit is dropped, and the page shows the bridge's
+          // queue and repeat again, so nothing is left to send or ask about.
+          applyQueue(reconcile(null, null, session), queue);
+          if (typeof showToast === 'function') showToast('Queue change not saved: administrator access is needed', 5000);
+        }
       }
       resyncing = conflicted;
     } catch {

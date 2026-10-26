@@ -1,5 +1,49 @@
 # Velvet Remote Bridge — Validation
 
+## 0.1.11 (tenth review: two P1 + P2) — 2026-10-26
+
+- `run_tests.bat --no-pause`: **106 Python + 33 Node, ALL TESTS PASSED, exit 0**; Python suite 10 consecutive full runs clean; `tests/manual_e2e_real_main.py`:
+  **20/20**; two-device admin browser run: **39/39 in three runs on fresh stacks**. Repository suites: frontend Node 23/23 (`frontend-contract` from a path
+  without spaces); pytest 568 passed in both runs this time. Not consistently green
+  overall: in 0.1.10 two of four runs had 1-2 failures in
+  `test_tailscale_proxy_security` (see there); this PR does not touch that code.
+- **P1-1 the administrator dialog is not timed.** 0.1.10 posted queue edits through Velvet's
+  `managementFetch` inside the 6 s timed window; that call waits for the person's password
+  dialog, so a slow person made the sync give up while the abandoned call later posted the
+  edit anyway (its own signal replaces ours), with retries and 409s in between. Now the
+  queue post is one plain request, timed and truly aborted on timeout; a `403
+  admin_password_required` answer then calls Velvet's `ensureAdminSession()` outside any
+  timeout, the sync staying busy (nothing else is sent, the dialog is not reopened). Unlocked:
+  the edit goes again as one new request against the revision current by then. Cancelled:
+  the edit is dropped and the page shows the bridge's queue and repeat again with a toast,
+  so nothing is pending (0.1.10's "don't ask again" guard was keyed on the revision, and the
+  browser run showed the bridge's next advance reopening the dialog for the same edit).
+  Node (dialog answered whenever the test says): open past many request timeouts and sync
+  ticks: one post (403), one dialog, then after unlock exactly one more post, applied once;
+  Cancel: nothing more sent, the edit undone on the page, a new edit asks again; after a
+  Cancel the bridge's advance is followed without a new dialog; another device's edit during
+  the dialog is kept and the post uses the new revision. Mutations: dialog back inside the
+  timed request (4 fail), no retry after unlock (2), Cancel keeping the edit (2).
+  Browser (Velvet's real dialog on the tablet): held open 7.5 s past the 6 s timeout,
+  nothing sent but the one refused post; Cancel: no edit, no second dialog, no late post for
+  6 s, Repeat All shown again; a second edit, dialog held 7.5 s, unlock: exactly one
+  authorized post (`403, 403, 200`), none later.
+- **P1-2 a refused request's body is drained within a budget.** `discard_body()` reads
+  only what arrives within `DISCARD_BUDGET` (0.5 s, all reads together; `read1` with the
+  socket timeout set to the time left), then answers and closes; a body still incomplete
+  is not waited for (that client may see a reset). Raw-socket tests: 1 byte of a claimed
+  300 KB -> JSON 403 well within the budget, handler thread gone; a body dripping one byte
+  every 20 ms for 10 s -> answered/closed within the budget, handler thread gone; a full
+  300 KB body -> 403 (as in 0.1.10). Mutations: no budget (both partial tests fail),
+  per-read timeout without the overall deadline (the drip test fails).
+- **P2 recovery after slow renderer reads.** A session lookup's renderer read now uses a
+  SOAP exchange whose socket the lookup closes at its deadline (`upnp_post_cancellable`,
+  the `ActiveStream` close used for media relays), so the reader thread ends at once and its
+  `SESSION_READERS` slot is free. Test: four lookups against a renderer dripping its answer
+  (as many as there are slots), each 503 with its reader gone within 1 s; the renderer then
+  answers normally and the next lookup gets 200 (`PLAYING`, 42 s) in < 0.8 s. Mutation,
+  not closing at the deadline: the recovered renderer's lookup fails (503).
+
 ## 0.1.10 (intermittent cross-site test) — 2026-10-26
 
 - `run_tests.bat --no-pause`: **103 Python + 30 Node, ALL TESTS PASSED, exit 0**; Python suite **15 consecutive full runs clean** (the old
