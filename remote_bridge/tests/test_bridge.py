@@ -9,6 +9,7 @@ import re
 import os
 from pathlib import Path
 import socket
+import socketserver
 import subprocess
 import sys
 import tempfile
@@ -1650,6 +1651,58 @@ class ServerFixture(unittest.TestCase):
         status, answer, took = self.timed_session_read()
         self.assertEqual((status, answer), (200, {'active': False}))
         self.assertLess(took, 0.5)  # nothing left to ask the renderer
+
+    # ── Review 9 / P2: the lookup deadline holds against a renderer that drips its answer ──
+
+    def dripping_renderer(self, gap=0.1):
+        """A real HTTP renderer that sends its whole answer, status line and
+        headers included, one byte every `gap` seconds (about 8 s): each byte
+        well inside any socket timeout, the answer far past it. (A dripped
+        body alone would not do: read(amt) returns with the first bytes.)"""
+        stop, asked = threading.Event(), []
+        class Drip(socketserver.BaseRequestHandler):
+            def handle(self):
+                asked.append(1)
+                self.request.settimeout(5)
+                data = b''
+                with contextlib.suppress(OSError):
+                    while b'\r\n\r\n' not in data:
+                        data += self.request.recv(4096)
+                    answer = (b'HTTP/1.1 200 OK\r\nContent-Type: text/xml\r\nConnection: close\r\n\r\n'
+                              b'<CurrentTransportState>PLAYING</CurrentTransportState>')
+                    for byte in answer[:80]:
+                        if stop.is_set():
+                            break
+                        self.request.sendall(bytes([byte]))
+                        time.sleep(gap)
+        # Not 127.0.0.1: that is this test bridge's own LAN IP, never a renderer.
+        server = socketserver.ThreadingTCPServer(('127.0.0.2', 0), Drip)
+        server.daemon_threads = True
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        def close():
+            stop.set()
+            server.shutdown()
+            server.server_close()
+        self.addCleanup(close)
+        return bridge.Renderer(self.UDN, 'EXN100 Living Room', '127.0.0.2',
+                               f'http://127.0.0.2:{server.server_address[1]}/ctl'), asked
+
+    def test_renderer_dripping_its_answer_cannot_outlast_the_session_deadline(self):
+        device, asked = self.dripping_renderer()
+        with self.core.lock:
+            self.core.devices[self.UDN] = device
+            self.core.sessions[self.UDN] = bridge.QueueSession(
+                ids=(5,), index=0, repeat='none', credential=CREDENTIAL, token='loaded', track_id=5)
+        self.addCleanup(self.core.devices.__setitem__, self.UDN, self.renderer)
+        with patch.object(bridge, 'SESSION_READ_BUDGET', 0.8):
+            for _ in range(2):  # and again while the first abandoned read still drips
+                started = time.monotonic()
+                status, _, data = self.request(f'/api/bridge/session/{self.UDN}', headers={'X-API-Key': CREDENTIAL})
+                took = time.monotonic() - started
+                self.assertEqual(status, 503, data)
+                # urllib's timeout covers each socket operation: on its own this read ran ~8 s.
+                self.assertLess(took, 1.5)
+        self.assertGreaterEqual(len(asked), 1, 'the renderer was never asked')
 
 class ReviewP1UnitTests(unittest.TestCase):
     CFG = dict(upstream_url='http://100.100.100.100:8765', control_bind='100.80.1.2', control_port=8877,

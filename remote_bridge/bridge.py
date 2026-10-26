@@ -92,6 +92,9 @@ SOAP_TIMEOUT = 8
 # together: a page syncs every 2 s and asks again, so a renderer that does not
 # answer gets a quick 503, not up to 3 x 2 x SOAP_TIMEOUT of waiting.
 SESSION_READ_BUDGET = 2.5
+# Renderer reads of session lookups that may be under way at once (each on
+# its own thread, so a lookup can stop waiting at its deadline).
+SESSION_READERS = 4
 MAX_QUEUE = 5000
 REPEAT_MODES = frozenset({'none', 'all', 'one'})
 MAX_HTML = 4 * 1024 * 1024
@@ -439,6 +442,7 @@ class Bridge:
         self.streams: dict[str, set[ActiveStream]] = {}
         self.peer_streams: dict[str, int] = {}
         self._tailscale_cache: dict[str, tuple[float, dict]] = {}
+        self._session_readers = threading.BoundedSemaphore(SESSION_READERS)
 
     def _tailscale_json(self, *args: str) -> dict:
         """`tailscale <args> --json`, cached briefly ({} if unavailable)."""
@@ -1159,7 +1163,8 @@ class Bridge:
         The renderer is read without the lock; a Stop or a new cast meanwhile
         ends or replaces the session, so the answer is built only if the
         session read is still the renderer's, else the lookup starts again.
-        All renderer reads share SESSION_READ_BUDGET; past it, 503 at once."""
+        All renderer reads share SESSION_READ_BUDGET, a strict deadline: past
+        it, 503 at once, however the renderer answers (see _read_by)."""
         self.authenticate(credential, cookie)
         wanted = udn
         deadline = time.monotonic() + SESSION_READ_BUDGET
@@ -1179,14 +1184,13 @@ class Bridge:
                 # Read of another stream (e.g. the previous track's end, just
                 # before the advance), or old: a reattaching page must show what
                 # plays now.
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    break
-                state = self.transport(device, timeout=remaining)
-                remaining = deadline - time.monotonic()
-                if state == 'UNKNOWN' or remaining <= 0:
+                state = self._read_by(deadline, self.transport, device)
+                if state in (None, 'UNKNOWN'):
                     break  # no answer: not worth a guess at what plays
-                position, _, uri = self.position(device, timeout=remaining)
+                read = self._read_by(deadline, self.position, device)
+                if read is None:
+                    break
+                position, _, uri = read
                 if not uri and state in ('PLAYING', 'PAUSED_PLAYBACK', 'TRANSITIONING'):
                     break  # a loaded stream always has a TrackURI: this read got no answer
             else:
@@ -1197,6 +1201,26 @@ class Bridge:
         # The renderer is not answering, or playback changes faster than it
         # answers: the page asks again on its next sync.
         raise HTTPFailure(503, 'The renderer did not answer in time; try again')
+
+    def _read_by(self, deadline: float, read, device: Renderer):
+        """`read(device, timeout=...)` on a reader thread, waited for only
+        until `deadline`; None if it has not answered by then. The timeout
+        alone bounds each socket operation, not the read: a renderer sending
+        its answer a byte at a time could hold it far longer. The abandoned
+        thread ends on its own; SESSION_READERS caps how many can linger."""
+        remaining = deadline - time.monotonic()
+        if remaining <= 0 or not self._session_readers.acquire(timeout=remaining):
+            return None
+        answer = []
+        def run():
+            try:
+                answer.append(read(device, timeout=max(0.05, deadline - time.monotonic())))
+            finally:
+                self._session_readers.release()
+        reader = threading.Thread(target=run, daemon=True, name='session-read')
+        reader.start()
+        reader.join(max(0.0, deadline - time.monotonic()))
+        return answer[0] if answer else None
 
     @staticmethod
     def _session_answer(udn: str, device: Renderer, session: QueueSession, state: str, position: float) -> dict:

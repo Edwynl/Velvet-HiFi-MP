@@ -2,7 +2,7 @@
 
 **用途：** 父母家的 Velvet 是唯一音乐服务器、唯一搜索索引和唯一 FLAC 文件所在地。你家 Windows 只运行这个轻量 Bridge；iPhone 打开 Bridge 提供的 Velvet 页面，用原来的 Artist / Album / Track 搜索和播放列表，选择本地 Cambridge Audio EXN100 作为输出。**不需要 StreamMagic 整理曲库，不需要 AirPlay，不需要 USB，不复制音乐文件。**
 
-> 版本：0.1.8，测试版。已完成模拟父服务器 / 模拟 DLNA 设备离线测试。**尚未在真实 Windows + Tailscale + EXN100 上验收**。首次播放需要做实体设备测试。
+> 版本：0.1.9，测试版。已完成模拟父服务器 / 模拟 DLNA 设备离线测试。**尚未在真实 Windows + Tailscale + EXN100 上验收**。首次播放需要做实体设备测试。
 
 ## 网络拓扑
 

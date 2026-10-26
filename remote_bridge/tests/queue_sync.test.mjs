@@ -43,7 +43,7 @@ function element() {
 }
 
 function page({ queue = [5, 6, 7], index = 0, current = 5, casting = true, session = null, bridge = null,
-  managementFetch = null, hang = () => false, fastTimers = false } = {}) {
+  managementFetch = null, hang = () => false, stallBody = () => false, fastTimers = false } = {}) {
   const calls = [];
   const played = [];
   const zones = [];
@@ -96,6 +96,10 @@ function page({ queue = [5, 6, 7], index = 0, current = 5, casting = true, sessi
       if (hang(path, init)) {
         // A request nobody answers: it ends only when the caller aborts it.
         return new Promise((_, reject) => init.signal.addEventListener('abort', () => reject(new Error('aborted'))));
+      }
+      if (stallBody(path, init)) {
+        // Headers in, then the body never comes, whatever the signal says.
+        return { ok: true, status: 200, json: () => new Promise(() => {}) };
       }
       if (path === '/api/bridge/session' || path.startsWith('/api/bridge/session/')) return respond(200, bridge.get());
       if (path.startsWith('/api/bridge/queue/')) return respond(...bridge.post(JSON.parse(init.body)));
@@ -452,6 +456,35 @@ test('a queue post that never answers is abandoned, then sent again', async () =
   silent = false;
   await api.sync();
   assert.equal(posts().length, 2);
+  assert.equal(bridge.session.repeat, 'all');
+});
+
+// ── Review 9 / P2: a response whose body stalls after its headers ──
+
+test('a session answer whose body stalls is abandoned, and the next sync goes ahead', async () => {
+  let stalled = true;
+  const { api, state } = page({ session: advanced, fastTimers: true,
+    stallBody: path => stalled && path.startsWith('/api/bridge/session/') });
+  await api.sync(); // returns: the body read is part of the timed request
+  assert.equal(state.currentTrack.id, 5);
+  stalled = false;
+  await api.sync();
+  assert.equal(state.currentTrack.id, 6);
+});
+
+test('a queue post whose answer body stalls (even through managementFetch) is abandoned, then sent again', async () => {
+  let stalled = true;
+  // Velvet's managementFetch puts its own signal on the request: ours cannot cancel that body.
+  const managementFetch = (fetch, url, init) => fetch(url, { ...init, signal: new AbortController().signal });
+  const { api, state, posts, bridge } = page({ session: { ...advanced, track_id: 5, queue_index: 0, revision: 0 },
+    fastTimers: true, managementFetch, stallBody: path => stalled && path.startsWith('/api/bridge/queue/') });
+  await api.sync();
+  state.repeatMode = 'all';
+  await api.sync();
+  assert.equal(posts().length, 1);
+  stalled = false;
+  await api.sync(); // the stalled one changed nothing it knows of: ask again
+  await api.sync();
   assert.equal(bridge.session.repeat, 'all');
 });
 

@@ -86,22 +86,33 @@
     return result;
   }
 
-  // `send(url, init)` abandoned after REQUEST_MS, so a hung request never
-  // stalls the sync loop. Velvet's managementFetch takes its own timeout as a
-  // third argument (it waits for an admin password prompt in between).
-  async function within(send, url, init) {
+  // `read(await send(url, init))`, abandoned after REQUEST_MS: the request
+  // and its response body together, so a response that stalls after its
+  // headers never holds the sync loop either. Racing the timer as well as
+  // aborting: Velvet's managementFetch puts its own signal on the request
+  // (it takes its timeout as a third argument, and waits for an admin
+  // password prompt in between), and that one no longer covers the body.
+  async function within(send, url, init, read) {
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), REQUEST_MS);
+    let timer;
+    const expired = new Promise((_, reject) => {
+      timer = setTimeout(() => {
+        controller.abort();
+        reject(new Error('The bridge did not answer in time'));
+      }, REQUEST_MS);
+    });
+    const work = (async () => read(await send(url, { ...init, signal: controller.signal }, REQUEST_MS)))();
+    work.catch(() => {}); // settles after the timeout: nobody is waiting for it
     try {
-      return await send(url, { ...init, signal: controller.signal }, REQUEST_MS);
+      return await Promise.race([work, expired]);
     } finally {
       clearTimeout(timer);
     }
   }
 
-  async function getJson(url) {
-    const response = await within(realFetch, url, { headers: headers(), cache: 'no-store' });
-    return response.ok ? response.json() : null;
+  function getJson(url) {
+    return within(realFetch, url, { headers: headers(), cache: 'no-store' },
+      response => (response.ok ? response.json() : null));
   }
 
   // Every cast carries its queue, so the bridge knows what follows it.
@@ -383,14 +394,13 @@
       // Velvet's managementFetch asks for the administrator password if this
       // browser session has not unlocked it yet, then sends again.
       const send = typeof managementFetch === 'function' ? managementFetch : realFetch;
-      const sent = await within(send, `/api/bridge/queue/${udn}`, {
+      const { sent, answer } = await within(send, `/api/bridge/queue/${udn}`, {
         method: 'POST',
         headers: headers({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({ track_id: session.track_id, ...queue, expected_revision: base.revision }),
-      });
+      }, async response => ({ sent: response, answer: response.ok ? await response.json() : null }));
       const conflicted = sent.status === 409;
-      if (sent.ok) {
-        const answer = await sent.json();
+      if (answer) {
         if (answer.success) base = { udn, revision: answer.revision, ids: queue.ids, repeat: queue.repeat };
       } else if (conflicted && !resyncing) {
         setTimeout(sync, 0); // a change from elsewhere came first: merge it now (once; then every SYNC_MS)

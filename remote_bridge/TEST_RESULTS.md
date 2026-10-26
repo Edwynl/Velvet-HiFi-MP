@@ -1,5 +1,38 @@
 # Velvet Remote Bridge — Validation
 
+## 0.1.9 (ninth review: two P2) — 2026-10-26
+
+- `run_tests.bat --no-pause`: **101 Python + 30 Node, ALL TESTS PASSED, exit 0**; Python suite eight further consecutive full runs clean;
+  `tests/manual_e2e_real_main.py`: **20/20**; two-device admin browser run: **all checks in three runs on fresh stacks** (34/35/34; the
+  35th is the extra same-track edit when Shuffle puts the playing song last).
+  Repository suites (unchanged by this PR): pytest 568 passed; frontend Node 23/23 (`frontend-contract` from a path without
+  spaces).
+- **P2 page timeout covers the response body.** `within(send, url, init, read)` times the
+  request *and* `read(response)` (the JSON body) as one unit: the AbortController is aborted
+  at 6 s and the whole unit is also raced against that deadline, so a body that stalls after
+  its headers releases the sync loop even where the abort cannot reach it (Velvet's
+  `managementFetch` puts its own signal on the request, which no longer covers the body).
+  Node, with a response whose `json()` never resolves and ignores the signal: a stalled
+  session answer is abandoned and the next sync adopts the change; a stalled queue-post
+  answer (through a managementFetch that substitutes its own signal) is abandoned and the
+  edit sent again. Mutations: body read after the timer -> the suite hangs; abort without
+  the race -> 2 tests fail.
+- **P2 strict session-lookup deadline.** urllib's timeout bounds each socket operation, so a
+  renderer sending its answer a byte at a time could hold a lookup well past
+  `SESSION_READ_BUDGET`. Each renderer read of a lookup now runs on a daemon reader thread
+  that the lookup waits for only until the absolute deadline, then answers 503; the
+  abandoned read ends on its own (its socket timeout is the time that was left), and
+  `SESSION_READERS` (4) caps how many can linger, a lookup finding none free also failing
+  fast. Test with a real socket renderer dripping its whole answer (status line and headers
+  included) one byte per 0.1 s, about 8 s in all, budget 0.8 s: two lookups in a row (the
+  first one's reader still dripping) each answer 503 in < 1.5 s. Mutation, reading on the
+  calling thread as 0.1.8 did: the lookup took 8.05 s. (A dripped body alone does not
+  reproduce it: `read(amt)` returns with the first bytes, the half answer fails to parse.)
+- A pre-existing intermittent: `test_cross_origin_cast_rejected` errored once in about
+  fourteen full runs (connection error instead of 403). The bridge refuses a cross-site
+  POST before reading its body, and on Windows closing a socket with unread data can reset
+  the connection. Not changed here.
+
 ## 0.1.8 (eighth review: two P2) — 2026-10-26
 
 - `run_tests.bat --no-pause` (both suites): **100 Python + 28 Node, ALL TESTS PASSED, exit 0**;
