@@ -43,6 +43,10 @@ HOP_HEADERS = frozenset({'connection', 'keep-alive', 'proxy-authenticate',
                          'proxy-authorization', 'te', 'trailers', 'transfer-encoding',
                          'upgrade', 'host'})
 BODY_LIMIT = 25 * 1024 * 1024
+# A request refused before its body was read gets that body read and dropped
+# first, up to this size: closing a socket with unread data resets the
+# connection, and the client (on Windows at least) then loses the answer.
+DISCARD_LIMIT = 1024 * 1024
 MAX_DEVICE_XML = 128 * 1024
 MAX_API_RESPONSE = 2 * 1024 * 1024
 UPSTREAM_TIMEOUT = 25
@@ -1493,6 +1497,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
     server_version = 'VelvetRemoteBridge/0.1'
     timeout = REQUEST_TIMEOUT
     headers_sent = False
+    body_read = False
 
     def log_request(self, code='-', size='-'):
         # Never log URLs, whose media paths contain time-limited credentials.
@@ -1557,6 +1562,8 @@ class BridgeHandler(BaseHTTPRequestHandler):
                 return self.dispatch_media()
             return self.dispatch_control()
         except HTTPFailure as exc:
+            with contextlib.suppress(OSError):
+                self.discard_body()
             body = {'error': exc.reason, 'detail': exc.reason}
             if exc.code:
                 body['code'] = exc.code
@@ -1631,7 +1638,26 @@ class BridgeHandler(BaseHTTPRequestHandler):
             raise HTTPFailure(400, 'Invalid Content-Length') from exc
         if n < 0 or n > BODY_LIMIT:
             raise HTTPFailure(413, 'Request too large')
+        self.body_read = True
         return self.rfile.read(n)
+
+    def discard_body(self) -> None:
+        """Read and drop the body of a request refused before reading it
+        (e.g. a cross-site POST), so the refusal reaches the client."""
+        if self.body_read:
+            return
+        try:
+            n = int(self.headers.get('Content-Length', '0'))
+        except ValueError:
+            return
+        if not 0 < n <= DISCARD_LIMIT:
+            return  # nothing to read, or too much to bother: the client may see a reset
+        self.body_read = True
+        while n > 0:
+            chunk = self.rfile.read(min(n, SOCKET_CHUNK))
+            if not chunk:
+                return
+            n -= len(chunk)
 
     def dispatch_control(self):
         bridge = self.server.bridge

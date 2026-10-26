@@ -363,6 +363,46 @@ class ServerFixture(unittest.TestCase):
                                              'Cookie': COOKIE})
         self.assertEqual(status, 403)
 
+    def refused_post(self, body, *, content_length=None, wait=0.5):
+        """A cross-site POST over a raw socket; the answer is read only once
+        the bridge has answered and closed (`wait`): a reset caused by unread
+        request data then discards it, as it intermittently did in
+        test_cross_origin_cast_rejected. Returns (answer or error, seconds)."""
+        length = len(body) if content_length is None else content_length
+        head = (f'POST /api/cast/{self.UDN} HTTP/1.1\r\nHost: 127.0.0.1:{self.control.server_port}\r\n'
+                f'Origin: https://evil.example\r\nContent-Type: application/json\r\n'
+                f'Content-Length: {length}\r\n\r\n').encode()
+        started = time.monotonic()
+        with socket.create_connection(('127.0.0.1', self.control.server_port), timeout=10) as sock:
+            def send():
+                with contextlib.suppress(OSError):
+                    sock.sendall(head + body)
+            sender = threading.Thread(target=send, daemon=True)
+            sender.start()
+            sender.join(5)
+            time.sleep(wait)
+            answer = b''
+            try:
+                while chunk := sock.recv(65536):
+                    answer += chunk
+            except OSError as exc:
+                return type(exc).__name__, time.monotonic() - started
+        return answer.split(b'\r\n', 1)[0].decode(), time.monotonic() - started
+
+    def test_refused_post_with_a_large_body_still_gets_its_answer(self):
+        # 300 KB: more than the request reader buffers, so some is still unread
+        # in the socket when the refusal is sent. Without reading it first,
+        # every attempt here ended in ConnectionAbortedError on Windows.
+        body = b'{"track_id": 5, "pad": "' + b'x' * 300_000 + b'"}'
+        for _ in range(5):
+            self.assertEqual(self.refused_post(body)[0], 'HTTP/1.0 403 Forbidden')
+
+    def test_refused_post_claiming_a_huge_body_is_not_waited_for(self):
+        # Over DISCARD_LIMIT the body is not read (nor waited for): answered at once.
+        answer, took = self.refused_post(b'', content_length=bridge.DISCARD_LIMIT + 1, wait=0)
+        self.assertEqual(answer, 'HTTP/1.0 403 Forbidden')
+        self.assertLess(took, 3)
+
     def test_invalid_json_returns_400(self):
         status, _, _ = self.request('/api/cast/uuid:EXN100-test', method='POST',
                                     headers={'X-API-Key': CREDENTIAL, 'Cookie': COOKIE})

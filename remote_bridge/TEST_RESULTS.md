@@ -1,5 +1,32 @@
 # Velvet Remote Bridge — Validation
 
+## 0.1.10 (intermittent cross-site test) — 2026-10-26
+
+- `run_tests.bat --no-pause`: **103 Python + 30 Node, ALL TESTS PASSED, exit 0**; Python suite **15 consecutive full runs clean** (the old
+  intermittent was about 1 in 14); `tests/manual_e2e_real_main.py`:
+  **20/20**; two-device admin browser run: **34/34 in three runs on fresh stacks**. Repository suites: frontend Node 23/23 (`frontend-contract` from a
+  path without spaces). pytest: 568 passed in two of four full runs; the other two had
+  1 and 2 failures, the one named being
+  `test_tailscale_proxy_security::test_unconfigured_proxy_cannot_browse_mutate_or_claim_initial_password`,
+  which passed 6 of 6 times on its own. It starts its own uvicorn process and consults this
+  PC's real Tailscale state; this PR changes nothing outside `remote_bridge/`, so it is an
+  intermittent of the main repository's suite on this machine, left as is.
+- **Cause.** The bridge refuses a cross-site POST (and any request it turns down before
+  reading the body: peer, Host, Origin) without reading the request body, answers, and
+  closes. Closing a socket that still holds unread request data sends a reset; on Windows
+  the reset can discard the answer the client has not read yet, so the client saw a
+  connection error instead of the 403. Reproduced deterministically: a 300 KB cross-site
+  POST, the answer read only after the bridge closed: 20 of 20 attempts ended in
+  `ConnectionAbortedError` (bodies small enough to sit in the request reader's buffer do not
+  trigger it, hence the rarity in the old test).
+- **Fix.** On a refusal, a body not yet read is read and dropped first, up to
+  `DISCARD_LIMIT` (1 MiB); a larger claimed body is not read or waited for (that client may
+  still see a reset). Same probe after the fix: 20 of 20 get `403 Forbidden`.
+- **Tests.** The 300 KB refused POST, read after the close, five times: 403 each time
+  (without the fix: `ConnectionAbortedError`). A refused POST claiming more than
+  `DISCARD_LIMIT` and sending nothing is answered at once (with the size cap removed, the
+  bridge waited for the body and the client timed out).
+
 ## 0.1.9 (ninth review: two P2) — 2026-10-26
 
 - `run_tests.bat --no-pause`: **101 Python + 30 Node, ALL TESTS PASSED, exit 0**; Python suite eight further consecutive full runs clean;
@@ -28,10 +55,8 @@
   first one's reader still dripping) each answer 503 in < 1.5 s. Mutation, reading on the
   calling thread as 0.1.8 did: the lookup took 8.05 s. (A dripped body alone does not
   reproduce it: `read(amt)` returns with the first bytes, the half answer fails to parse.)
-- A pre-existing intermittent: `test_cross_origin_cast_rejected` errored once in about
-  fourteen full runs (connection error instead of 403). The bridge refuses a cross-site
-  POST before reading its body, and on Windows closing a socket with unread data can reset
-  the connection. Not changed here.
+- A pre-existing intermittent, `test_cross_origin_cast_rejected` (about one error in
+  fourteen full runs), is fixed in 0.1.10 (above).
 
 ## 0.1.8 (eighth review: two P2) — 2026-10-26
 
