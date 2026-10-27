@@ -1,2 +1,3 @@
 ﻿kind,id,current,proposed,merge_ids,aliases,exclude,source,check,approve
 artist,1806,薛之谦,薛之谦,,,Jacky Xue,"MusicBrainz lists both 'Jacky Xue' and 'Joker Xue'; Apple Music calls him 薛之谦 and uses the slug joker-xue, so 'Jacky Xue' is the catalogue's misspelling and is not a name he records under",mainland,Y
+artist,760,秦岚,秦岚,,,Qing Lan,"MusicBrainz sorts the artist as 'Qin, Lan'; the release files carry 秦岚. 'Qing Lan' is a misspelling of the pinyin.",mainland,Y
