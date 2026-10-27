@@ -1,3 +1,3 @@
-Velvet Remote Bridge 0.1.11
+Velvet Remote Bridge 0.1.12
 Designed for Velvet-HiFi-MP main as inspected 2026-10-25.
 Standalone Windows, Python 3.10+, no third-party Python dependencies.

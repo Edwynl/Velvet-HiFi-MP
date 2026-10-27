@@ -456,6 +456,69 @@ class ServerFixture(unittest.TestCase):
         self.assertEqual(answer, 'HTTP/1.0 403 Forbidden')
         self.assertLess(took, 3)
 
+    def raw_get(self, server, path, source='127.0.0.1'):
+        """First line and all of the answer to one GET sent from `source`."""
+        request = f'GET {path} HTTP/1.0\r\nHost: 127.0.0.1:{server.server_port}\r\n\r\n'.encode()
+        with socket.create_connection(('127.0.0.1', server.server_port), timeout=5,
+                                      source_address=(source, 0)) as sock:
+            sock.sendall(request)
+            answer = b''
+            with contextlib.suppress(OSError):
+                while chunk := sock.recv(65536):
+                    answer += chunk
+        return answer.split(b'\r\n', 1)[0].decode(), answer
+
+    def assert_connections_capped_per_peer(self, server, path):
+        cap = 3
+        usual = self.raw_get(server, path)[0]
+        self.assertNotIn('503', usual)
+        with patch.object(bridge, 'MAX_CONNECTIONS_PER_PEER', cap):
+            # Connections that never send a request: each holds a thread for
+            # up to REQUEST_TIMEOUT.
+            silent = [socket.create_connection(('127.0.0.1', server.server_port), timeout=5)
+                      for _ in range(cap)]
+            try:
+                self.wait_for(lambda: server.peer_connections.get('127.0.0.1') == cap,
+                              'the silent connections were not counted', 3)
+                threads = len(self.handler_threads())
+                started = time.monotonic()
+                # One more, read without sending first: the answer is then
+                # never lost to a reset caused by an unread request.
+                with socket.create_connection(('127.0.0.1', server.server_port), timeout=5) as over:
+                    answer = b''
+                    while chunk := over.recv(65536):
+                        answer += chunk
+                self.assertTrue(answer.startswith(b'HTTP/1.0 503 Service Unavailable\r\n'), answer)
+                self.assertIn(b'Retry-After: 2', answer)
+                self.assertIn(b'Too many connections from this device', answer)
+                self.assertLess(time.monotonic() - started, 1.0)  # at once, not after any timeout
+                # With a request sent at once, the 503 may arrive or be lost to
+                # a reset; either way the request is not served.
+                self.assertIn(self.raw_get(server, path)[0], ('HTTP/1.0 503 Service Unavailable', ''))
+                self.assertLessEqual(len(self.handler_threads()), threads)  # no thread for either
+                self.assertEqual(server.peer_connections.get('127.0.0.1'), cap)
+                # Another peer is not affected by this one's connections.
+                self.assertEqual(self.raw_get(server, path, source='127.0.0.2')[0], usual)
+            finally:
+                for sock in silent:
+                    sock.close()
+            # Once they close, their slots are free again.
+            self.wait_for(lambda: '127.0.0.1' not in server.peer_connections,
+                          'closed connections are still counted', 3)
+            self.assertEqual(self.raw_get(server, path)[0], usual)
+
+    def test_control_connections_are_capped_per_peer(self):
+        self.assert_connections_capped_per_peer(self.control, '/bridge/queue-sync.js')
+
+    def test_media_connections_are_capped_per_peer(self):
+        self.assert_connections_capped_per_peer(self.media, '/media/unknown')
+
+    def test_connection_count_returns_to_zero_after_ordinary_and_refused_requests(self):
+        for _ in range(5):
+            self.request('/bridge/queue-sync.js')
+            self.refused_post(b'{"track_id": 5}')
+        self.wait_for(lambda: not self.control.peer_connections, 'connections are still counted', 3)
+
     def test_invalid_json_returns_400(self):
         status, _, _ = self.request('/api/cast/uuid:EXN100-test', method='POST',
                                     headers={'X-API-Key': CREDENTIAL, 'Cookie': COOKIE})

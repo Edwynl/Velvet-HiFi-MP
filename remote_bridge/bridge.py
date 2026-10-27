@@ -74,6 +74,16 @@ MEDIA_READ_TIMEOUT = 60
 MEDIA_STALL_TIMEOUT = 300
 MAX_MEDIA_STREAMS_PER_IP = 4
 MAX_MEDIA_STREAMS = 16
+# Open connections one peer may have on a port at once, each one a thread:
+# without a cap, a client that opens many and sends slowly (or not at all)
+# holds that many threads. Generous, because behind Tailscale Serve every
+# phone arrives as the same loopback peer; one more is answered 503 at once.
+MAX_CONNECTIONS_PER_PEER = 32
+_BUSY_BODY = b'{"error": "Too many connections from this device; try again shortly"}'
+BUSY_ANSWER = (b'HTTP/1.0 503 Service Unavailable\r\n'
+               b'Content-Type: application/json; charset=utf-8\r\n'
+               b'Content-Length: ' + str(len(_BUSY_BODY)).encode() + b'\r\n'
+               b'Retry-After: 2\r\nConnection: close\r\n\r\n' + _BUSY_BODY)
 TAILNET_STATUS_TTL = 30
 # Bridge-owned queue: the monitor looks at each renderer with a session this
 # often; a track counts as finished when STOPPED within END_TOLERANCE seconds
@@ -1865,7 +1875,51 @@ class BridgeHTTPServer(ThreadingHTTPServer):
     def __init__(self, address, role: str, bridge: Bridge):
         self.role = role
         self.bridge = bridge
+        self.peer_lock = threading.Lock()
+        self.peer_connections: dict[str, int] = {}
         super().__init__(address, BridgeHandler)
+
+    def process_request(self, request, client_address):
+        """Count the peer's connection before giving it a thread; refuse it,
+        still on the accepting thread, when the peer is at its cap."""
+        peer = client_address[0]
+        with self.peer_lock:
+            held = self.peer_connections.get(peer, 0)
+            if held < MAX_CONNECTIONS_PER_PEER:
+                self.peer_connections[peer] = held + 1
+        if held >= MAX_CONNECTIONS_PER_PEER:
+            LOG.warning('%s has %d connections open to the %s port; refusing another', peer, held, self.role)
+            request.setblocking(False)  # never wait on this peer here
+            with contextlib.suppress(OSError):
+                # Drop what has already arrived of its request (unread data
+                # makes the close a reset, which can lose the answer); what
+                # arrives later may still cost the client the 503.
+                dropped = 0
+                while dropped < DISCARD_LIMIT and (chunk := request.recv(SOCKET_CHUNK)):
+                    dropped += len(chunk)
+            with contextlib.suppress(OSError):
+                request.send(BUSY_ANSWER)
+            self.shutdown_request(request)
+            return
+        try:
+            super().process_request(request, client_address)
+        except BaseException:
+            self.release_peer(peer)
+            raise
+
+    def process_request_thread(self, request, client_address):
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            self.release_peer(client_address[0])
+
+    def release_peer(self, peer: str):
+        with self.peer_lock:
+            held = self.peer_connections.get(peer, 0) - 1
+            if held > 0:
+                self.peer_connections[peer] = held
+            else:
+                self.peer_connections.pop(peer, None)
 
 
 def serve(cfg: BridgeConfig):

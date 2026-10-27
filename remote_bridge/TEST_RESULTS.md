@@ -1,5 +1,27 @@
 # Velvet Remote Bridge — Validation
 
+## 0.1.12 (per-peer connection cap, optional item from the tenth review) — 2026-10-27
+
+- `run_tests.bat --no-pause`: **109 Python + 33 Node, ALL TESTS PASSED, exit 0**; Python suite 10 consecutive full runs clean; `tests/manual_e2e_real_main.py`:
+  **20/20**; two-device admin browser run: **all checks in three runs on fresh stacks** (40/39/39; the
+  conditional Shuffle reorder step adds one). Repository suites (unchanged by this PR): pytest
+  `tests/` 568 passed (one run); frontend Node 23/23 (`frontend-contract` from a path without spaces).
+- **Cap.** Each port (control `:8877`, media `:8878`) counts the connections each peer IP
+  holds open; the 33rd at once (`MAX_CONNECTIONS_PER_PEER = 32`) is refused on the accepting
+  thread, before any handler thread exists: what has already arrived of its request is read
+  and dropped (non-blocking, up to `DISCARD_LIMIT`), it gets `503 Service Unavailable` with
+  `Retry-After: 2` and a JSON error, and is closed. A slot is freed when its handler thread
+  ends, whatever the outcome. The cap is generous because behind Tailscale Serve every phone
+  arrives as the same loopback peer. A client whose request arrives after the refusal may see
+  a reset instead of the 503 (Windows drops unread answers on reset); it is not served either way.
+- **Tests** (cap patched to 3, on both ports): three connections that never send a request
+  are counted; one more, read without sending, gets the 503 with `Retry-After` and the JSON
+  error in < 1 s and no handler thread; one more sending a GET at once gets the 503 or a reset,
+  never service; another peer (127.0.0.2) is served normally meanwhile; after the three close,
+  the count drops to zero and the first peer is served again. Ordinary and refused requests
+  leave the count at zero. Mutations: no cap (2 tests fail), refusal skipped (2), slots never
+  freed (3), one cap shared by all peers (3).
+
 ## 0.1.11 (tenth review: two P1 + P2) — 2026-10-26
 
 - `run_tests.bat --no-pause`: **106 Python + 33 Node, ALL TESTS PASSED, exit 0**; Python suite 10 consecutive full runs clean; `tests/manual_e2e_real_main.py`:

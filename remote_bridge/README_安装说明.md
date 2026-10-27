@@ -2,7 +2,7 @@
 
 **用途：** 父母家的 Velvet 是唯一音乐服务器、唯一搜索索引和唯一 FLAC 文件所在地。你家 Windows 只运行这个轻量 Bridge；iPhone 打开 Bridge 提供的 Velvet 页面，用原来的 Artist / Album / Track 搜索和播放列表，选择本地 Cambridge Audio EXN100 作为输出。**不需要 StreamMagic 整理曲库，不需要 AirPlay，不需要 USB，不复制音乐文件。**
 
-> 版本：0.1.11，测试版。已完成模拟父服务器 / 模拟 DLNA 设备离线测试。**尚未在真实 Windows + Tailscale + EXN100 上验收**。首次播放需要做实体设备测试。
+> 版本：0.1.12，测试版。已完成模拟父服务器 / 模拟 DLNA 设备离线测试。**尚未在真实 Windows + Tailscale + EXN100 上验收**。首次播放需要做实体设备测试。
 
 ## 网络拓扑
 
@@ -99,6 +99,7 @@
 - 控制入口默认只监听你家 Windows 的 **Tailscale IPv4**（检测不到时退回 `127.0.0.1`），**不会**默认开放到整个 LAN；音频入口只监听你家 Windows 的 LAN IPv4 且媒体 URL 只能从被选中的 EXN100 IP 使用。
 - 父母家 Velvet 信任 Bridge 转发的每一个请求（它是 tailnet 内的设备）。所以 Bridge 自己会检查是**哪台 tailnet 设备**在访问 `:8877`：默认只允许与这台 Bridge 电脑**同一个 Tailscale 账号**的设备（你的 iPhone / iPad）；父母或其他账号的设备、tag 设备一律拒绝（403）。如需放行，在 `config.json` 的 `allowed_peers` 写入对方的 Tailscale 登录名或 Tailscale IP，例如 `"allowed_peers": ["you@example.com", "100.101.1.20"]`（写了列表后只认列表）。读不到 `tailscale status` 时一律拒绝，只有本机浏览器例外。身份只按真实 TCP 来源 IP 在 tailnet 中查找；请求自带的 `Tailscale-User-Login`、`X-Forwarded-For` 等头一律不作数，只有本机 Tailscale Serve 确实代理到 8877（且未开 Funnel）时，才采信 Serve 注入的登录名。这些头也不会转发给父母家 Velvet。也建议在 Tailscale 管理后台的 ACL 里把 `:8877` 限定给自己的设备。**绝对不要**对 Bridge 开启 Tailscale **Funnel**（公网发布），否则任何人都能收听整个曲库。Bridge 只接受以 Tailscale IP、本机名 / MagicDNS 名或 `allowed_hosts` 访问，防止恶意网页通过 DNS rebinding 借道。
 - 局域网内任意设备都能回应 SSDP 自称是播放器；Bridge 会去掉设备名中的 HTML 字符，防止恶意设备名在 Velvet 页面里执行脚本。
+- 每台设备（按来源 IP）在 `8877`、`8878` 上各最多同时保持 32 个连接，超出的连接立即收到 `503`（或被直接断开），不占用线程；这样某台设备打开大量连接却迟迟不发数据，也拖不垮 Bridge。正常使用远达不到这个数。通过 Tailscale Serve 访问时所有设备都算作本机同一个来源，32 个仍够几台设备同时使用。
 - **不要**为 `8877/8878` 配置路由器端口转发或公网开放规则。Windows 防火墙建议把 `8878` TCP 入站限定为 EXN100 的局域网 IP，只选 Private 网络。
 - 网络需要父母家的**上传带宽**能够持续支持 FLAC 码率；高解析和多房间同时播放需要更高带宽。
 - 这是正常的在线串流；父母家断网、Velvet 停止或任一台 Windows 睡眠，播放就会中断。两台 Windows 在听歌时均须保持开机。
@@ -116,6 +117,7 @@
 | 页面显示 `421` | 用 Tailscale IP 打开 Bridge，或把所用的名字加入 `allowed_hosts`。|
 | 页面显示 `This Tailscale device may not use the bridge` | 该设备不属于 Bridge 电脑的 Tailscale 账号；把它的登录名或 IP 加入 `allowed_peers`，并确认 `tailscale status` 在 Bridge 电脑上可用。|
 | 暂停很久后继续播放没声音 | 渲染器 5 分钟不读取数据，Bridge 会断开该连接（避免线程长期挂起）；正常的 DLNA 播放器继续时会用 Range 重新请求。如果 EXN100 实测不能恢复，请记录下来反馈。|
+| 页面或请求偶尔返回 `503 Too many connections` | 同一台设备同时打开的连接超过 32 个；关掉多余的 Velvet 标签页后稍等几秒即可。Bridge 日志会显示 `refusing another`。|
 | 锁屏后播完一首就停 | 确认是用 Bridge 地址（`:8877`）打开的 Velvet，而不是直接打开父母家的 `:8765`；Bridge 日志在切歌时会显示 `Advanced to queue position N`。|
 | 选了 DSP/EQ 预设后无法投放 | 这版只直传原始文件；把该 Zone 的 DSP/EQ 设为 Off、ReplayGain 设为 Off。|
 | 播放较长歌曲中断 | 检查父母家上传速度、Tailscale 稳定性、Windows 电源设置、父母家 Velvet 服务状态。|
