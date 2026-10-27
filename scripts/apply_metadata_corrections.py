@@ -2,7 +2,7 @@
 
 The list is a UTF-8 CSV with the columns
 
-    kind,id,current,proposed,merge_ids,aliases,source,check,approve
+    kind,id,current,proposed,merge_ids,aliases,exclude,source,check,approve
 
 kind is ``artist``, ``album`` or ``track``; only rows whose ``approve``
 column is Y/yes/1/是 are applied. An artist row renames artist ``id`` to
@@ -17,6 +17,10 @@ romanised one, and for a singer stored under their English name whose
 Chinese name is only known as an alias. Every attached name is also mapped
 back to the display name when the files' tags are rewritten, so a re-import
 on another machine produces one artist row instead of several.
+
+The optional ``exclude`` column (pipe-separated) takes names away again: a
+catalogue can carry a misspelling of the artist's English name, and that
+name has to go rather than stay as a way to reach the artist.
 
 Nothing is written without --apply. Before writing, the database is copied
 with the SQLite backup API; with --write-tags every changed file's old tag
@@ -67,6 +71,11 @@ def read_corrections(path: Path) -> dict[str, list[dict]]:
             row["alias_names"] = [
                 name.strip()
                 for name in (row.get("aliases") or "").split("|")
+                if name.strip()
+            ]
+            row["excluded_aliases"] = [
+                name.strip()
+                for name in (row.get("exclude") or "").split("|")
                 if name.strip()
             ]
             rows[kind].append(row)
@@ -129,6 +138,22 @@ def apply_to_database(db: sqlite3.Connection, corrections: dict[str, list[dict]]
                 continue
             if add_alias(db, target_id, name):
                 attached.append(name)
+        removed: list[str] = []
+        for name in row["excluded_aliases"]:
+            # A name the source got wrong: the library holds it, but the
+            # artist never recorded under it.
+            if name.casefold() == display.casefold():
+                continue
+            found = db.execute(
+                "SELECT id FROM artist_aliases WHERE artist_id = ? AND name = ?",
+                (target_id, name),
+            ).fetchone()
+            if not found:
+                continue
+            db.execute("DELETE FROM artist_alias_provenance WHERE alias_id = ?",
+                       (found[0],))
+            db.execute("DELETE FROM artist_aliases WHERE id = ?", (found[0],))
+            removed.append(name)
         for name in attached:
             # The alias was checked against a source before it reached this
             # list, so record where it came from instead of leaving it
@@ -145,7 +170,7 @@ def apply_to_database(db: sqlite3.Connection, corrections: dict[str, list[dict]]
                 report["renamed_names"][name] = display
         report["artists"].append({
             "id": target_id, "name": display, "from": old_names,
-            "aliases_added": attached,
+            "aliases_added": attached, "aliases_removed": removed,
         })
 
     for kind, table in (("album", "albums"), ("track", "tracks")):
