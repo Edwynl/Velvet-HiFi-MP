@@ -605,7 +605,65 @@ async function testVuModalControlsStayClickableAndDismiss() {
   } finally { dom.window.close(); }
 }
 
+async function testTouchScrubWithMissingOrPartialPointerSupport() {
+  for (const mixedEvents of [false, true]) {
+    const dom = await createHarness().createDom();
+    try {
+      const { window } = dom;
+      const audio = primeAudio(dom, { currentTime: 25, duration: 200 });
+      window.eval('state.currentTrack = { id: 101, duration: 200, format: "FLAC" };');
+      const row = window.document.querySelector('#progress-row');
+      row.querySelector('.progress-track').getBoundingClientRect = () => ({ left: 10, width: 200 });
+      const seeks = [];
+      window.recordSeek = seconds => { seeks.push(seconds); audio.currentTime = seconds; };
+      window.eval('seekBrowserPlayback = recordSeek;');
+      const dispatch = (target, type, props) => {
+        const event = new window.Event(type, { bubbles: true, cancelable: true });
+        Object.assign(event, props);
+        target.dispatchEvent(event);
+      };
+      const touch = (type, x, id = 9) => dispatch(row, type, {
+        changedTouches: [{ identifier: id, clientX: x }],
+        touches: type === 'touchend' || type === 'touchcancel' ? [] : [{ identifier: id, clientX: x }],
+      });
+      if (mixedEvents) {
+        row.setPointerCapture = () => { throw new Error('Capture unavailable'); };
+        dispatch(row, 'pointerdown', { pointerType: 'touch', pointerId: 2, clientX: 60 });
+      }
+      touch('touchstart', 60);
+      touch('touchmove', 110);
+      assert.equal(window.document.querySelector('#progress-fill').style.width, '50%');
+      assert.equal(row.querySelector('.progress-preview').textContent, '1:40');
+      audio.dispatchEvent(new window.Event('timeupdate'));
+      await new Promise(resolve => window.setTimeout(resolve, 90));
+      assert.equal(window.document.querySelector('#progress-fill').style.width, '50%', 'Playback updates must not erase the drag preview');
+      assert.equal(seeks.length, 0, 'Dragging previews without restarting the stream');
+      touch('touchend', 160);
+      if (mixedEvents) dispatch(window.document, 'pointerup', { pointerId: 2, clientX: 160 });
+      dispatch(row, 'click', { clientX: 160 });
+      assert.deepEqual(seeks, [150], 'Touch, pointer and synthetic click commit a single seek');
+      assert.ok(row.querySelector('.progress-preview').hidden);
+
+      touch('touchstart', 90);
+      touch('touchcancel', 180);
+      dispatch(row, 'click', { clientX: 180 });
+      assert.deepEqual(seeks, [150], 'Cancelled touches never seek');
+      assert.equal(window.document.querySelector('#progress-fill').style.width, '75%');
+
+      // Mouse/pen release still works outside the bar when capture throws.
+      row.setPointerCapture = () => { throw new Error('Capture unavailable'); };
+      dispatch(row, 'pointerdown', { pointerType: 'mouse', button: 0, pointerId: 3, clientX: 30 });
+      dispatch(window.document, 'pointerup', { pointerId: 4, clientX: 110 });
+      assert.equal(seeks.length, 1, 'An unrelated pointer cannot finish the drag');
+      dispatch(window.document, 'pointermove', { pointerId: 3, clientX: 210 });
+      dispatch(window.document, 'pointerup', { pointerId: 3, clientX: 310 });
+      assert.deepEqual(seeks, [150, 200], 'Release outside the track clamps to the song end');
+    } finally { dom.window.close(); }
+  }
+}
+
 async function main() {
+  await testTouchScrubWithMissingOrPartialPointerSupport();
   await testVuModalControlsStayClickableAndDismiss();
   await testFullscreenLibraryNavigation();
   await testAutoOpenOnlyBeforeDismiss();

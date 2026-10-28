@@ -1349,6 +1349,31 @@ html, body {
 .progress-time.left  { left: 0; }
 .progress-time.right { right: 0; }
 .progress-row:hover .progress-time { opacity: 1; }
+.progress-row.is-scrubbing .progress-time { opacity: 1; }
+@media (hover: none), (pointer: coarse) {
+  .progress-time { opacity: 1; }
+  .progress-bar .progress-fill::after { transform: translateY(-50%) scale(1); }
+}
+#progress-row, #mobile-progress-row {
+  touch-action: none;
+  -webkit-user-select: none;
+}
+.progress-preview {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  transform: translateX(-50%);
+  padding: 4px 7px;
+  border-radius: 4px;
+  background: var(--s3);
+  color: var(--text);
+  font: 11px 'DM Mono', monospace;
+  pointer-events: none;
+  white-space: nowrap;
+  z-index: 2;
+}
+.mobile-player-progress-container { position: relative; }
+.progress-row.is-scrubbing .progress-fill,
+.mobile-player-progress-container.is-scrubbing .mobile-progress-fill { transition: none; }
 
 .progress-bar {
   position: relative;
@@ -10151,6 +10176,7 @@ function flushTimeupdate() {
 
   if (isCastZone() || isNativeZone()) return;
   noteBrowserPlaybackProgress();
+  if (activeProgressScrub) return;
   const audioDuration = Number.isFinite(audio.duration) && audio.duration > 0 ? audio.duration : 0;
   const trackDuration = Number.isFinite(Number(state.currentTrack?.duration)) && Number(state.currentTrack.duration) > 0
     ? Number(state.currentTrack.duration)
@@ -10772,11 +10798,14 @@ UI['vu-calibration'].addEventListener('change', event => {
 });
 syncVUControls();
 
-// Handle progress scrub on both desktop and mobile bars
+// Preview locally, then commit once on release. Touch Events also cover native
+// Android browsers that expose PointerEvent but do not deliver a full sequence.
+let activeProgressScrub = null;
 function seekFromClientX(clientX, trackEl, preview = false) {
   if (isCastZone() || isNativeZone()) return;
   if (browserPlaybackDuration() <= 0) return;
   const rect = trackEl.getBoundingClientRect();
+  if (!Number.isFinite(clientX) || rect.width <= 0) return;
   const pct = Math.min(1, Math.max(0, (clientX - rect.left) / rect.width));
   if (preview) {
     for (const id of ['progress-fill', 'mobile-progress-fill']) {
@@ -10788,42 +10817,106 @@ function seekFromClientX(clientX, trackEl, preview = false) {
   seekBrowserPlayback(browserPlaybackDuration() * pct);
 }
 function bindProgressScrub(containerEl) {
-  let isSeeking = false;
-  let pointerSeekAt = -Infinity;
-
   const track = containerEl.querySelector('.progress-track') || containerEl.querySelector('.mobile-progress-track');
-  const stopSeek = (e) => {
-    if (isSeeking && e?.type === 'pointerup') {
-      if (browserStreamNeedsOffset(state.currentTrack)) seekFromClientX(e.clientX, track);
-      pointerSeekAt = performance.now();
-    }
-    isSeeking = false;
-    if (e && typeof e.pointerId === 'number' && containerEl.hasPointerCapture?.(e.pointerId)) {
-      containerEl.releasePointerCapture(e.pointerId);
-    }
+  if (!track) return;
+  let gesture = null;
+  let lastGestureAt = -Infinity;
+  const preview = document.createElement('output');
+  preview.className = 'progress-preview';
+  preview.hidden = true;
+  containerEl.appendChild(preview);
+  const showPreview = clientX => {
+    const rect = track.getBoundingClientRect();
+    if (!Number.isFinite(clientX) || rect.width <= 0 || browserPlaybackDuration() <= 0
+        || isCastZone() || isNativeZone()) return;
+    const pct = Math.min(1, Math.max(0, (clientX - rect.left) / rect.width));
+    preview.textContent = fmt(browserPlaybackDuration() * pct);
+    preview.style.left = Math.min(96, Math.max(4, pct * 100)) + '%';
+    preview.hidden = false;
+  };
+  const begin = (kind, id, clientX) => {
+    if (isCastZone() || isNativeZone() || browserPlaybackDuration() <= 0) return;
+    if (activeProgressScrub && activeProgressScrub !== containerEl) return;
+    gesture = { kind, id, trackId: state.currentTrack?.id };
+    activeProgressScrub = containerEl;
+    containerEl.classList.add('is-scrubbing');
+    seekFromClientX(clientX, track, true);
+    showPreview(clientX);
+  };
+  const finish = (clientX, commit) => {
+    if (!gesture) return;
+    const ended = gesture;
+    gesture = null;
+    activeProgressScrub = null;
+    lastGestureAt = performance.now();
+    containerEl.classList.remove('is-scrubbing');
+    preview.hidden = true;
+    if (commit && ended.trackId === state.currentTrack?.id) seekFromClientX(clientX, track);
+    // A cancelled drag restores the actual playback position, without seeking.
+    _timeupdatePending = true;
+    flushTimeupdate();
+    try {
+      if (ended.kind === 'pointer' && containerEl.hasPointerCapture?.(ended.id)) {
+        containerEl.releasePointerCapture(ended.id);
+      }
+    } catch { /* Some embedded browsers expose capture without implementing it. */ }
   };
   containerEl.addEventListener('click', e => {
-    if (!track) return;
-    if (performance.now() - pointerSeekAt < 500) return;
+    if (gesture) { finish(e.clientX, true); return; }
+    if (performance.now() - lastGestureAt < 800) return;
     seekFromClientX(e.clientX, track);
   });
   containerEl.addEventListener('pointerdown', e => {
-    if (e.pointerType === 'mouse' && e.button !== 0) return;
-    if (!track) return;
-    isSeeking = true;
-    containerEl.setPointerCapture?.(e.pointerId);
-    seekFromClientX(e.clientX, track, browserStreamNeedsOffset(state.currentTrack));
+    if (e.isPrimary === false || (e.pointerType === 'mouse' && e.button !== 0) || gesture) return;
+    begin('pointer', e.pointerId, e.clientX);
+    if (!gesture) return;
+    try { containerEl.setPointerCapture?.(e.pointerId); } catch { /* Document listeners handle release. */ }
+    // Allow touchstart to take over on browsers delivering both event families.
+    if (e.pointerType !== 'touch') e.preventDefault();
+  });
+  document.addEventListener('pointermove', e => {
+    if (gesture?.kind !== 'pointer' || gesture.id !== e.pointerId) return;
+    seekFromClientX(e.clientX, track, true);
+    showPreview(e.clientX);
     e.preventDefault();
   });
-  containerEl.addEventListener('pointermove', e => {
-    if (!isSeeking) return;
-    if (!track) return;
-    seekFromClientX(e.clientX, track, browserStreamNeedsOffset(state.currentTrack));
-    e.preventDefault();
+  document.addEventListener('pointerup', e => {
+    if (gesture?.kind === 'pointer' && gesture.id === e.pointerId) finish(e.clientX, true);
   });
-  containerEl.addEventListener('pointerup', stopSeek);
-  containerEl.addEventListener('pointercancel', stopSeek);
-  containerEl.addEventListener('lostpointercapture', () => { isSeeking = false; });
+  document.addEventListener('pointercancel', e => {
+    if (gesture?.kind === 'pointer' && gesture.id === e.pointerId) finish(e.clientX, false);
+  });
+  containerEl.addEventListener('lostpointercapture', e => {
+    if (gesture?.kind === 'pointer' && gesture.id === e.pointerId) finish(e.clientX, false);
+  });
+  containerEl.addEventListener('touchstart', e => {
+    if (e.touches.length !== 1 || gesture?.kind === 'touch') return;
+    const touch = e.changedTouches[0];
+    if (!touch) return;
+    begin('touch', touch.identifier, touch.clientX);
+    if (gesture) e.preventDefault();
+  }, { passive: false });
+  // Touch events stay targeted at the element where contact began, even when
+  // the finger leaves it. Keep the non-passive listener off the page scroller.
+  containerEl.addEventListener('touchmove', e => {
+    if (gesture?.kind !== 'touch') return;
+    const touch = Array.from(e.changedTouches).find(t => t.identifier === gesture.id);
+    if (!touch) return;
+    seekFromClientX(touch.clientX, track, true);
+    showPreview(touch.clientX);
+    e.preventDefault();
+  }, { passive: false });
+  const endTouch = e => {
+    if (gesture?.kind !== 'touch') return;
+    const touch = Array.from(e.changedTouches).find(t => t.identifier === gesture.id);
+    if (touch) finish(touch.clientX, e.type === 'touchend');
+  };
+  containerEl.addEventListener('touchend', endTouch);
+  containerEl.addEventListener('touchcancel', endTouch);
+  window.addEventListener('blur', () => finish(0, false));
+  document.addEventListener('visibilitychange', () => { if (document.hidden) finish(0, false); });
+  containerEl.addEventListener('pointermove', e => { if (!gesture && e.pointerType === 'mouse') showPreview(e.clientX); });
+  containerEl.addEventListener('pointerleave', () => { if (!gesture) preview.hidden = true; });
 }
 
 bindProgressScrub(UI['progress-row']);
@@ -11356,11 +11449,14 @@ function _beginViewHandoff(vc) {
     if (!records.some(record => record.removedNodes.length)) return;
     flip();
   });
-  const flip = () => {
+  const flip = ({ keepScroll = false } = {}) => {
     if (swapped) return;
     swapped = true;
     observer.disconnect();
     vc.className = targetClass;
+    // Reset at the DOM swap. Optional slow requests must not reset a page the
+    // user has already started scrolling, or a newer page after navigation.
+    if (!keepScroll) scrollToTop();
   };
   observer.observe(vc, { childList: true });
   // With nothing on screen there is no layout to protect: switch straight away.
@@ -11368,7 +11464,7 @@ function _beginViewHandoff(vc) {
   return {
     finish({ keepScroll = false } = {}) {
       observer.disconnect();
-      flip();
+      flip({ keepScroll });
       const handoff = _pendingViewHandoff;
       _pendingViewHandoff = null;
       if (handoff) {
@@ -11387,7 +11483,6 @@ function _beginViewHandoff(vc) {
           });
         }
       }
-      if (!keepScroll) scrollToTop();
     },
   };
 }

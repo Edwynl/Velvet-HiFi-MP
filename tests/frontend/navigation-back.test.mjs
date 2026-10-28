@@ -180,6 +180,12 @@ function createHarness({ initialHash = '#home' } = {}) {
         { id: 7, name: 'Back Test Artist', album_count: 1 },
       ]));
     }
+    if (parsedUrl.pathname === '/api/artists/7' && method === 'GET') {
+      return makeJsonResponse({ id: 7, name: 'Back Test Artist' });
+    }
+    if (parsedUrl.pathname === '/api/artists/7/albums' && method === 'GET') {
+      return makeJsonResponse(albumList);
+    }
     if (parsedUrl.pathname === '/api/artists/page' && method === 'GET') {
       return Promise.resolve(makeJsonResponse({
         artists: [{ id: 7, name: 'Back Test Artist', album_count: 1 }],
@@ -742,7 +748,84 @@ async function testBackSkipsExistingDuplicateAlbumEntries() {
   } finally { dom.window.close(); }
 }
 
+async function testLateBiographyDoesNotResetScrollOrEditAnotherPage() {
+  const dom = await createHarness().createDom();
+  const pending = [];
+  try {
+    const { window } = dom;
+    const originalFetch = window.fetch;
+    window.fetch = (url, options) => String(url).includes('/enrich-bio')
+      ? new Promise(resolve => pending.push(resolve)) : originalFetch(url, options);
+    const navigation = window.navigate('artist', { id: 7 });
+    await waitFor(() => window.document.querySelector('#artist-albums-grid') && pending.length);
+    assert.equal(await Promise.race([
+      navigation.then(() => true), new Promise(resolve => setTimeout(() => resolve(false), 100)),
+    ]), true, 'Artist navigation completes before optional biography enrichment');
+    const main = window.document.querySelector('#main');
+    main.scrollTop = 640;
+    pending.shift()(makeJsonResponse({ bio: 'Late biography' }));
+    await waitFor(() => window.document.querySelector('#artist-bio')?.textContent.includes('Late biography'));
+    assert.equal(main.scrollTop, 640, 'A late biography must not reset an already scrolled artist');
+
+    await window.navigate('artist', { id: 7 });
+    await window.navigate('album', { id: 11 });
+    main.scrollTop = 420;
+    pending.shift()(makeJsonResponse({ bio: 'Obsolete biography' }));
+    await new Promise(resolve => setTimeout(resolve, 20));
+    assert.equal(main.scrollTop, 420, 'Old artist completion must not reset the newer album');
+    assert.equal(window.document.querySelector('#view-container').className, 'view-album');
+  } finally {
+    pending.forEach(resolve => resolve(makeJsonResponse({})));
+    dom.window.close();
+  }
+}
+
+async function testHeaderControlsDoNotAccidentallyScrollToTop() {
+  const dom = await createHarness().createDom();
+  try {
+    for (const view of ['albums', 'artists']) {
+      await dom.window.navigate(view);
+      const header = dom.window.document.querySelector(`#${view}-header`);
+      const root = dom.window.getScrollRoot();
+      root.scrollTop = 570;
+      root.scrollTo = ({ top }) => { root.scrollTop = top; };
+      const control = dom.window.document.createElement('button');
+      control.innerHTML = '<span><svg><path></path></svg></span>';
+      header.appendChild(control);
+      control.querySelector('path').dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true }));
+      assert.equal(root.scrollTop, 570, `${view}: nested icons in controls must not trigger header scroll`);
+      header.dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true }));
+      assert.equal(root.scrollTop, 0, 'Header background keeps intentional back-to-top behavior');
+    }
+  } finally { dom.window.close(); }
+}
+
+async function testScrollResetsAtContentSwapNotLateRenderCompletion() {
+  const dom = await createHarness().createDom();
+  let release;
+  try {
+    const { window } = dom;
+    await window.navigate('albums');
+    const originalRender = window.renderAlbum;
+    window.renderAlbum = async (...args) => {
+      await originalRender(...args);
+      await new Promise(resolve => { release = resolve; });
+    };
+    const navigation = window.navigate('album', { id: 11 });
+    await waitFor(() => release);
+    const main = window.document.querySelector('#main');
+    assert.equal(main.scrollTop, 0, 'The new content starts at the top');
+    main.scrollTop = 550;
+    release();
+    await navigation;
+    assert.equal(main.scrollTop, 550, 'Finishing late work cannot interrupt scrolling after the DOM swap');
+  } finally { release?.(); dom.window.close(); }
+}
+
 async function main() {
+  await testScrollResetsAtContentSwapNotLateRenderCompletion();
+  await testLateBiographyDoesNotResetScrollOrEditAnotherPage();
+  await testHeaderControlsDoNotAccidentallyScrollToTop();
   await testAlbumSwipeOpensPlaylistPickerWithoutPlayingOrInlinePlus();
   await testReopeningTheSameAlbumDoesNotStackHistory();
   await testReopeningTheSameAlbumDoesNotStackHistory('11', true);

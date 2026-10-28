@@ -671,7 +671,7 @@ async function renderAlbums(vc) {
 
   // Scroll to top on header click
   headerEl.addEventListener('click', (e) => {
-    if (e.target.tagName === 'SELECT' || e.target.tagName === 'INPUT' || e.target.tagName === 'BUTTON') return;
+    if (e.target.closest('button, input, select, a, label, [role="button"]')) return;
     getScrollRoot().scrollTo({ top: 0, behavior: 'smooth' });
   });
 
@@ -886,7 +886,7 @@ async function renderArtists(vc) {
 
   // Scroll to top on header click
   headerEl.addEventListener('click', (e) => {
-    if (e.target.tagName === 'INPUT' || e.target.tagName === 'BUTTON') return;
+    if (e.target.closest('button, input, select, a, label, [role="button"]')) return;
     getScrollRoot().scrollTo({ top: 0, behavior: 'smooth' });
   });
 
@@ -2785,18 +2785,17 @@ async function renderArtist(vc, { id }) {
     }
   });
 
-  // Load bio separately
-  try {
-    const bioWrap = UI['artist-bio'];
-    const result = await api(`/artists/${id}/enrich-bio`, { method: 'POST' });
+  // Biography enrichment must not delay navigation completion or its scroll
+  // handoff. Keep the original node so late responses cannot edit another artist.
+  const bioWrap = vc.querySelector('#artist-bio');
+  api(`/artists/${id}/enrich-bio`, { method: 'POST' }).then(result => {
+    if (!bioWrap?.isConnected) return;
     if (result.bio) {
       bioWrap.innerHTML = `<div class="bio-text">${escHtml(result.bio)}</div>`;
     } else {
       bioWrap.innerHTML = '';
     }
-  } catch {
-    if (UI['artist-bio']) UI['artist-bio'].innerHTML = '';
-  }
+  }).catch(() => { /* Biography is optional; keep the rendered artist usable. */ });
 }
 
 // ── Album Detail ──────────────────────────────────────────────────────────────
