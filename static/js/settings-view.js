@@ -118,6 +118,19 @@ async function renderSettings(vc) {
   const [config, scanStatus, dspProfiles] = await Promise.all([
     api('/config'), api('/scan/status'), api('/dsp/profiles')
   ]);
+  // 读不到配置：管理员验证被取消，或请求失败。给出一个明确的状态，
+  // 而不是渲染到一半抛错。视图已经切走时，容器归新视图所有，这里不能动它。
+  if (!config) {
+    if (state.view === 'settings') {
+      vc.innerHTML = `<div class="empty-state">
+        <div class="empty-state-icon">⚠</div>
+        <div class="empty-state-title">Settings are unavailable</div>
+        <div class="empty-state-sub">Administrator verification was cancelled, or the configuration could not be read.</div>
+        <button class="btn btn-gold" style="margin-top:16px" onclick="location.reload()">Reload Application</button>
+      </div>`;
+    }
+    return;
+  }
   const settingsDspProfiles = visibleDspProfiles(dspProfiles || []);
   const activeDspId = String(state.dspProfile || '');
   const dspCategoryOrder = ['reference', 'tone', 'genre', 'custom'];

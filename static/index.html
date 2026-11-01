@@ -8440,8 +8440,18 @@ let authState = {
 // Admin sessions use an HttpOnly cookie; never retain the administrator password.
 let adminDialogActive = false;
 let adminUnlockPromise = null;
+// 打开的管理员验证弹窗属于提出它的那个视图。离开该视图时必须把它一并关闭：
+// 它的遮罩覆盖整个窗口，会吞掉所有指向下层应用的点击。
+let adminDialogDismiss = null;
+let adminDialogOwner = null;
+function dismissAdminDialog() {
+  if (adminDialogDismiss) adminDialogDismiss();
+}
 async function ensureAdminSession() {
   if (adminUnlockPromise) return adminUnlockPromise;
+  // 弹窗属于需要管理员会话的那个视图。在第一个 await 之前捕获，
+  // 因为状态请求还在途中时可能发生导航。
+  const owner = { view: state.view, params: { ...(state.viewParams || {}) } };
   adminUnlockPromise = (async () => {
     try {
       const statusResponse = await fetch('/api/security/status', { cache: 'no-store' });
@@ -8451,7 +8461,7 @@ async function ensureAdminSession() {
       const approved = await showAdminVerification(password => fetch('/api/security/admin-login', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ password }), credentials: 'same-origin',
-      }));
+      }), false, owner);
       return !!approved?.ok;
     } catch { showToast('Unable to verify administrator access. Try again.'); return false; }
   })();
@@ -8478,7 +8488,7 @@ async function managementFetch(url, opts = {}, timeoutMs = 30000) {
   return response;
 }
 
-function showAdminVerification(submit, setupRequired = false) {
+function showAdminVerification(submit, setupRequired = false, owner = null) {
   if (adminDialogActive) return Promise.resolve(null);
   adminDialogActive = true;
   const previousFocus = document.activeElement;
@@ -8505,16 +8515,33 @@ function showAdminVerification(submit, setupRequired = false) {
     const button = dialog.querySelector('#admin-verification-submit');
     const cancel = dialog.querySelector('#admin-verification-cancel');
     const error = dialog.querySelector('[role="alert"]');
-    const close = result => {
+    const close = (result, { restoreFocus = true } = {}) => {
       if (field) field.value = '';
       dialog.remove();
       adminDialogActive = false;
-      if (previousFocus?.isConnected) previousFocus.focus();
+      if (adminDialogDismiss === dismiss) {
+        adminDialogDismiss = null;
+        adminDialogOwner = null;
+      }
+      document.removeEventListener('keydown', onDocumentKeydown, true);
+      if (restoreFocus && previousFocus?.isConnected) previousFocus.focus();
       resolve(result);
     };
+    // 因为视图改变而关闭弹窗时，不能把焦点拉回正在被替换的视图里。
+    const dismiss = () => { if (!busy) close(null, { restoreFocus: false }); };
+    adminDialogDismiss = dismiss;
+    adminDialogOwner = owner || { view: state.view, params: { ...(state.viewParams || {}) } };
+    // Escape 绑在 document 上而不是弹窗本身：浏览器后退之后焦点可能落在
+    // 弹窗之外，绑在弹窗上的监听就再也收不到按键了。
+    const onDocumentKeydown = event => {
+      if (event.key !== 'Escape') return;
+      event.preventDefault();
+      event.stopPropagation();
+      dismiss();
+    };
+    document.addEventListener('keydown', onDocumentKeydown, true);
     cancel.onclick = () => { if (!busy) close(null); };
     dialog.addEventListener('keydown', event => {
-      if (event.key === 'Escape') { event.preventDefault(); if (!busy) close(null); }
       if (event.key === 'Tab') {
         const controls = [...dialog.querySelectorAll('input,button')].filter(item => !item.disabled);
         if (event.shiftKey && document.activeElement === controls[0]) {
@@ -11232,6 +11259,14 @@ const _maxCacheSize = 5;  // Keep last 5 pages in memory
 
 async function navigate(view, params = {}, push = true) {
   log(`[VELVET] Navigating to: ${view}`, params);
+  // 打开的管理员弹窗属于提出它的那个视图。离开该视图时一并关闭弹窗，
+  // 它的全屏遮罩就不会留在应用上面吞掉每一次点击。
+  const owner = adminDialogOwner;
+  if (adminDialogDismiss && owner
+      && sameRoute(owner.view, owner.params, state.view, state.viewParams || {})
+      && !sameRoute(view, params, owner.view, owner.params)) {
+    dismissAdminDialog();
+  }
   const prevView = state.view;
   const prevParams = state.viewParams;
 
@@ -11489,8 +11524,13 @@ function _beginViewHandoff(vc) {
 
 async function render({ restore = false } = {}) {
   log('[VELVET] render() started');
-  if (['settings', 'remote'].includes(state.view) && !await ensureAdminSession()) {
-    await navigate('home', {}, false);
+  const gatedView = state.view;
+  if (['settings', 'remote'].includes(gatedView) && !await ensureAdminSession()) {
+    // 弹窗被取消，或者弹窗打开期间视图已经改变。只有第一种情况仍然属于
+    // 本次渲染；再导航一次会覆盖掉用户刚切换到的视图。
+    if (state.view === gatedView) {
+      await navigate('home', {}, false);
+    }
     return;
   }
   const vc = UI['view-container'];
@@ -11545,6 +11585,9 @@ async function render({ restore = false } = {}) {
     return;
   }
 
+  // 本次渲染对应的视图。请求还在途中时发生的导航会接管容器，
+  // 上一个视图迟到的失败不能画到用户正在看的视图上。
+  const renderingView = state.view;
   try {
     log('[VELVET] Rendering view:', state.view);
     switch (state.view) {
@@ -11575,6 +11618,9 @@ async function render({ restore = false } = {}) {
     log('[VELVET] Render complete:', state.view);
   } catch (e) {
     console.error('[VELVET] render error:', state.view, e);
+    // 已经有更新的导航接管了容器；在这里绘制失败页会替换掉用户
+    // 真正正在看的视图。
+    if (state.view !== renderingView) return;
     vc.innerHTML = `<div class="empty-state">
       <div class="empty-state-icon">⚠</div>
       <div class="empty-state-title">Could not load page</div>
