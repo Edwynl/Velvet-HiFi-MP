@@ -64,6 +64,17 @@ class ArtistRegionTests(unittest.TestCase):
                          'taiwan')
         self.assertEqual(classify(['Sukie S 石詠莉'], []), 'hongkong')
 
+    def test_psyp_is_the_mainland_rapper_not_the_korean_artist(self):
+        # PSY.P 是成都 CDC 厂牌的说唱歌手杨俊逸（Higher Brothers 成员），
+        # 名字和韩国歌手 PSY 相近，但不是同一个人，也不能落在韩国货架。
+        self.assertEqual(classify(['PSY.P'], [('88rising Music', 'Rap')]), 'mainland')
+        self.assertEqual(classify(['PSY.P'], [('88rising Music', 'Rap')] * 3), 'mainland')
+        self.assertEqual(classify(['PSYP'], []), 'mainland')
+        self.assertEqual(classify(['杨俊逸'], []), 'mainland')
+        # 韩国 PSY 本人仍然属于韩国。
+        self.assertEqual(classify(['PSY'], [('P NATION', 'Musiques du monde, Asie, Corée, K-pop')]),
+                         'korea')
+
     def test_names_carrying_two_markets_stay_other(self):
         # A shared English alias must not be curated: it would make both artists
         # resolve to two regions, which classify() deliberately reports as Other.

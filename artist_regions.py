@@ -46,6 +46,9 @@ _NAMES = {
                 '|礼韦 Thehopend|秦昊|程潇|簡弘亦|肖俊|胡夏|苏楚力|葛珊珊|袁帅|霍尊|马闻远|鹭卓|黄誉博'
                 '|姜大声|陈安立|陳文強|陳樂一|陈辉|WILLIM缪维霖|丁于|小麻M.Refre$H'
                 '|Jony J|Vava|Higher Brothers|KnowKnow|Melo|7Teen|Bruce Liu|Xiao Xia|GoKKy'
+                # PSY.P 是成都 CDC 厂牌的说唱歌手杨俊逸（Higher Brothers 成员），
+                # 与韩国歌手 PSY 是两个人；此前因名字相近被误列入韩国名单。
+                '|PSY.P|PSYP|杨俊逸'
                 '|Xiayin Wang|Jo-Yu Chen|Liu Yunzhi|China National Symphony Orchestra|余佳运|王加一'
                 '|盛夏光年|Shen Wanwan|张可盈|孔令奇|张一鸣|李曉東|艾小伦|喻言|王箏|蔡国庆'
                 '|陳安立|陳穎欣|陳紅|陳輝|雅麗|龚玥|承桓|宋沛 MattyPei|慧凯|DENZEL丹澤|张昊'
@@ -188,7 +191,7 @@ _WEST_NAMES += ('|Ariana Grande|Travis Scott|AYLIVA|Daniela Andrade|Geza Anda|Li
                 '|The Tallis Scholars|Theodore Platt|Tiffany Stringer|Timmy McKeever'
                 '|Tudor Iustin Andrei')
 _NORTH_NAMES = 'ITZY|李承铉'
-_NORTH_NAMES += ('|Minnie|ATEEZ|EVERGLOW|JEON SOMI|PSY.P|Hera Hyesang Park|Seong-Jin Cho'
+_NORTH_NAMES += ('|Minnie|ATEEZ|EVERGLOW|JEON SOMI|Hera Hyesang Park|Seong-Jin Cho'
                  '|YUJU|Gunho|Lee Seung Chul|Lim Jae Beum|MOON haewon|Eric Nam|Daesung'
                  '|T.O.P|GD X TAEYANG|Doyi Lee|KiiiKiii|Billlie')
 _JP_NAMES = ('|Kajiura Yuki|梶浦由記|Joe Hisaishi|久石譲|Kinokoteikoku|Ken Ara'
