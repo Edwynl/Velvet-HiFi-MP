@@ -7,8 +7,12 @@
 import assert from 'node:assert/strict';
 import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-const root = new URL('../../', import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1');
+// fileURLToPath, not URL.pathname: the pathname keeps percent escapes, so a
+// checkout under a path with a space ("Claude Code") pointed at a directory
+// that does not exist and the guard failed instead of reading the sources.
+const root = fileURLToPath(new URL('../../', import.meta.url));
 const jsDir = join(root, 'static', 'js');
 const files = [
   join(root, 'static', 'index.html'),
