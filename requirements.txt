@@ -5,6 +5,7 @@ mutagen>=1.47.0                # Audio metadata extraction
 opencc==1.4.2                   # Offline, phrase-aware Chinese search normalization
 pydantic-settings>=2.2.1        # Settings management
 bcrypt>=4.1.2                   # Password hashing
+zhconv>=1.4.1                   # Simplified/Traditional conversion for the avatar backfill script
 numpy>=1.26.0,<3.0.0            # Native audio float32 processing (sounddevice callback)
 # Native (WASAPI/ASIO host API) output. Windows and macOS wheels bundle PortAudio;
 # on Linux install libportaudio2 and `pip install sounddevice` manually.

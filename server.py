@@ -65,6 +65,7 @@ from dsp_engine import (
 )
 from audio_streaming import (
     StreamLease, StreamSlots, TranscodeGuard, TranscodeStreamingResponse, iter_ffmpeg_stdout,
+    browser_can_decode,
     ffmpeg_supports_soxr,
 )
 from db_pool import (
@@ -2728,6 +2729,43 @@ async def _prepare_browser_dsp_file(file_path: str, dsp_filter: str, timeout_sec
                 task.exception()  # retrieve failures even when the requester disconnected
         job.add_done_callback(finished)
     return await asyncio.shield(job)
+def _file_mtime(file_path: str) -> float:
+    """Cache key component so a replaced file is re-probed without a restart."""
+    try:
+        return os.path.getmtime(filesystem_path(file_path))
+    except OSError:
+        return 0.0
+
+
+async def _stream_browser_safe(file_path: str, timeout_seconds: int = 3600):
+    """Downmix to stereo PCM WAV for files a browser cannot decode itself.
+
+    E-AC3/Dolby Atmos .m4a and multichannel FLAC decode fine in FFmpeg but play
+    silent in an <audio> element. This is not an upgrade path, only a
+    compatibility bridge, so it is reserved for files the direct route cannot
+    hand to the browser untouched.
+    """
+    lease = await _acquire_transcode_slot()
+    cmd = [
+        "ffmpeg", "-nostdin", "-i", filesystem_path(file_path),
+        "-vn", "-sn", "-dn",
+        "-ac", "2",
+        "-c:a", "pcm_s32le",
+        "-f", "wav",
+        "pipe:1",
+        "-loglevel", "error",
+    ]
+    # Releases the slot only after FFmpeg has exited (or never started).
+    guard = TranscodeGuard(lease.release)
+    return TranscodeStreamingResponse(
+        iter_ffmpeg_stdout(cmd, timeout_seconds=timeout_seconds, guard=guard),
+        guard=guard,
+        media_type="audio/wav",
+        headers={
+            "X-Output-Mode": "CompatibilityTranscode",
+            "Cache-Control": "no-cache",
+        },
+    )
 
 
 def _select_pcm_upsample_rate(source_rate: int | None, multiplier: str) -> str | None:
@@ -2890,6 +2928,19 @@ async def stream_track(
     if dsp_filter:
         limit = _transcode_time_limit_seconds(track["duration"], timeout_minutes)
         return await _stream_with_dsp(fp, dsp_filter, limit, start_seconds=start)
+
+    # Not every codec the library holds is playable natively in a browser.
+    # E-AC3/Dolby Atmos inside .m4a and multichannel FLAC decode in FFmpeg but
+    # play silent in <audio>, so those need a downmix instead of the raw file.
+    if not await asyncio.to_thread(browser_can_decode, filesystem_path(fp), _file_mtime(fp)):
+        if request.method == "HEAD":
+            # Describe the compatibility stream without starting FFmpeg.
+            return Response(media_type="audio/wav", headers={
+                "X-Output-Mode": "CompatibilityTranscode",
+                "Cache-Control": "no-cache",
+            })
+        limit = _transcode_time_limit_seconds(track["duration"], timeout_minutes)
+        return await _stream_browser_safe(fp, limit)
 
     return _stream_file_direct(fp, request, track["format"] or "")
 

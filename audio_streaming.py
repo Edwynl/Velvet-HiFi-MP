@@ -6,6 +6,7 @@ client cancellation close the decoder instead of leaving background processes.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import anyio
@@ -13,6 +14,7 @@ import shutil
 import subprocess
 import threading
 from functools import lru_cache
+from pathlib import Path
 from collections.abc import AsyncIterator, Callable, Sequence
 
 from starlette.responses import StreamingResponse
@@ -35,6 +37,70 @@ def ffmpeg_supports_soxr() -> bool:
         return result.returncode == 0
     except (OSError, subprocess.TimeoutExpired):
         return False
+
+
+# Codecs mainstream browsers decode natively inside an <audio> element.
+BROWSER_SAFE_CODECS = frozenset({"flac", "alac", "mp3", "aac", "opus", "vorbis"})
+
+
+def _browser_safe_codec(codec: str) -> bool:
+    """Return True when a browser decodes the codec without help.
+
+    Uncompressed PCM in a WAV container is natively playable, so every pcm_*
+    variant counts as safe; only proprietary or exotic encodings need a bridge.
+    """
+    return codec in BROWSER_SAFE_CODECS or codec.startswith("pcm_")
+
+
+def _ffprobe_executable() -> str | None:
+    """Locate ffprobe, falling back to the directory of the paired ffmpeg."""
+    found = shutil.which("ffprobe")
+    if found:
+        return found
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        return None
+    sibling = Path(ffmpeg).with_name("ffprobe.exe" if os.name == "nt" else "ffprobe")
+    return str(sibling) if sibling.exists() else None
+
+
+@lru_cache(maxsize=4096)
+def browser_can_decode(file_path: str, mtime: float = 0.0) -> bool:
+    """Report whether a browser plays the file natively, without transcoding.
+
+    Serving the original bytes works for codecs every browser knows, but
+    E-AC3/Dolby Atmos inside .m4a decodes cleanly in FFmpeg and stays silent
+    in <audio>, and multichannel FLAC has no standard browser output mapping.
+    Either case must be downmixed server-side instead of being pushed raw.
+
+    An unreadable or unprobeable file is reported as playable so a probe failure
+    never blocks a stream that would otherwise work. mtime keys the cache so a
+    replaced file is re-classified without a restart.
+    """
+    executable = _ffprobe_executable()
+    if not executable:
+        return True
+    try:
+        result = subprocess.run([
+            executable, "-v", "error", "-select_streams", "a:0",
+            "-show_entries", "stream=codec_name,channels",
+            "-of", "json", file_path,
+        ], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=15)
+        if result.returncode != 0:
+            return True
+        streams = json.loads(result.stdout or b"{}").get("streams") or []
+        if not streams:
+            return True
+        stream = streams[0]
+        codec = str(stream.get("codec_name") or "").strip().lower()
+        channels = stream.get("channels")
+        if codec and not _browser_safe_codec(codec):
+            return False
+        if channels is not None and int(channels) > 2:
+            return False
+        return True
+    except (OSError, ValueError, TypeError, subprocess.TimeoutExpired):
+        return True
 
 
 class StreamLease:
