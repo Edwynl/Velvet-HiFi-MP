@@ -9595,17 +9595,57 @@ document.addEventListener('visibilitychange', () => {
 // so that HTML5 Audio continues on mobile lock screen. VU overlay calls initAudioAnalyser
 // when the user opens it. See "AudioContext / VU Meter Notes" above.
 
+// Offline downloads (static/js/offline-store.js). A downloaded track plays from
+// its blob: URL unless server-side EQ or upsampling is on; then it streams, and
+// the local copy is only the fallback for when the server cannot be reached.
+let browserForceLocal = false;
+let offlineCopyToastTrackId = null;
+window.addEventListener('online', () => { browserForceLocal = false; });
+
+function browserPrefersLocal() {
+  return browserForceLocal || (!state.dspProfile && (state.upsample || 'none') === 'none');
+}
+
+function localPlaybackUrl(trackId) {
+  const offline = window.VelvetOffline;
+  if (!offline?.has(trackId) || !browserPrefersLocal()) return '';
+  return offline.urlFor(trackId);
+}
+
+function probeServerReachable(timeoutMs = 3000) {
+  if (navigator.onLine === false) return Promise.resolve(false);
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  return fetch('/api/security/status', { cache: 'no-store', signal: controller.signal })
+    .then(response => response.ok, () => false)
+    .finally(() => clearTimeout(timer));
+}
+
 async function startBrowserPlayback(track, { resumeTime = null, token = null } = {}) {
   const playbackToken = token ?? ++browserPlaybackToken;
+  // Warm local copies (see playTrack) keep play() synchronous within the tap.
+  const wantsLocal = !!window.VelvetOffline?.has(track.id) && browserPrefersLocal();
+  let localUrl = wantsLocal ? localPlaybackUrl(track.id) : '';
+  const localWasAwaited = wantsLocal && !localUrl;
+  if (localWasAwaited) localUrl = await window.VelvetOffline.load(track.id).catch(() => '');
   // Synchronous whenever a credential response delivered a ticket. Awaiting
   // is a last resort (ticket expired while the page slept); if the browser
   // then refuses play() for lack of a fresh gesture, ask for one more tap.
-  let ticket = authState.apiKey ? currentStreamTicket() : '';
-  const ticketWasAwaited = !!authState.apiKey && !ticket;
-  if (ticketWasAwaited) ticket = await refreshStreamTicket();
-  const streamOffset = Number.isFinite(resumeTime) && resumeTime > 0 && browserStreamNeedsOffset(track) ? resumeTime : 0;
-  const targetUrl = streamUrl(track.id, undefined, ticket) + (streamOffset ? `&start=${encodeURIComponent(streamOffset)}` : '');
+  let ticket = '';
+  let ticketWasAwaited = false;
+  if (!localUrl) {
+    ticket = authState.apiKey ? currentStreamTicket() : '';
+    ticketWasAwaited = !!authState.apiKey && !ticket;
+    if (ticketWasAwaited) ticket = await refreshStreamTicket();
+  }
+  const streamOffset = !localUrl && Number.isFinite(resumeTime) && resumeTime > 0 && browserStreamNeedsOffset(track) ? resumeTime : 0;
+  const targetUrl = localUrl ||
+    streamUrl(track.id, undefined, ticket) + (streamOffset ? `&start=${encodeURIComponent(streamOffset)}` : '');
   if (playbackToken !== browserPlaybackToken) return false;
+  if (localUrl && !(!state.dspProfile && (state.upsample || 'none') === 'none') && offlineCopyToastTrackId !== track.id) {
+    offlineCopyToastTrackId = track.id;
+    showToast('Offline copy, EQ off');
+  }
   clearDspStartupHealthCheck();
 
   cancelBrowserPlaybackRecovery();
@@ -9650,11 +9690,11 @@ async function startBrowserPlayback(track, { resumeTime = null, token = null } =
     await audio.play();
     // Keep VU audio in sync with the new playback state / src
     syncVUAudioToPlayback();
-    scheduleDspStartupHealthCheck(playbackToken);
+    if (!localUrl) scheduleDspStartupHealthCheck(playbackToken);
   } catch (error) {
     if (playbackToken !== browserPlaybackToken) return false;
     reportBrowserAudio('play-rejected', error);
-    if (state.dspProfile) {
+    if (state.dspProfile && !localUrl) {
       const errorMessage = String(error?.message || '').toLowerCase();
       const likelyUnsupported =
         errorMessage.includes('not supported') ||
@@ -9670,6 +9710,8 @@ async function startBrowserPlayback(track, { resumeTime = null, token = null } =
     console.warn('[VELVET] Browser playback failed:', error?.message || error);
     if (ticketWasAwaited && error?.name === 'NotAllowedError') {
       showToast('Secure stream ready. Tap play again.');
+    } else if (localWasAwaited && error?.name === 'NotAllowedError') {
+      showToast('Offline copy ready. Tap play again.');
     }
     state.playing = false;
     updatePlayBtnUI();
@@ -9696,6 +9738,10 @@ async function playTrack(track, queue, idx, { resume = false } = {}) {
   }
   state.queue    = queue || state.queue;
   state.queueIdx = idx   !== undefined ? idx : state.queueIdx;
+  // Prepare blob: URLs for this track and the next so neither a tap nor the
+  // lock-screen advance has to wait on IndexedDB before play().
+  const upNext = state.queue?.[state.queueIdx + 1];
+  window.VelvetOffline?.warm(upNext ? [track.id, upNext.id] : [track.id]).catch(() => {});
 
   // Only update player UI if this is a different track from what's currently playing.
   // This avoids expensive DOM updates (especially cover art reload) when resuming the
@@ -10308,13 +10354,31 @@ audio.addEventListener('pause', () => {
 audio.addEventListener('error', () => {
   reportBrowserAudio('media-error');
   const errCode = Number(audio.error?.code || 0);
+  const track = state.currentTrack;
+  // A downloaded track streaming with EQ: if the server is gone (Tailscale
+  // dropped, no signal), play the local copy instead of retrying the stream.
+  if (isBrowserZone() && track && !browserForceLocal && window.VelvetOffline?.has(track.id) &&
+      !String(audio.src).startsWith('blob:')) {
+    const resumeTime = browserPlaybackPosition();
+    probeServerReachable().then(reachable => {
+      if (state.currentTrack !== track) return;
+      if (reachable) { handleBrowserAudioError(errCode); return; }
+      browserForceLocal = true;
+      startBrowserPlayback(track, { resumeTime }).catch(() => {});
+    });
+    return;
+  }
+  handleBrowserAudioError(errCode);
+});
+
+function handleBrowserAudioError(errCode) {
   if (errCode === 4 && state.dspProfile) {
     const failures = noteDspError(state.dspProfile);
     if (failures >= 2 && attemptDspAutoFallback('media-src-not-supported')) return;
   }
   if (!canRecoverBrowserPlayback()) return;
   scheduleBrowserPlaybackRecovery('error', { delayMs: browserPlaybackRecoveryConfig.pauseDelayMs });
-});
+}
 
 audio.addEventListener('ended', async () => {
   if (isCastZone() || isNativeZone()) return; // Handle outside browser output
@@ -12341,6 +12405,11 @@ loadStats();
 loadDspProfiles();
 
 window.addEventListener('DOMContentLoaded', async () => {
+  // Offline downloads use the same short-lived stream ticket as <audio>.
+  window.VelvetOffline?.configure?.({
+    getTicket: async () => (authState.apiKey ? currentStreamTicket() || await refreshStreamTicket() : ''),
+  });
+  window.VelvetOffline?.init().catch(error => console.warn('[VELVET] Offline index unavailable:', error));
   // Refresh the cover-only HttpOnly cookie for clients with a saved API key.
   // Startup session refresh: also delivers the stream ticket before the first
   // navigation renders anything the user can tap.
