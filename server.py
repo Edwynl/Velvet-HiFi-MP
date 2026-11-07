@@ -4460,6 +4460,7 @@ PUBLIC_FRONTEND_JS_MODULES = frozenset({
     "dsp-controls.js",
     "remote-settings.js",
     "vu-meter-engine.js",
+    "offline-store.js",
 })
 PUBLIC_FRONTEND_JS_PATHS = frozenset(
     f"/static/js/{name}" for name in PUBLIC_FRONTEND_JS_MODULES
