@@ -14,12 +14,20 @@
 const OFFLINE_WARM_LIMIT = 4;
 const OFFLINE_FETCH_ATTEMPTS = 3;
 const OFFLINE_CHUNK_BYTES = 4 * 1024 * 1024;
+const OFFLINE_RETRY_DELAYS_MS = [1000, 3000];
 
-function createOfflineManager({ store, fetchTrack, createObjectURL, revokeObjectURL, persist = null }) {
+function createOfflineManager({
+  store, fetchTrack, createObjectURL, revokeObjectURL, persist = null,
+  sleep = ms => new Promise(resolve => setTimeout(resolve, ms)),
+}) {
   const stored = new Set();
   const warmUrls = new Map(); // track id -> object URL; insertion order is least recent first
   const listeners = new Set();
   let current = null;
+  // The track <audio> is playing from its blob: URL. That URL is never revoked
+  // while pinned; a removal parks it here until another track takes over.
+  let pinnedId = null;
+  let releaseOnUnpin = null;
 
   const snapshot = () => current && { playlistId: current.playlistId, done: current.done, total: current.total };
   const emit = () => {
@@ -30,11 +38,11 @@ function createOfflineManager({ store, fetchTrack, createObjectURL, revokeObject
 
   // Streams one track into chunks; resolves its metadata record once the
   // whole body arrived and passed the size checks. Partial chunks are removed.
-  async function saveTrack(track) {
+  async function saveTrack(track, signal) {
     const id = Number(track.id);
     await store.deleteChunks(id); // Leftovers of an interrupted earlier attempt.
     try {
-      const { chunks, contentLength = null, minBytes = null, type = '' } = await fetchTrack(track);
+      const { chunks, contentLength = null, minBytes = null, type = '' } = await fetchTrack(track, signal);
       let parts = [];
       let partBytes = 0;
       let index = 0;
@@ -65,23 +73,34 @@ function createOfflineManager({ store, fetchTrack, createObjectURL, revokeObject
     }
   }
 
-  async function saveWithRetries(track) {
+  // Throws the last error after OFFLINE_FETCH_ATTEMPTS, backing off between
+  // attempts. Quota errors and a pause end it at once.
+  async function saveWithRetries(track, job) {
     let lastError;
     for (let attempt = 0; attempt < OFFLINE_FETCH_ATTEMPTS; attempt++) {
+      if (attempt) await sleep(OFFLINE_RETRY_DELAYS_MS[attempt - 1]);
+      if (job.paused) break;
       try {
-        return await saveTrack(track);
+        return await saveTrack(track, job.controller.signal);
       } catch (error) {
-        if (isQuotaError(error)) throw error;
+        if (isQuotaError(error) || job.paused) throw error;
         lastError = error;
       }
     }
     throw lastError;
   }
 
+  function release(url) {
+    if (url) revokeObjectURL(url);
+  }
+
   function forget(id) {
     stored.delete(id);
     const url = warmUrls.get(id);
-    if (url) { warmUrls.delete(id); revokeObjectURL(url); }
+    if (!url) return;
+    warmUrls.delete(id);
+    if (id === pinnedId) releaseOnUnpin = url;
+    else release(url);
   }
 
   // Deletes the given tracks unless an offline playlist still references them.
@@ -97,6 +116,7 @@ function createOfflineManager({ store, fetchTrack, createObjectURL, revokeObject
   const manager = {
     async init() {
       (await store.listTrackIds()).forEach(id => stored.add(Number(id)));
+      emit(); // Pages rendered before the index loaded refresh their buttons and markers.
     },
 
     has: id => stored.has(Number(id)),
@@ -119,11 +139,20 @@ function createOfflineManager({ store, fetchTrack, createObjectURL, revokeObject
       const url = createObjectURL(new Blob(parts, { type: record.type || '' }));
       warmUrls.set(id, url);
       while (warmUrls.size > OFFLINE_WARM_LIMIT) {
-        const [oldestId, oldestUrl] = warmUrls.entries().next().value;
+        const oldestId = [...warmUrls.keys()].find(key => key !== pinnedId);
+        release(warmUrls.get(oldestId));
         warmUrls.delete(oldestId);
-        revokeObjectURL(oldestUrl);
       }
       return url;
+    },
+
+    // Marks the track whose blob: URL <audio> now uses (null: none).
+    pin(trackId) {
+      pinnedId = trackId == null ? null : Number(trackId);
+      if (releaseOnUnpin && !(pinnedId != null && warmUrls.get(pinnedId) === releaseOnUnpin)) {
+        release(releaseOnUnpin);
+        releaseOnUnpin = null;
+      }
     },
 
     async warm(trackIds) {
@@ -140,8 +169,11 @@ function createOfflineManager({ store, fetchTrack, createObjectURL, revokeObject
 
     job: snapshot,
 
+    // Stops now: the track in flight is abandoned and fetched again on resume.
     pause() {
-      if (current) current.paused = true;
+      if (!current) return;
+      current.paused = true;
+      current.controller.abort();
     },
 
     onChange(listener) {
@@ -153,18 +185,24 @@ function createOfflineManager({ store, fetchTrack, createObjectURL, revokeObject
       if (current) return { downloaded: 0, failed: 0, stopped: 'busy' };
       const playlistId = Number(playlist.id);
       const trackIds = playlist.tracks.map(track => Number(track.id));
-      current = { playlistId, done: 0, total: trackIds.length, paused: false };
+      current = { playlistId, done: 0, total: trackIds.length, paused: false, controller: new AbortController() };
       const result = { downloaded: 0, failed: 0, stopped: null };
       try {
         const previous = await store.getPlaylist(playlistId);
-        await store.putPlaylist({
-          id: playlistId,
-          name: playlist.name || '',
-          description: playlist.description || '',
-          tracks: playlist.tracks,
-          trackIds,
-          savedAt: Date.now(),
-        });
+        try {
+          await store.putPlaylist({
+            id: playlistId,
+            name: playlist.name || '',
+            description: playlist.description || '',
+            tracks: playlist.tracks,
+            trackIds,
+            savedAt: Date.now(),
+          });
+        } catch (error) {
+          if (!isQuotaError(error)) throw error;
+          result.stopped = 'quota';
+          return result;
+        }
         // Tracks removed from the playlist on the server since the last download.
         if (previous) await deleteUnreferenced(previous.trackIds.filter(id => !trackIds.includes(id)));
         current.done = trackIds.filter(id => stored.has(id)).length;
@@ -174,12 +212,13 @@ function createOfflineManager({ store, fetchTrack, createObjectURL, revokeObject
           if (stored.has(id)) continue;
           if (current.paused) { result.stopped = 'paused'; break; }
           try {
-            const record = await saveWithRetries(track);
+            const record = await saveWithRetries(track, current);
             await store.putTrack(record).catch(async error => {
               await store.deleteChunks(id).catch(() => {}); // No record means no track: free its audio.
               throw error;
             });
           } catch (error) {
+            if (current.paused) { result.stopped = 'paused'; break; }
             if (isQuotaError(error)) { result.stopped = 'quota'; break; }
             console.warn('[VELVET] offline download skipped track', id, error?.message || error);
             result.failed++;
@@ -289,11 +328,11 @@ if (typeof window !== 'undefined' && window.indexedDB) {
     store: createIdbOfflineStore(window.indexedDB),
     // The plain stream URL: original file for browser-playable codecs, the
     // server's stereo compatibility stream otherwise. Never DSP or upsampled.
-    async fetchTrack(track) {
+    async fetchTrack(track, signal) {
       const ticket = await getTicket();
       const url = `/api/stream/${encodeURIComponent(track.id)}?upsample=none` +
         (ticket ? `&ticket=${encodeURIComponent(ticket)}` : '');
-      const response = await fetch(url, { cache: 'no-store' });
+      const response = await fetch(url, { cache: 'no-store', signal });
       if (!response.ok || !response.body) throw new Error(`HTTP ${response.status}`);
       const length = Number(response.headers.get('Content-Length'));
       const contentLength = Number.isFinite(length) && length > 0 ? length : null;

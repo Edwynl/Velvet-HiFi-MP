@@ -31,7 +31,8 @@ async function waitFor(predicate, timeoutMs = 5000) {
 
 function fakeOffline({ stored = [], warm = {} } = {}) {
   const fake = {
-    calls: { init: 0, configure: [], warm: [], load: [] },
+    calls: { init: 0, configure: [], warm: [], load: [], pin: [] },
+    pin(id) { fake.calls.pin.push(id == null ? null : Number(id)); },
     loadResult: null,
     async init() { fake.calls.init++; },
     configure(options) { fake.calls.configure.push(options); },
@@ -231,6 +232,67 @@ const src = dom => dom.window.eval('audio.src');
   assert.ok(!toasts.some(t => /Retrying EQ|EQ could not play/.test(t)), toasts.join(' | '));
   assert.equal(toasts.filter(t => t === 'Offline copy, EQ off').length, 1);
   assert.equal(seen.status - statusBefore, 1, 'One reachability probe serves both failure paths');
+  dom.window.close();
+}
+
+// The track <audio> plays from is pinned, so its URL is never revoked under it;
+// streaming unpins.
+{
+  const offline = fakeOffline({ stored: [7], warm: { 7: 'blob:local/7' } });
+  const { dom } = await boot({ offline });
+  await dom.window.startBrowserPlayback({ id: 7, title: 'T' });
+  assert.equal(offline.calls.pin.at(-1), 7);
+  dom.window.eval("state.dspProfile = '3'");
+  await dom.window.startBrowserPlayback({ id: 7, title: 'T' });
+  assert.equal(offline.calls.pin.at(-1), null);
+  dom.window.close();
+}
+
+// The fallback reports the outcome of the local playback it started, so
+// callers do not announce a failure while the copy is playing.
+{
+  const offline = fakeOffline({ stored: [7], warm: { 7: 'blob:local/7' } });
+  const { dom } = await boot({
+    offline,
+    statusReachable: () => false,
+    playImpl: (el, window) => (el.src.startsWith('blob:') ? resolvedPlay(el)
+      : Promise.reject(new window.DOMException('The element has no supported sources.', 'NotSupportedError'))),
+  });
+  dom.window.eval("state.dspProfile = '3'");
+  assert.equal(await dom.window.startBrowserPlayback({ id: 7, title: 'T' }), true);
+  assert.equal(src(dom), 'blob:local/7');
+  assert.equal(dom.window.eval('state.playing'), true);
+  dom.window.close();
+}
+
+// A local copy refused outside a gesture (the fallback runs after a probe)
+// asks for a tap instead of stopping silently.
+{
+  const offline = fakeOffline({ stored: [7], warm: { 7: 'blob:local/7' } });
+  const { dom, toasts } = await boot({
+    offline,
+    playImpl: (el, window) => Promise.reject(new window.DOMException('gesture required', 'NotAllowedError')),
+  });
+  dom.window.eval("state.dspProfile = '3'; browserForceLocal = true");
+  assert.equal(await dom.window.startBrowserPlayback({ id: 7, title: 'T' }), false);
+  assert.ok(toasts.some(t => /Tap play again/.test(t)), toasts.join(' | '));
+  dom.window.close();
+}
+
+// A media error while the local copy plays never counts against the EQ preset.
+{
+  const offline = fakeOffline({ stored: [7], warm: { 7: 'blob:local/7' } });
+  const { dom } = await boot({ offline });
+  let dspErrors = 0;
+  dom.window.noteDspError = () => ++dspErrors;
+  dom.window.eval("state.dspProfile = '3'; browserForceLocal = true");
+  await dom.window.playTrack({ id: 7, title: 'T', artist_name: 'A' }, [{ id: 7 }], 0);
+  const element = dom.window.eval('audio');
+  Object.defineProperty(element, 'error', { configurable: true, get: () => ({ code: 4 }) });
+  element.dispatchEvent(new dom.window.Event('error'));
+  element.dispatchEvent(new dom.window.Event('error'));
+  assert.equal(dspErrors, 0);
+  assert.equal(dom.window.eval('state.dspProfile'), '3');
   dom.window.close();
 }
 

@@ -6,7 +6,7 @@ import vm from 'node:vm';
 // bare VM with an in-memory store. The IndexedDB adapter is exercised in the
 // browser; nothing here may depend on window/indexedDB existing.
 const source = readFileSync('static/js/offline-store.js', 'utf8');
-const sandbox = vm.createContext({ Promise, Map, Set, Date, Error, Blob, Uint8Array, console });
+const sandbox = vm.createContext({ Promise, Map, Set, Date, Error, Blob, Uint8Array, AbortController, console });
 vm.runInContext(source, sandbox);
 assert.equal(sandbox.VelvetOffline, undefined, 'No IndexedDB means no global instance');
 
@@ -44,7 +44,7 @@ const bytes = n => new Uint8Array(n);
 // A body delivered in pieces, the way a ReadableStream reader yields it.
 const body = (...sizes) => sizes.map(bytes);
 
-function setup({ fetchTrack } = {}) {
+function setup({ fetchTrack, sleeps = [] } = {}) {
   const store = memoryStore();
   const calls = [];
   const revoked = [];
@@ -58,6 +58,7 @@ function setup({ fetchTrack } = {}) {
     }),
     createObjectURL: blob => { const url = `blob:velvet/${++urls}`; urlBlobs.set(url, blob); return url; },
     revokeObjectURL: url => revoked.push(url),
+    sleep: async ms => { sleeps.push(ms); },
   });
   return { store, manager, calls, revoked, urlBlobs };
 }
@@ -152,7 +153,8 @@ const playlist = (id, ids) => ({ id, name: `P${id}`, tracks: ids.map(t => ({ id:
 // A track failing three times is skipped; the rest still download.
 {
   const attempts = new Map();
-  const { manager } = setup({ fetchTrack: async track => {
+  const sleeps = [];
+  const { manager } = setup({ sleeps, fetchTrack: async track => {
     attempts.set(track.id, (attempts.get(track.id) || 0) + 1);
     if (track.id === 11) throw new Error('boom');
     return { chunks: body(1), contentLength: null, type: 'audio/flac' };
@@ -162,6 +164,66 @@ const playlist = (id, ids) => ({ id, name: `P${id}`, tracks: ids.map(t => ({ id:
   assert.equal(result.failed, 1);
   assert.equal(result.downloaded, 1);
   assert.equal(manager.has(22), true);
+  assert.deepEqual([...sleeps], [1000, 3000], 'Retries back off instead of firing back to back');
+}
+
+// pause() aborts the track in flight instead of waiting for it to finish,
+// and an aborted track is neither retried nor counted as failed.
+{
+  let manager;
+  const sleeps = [];
+  let calls = 0;
+  ({ manager } = setup({ sleeps, fetchTrack: (track, signal) => {
+    calls++;
+    return new Promise((resolve, reject) => {
+      signal.addEventListener('abort', () => { const e = new Error('aborted'); e.name = 'AbortError'; reject(e); });
+      setTimeout(() => manager.pause(), 0);
+    });
+  } }));
+  const result = await manager.download(playlist(1, [11, 22]));
+  assert.equal(result.stopped, 'paused');
+  assert.equal(result.failed, 0);
+  assert.equal(calls, 1);
+  assert.deepEqual([...sleeps], []);
+  assert.equal(manager.has(11), false);
+}
+
+// A full disk while saving the playlist manifest reports quota, not a crash.
+{
+  const { store, manager } = setup();
+  store.putPlaylist = async () => { const e = new Error('full'); e.name = 'QuotaExceededError'; throw e; };
+  const result = await manager.download(playlist(1, [11]));
+  assert.equal(result.stopped, 'quota');
+  assert.equal(manager.job(), null);
+}
+
+// init() announces itself, so a page rendered before the index loaded refreshes.
+{
+  const { store, manager } = setup();
+  await manager.download(playlist(1, [11]));
+  const again = sandbox.createOfflineManager({ store, fetchTrack: async () => { throw new Error('no'); },
+    createObjectURL: () => 'blob:x', revokeObjectURL() {} });
+  const heard = [];
+  again.onChange(job => heard.push(again.has(11) && job === null));
+  await again.init();
+  assert.deepEqual(heard, [true]);
+}
+
+// The URL of the track that is playing is never revoked from under <audio>:
+// not by removal, not by warm() eviction. It goes once another track plays.
+{
+  const { manager, revoked } = setup();
+  await manager.download(playlist(1, [1, 2, 3, 4, 5, 6]));
+  const playing = await manager.load(1);
+  manager.pin(1);
+  await manager.warm([2, 3, 4, 5, 6]);
+  assert.ok(!revoked.includes(playing), 'Eviction skips the pinned URL');
+  assert.equal(manager.urlFor(1), playing);
+  await manager.remove(1);
+  assert.equal(manager.has(1), false);
+  assert.ok(!revoked.includes(playing), 'Removal defers the playing URL');
+  manager.pin(null);
+  assert.ok(revoked.includes(playing), 'Released once nothing pins it');
 }
 
 // Storage full stops the whole job and keeps what was saved.

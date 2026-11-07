@@ -9647,22 +9647,24 @@ function probeServerReachable(timeoutMs = 3000) {
 }
 
 // A streamed track with a local copy failed (play() rejected or a media
-// error). Resolves 'local' after switching to the copy because the server is
-// unreachable, 'reachable' when the stream itself is the problem, or 'stale'
-// when another track took over. Both failure paths share one probe.
+// error). Resolves { outcome, played }: 'local' after switching to the copy
+// because the server is unreachable (played: that playback's result),
+// 'reachable' when the stream itself is the problem, or 'stale' when another
+// track took over. Both failure paths share one probe and one local restart.
 let offlineFallbackProbe = null;
+let offlineFallbackPlayback = null;
 function fallBackToOfflineCopy(track, resumeTime) {
   if (!offlineFallbackProbe) {
     offlineFallbackProbe = probeServerReachable().finally(() => { offlineFallbackProbe = null; });
   }
   return offlineFallbackProbe.then(reachable => {
-    if (state.currentTrack && state.currentTrack.id !== track.id) return 'stale';
-    if (reachable) return 'reachable';
+    if (state.currentTrack && state.currentTrack.id !== track.id) return { outcome: 'stale', played: null };
+    if (reachable) return { outcome: 'reachable', played: null };
     if (!browserForceLocal) {
       browserForceLocal = true;
-      startBrowserPlayback(track, { resumeTime }).catch(() => {});
+      offlineFallbackPlayback = startBrowserPlayback(track, { resumeTime }).catch(() => false);
     }
-    return 'local';
+    return { outcome: 'local', played: offlineFallbackPlayback };
   });
 }
 
@@ -9692,6 +9694,8 @@ async function startBrowserPlayback(track, { resumeTime = null, token = null } =
   const targetUrl = localUrl ||
     streamUrl(track.id, undefined, ticket) + (streamOffset ? `&start=${encodeURIComponent(streamOffset)}` : '');
   if (playbackToken !== browserPlaybackToken) return false;
+  // The URL <audio> is about to use must outlive removals and warm() eviction.
+  window.VelvetOffline?.pin?.(localUrl ? track.id : null);
   if (localUrl && browserHasServerProcessing() && offlineCopyToastTrackId !== track.id) {
     offlineCopyToastTrackId = track.id;
     showToast('Offline copy, EQ off');
@@ -9746,9 +9750,12 @@ async function startBrowserPlayback(track, { resumeTime = null, token = null } =
     reportBrowserAudio('play-rejected', error);
     // An unreachable server is not an EQ codec problem: try the local copy
     // before the EQ fallback below changes the container or turns EQ off.
-    if (canFallBackToOfflineCopy(track) && error?.name !== 'NotAllowedError' &&
-        await fallBackToOfflineCopy(track, resumeTime) !== 'reachable') {
-      return false;
+    if (canFallBackToOfflineCopy(track) && error?.name !== 'NotAllowedError') {
+      const { outcome, played } = await fallBackToOfflineCopy(track, resumeTime);
+      // Report the local playback's result: callers must not announce a
+      // failure while the copy is playing.
+      if (outcome === 'local') return (await played) === true;
+      if (outcome === 'stale') return false;
     }
     if (playbackToken !== browserPlaybackToken) return false;
     if (state.dspProfile && !localUrl) {
@@ -9767,7 +9774,9 @@ async function startBrowserPlayback(track, { resumeTime = null, token = null } =
     console.warn('[VELVET] Browser playback failed:', error?.message || error);
     if (ticketWasAwaited && error?.name === 'NotAllowedError') {
       showToast('Secure stream ready. Tap play again.');
-    } else if (localWasAwaited && error?.name === 'NotAllowedError') {
+    } else if (localUrl && error?.name === 'NotAllowedError') {
+      // After an IndexedDB read, or a fallback started by a probe rather
+      // than a tap, iOS may want a fresh gesture.
       showToast('Offline copy ready. Tap play again.');
     }
     state.playing = false;
@@ -10425,7 +10434,8 @@ audio.addEventListener('error', () => {
 });
 
 function handleBrowserAudioError(errCode) {
-  if (errCode === 4 && state.dspProfile) {
+  // A local copy plays without EQ, so its errors say nothing about the preset.
+  if (errCode === 4 && state.dspProfile && !String(audio.src).startsWith('blob:')) {
     const failures = noteDspError(state.dspProfile);
     if (failures >= 2 && attemptDspAutoFallback('media-src-not-supported')) return;
   }

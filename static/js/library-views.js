@@ -2368,7 +2368,15 @@ function attachOfflinePlaylistControls(vc, playlist) {
       });
       return;
     }
-    const result = await offline.download(playlist);
+    let result;
+    try {
+      result = await offline.download(playlist);
+    } catch (error) {
+      console.warn('[VELVET] Offline download could not start:', error);
+      showToast('Download could not start');
+      if (button.isConnected) sync();
+      return;
+    }
     if (result.stopped === 'busy') showToast('Another playlist is downloading');
     else if (result.stopped === 'quota') showToast('Not enough storage on this device');
     else if (result.failed) showToast(`${result.failed} track${result.failed === 1 ? '' : 's'} could not be downloaded`);

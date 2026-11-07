@@ -48,7 +48,7 @@ function fakeOffline({ stored = [] } = {}) {
     onChange(fn) { listeners.add(fn); return () => listeners.delete(fn); },
     emit(job) { fake.currentJob = job; listeners.forEach(fn => fn(job)); },
     listenerCount: () => listeners.size,
-    async download(playlist) { fake.downloads.push(playlist); return fake.result || { downloaded: 0, failed: 0, stopped: null }; },
+    async download(playlist) { fake.downloads.push(playlist); if (fake.downloadError) throw fake.downloadError; return fake.result || { downloaded: 0, failed: 0, stopped: null }; },
     async remove(id) { fake.removed.push(id); fake.stored.clear(); },
     async getPlaylist(id) { return fake.manifests.get(Number(id)) || null; },
     async listPlaylists() { return [...fake.manifests.values()]; },
@@ -147,6 +147,11 @@ const waitUntil = async (predicate, ms = 2000) => { const end = Date.now() + ms;
   button(view).click();
   await settle();
   assert.ok(seen.toasts.includes('Another playlist is downloading'));
+  offline.downloadError = new Error('IndexedDB unavailable');
+  button(view).click();
+  await settle();
+  assert.ok(seen.toasts.includes('Download could not start'), seen.toasts.join(' | '));
+  assert.equal(button(view).textContent.trim(), 'Download', 'The button recovers');
 }
 
 // Server unreachable: the playlist opens from its saved manifest.
