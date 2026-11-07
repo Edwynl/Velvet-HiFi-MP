@@ -9612,9 +9612,24 @@ let browserForceLocal = false;
 let offlineCopyToastTrackId = null;
 window.addEventListener('online', () => { browserForceLocal = false; });
 
-function browserPrefersLocal() {
-  return browserForceLocal || (!state.dspProfile && (state.upsample || 'none') === 'none');
+// EQ, upsampling and ReplayGain are all applied by the server.
+function browserHasServerProcessing() {
+  return !!state.dspProfile || (state.upsample || 'none') !== 'none' || (state.replaygain || 'off') !== 'off';
 }
+
+function browserPrefersLocal() {
+  return browserForceLocal || !browserHasServerProcessing();
+}
+
+// The fallback lasts until the server answers again. Tailscale dropping
+// leaves navigator.onLine true, so the 'online' event alone never ends it.
+function recheckServerAfterOfflineFallback() {
+  if (!browserForceLocal) return;
+  probeServerReachable().then(reachable => { if (reachable) browserForceLocal = false; });
+}
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') recheckServerAfterOfflineFallback();
+});
 
 function localPlaybackUrl(trackId) {
   const offline = window.VelvetOffline;
@@ -9677,7 +9692,7 @@ async function startBrowserPlayback(track, { resumeTime = null, token = null } =
   const targetUrl = localUrl ||
     streamUrl(track.id, undefined, ticket) + (streamOffset ? `&start=${encodeURIComponent(streamOffset)}` : '');
   if (playbackToken !== browserPlaybackToken) return false;
-  if (localUrl && !(!state.dspProfile && (state.upsample || 'none') === 'none') && offlineCopyToastTrackId !== track.id) {
+  if (localUrl && browserHasServerProcessing() && offlineCopyToastTrackId !== track.id) {
     offlineCopyToastTrackId = track.id;
     showToast('Offline copy, EQ off');
   }
@@ -9784,6 +9799,7 @@ async function playTrack(track, queue, idx, { resume = false } = {}) {
   // lock-screen advance has to wait on IndexedDB before play().
   const upNext = state.queue?.[state.queueIdx + 1];
   window.VelvetOffline?.warm(upNext ? [track.id, upNext.id] : [track.id]).catch(() => {});
+  recheckServerAfterOfflineFallback(); // Applies from the next track on.
 
   // Only update player UI if this is a different track from what's currently playing.
   // This avoids expensive DOM updates (especially cover art reload) when resuming the

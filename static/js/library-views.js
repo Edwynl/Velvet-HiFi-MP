@@ -2385,6 +2385,13 @@ async function renderPlaylists(vc) {
     // Server unreachable: list the playlists saved on this device.
     playlists = (await offline.listPlaylists().catch(() => []))
       .map(saved => ({ ...saved, track_count: saved.trackIds.length }));
+  } else if (Array.isArray(playlists) && offline) {
+    // Offline copies of playlists deleted elsewhere would otherwise linger
+    // with no page left to remove them from.
+    const live = new Set(playlists.map(playlist => Number(playlist.id)));
+    offline.listPlaylists().then(saved => Promise.all(saved
+      .filter(copy => !live.has(Number(copy.id)))
+      .map(copy => offline.remove(copy.id)))).catch(() => {});
   }
   playlists = playlists || [];
 
@@ -2479,6 +2486,7 @@ async function renderPlaylist(vc, { id }) {
     const result = await api(`/playlists/${id}`, { method: 'DELETE' });
     if (result?.success) {
       showToast('Playlist deleted');
+      offline?.remove(id).catch(() => {});
       navigate('playlists');
     }
   });

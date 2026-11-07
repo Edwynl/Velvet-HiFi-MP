@@ -3,13 +3,17 @@
  *
  * Tracks are stored once per track id; playlists are manifests that reference
  * them, so removing one playlist never deletes a track another still uses.
- * Audio is handed to <audio> as a blob: URL rather than served back through
- * the service worker, so WebKit itself handles seeking and lock-screen reads.
+ * Audio is streamed into IndexedDB in bounded chunks (a hi-res FLAC or a
+ * transcoded WAV can be hundreds of MB; holding it whole in memory gets the
+ * PWA killed on iOS) and reassembled as one Blob of disk-backed parts.
+ * It is handed to <audio> as a blob: URL rather than served back through the
+ * service worker, so WebKit itself handles seeking and lock-screen reads.
  * Object URLs are created ahead of time (warm) because iOS refuses play() when
  * an IndexedDB read sits between the user's tap and the play() call.
  */
 const OFFLINE_WARM_LIMIT = 4;
 const OFFLINE_FETCH_ATTEMPTS = 3;
+const OFFLINE_CHUNK_BYTES = 4 * 1024 * 1024;
 
 function createOfflineManager({ store, fetchTrack, createObjectURL, revokeObjectURL, persist = null }) {
   const stored = new Set();
@@ -24,16 +28,50 @@ function createOfflineManager({ store, fetchTrack, createObjectURL, revokeObject
   };
   const isQuotaError = error => error?.name === 'QuotaExceededError';
 
-  async function fetchComplete(id) {
+  // Streams one track into chunks; resolves its metadata record once the
+  // whole body arrived and passed the size checks. Partial chunks are removed.
+  async function saveTrack(track) {
+    const id = Number(track.id);
+    await store.deleteChunks(id); // Leftovers of an interrupted earlier attempt.
+    try {
+      const { chunks, contentLength = null, minBytes = null, type = '' } = await fetchTrack(track);
+      let parts = [];
+      let partBytes = 0;
+      let index = 0;
+      let size = 0;
+      const flush = async () => {
+        if (!parts.length) return;
+        await store.putChunk({ id, index: index++, blob: new Blob(parts, { type }) });
+        parts = [];
+        partBytes = 0;
+      };
+      for await (const piece of chunks) {
+        parts.push(piece);
+        partBytes += piece.byteLength;
+        size += piece.byteLength;
+        if (partBytes >= OFFLINE_CHUNK_BYTES) await flush();
+      }
+      await flush();
+      if (contentLength != null && size !== contentLength) {
+        throw new Error(`Incomplete download: ${size}/${contentLength} bytes`);
+      }
+      if (minBytes != null && size < minBytes) {
+        throw new Error(`Incomplete transcode: ${size} bytes, expected at least ${minBytes}`);
+      }
+      return { id, size, type, chunks: index, savedAt: Date.now() };
+    } catch (error) {
+      await store.deleteChunks(id).catch(() => {});
+      throw error;
+    }
+  }
+
+  async function saveWithRetries(track) {
     let lastError;
     for (let attempt = 0; attempt < OFFLINE_FETCH_ATTEMPTS; attempt++) {
       try {
-        const { blob, contentLength } = await fetchTrack(id);
-        if (contentLength != null && blob.size !== contentLength) {
-          throw new Error(`Incomplete download: ${blob.size}/${contentLength} bytes`);
-        }
-        return blob;
+        return await saveTrack(track);
       } catch (error) {
+        if (isQuotaError(error)) throw error;
         lastError = error;
       }
     }
@@ -44,6 +82,16 @@ function createOfflineManager({ store, fetchTrack, createObjectURL, revokeObject
     stored.delete(id);
     const url = warmUrls.get(id);
     if (url) { warmUrls.delete(id); revokeObjectURL(url); }
+  }
+
+  // Deletes the given tracks unless an offline playlist still references them.
+  async function deleteUnreferenced(trackIds) {
+    const stillUsed = new Set();
+    (await store.listPlaylists()).forEach(other => other.trackIds.forEach(trackId => stillUsed.add(trackId)));
+    const orphans = trackIds.filter(trackId => !stillUsed.has(trackId));
+    if (!orphans.length) return;
+    await store.deleteTracks(orphans);
+    orphans.forEach(forget);
   }
 
   const manager = {
@@ -65,9 +113,10 @@ function createOfflineManager({ store, fetchTrack, createObjectURL, revokeObject
       }
       if (!stored.has(id)) return '';
       const record = await store.getTrack(id);
-      if (!record?.blob) return '';
+      const parts = record ? await store.getChunks(id) : [];
+      if (!parts.length) return '';
       if (warmUrls.has(id)) return manager.load(id); // A concurrent load won the race.
-      const url = createObjectURL(record.blob);
+      const url = createObjectURL(new Blob(parts, { type: record.type || '' }));
       warmUrls.set(id, url);
       while (warmUrls.size > OFFLINE_WARM_LIMIT) {
         const [oldestId, oldestUrl] = warmUrls.entries().next().value;
@@ -107,6 +156,7 @@ function createOfflineManager({ store, fetchTrack, createObjectURL, revokeObject
       current = { playlistId, done: 0, total: trackIds.length, paused: false };
       const result = { downloaded: 0, failed: 0, stopped: null };
       try {
+        const previous = await store.getPlaylist(playlistId);
         await store.putPlaylist({
           id: playlistId,
           name: playlist.name || '',
@@ -115,24 +165,23 @@ function createOfflineManager({ store, fetchTrack, createObjectURL, revokeObject
           trackIds,
           savedAt: Date.now(),
         });
+        // Tracks removed from the playlist on the server since the last download.
+        if (previous) await deleteUnreferenced(previous.trackIds.filter(id => !trackIds.includes(id)));
         current.done = trackIds.filter(id => stored.has(id)).length;
         emit();
-        for (const id of trackIds) {
+        for (const track of playlist.tracks) {
+          const id = Number(track.id);
           if (stored.has(id)) continue;
           if (current.paused) { result.stopped = 'paused'; break; }
-          let blob;
           try {
-            blob = await fetchComplete(id);
-          } catch (error) {
-            console.warn('[VELVET] offline download skipped track', id, error?.message || error);
-            result.failed++;
-            continue;
-          }
-          try {
-            await store.putTrack({ id, blob, size: blob.size, type: blob.type || '', savedAt: Date.now() });
+            const record = await saveWithRetries(track);
+            await store.putTrack(record).catch(async error => {
+              await store.deleteChunks(id).catch(() => {}); // No record means no track: free its audio.
+              throw error;
+            });
           } catch (error) {
             if (isQuotaError(error)) { result.stopped = 'quota'; break; }
-            console.warn('[VELVET] offline save failed', id, error);
+            console.warn('[VELVET] offline download skipped track', id, error?.message || error);
             result.failed++;
             continue;
           }
@@ -156,11 +205,7 @@ function createOfflineManager({ store, fetchTrack, createObjectURL, revokeObject
       const manifest = await store.getPlaylist(id);
       await store.deletePlaylist(id);
       if (!manifest) return;
-      const stillUsed = new Set();
-      (await store.listPlaylists()).forEach(other => other.trackIds.forEach(trackId => stillUsed.add(trackId)));
-      const orphans = manifest.trackIds.filter(trackId => !stillUsed.has(trackId));
-      await store.deleteTracks(orphans);
-      orphans.forEach(forget);
+      await deleteUnreferenced(manifest.trackIds);
       emit();
     },
 
@@ -169,11 +214,7 @@ function createOfflineManager({ store, fetchTrack, createObjectURL, revokeObject
     listPlaylists: () => store.listPlaylists(),
 
     async usage() {
-      let bytes = 0;
-      for (const id of await store.listTrackIds()) {
-        bytes += (await store.getTrack(id))?.size || 0;
-      }
-      return bytes;
+      return (await store.listTracks()).reduce((total, record) => total + (record.size || 0), 0);
     },
   };
   return manager;
@@ -185,7 +226,8 @@ function createIdbOfflineStore(idb, name = 'velvet-offline') {
     const request = idb.open(name, 1);
     request.onupgradeneeded = () => {
       const db = request.result;
-      db.createObjectStore('tracks', { keyPath: 'id' });
+      db.createObjectStore('tracks', { keyPath: 'id' });           // {id, size, type, chunks, savedAt}
+      db.createObjectStore('chunks', { keyPath: ['id', 'index'] }); // {id, index, blob}
       db.createObjectStore('playlists', { keyPath: 'id' });
     };
     request.onsuccess = () => resolve(request.result);
@@ -193,27 +235,52 @@ function createIdbOfflineStore(idb, name = 'velvet-offline') {
   }));
   // Resolve when the transaction commits, so a QuotaExceededError on commit
   // rejects instead of passing as a successful write.
-  const run = async (storeName, mode, operation) => {
+  const run = async (storeNames, mode, operation) => {
     const db = await open();
     return new Promise((resolve, reject) => {
-      const tx = db.transaction(storeName, mode);
-      const request = operation(tx.objectStore(storeName));
+      const tx = db.transaction(storeNames, mode);
+      const request = operation(tx);
       let result;
       if (request) request.onsuccess = () => { result = request.result; };
       tx.oncomplete = () => resolve(result);
       tx.onerror = tx.onabort = () => reject(tx.error || request?.error);
     });
   };
+  const chunkRange = id => IDBKeyRange.bound([id, 0], [id, Infinity]);
   return {
-    listTrackIds: () => run('tracks', 'readonly', os => os.getAllKeys()).then(keys => keys || []),
-    getTrack: id => run('tracks', 'readonly', os => os.get(id)).then(value => value || null),
-    putTrack: record => run('tracks', 'readwrite', os => os.put(record)),
-    deleteTracks: ids => run('tracks', 'readwrite', os => { ids.forEach(id => os.delete(id)); }),
-    listPlaylists: () => run('playlists', 'readonly', os => os.getAll()).then(values => values || []),
-    getPlaylist: id => run('playlists', 'readonly', os => os.get(id)).then(value => value || null),
-    putPlaylist: record => run('playlists', 'readwrite', os => os.put(record)),
-    deletePlaylist: id => run('playlists', 'readwrite', os => os.delete(id)),
+    listTrackIds: () => run('tracks', 'readonly', tx => tx.objectStore('tracks').getAllKeys()).then(keys => keys || []),
+    listTracks: () => run('tracks', 'readonly', tx => tx.objectStore('tracks').getAll()).then(values => values || []),
+    getTrack: id => run('tracks', 'readonly', tx => tx.objectStore('tracks').get(id)).then(value => value || null),
+    putTrack: record => run('tracks', 'readwrite', tx => tx.objectStore('tracks').put(record)),
+    putChunk: record => run('chunks', 'readwrite', tx => tx.objectStore('chunks').put(record)),
+    getChunks: id => run('chunks', 'readonly', tx => tx.objectStore('chunks').getAll(chunkRange(id)))
+      .then(values => (values || []).map(value => value.blob)),
+    deleteChunks: id => run('chunks', 'readwrite', tx => tx.objectStore('chunks').delete(chunkRange(id))),
+    deleteTracks: ids => run(['tracks', 'chunks'], 'readwrite', tx => {
+      ids.forEach(id => {
+        tx.objectStore('tracks').delete(id);
+        tx.objectStore('chunks').delete(chunkRange(id));
+      });
+    }),
+    listPlaylists: () => run('playlists', 'readonly', tx => tx.objectStore('playlists').getAll()).then(values => values || []),
+    getPlaylist: id => run('playlists', 'readonly', tx => tx.objectStore('playlists').get(id)).then(value => value || null),
+    putPlaylist: record => run('playlists', 'readwrite', tx => tx.objectStore('playlists').put(record)),
+    deletePlaylist: id => run('playlists', 'readwrite', tx => tx.objectStore('playlists').delete(id)),
   };
+}
+
+async function* readResponseChunks(body) {
+  const reader = body.getReader();
+  let finished = false;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) { finished = true; return; }
+      yield value;
+    }
+  } finally {
+    if (!finished) reader.cancel().catch(() => {});
+  }
 }
 
 if (typeof window !== 'undefined' && window.indexedDB) {
@@ -222,15 +289,29 @@ if (typeof window !== 'undefined' && window.indexedDB) {
     store: createIdbOfflineStore(window.indexedDB),
     // The plain stream URL: original file for browser-playable codecs, the
     // server's stereo compatibility stream otherwise. Never DSP or upsampled.
-    async fetchTrack(id) {
+    async fetchTrack(track) {
       const ticket = await getTicket();
-      const url = `/api/stream/${encodeURIComponent(id)}?upsample=none` +
+      const url = `/api/stream/${encodeURIComponent(track.id)}?upsample=none` +
         (ticket ? `&ticket=${encodeURIComponent(ticket)}` : '');
       const response = await fetch(url, { cache: 'no-store' });
-      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      if (!response.ok || !response.body) throw new Error(`HTTP ${response.status}`);
       const length = Number(response.headers.get('Content-Length'));
-      const blob = await response.blob();
-      return { blob, contentLength: Number.isFinite(length) && length > 0 ? length : null };
+      const contentLength = Number.isFinite(length) && length > 0 ? length : null;
+      let minBytes = null;
+      if (contentLength == null) {
+        // The compatibility transcode streams without a length: stereo s32 PCM
+        // at the source rate, 8 bytes per frame. Without duration and rate a
+        // cut-off transcode cannot be told from a complete one.
+        const duration = Number(track.duration);
+        const rate = Number(track.sample_rate);
+        if (!(duration > 0 && rate > 0)) {
+          response.body.cancel().catch(() => {});
+          throw new Error('Cannot verify a download without a length');
+        }
+        minBytes = Math.floor(Math.max(0, duration * 0.98 - 0.5) * rate * 8);
+      }
+      const type = (response.headers.get('Content-Type') || '').split(';')[0].trim();
+      return { chunks: readResponseChunks(response.body), contentLength, minBytes, type };
     },
     createObjectURL: blob => URL.createObjectURL(blob),
     revokeObjectURL: url => URL.revokeObjectURL(url),

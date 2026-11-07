@@ -132,6 +132,25 @@ const src = dom => dom.window.eval('audio.src');
   dom.window.eval("state.dspProfile = ''; state.upsample = '2x'");
   await dom.window.startBrowserPlayback({ id: 7, title: 'T' });
   assert.match(src(dom), /\/api\/stream\/7\?upsample=2x/, 'Upsampling follows the EQ rule');
+  dom.window.eval("state.upsample = 'none'; state.replaygain = 'track'");
+  await dom.window.startBrowserPlayback({ id: 7, title: 'T' });
+  assert.match(src(dom), /\/api\/stream\/7\?.*replaygain=track/, 'Server-side ReplayGain follows the EQ rule');
+  dom.window.close();
+}
+
+// After a fallback, the next track start re-checks the server: once it
+// answers again, EQ streaming comes back instead of staying local for good.
+{
+  let reachable = false;
+  const offline = fakeOffline({ stored: [7, 8], warm: { 7: 'blob:local/7', 8: 'blob:local/8' } });
+  const { dom } = await boot({ offline, statusReachable: () => reachable });
+  dom.window.eval("state.dspProfile = '3'; browserForceLocal = true");
+  await dom.window.playTrack({ id: 7, title: 'T', artist_name: 'A' }, [{ id: 7 }, { id: 8 }], 0);
+  await new Promise(resolve => setTimeout(resolve, 50));
+  assert.equal(dom.window.eval('browserForceLocal'), true, 'Still unreachable: stay local');
+  reachable = true;
+  await dom.window.playTrack({ id: 8, title: 'U', artist_name: 'A' }, [{ id: 7 }, { id: 8 }], 1);
+  await waitFor(() => dom.window.eval('browserForceLocal') === false);
   dom.window.close();
 }
 

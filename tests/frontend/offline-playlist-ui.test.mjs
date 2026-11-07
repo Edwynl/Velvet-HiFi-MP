@@ -59,6 +59,7 @@ function fakeOffline({ stored = [] } = {}) {
 
 const button = view => view.querySelector('#offline-playlist-btn');
 const settle = () => new Promise(resolve => setTimeout(resolve, 0));
+const waitUntil = async (predicate, ms = 2000) => { const end = Date.now() + ms; while (!predicate()) { if (Date.now() > end) throw new Error("Timed out waiting for condition"); await settle(); } };
 
 // Without the offline module the page is exactly as before.
 {
@@ -180,6 +181,30 @@ const settle = () => new Promise(resolve => setTimeout(resolve, 0));
   await window.renderPlaylists(view);
   await settle();
   assert.equal(view.querySelector('.section-sub').textContent, '1 playlist', 'No usage, no suffix');
+}
+
+// Deleting a playlist on the server also frees its offline copy.
+{
+  const offline = fakeOffline({ stored: [11, 22] });
+  const { window, view } = setup({ offline, apiImpl: async (path, options = {}) => (options.method === 'DELETE'
+    ? { success: true }
+    : { id: 1, name: 'Mix', tracks: [{ id: 11, title: 'A' }, { id: 22, title: 'B' }] }) });
+  window.confirm = () => true;
+  await window.renderPlaylist(view, { id: 1 });
+  view.querySelector('#delete-playlist-btn').click();
+  await waitUntil(() => offline.removed.length === 1);
+  assert.deepEqual(offline.removed, [1]);
+}
+
+// Online, offline copies of playlists the server no longer has are removed.
+{
+  const offline = fakeOffline();
+  offline.manifests.set(1, { id: 1, name: 'Mix', tracks: [], trackIds: [] });
+  offline.manifests.set(9, { id: 9, name: 'Gone', tracks: [], trackIds: [] });
+  const { window, view } = setup({ offline });
+  await window.renderPlaylists(view);
+  await waitUntil(() => offline.removed.length === 1);
+  assert.deepEqual(offline.removed, [9]);
 }
 
 windows.forEach(window => window.close());
