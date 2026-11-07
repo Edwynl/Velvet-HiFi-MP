@@ -2323,8 +2323,69 @@ async function renderGenre(vc, { id }) {
 
 // ── Playlists ─────────────────────────────────────────────────────────────────
 
+// Offline copies (static/js/offline-store.js). window.VelvetOffline is absent
+// in browsers without IndexedDB; the pages then render exactly as before.
+function formatOfflineBytes(bytes) {
+  return bytes >= 1e9 ? `${(bytes / 1e9).toFixed(1)} GB` : `${Math.max(1, Math.round(bytes / 1e6))} MB`;
+}
+
+function offlinePlaylistLabel(status, job) {
+  if (job) return `${job.done}/${job.total}`;
+  if (!status.downloaded) return 'Download';
+  return status.missing ? `+${status.missing}` : 'Downloaded';
+}
+
+// Wires #offline-playlist-btn and the row markers; returns a re-sync function.
+function attachOfflinePlaylistControls(vc, playlist) {
+  const offline = window.VelvetOffline;
+  const button = vc.querySelector('#offline-playlist-btn');
+  if (!offline || !button) return () => {};
+  const playlistId = Number(playlist.id);
+  const ownJob = job => (job && Number(job.playlistId) === playlistId ? job : null);
+  const sync = (job = ownJob(offline.job())) => {
+    button.textContent = offlinePlaylistLabel(offline.status(playlist), job);
+    vc.querySelectorAll('#playlist-tracks-list .track-item').forEach(row => {
+      row.classList.toggle('is-offline', offline.has(row.dataset.trackId));
+    });
+  };
+  const unsubscribe = offline.onChange(job => {
+    if (!button.isConnected) { unsubscribe(); return; }
+    sync(ownJob(job));
+  });
+  button.addEventListener('click', async () => {
+    if (ownJob(offline.job())) { offline.pause(); return; }
+    const status = offline.status(playlist);
+    if (status.total && !status.missing) {
+      showConfirm({
+        title: 'Remove offline copy?',
+        body: `Remove the downloaded audio of “${escHtml(playlist.name)}” from this device?`,
+        confirmText: 'Remove',
+        onConfirm: async () => {
+          await offline.remove(playlistId);
+          if (button.isConnected) sync();
+        },
+      });
+      return;
+    }
+    const result = await offline.download(playlist);
+    if (result.stopped === 'busy') showToast('Another playlist is downloading');
+    else if (result.stopped === 'quota') showToast('Not enough storage on this device');
+    else if (result.failed) showToast(`${result.failed} track${result.failed === 1 ? '' : 's'} could not be downloaded`);
+    if (button.isConnected) sync();
+  });
+  sync();
+  return sync;
+}
+
 async function renderPlaylists(vc) {
-  const playlists = await api('/playlists') || [];
+  const offline = window.VelvetOffline;
+  let playlists = await api('/playlists');
+  if (!playlists && offline) {
+    // Server unreachable: list the playlists saved on this device.
+    playlists = (await offline.listPlaylists().catch(() => []))
+      .map(saved => ({ ...saved, track_count: saved.trackIds.length }));
+  }
+  playlists = playlists || [];
 
   vc.innerHTML = `
     <div class="topbar">
@@ -2337,6 +2398,11 @@ async function renderPlaylists(vc) {
     </div>
     <div class="grid" id="playlists-grid"></div>
   `;
+
+  const sub = vc.querySelector('.section-sub');
+  offline?.usage().then(bytes => {
+    if (bytes > 0 && sub.isConnected) sub.textContent += ` · ${formatOfflineBytes(bytes)} offline`;
+  }).catch(() => {});
 
   UI['create-playlist-btn'].addEventListener('click', async () => {
     const name = prompt('Playlist name', 'New Playlist');
@@ -2363,7 +2429,9 @@ async function renderPlaylists(vc) {
 }
 
 async function renderPlaylist(vc, { id }) {
-  const playlist = await api(`/playlists/${id}`);
+  const offline = window.VelvetOffline;
+  // Server unreachable: open the copy saved on this device, if any.
+  const playlist = await api(`/playlists/${id}`) || await offline?.getPlaylist(id).catch(() => null);
   if (!playlist) {
     vc.innerHTML = `<div class="empty-state"><div class="empty-state-title">Playlist not found</div></div>`;
     return;
@@ -2378,6 +2446,7 @@ async function renderPlaylist(vc, { id }) {
         Back
       </button>
       <div class="playlist-toolbar-actions">
+        ${offline ? '<button class="btn btn-ghost" id="offline-playlist-btn">Download</button>' : ''}
         <button class="btn btn-ghost" id="rename-playlist-btn">Rename</button>
         <button class="btn btn-ghost" id="delete-playlist-btn">Delete</button>
       </div>
@@ -2413,6 +2482,7 @@ async function renderPlaylist(vc, { id }) {
     }
   });
 
+  const syncOffline = attachOfflinePlaylistControls(vc, playlist);
   const list = UI['playlist-tracks-list'];
   if (!playlist.tracks.length) {
     list.innerHTML = `<div style="padding:24px 32px;color:var(--muted);font-size:13px">This playlist is empty. Swipe a track left in Albums, Tracks or Search to add it.</div>`;
@@ -2447,6 +2517,7 @@ async function renderPlaylist(vc, { id }) {
     fragment.appendChild(swipe);
   });
   list.appendChild(fragment);
+  syncOffline();
 }
 
 function makeTrackSwipeRow(row, play, action, { add = false } = {}) {

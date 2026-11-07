@@ -2012,6 +2012,13 @@ input[type=range]::-webkit-slider-thumb:hover { background: var(--gold); }
 
 .playlist-toolbar-actions { margin-left: auto; display: flex; gap: 8px; }
 .playlist-toolbar .btn { width: 84px; min-height: 34px; padding: 8px 12px; justify-content: center; flex-shrink: 0; }
+.playlist-toolbar #offline-playlist-btn { padding-inline: 4px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+/* Downloaded track: a dot beside the number, absolutely placed so rows keep their size. */
+.track-item.is-offline .track-num { position: relative; }
+.track-item.is-offline .track-num::after {
+  content: ''; position: absolute; left: 2px; top: 50%; width: 4px; height: 4px;
+  margin-top: -2px; border-radius: 50%; background: var(--gold); pointer-events: none;
+}
 .track-swipe-row { position: relative; overflow: hidden; border-radius: var(--radius); }
 .track-swipe-row .track-item {
   position: relative; z-index: 1; background-color: var(--bg);
