@@ -191,6 +191,30 @@ const src = dom => dom.window.eval('audio.src');
   dom.window.close();
 }
 
+// EQ on, server gone: play() itself is rejected before any media error. That
+// must not be mistaken for an EQ codec problem (container switch, EQ off).
+{
+  const offline = fakeOffline({ stored: [7], warm: { 7: 'blob:local/7' } });
+  const { dom, seen, toasts } = await boot({
+    offline,
+    statusReachable: () => false,
+    playImpl: (el, window) => (el.src.startsWith('blob:') ? resolvedPlay(el)
+      : Promise.reject(new window.DOMException('The element has no supported sources.', 'NotSupportedError'))),
+  });
+  dom.window.eval("state.dspProfile = '3'");
+  const statusBefore = seen.status;
+  await dom.window.startBrowserPlayback({ id: 7, title: 'T' });
+  dom.window.eval('audio').dispatchEvent(new dom.window.Event('error'));
+  await waitFor(() => src(dom) === 'blob:local/7');
+  await new Promise(resolve => setTimeout(resolve, 50));
+  assert.equal(dom.window.eval('browserDspContainer'), 'flac', 'The EQ output format is left alone');
+  assert.equal(dom.window.eval('state.dspProfile'), '3', 'The EQ choice is left alone');
+  assert.ok(!toasts.some(t => /Retrying EQ|EQ could not play/.test(t)), toasts.join(' | '));
+  assert.equal(toasts.filter(t => t === 'Offline copy, EQ off').length, 1);
+  assert.equal(seen.status - statusBefore, 1, 'One reachability probe serves both failure paths');
+  dom.window.close();
+}
+
 // Starting a track warms it and the next one in the queue.
 {
   const offline = fakeOffline({ stored: [7, 8] });

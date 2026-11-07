@@ -110,7 +110,7 @@ const settle = () => new Promise(resolve => setTimeout(resolve, 0));
   offline.stored.add(22);
   offline.emit(null);
   assert.ok(view.querySelectorAll('.track-item')[1].classList.contains('is-offline'), 'Markers follow progress');
-  assert.equal(button(view).textContent.trim(), 'Downloaded');
+  assert.equal(button(view).textContent.trim(), 'Saved');
 }
 
 // Fully downloaded: the button removes the offline copy after confirmation.
@@ -118,7 +118,7 @@ const settle = () => new Promise(resolve => setTimeout(resolve, 0));
   const offline = fakeOffline({ stored: [11, 22] });
   const { window, view, seen } = setup({ offline });
   await window.renderPlaylist(view, { id: 1 });
-  assert.equal(button(view).textContent.trim(), 'Downloaded');
+  assert.equal(button(view).textContent.trim(), 'Saved');
   button(view).click();
   assert.equal(seen.confirmation.title, 'Remove offline copy?');
   assert.equal(seen.confirmation.confirmText, 'Remove');

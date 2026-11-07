@@ -2332,7 +2332,8 @@ function formatOfflineBytes(bytes) {
 function offlinePlaylistLabel(status, job) {
   if (job) return `${job.done}/${job.total}`;
   if (!status.downloaded) return 'Download';
-  return status.missing ? `+${status.missing}` : 'Downloaded';
+  // Short labels: the button is 76px so the iPhone toolbar stays on one row.
+  return status.missing ? `+${status.missing}` : 'Saved';
 }
 
 // Wires #offline-playlist-btn and the row markers; returns a re-sync function.

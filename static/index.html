@@ -2012,7 +2012,8 @@ input[type=range]::-webkit-slider-thumb:hover { background: var(--gold); }
 
 .playlist-toolbar-actions { margin-left: auto; display: flex; gap: 8px; }
 .playlist-toolbar .btn { width: 84px; min-height: 34px; padding: 8px 12px; justify-content: center; flex-shrink: 0; }
-.playlist-toolbar #offline-playlist-btn { padding-inline: 4px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+/* 76px keeps Back + Download + Rename + Delete on one row at 430px. */
+.playlist-toolbar #offline-playlist-btn { width: 76px; padding-inline: 4px; white-space: nowrap; font-variant-numeric: tabular-nums; }
 /* Downloaded track: a dot beside the number, absolutely placed so rows keep their size. */
 .track-item.is-offline .track-num { position: relative; }
 .track-item.is-offline .track-num::after {
@@ -9628,6 +9629,31 @@ function probeServerReachable(timeoutMs = 3000) {
     .finally(() => clearTimeout(timer));
 }
 
+// A streamed track with a local copy failed (play() rejected or a media
+// error). Resolves 'local' after switching to the copy because the server is
+// unreachable, 'reachable' when the stream itself is the problem, or 'stale'
+// when another track took over. Both failure paths share one probe.
+let offlineFallbackProbe = null;
+function fallBackToOfflineCopy(track, resumeTime) {
+  if (!offlineFallbackProbe) {
+    offlineFallbackProbe = probeServerReachable().finally(() => { offlineFallbackProbe = null; });
+  }
+  return offlineFallbackProbe.then(reachable => {
+    if (state.currentTrack && state.currentTrack.id !== track.id) return 'stale';
+    if (reachable) return 'reachable';
+    if (!browserForceLocal) {
+      browserForceLocal = true;
+      startBrowserPlayback(track, { resumeTime }).catch(() => {});
+    }
+    return 'local';
+  });
+}
+
+function canFallBackToOfflineCopy(track) {
+  return !!track && !browserForceLocal && !!window.VelvetOffline?.has(track.id) &&
+    !String(audio.src).startsWith('blob:');
+}
+
 async function startBrowserPlayback(track, { resumeTime = null, token = null } = {}) {
   const playbackToken = token ?? ++browserPlaybackToken;
   // Warm local copies (see playTrack) keep play() synchronous within the tap.
@@ -9701,6 +9727,13 @@ async function startBrowserPlayback(track, { resumeTime = null, token = null } =
   } catch (error) {
     if (playbackToken !== browserPlaybackToken) return false;
     reportBrowserAudio('play-rejected', error);
+    // An unreachable server is not an EQ codec problem: try the local copy
+    // before the EQ fallback below changes the container or turns EQ off.
+    if (canFallBackToOfflineCopy(track) && error?.name !== 'NotAllowedError' &&
+        await fallBackToOfflineCopy(track, resumeTime) !== 'reachable') {
+      return false;
+    }
+    if (playbackToken !== browserPlaybackToken) return false;
     if (state.dspProfile && !localUrl) {
       const errorMessage = String(error?.message || '').toLowerCase();
       const likelyUnsupported =
@@ -10364,14 +10397,9 @@ audio.addEventListener('error', () => {
   const track = state.currentTrack;
   // A downloaded track streaming with EQ: if the server is gone (Tailscale
   // dropped, no signal), play the local copy instead of retrying the stream.
-  if (isBrowserZone() && track && !browserForceLocal && window.VelvetOffline?.has(track.id) &&
-      !String(audio.src).startsWith('blob:')) {
-    const resumeTime = browserPlaybackPosition();
-    probeServerReachable().then(reachable => {
-      if (state.currentTrack !== track) return;
-      if (reachable) { handleBrowserAudioError(errCode); return; }
-      browserForceLocal = true;
-      startBrowserPlayback(track, { resumeTime }).catch(() => {});
+  if (isBrowserZone() && canFallBackToOfflineCopy(track)) {
+    fallBackToOfflineCopy(track, browserPlaybackPosition()).then(outcome => {
+      if (outcome === 'reachable') handleBrowserAudioError(errCode);
     });
     return;
   }
