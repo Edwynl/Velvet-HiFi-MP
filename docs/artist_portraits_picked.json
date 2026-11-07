@@ -1,5 +1,5 @@
 {
- "_note": "Portraits that were picked by eye from the artwork set on each artist's Apple Music page, because the page's og:image is either a publicity still or carries the Apple Music banner. Pass this to scripts/backfill_artist_images.py with --portrait-map so a later run does not put the old picture back. Each path is the picture already stored in the library's image folder, so no download is needed. The mzl.* set cannot be taken automatically: on 蔡琴's page it opens on a photograph of a man, and the set the page returns changes between requests.",
+ "_note": "Portraits that were picked by eye, because the picture a service hands out for these artists is the wrong person. Pass this to scripts/backfill_artist_images.py with --portrait-map so a later run does not put the wrong picture back. A value is either a path to the picture already stored in the library's image folder, or a URL of a picture that was checked by eye. The mzl.* set cannot be taken automatically: on 蔡琴's page it opens on a photograph of a man, and the set the page returns changes between requests. 2026-11-08: Apple Music's own artist picture was a stock photo of a cowboy for 清水翔太 and a girl group's stage shot for 安哲逸, so both were replaced with a portrait checked against the artist's own album covers.",
  "1928": "C:\\Antigravity\\Claude Code\\VELVET_NEXT\\velvet_data\\artist_images\\1928.jpg",
  "1805": "C:\\Antigravity\\Claude Code\\VELVET_NEXT\\velvet_data\\artist_images\\1805.jpg",
  "876": "C:\\Antigravity\\Claude Code\\VELVET_NEXT\\velvet_data\\artist_images\\876.jpg",
@@ -7,5 +7,7 @@
  "838": "C:\\Antigravity\\Claude Code\\VELVET_NEXT\\velvet_data\\artist_images\\838.jpg",
  "809": "C:\\Antigravity\\Claude Code\\VELVET_NEXT\\velvet_data\\artist_images\\809.jpg",
  "1032": "C:\\Antigravity\\Claude Code\\VELVET_NEXT\\velvet_data\\artist_images\\1032.jpg",
- "774": "C:\\Antigravity\\Claude Code\\VELVET_NEXT\\velvet_data\\artist_images\\774.jpg"
+ "774": "C:\\Antigravity\\Claude Code\\VELVET_NEXT\\velvet_data\\artist_images\\774.jpg",
+ "1169": "https://commons.wikimedia.org/wiki/Special:FilePath/Shimizu_Shota_Japan_Day_2008_1.jpg?width=600",
+ "1678": "https://cdn-images.dzcdn.net/images/artist/c2f03b3e6e04d1dcddf88ec01c3be425/500x500-000000-80-0-0.jpg"
 }

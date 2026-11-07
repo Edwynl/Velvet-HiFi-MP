@@ -5,21 +5,36 @@ Backfill artist avatars for the local VELVET library.
 Source strategy
 ---------------
 A music service's own artist image is fresher and more recognisable than a
-wiki portrait, so Apple Music leads and Wikimedia is the fallback:
+wiki portrait, so the services lead and Wikimedia is the fallback:
 
-    A1  Apple Music og:image
+    A1  Apple Music artist picture
         iTunes Search API (entity=musicArtist) resolves name -> artist page,
-        then the page's own ``og:image`` is taken. ``og:image`` is by
-        definition that artist page's hero artwork, which matters: the same
-        pages embed hundreds of AMCArtistImages URLs from their "similar
-        artists" carousels, and picking the first of those attaches a
-        *different* musician's face - verified, the identical 147 KB portrait
-        came back for four different artists. The Apple filenames carry
-        ``ami-identity-...-2026-03-24`` timestamps, i.e. current press art.
+        then the page's own square picture of the act is taken. The page's
+        ``og:image`` is used only when there is no such picture, because
+        ``og:image`` is the hero artwork of whatever the page currently
+        features: the same pages embed hundreds of AMCArtistImages URLs from
+        their "similar artists" carousels, and picking the first of those
+        attaches a *different* musician's face - verified, the identical
+        147 KB portrait came back for four different artists. The Apple
+        filenames carry ``ami-identity-...-2026-03-24`` timestamps, i.e.
+        current press art.
 
-    B1  Wikidata P18          - curated Commons portrait
-    B2  Wikipedia lead image  - article hero
-    B3  Commons category file - band photos, downgraded to `low`
+    B1  Deezer artist picture
+        Matched by discography rather than by name. Deezer's artist pages
+        carry a square picture of the act and, more usefully, the act's
+        albums; comparing those titles against the library's own albums is
+        the strongest identity proof available here. Two acts that share
+        three release titles are the same act even when their names differ:
+        謝凌君 is filed by Deezer as "Lisa Djaati" and 俐蓁's "Meet You"
+        is only reachable through her Chinese name.
+
+    C1  Wikidata P18          - curated Commons portrait
+    C2  Wikipedia lead image  - article hero
+    C3  Commons category file - band photos, downgraded to `low`
+
+The library's own ``artist_aliases`` table supplies the alternative names
+each artist is filed under, so an act called "Samuelyu" is also looked up
+as 余毓兴 and "清水翔太" as Shota Shimizu.
 
 Why the verification exists
 ---------------------------
@@ -314,8 +329,21 @@ _GENERIC_APPLE_IMAGE = re.compile(r"(?:/cover\.jpg|/apple-music\.png|/features/)
 
 
 def _upscale(url: str, edge: int = 800) -> str:
+    """Point an Apple image URL at a square thumbnail.
+
+    Apple's image URLs carry their size as the last path segment
+    (``/600x600bb.jpg``). The regex that finds the artist picture stops
+    *before* that segment, so the URL it hands over has none, and Apple
+    answers 404 for it - the size segment has to be put back. Verified:
+    ``..._file_cropped.png`` alone is a 404 while
+    ``..._file_cropped.png/600x600bb.jpg`` is the portrait.
+    """
     m = _MZ_RESIZE.search(url)
-    return url[:m.start()] + "/%dx%dbb.jpg" % (edge, edge) if m else url
+    if m:
+        return url[:m.start()] + "/%dx%dbb.jpg" % (edge, edge)
+    if "/image/thumb/" in url:
+        return url + "/%dx%dbb.jpg" % (edge, edge)
+    return url
 
 
 def looks_flat(colour_spread: float, edge_energy: float) -> bool:
@@ -355,12 +383,21 @@ async def fetch_image(http: httpx.AsyncClient, wiki: Optional["Wiki"], url: str)
 
     Wikimedia 403s browser-spoofing agents while mzstatic wants one; sending
     the wrong UA silently failed every Wikimedia download until this split.
+    A dropped connection is not an answer either, so the download is tried
+    again before the artist is given up on.
     """
     if _is_wikimedia_host(url) and wiki is not None:
         return await wiki.fetch_bytes(url)
-    resp = await http.get(url)
-    resp.raise_for_status()
-    return resp.content
+    last: Optional[Exception] = None
+    for attempt in range(3):
+        try:
+            resp = await http.get(url)
+            resp.raise_for_status()
+            return resp.content
+        except Exception as exc:
+            last = exc
+            await asyncio.sleep(1.5 * (attempt + 1))
+    raise last if last else RuntimeError("download failed")
 
 
 class Apple:
@@ -379,9 +416,17 @@ class Apple:
             delay = 2.0
             for attempt in range(4):
                 self.calls += 1
-                resp = await self._client.get(
-                    ITUNES_SEARCH,
-                    params={"term": name, "entity": "musicArtist", "limit": 5})
+                try:
+                    resp = await self._client.get(
+                        ITUNES_SEARCH,
+                        params={"term": name, "entity": "musicArtist", "limit": 5})
+                except Exception:
+                    # A dropped connection is not an answer; try again.
+                    if attempt == 3:
+                        return []
+                    await asyncio.sleep(delay)
+                    delay *= 2
+                    continue
                 if resp.status_code == 429:
                     if attempt == 3:
                         return []
@@ -392,6 +437,23 @@ class Apple:
                     return []
                 return resp.json().get("results", [])
         return []
+
+    async def _page(self, url: str) -> Optional[str]:
+        """Fetch an artist page, retrying a dropped connection."""
+        delay = 2.0
+        for attempt in range(3):
+            try:
+                resp = await self._client.get(url)
+            except Exception:
+                if attempt == 2:
+                    return None
+                await asyncio.sleep(delay)
+                delay *= 2
+                continue
+            if resp.status_code != 200:
+                return None
+            return resp.text
+        return None
 
     async def artist_image(self, name: str, min_level: str = "alias",
                            exact_name: Optional[str] = None) -> Optional[dict]:
@@ -426,8 +488,8 @@ class Apple:
         link = matched.get("artistLinkUrl")
         if not link:
             return None
-        page = await self._client.get(link)
-        if page.status_code != 200:
+        page_text = await self._page(link)
+        if not page_text:
             return None
         apple_name = matched.get("artistName")
         artist_id = matched.get("artistId")
@@ -439,7 +501,7 @@ class Apple:
         # the page is currently featuring, which for many artists is the
         # generic cover.jpg or the apple-music.png placeholder rather than
         # a picture of the artist at all.
-        identity = _IDENTITY_IMAGE.search(page.text)
+        identity = _IDENTITY_IMAGE.search(page_text)
         if identity:
             return {
                 "url": _upscale(identity.group(1).split("?")[0]),
@@ -455,7 +517,7 @@ class Apple:
         # in it too: 蔡琴's page opens on a photograph of a man. A wrong face
         # is worse than a dated one, so this set is left for a person to
         # pick from rather than taken automatically.
-        found = _OG_IMAGE.search(page.text)
+        found = _OG_IMAGE.search(page_text)
         if not found:
             return None
         url = _upscale(found.group(1).split("?")[0])
@@ -472,6 +534,219 @@ class Apple:
             "match_level": match_level,
             "source": source,
         }
+
+
+# ─── Deezer ──────────────────────────────────────────────────────────────────
+
+DEEZEER_SEARCH = "https://api.deezer.com/search/artist"
+DEEZEER_ALBUM_SEARCH = "https://api.deezer.com/search/album"
+DEEZEER_ARTIST = "https://api.deezer.com/artist"
+
+# Deezer's stand-in artwork: the artist's own slot is empty, so every act
+# without a picture gets the same grey tile.
+_DEEZEER_PLACEHOLDER = re.compile(r"/images/artist//")
+
+# "Red - Single" and "Red" are the same release; the "- Single" tag is how
+# Apple and Deezer file one-song releases, and the library files them
+# without it.
+_RELEASE_TAG = re.compile(
+    r"\s*[-–—]\s*(single|ep|album|mix tape|mixtape|mix|version|edit)\s*$",
+    re.IGNORECASE)
+
+
+def _title_keys(title: str) -> set[str]:
+    """Comparable forms of an album title.
+
+    Both the whole title and the part before a parenthetical are used, so
+    "The Time We Dream (feat. FDSM Elite-Voice Choir)" and "The Time We
+    Dream" meet, while "Meet You" and "Meet Yourself" do not.
+    """
+    s = unicodedata.normalize("NFKC", title or "").casefold()
+    s = _RELEASE_TAG.sub("", s)
+    keys = {re.sub(r"[^\w\u4e00-\u9fff]+", "", s)}
+    head = s.split("(")[0]
+    base = re.sub(r"[^\w\u4e00-\u9fff]+", "", head)
+    if base:
+        keys.add(base)
+    return {k for k in keys if k}
+
+
+class Deezer:
+    """Artist pictures from Deezer, matched by discography.
+
+    Deezer's artist pages carry a square picture of the act and, more
+    usefully, the act's albums. Comparing those titles with the library's
+    own albums is the strongest identity proof available here: two acts
+    that share several release titles are the same act even when their
+    names differ - 謝凌君 is filed by Deezer as "Lisa Djaati", and the
+    library's 謝凌君 albums turn up under exactly that name.
+    """
+
+    def __init__(self, client: httpx.AsyncClient, concurrency: int = 4):
+        self._client = client
+        self._sem = asyncio.Semaphore(concurrency)
+        self.calls = 0
+
+    async def _get(self, url: str, params: Optional[dict] = None) -> Any:
+        async with self._sem:
+            self.calls += 1
+            delay = 1.0
+            for attempt in range(3):
+                try:
+                    resp = await self._client.get(url, params=params or {})
+                except Exception:
+                    if attempt == 2:
+                        raise
+                    await asyncio.sleep(delay)
+                    delay *= 2
+                    continue
+                if resp.status_code in (429, 500, 502, 503, 504):
+                    # A long run trips the service's rate limit; the answer
+                    # comes back a moment later.
+                    if attempt == 2:
+                        resp.raise_for_status()
+                    await asyncio.sleep(delay)
+                    delay *= 2
+                    continue
+                resp.raise_for_status()
+                return resp.json()
+        raise RuntimeError("unreachable")
+
+    async def search(self, name: str) -> list[dict]:
+        try:
+            data = await self._get(DEEZEER_SEARCH, {"q": name, "limit": 10})
+        except Exception:
+            return []
+        return data.get("data") or []
+
+    async def search_album(self, title: str) -> list[dict]:
+        """Artists that released an album with this title.
+
+        The name search does not always reach the act: Deezer answers a
+        query for "Shiny" with a different Shiny first, and it files 謝凌君
+        as "Lisa Djaati". The library's own album titles reach the act as
+        well, because the act's releases are in the index under it.
+        """
+        try:
+            data = await self._get(DEEZEER_ALBUM_SEARCH,
+                                   {"q": title, "limit": 25})
+        except Exception:
+            return []
+        out: list[dict] = []
+        for item in data.get("data") or []:
+            artist = item.get("artist") or {}
+            if not artist.get("id"):
+                continue
+            out.append({"id": artist["id"], "name": artist.get("name") or "",
+                        "picture_big": artist.get("picture_big"),
+                        "album_title": item.get("title") or ""})
+        return out
+
+    async def albums(self, artist_id: int) -> list[str]:
+        try:
+            data = await self._get("%s/%d/albums" % (DEEZEER_ARTIST, artist_id),
+                                   {"limit": 100})
+        except Exception:
+            return []
+        return [a.get("title") or "" for a in (data.get("data") or [])]
+
+    async def artist_picture(self, names: list[str],
+                             library_albums: list[str]) -> Optional[dict]:
+        """Find the act's picture, proving the match with its albums.
+
+        ``names`` holds the library's display name plus its aliases, so an
+        act is looked up under every name it is filed under. A candidate is
+        accepted when its album titles line up with the library's, which
+        catches acts whose service name is nothing like the library's.
+        """
+        lib_keys: set[str] = set()
+        for title in library_albums:
+            lib_keys |= _title_keys(title)
+        if not lib_keys:
+            return None
+
+        seen: set[int] = set()
+        candidates: list[dict] = []
+        for name in names:
+            for item in await self.search(name):
+                cid = item.get("id")
+                if not isinstance(cid, int) or cid in seen:
+                    continue
+                seen.add(cid)
+                candidates.append(item)
+
+        # The act's own releases find it as well, which is what reaches the
+        # acts the name search answers with a different act. The most
+        # distinctive titles are probed first.
+        for title in sorted(library_albums, key=len, reverse=True)[:3]:
+            for item in await self.search_album(title):
+                cid = item.get("id")
+                if not isinstance(cid, int) or cid in seen:
+                    continue
+                if not (_title_keys(item.get("album_title") or "") & lib_keys):
+                    continue
+                seen.add(cid)
+                candidates.append(item)
+
+        best: Optional[dict] = None
+        for item in candidates:
+            url = item.get("picture_big") or item.get("picture_medium")
+            if not url or _DEEZEER_PLACEHOLDER.search(url):
+                # Deezer's stand-in tile is the same for every act without
+                # a picture; the next source is asked instead.
+                continue
+            remote = await self.albums(item["id"])
+            if not remote:
+                continue
+            remote_keys: set[str] = set()
+            for title in remote:
+                remote_keys |= _title_keys(title)
+            overlap = lib_keys & remote_keys
+            if not overlap:
+                continue
+            level = "none"
+            for name in names:
+                found = name_match_level(name, item.get("name") or "")
+                if {"none": 0, "partial": 1, "alias": 2,
+                    "exact": 3}[found] > {"none": 0, "partial": 1, "alias": 2,
+                                          "exact": 3}[level]:
+                    level = found
+            hits = len(overlap)
+            # Two or more shared release titles identify the act on their
+            # own; one shared title needs the name to agree as well.
+            if hits >= 2:
+                confidence = "high"
+            elif level in ("exact", "alias"):
+                confidence = "high"
+            elif level == "partial":
+                confidence = "medium"
+            else:
+                confidence = "low"
+            if confidence == "low":
+                continue
+            matched = sorted(
+                t for t in remote
+                if _title_keys(t) & lib_keys)[:6]
+            result = {
+                "url": url,
+                "deezer_name": item.get("name") or "",
+                "deezer_id": item["id"],
+                "match_level": level,
+                "album_overlap": hits,
+                "matched_albums": matched,
+                "source": "deezer-artist-picture",
+                "confidence": confidence,
+                "reason": "Deezer artist picture, %d album title(s) match the library (%s)"
+                          % (hits, "; ".join(matched[:3]) or "name match"),
+                "reference": "https://www.deezer.com/artist/%d" % item["id"],
+            }
+            if best is None or (
+                    result["album_overlap"],
+                    CONFIDENCE_ORDER.get(result["confidence"], 0)) > (
+                    best["album_overlap"],
+                    CONFIDENCE_ORDER.get(best["confidence"], 0)):
+                best = result
+        return best
 
 
 # ─── Wikimedia ───────────────────────────────────────────────────────────────
@@ -728,41 +1003,81 @@ async def resolve_wiki(wiki: Wiki, name: str, use_commons: bool) -> dict:
             "source": None, "rejected_candidates": rejected}
 
 
-async def resolve(apple: Apple, wiki: Optional[Wiki], artist: dict,
+async def resolve(apple: Optional[Apple], wiki: Optional[Wiki],
+                  deezer: Optional[Deezer], artist: dict,
                   sources: set[str], use_commons: bool,
                   exact_name: Optional[str] = None) -> dict:
     name = artist["name"]
     if not exact_name and looks_like_pseudo_artist(name):
         return {"status": "skipped", "reason": "pseudo/various artist", "source": None}
 
+    # The library's own alias table says under which other names the act is
+    # filed, so an act called "Samuelyu" is also looked up as 余毓兴.
+    names: list[str] = [name]
+    for alias in artist.get("aliases") or []:
+        if alias and alias not in names:
+            names.append(alias)
+
     attempts: list[str] = []
 
-    if "apple" in sources:
+    if "deezer" in sources and deezer is not None:
         try:
-            found = await apple.artist_image(name, exact_name=exact_name)
+            found = await deezer.artist_picture(names, artist.get("albums") or [])
         except Exception as exc:
             found = None
-            attempts.append("apple error %s" % type(exc).__name__)
+            attempts.append("deezer error %s" % type(exc).__name__)
+        if found and found.get("url"):
+            return {"status": "ok", "image_url": found["url"],
+                    "source": found["source"], "source_key": "deezer",
+                    "confidence": found["confidence"],
+                    "reason": found["reason"],
+                    "matched_label": found["deezer_name"],
+                    "matched_description": "album overlap %d: %s"
+                                           % (found["album_overlap"],
+                                              "; ".join(found["matched_albums"])),
+                    "reference": found["reference"]}
+        attempts.append("deezer: no discography match")
+
+    if "apple" in sources and apple is not None:
+        found = None
+        for candidate_name in names:
+            try:
+                found = await apple.artist_image(
+                    candidate_name,
+                    exact_name=exact_name if candidate_name == name else None)
+            except Exception as exc:
+                found = None
+                attempts.append("apple error %s" % type(exc).__name__)
+            if found:
+                break
         if found:
             level = found.get("match_level", "exact")
             apple_source = found.get("source", "apple-og-image")
-            reason = ("Apple Music artist identity image (%s name match)" % level
-                      if apple_source == "apple-music-artist-image"
-                      else "Apple Music artist page og:image (%s name match)" % level)
-            return {"status": "ok", "image_url": found["url"],
-                    "source": apple_source,
-                    # A containment match ("软硬" / "軟硬天師") may be a different
-                    # act that merely shares a prefix, so it is review-only.
-                    "confidence": "high" if level == "exact" else
-                                  "medium" if level == "alias" else "low",
-                    "reason": reason,
-                    "matched_label": found["apple_name"],
-                    "reference": "https://music.apple.com/artist/%s" % found["artist_id"]}
-        attempts.append("apple: no verified match")
+            if apple_source == "apple-og-image-generic":
+                # Apple's stand-in artwork is the same picture for the whole
+                # library. Storing it would put a logo on the artist page, so
+                # the search moves on to the next source instead.
+                attempts.append("apple: generic stand-in artwork")
+            else:
+                reason = ("Apple Music artist identity image (%s name match)" % level
+                          if apple_source == "apple-music-artist-image"
+                          else "Apple Music artist page og:image (%s name match)" % level)
+                return {"status": "ok", "image_url": found["url"],
+                        "source": apple_source, "source_key": "apple",
+                        # A containment match ("软硬" / "軟硬天師") may be a different
+                        # act that merely shares a prefix, so it is review-only.
+                        "confidence": "high" if level == "exact" else
+                                      "medium" if level == "alias" else "low",
+                        "reason": reason,
+                        "matched_label": found["apple_name"],
+                        "reference": "https://music.apple.com/artist/%s" % found["artist_id"]}
+        if not found:
+            attempts.append("apple: no verified match")
 
     if "wiki" in sources and wiki is not None:
         res = await resolve_wiki(wiki, name, use_commons)
         if res.get("status") == "ok":
+            res["source_key"] = "wiki"
             return res
 
         # Apple files many Chinese artists under a romanised name only
@@ -775,7 +1090,7 @@ async def resolve(apple: Apple, wiki: Optional[Wiki], artist: dict,
                 bridged = await apple.artist_image(english_label, min_level="exact")
             except Exception:
                 bridged = None
-            if bridged:
+            if bridged and bridged.get("source") != "apple-og-image-generic":
                 return {"status": "ok", "image_url": bridged["url"],
                         "source": bridged.get("source", "apple-og-image"),
                         "confidence": "high",
@@ -811,9 +1126,17 @@ def load_artists(only_ids: Optional[list[int]], include_filled: bool,
     conn = connect_db()
     try:
         rows = conn.execute(sql).fetchall()
+        aliases: dict[int, list[str]] = {}
+        for row in conn.execute("SELECT artist_id, name FROM artist_aliases"):
+            aliases.setdefault(row["artist_id"], []).append(row["name"])
+        albums: dict[int, list[str]] = {}
+        for row in conn.execute("SELECT artist_id, title FROM albums"):
+            albums.setdefault(row["artist_id"], []).append(row["title"])
     finally:
         conn.close()
-    artists = [{"id": r["id"], "name": r["name"]} for r in rows]
+    artists = [{"id": r["id"], "name": r["name"],
+                "aliases": aliases.get(r["id"], []),
+                "albums": albums.get(r["id"], [])} for r in rows]
 
     wanted: set[int] = set(only_ids or [])
     if id_file:
@@ -881,8 +1204,9 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
                          'was picked by eye for that artist. Use it for the acts whose '
                          'Apple page offers a better portrait than the og:image, so a '
                          'later run does not put the old picture back')
-    ap.add_argument("--sources", default="apple,wiki",
-                    help="comma separated: apple,wiki (default: apple,wiki)")
+    ap.add_argument("--sources", default="apple,deezer,wiki",
+                    help="comma separated: apple,deezer,wiki "
+                         "(default: apple,deezer,wiki)")
     ap.add_argument("--min-confidence", choices=["low", "medium", "high"], default="medium")
     ap.add_argument("--include-low", action="store_true",
                     help="alias for --min-confidence low")
@@ -906,7 +1230,7 @@ async def run(args: argparse.Namespace) -> int:
 
     min_conf = "low" if args.include_low else args.min_confidence
     sources = {s.strip() for s in args.sources.split(",") if s.strip()}
-    unknown = sources - {"apple", "wiki"}
+    unknown = sources - {"apple", "deezer", "wiki"}
     if unknown:
         raise SystemExit("unknown source(s): %s" % ", ".join(sorted(unknown)))
 
@@ -944,6 +1268,7 @@ async def run(args: argparse.Namespace) -> int:
 
     apple = None
     wiki = None
+    deezer = None
     async with httpx.AsyncClient(
             timeout=30.0, follow_redirects=True, headers={"User-Agent": BROWSER_UA},
             limits=httpx.Limits(max_connections=APPLE_PAGE_CONCURRENCY + 2)) as http:
@@ -951,6 +1276,8 @@ async def run(args: argparse.Namespace) -> int:
             apple = Apple(http)
         if "wiki" in sources:
             wiki = Wiki(concurrency=max(1, args.wiki_concurrency), delay=args.delay)
+        if "deezer" in sources:
+            deezer = Deezer(http)
 
         conn = None if args.dry_run else connect_db()
         writer = Writer(conn) if conn else None
@@ -971,119 +1298,109 @@ async def run(args: argparse.Namespace) -> int:
 
         async def handle(artist: dict) -> dict:
             picked = portrait_overrides.get(artist["id"])
-            if picked:
-                # A picture that was chosen by eye for this artist.
-                res = {"status": "ok", "image_url": picked,
-                       "source": "hand-picked-portrait", "confidence": "high",
-                       "reason": "picture picked by eye for this artist",
-                       "matched_label": artist["name"]}
-            else:
-                res = await resolve(apple, wiki, artist, sources,
-                                    use_commons=not args.no_commons,
-                                    exact_name=apple_overrides.get(artist["id"]))
-            row = {
-                "id": artist["id"], "name": artist["name"],
-                "status": res["status"], "source": res.get("source"),
-                "confidence": res.get("confidence"), "reason": res.get("reason"),
-                "matched_label": res.get("matched_label"),
-                "matched_description": res.get("matched_description"),
-                "image_url": res.get("image_url"), "reference": res.get("reference"),
-                "rejected_candidates": res.get("rejected_candidates", [])[:6],
-            }
+            # A service that answers with a stand-in tile is put aside and
+            # the next source is asked, so the artist page never shows a
+            # logo or a grey block.
+            banned: set[str] = set()
 
-            if res["status"] != "ok":
-                counts["skipped" if res["status"] == "skipped" else
-                       ("no-image" if res["status"] == "no-image" else "error")] += 1
-                record(row)
-                return row
-
-            conf = res.get("confidence") or "low"
-            if CONFIDENCE_ORDER.get(conf, 0) < CONFIDENCE_ORDER[min_conf]:
-                row["status"] = "low-confidence"
-                counts["low-confidence"] += 1
-                record(row, checkpoint=False)
-                return row
-
-            async with page_sem:
+            async def download(res: dict) -> tuple[Optional[bytes], str]:
                 try:
-                    if res["image_url"].startswith(("http://", "https://")):
-                        payload = await fetch_image(http, wiki, res["image_url"])
-                    else:
-                        # A picture that was picked by eye and already sits in
-                        # the library's image folder.
-                        payload = Path(res["image_url"]).read_bytes()
+                    async with page_sem:
+                        if res["image_url"].startswith(("http://", "https://")):
+                            payload = await fetch_image(http, wiki, res["image_url"])
+                        else:
+                            # A picture that was picked by eye and already sits in
+                            # the library's image folder.
+                            payload = Path(res["image_url"]).read_bytes()
                 except Exception as exc:
+                    return None, "download failed: %s" % type(exc).__name__
+                jpeg = _normalize_image_to_jpeg_bytes(payload, max_edge=ARTIST_IMAGE_MAX_SIZE)
+                if not jpeg:
+                    return None, "not a decodable image"
+                return jpeg, ""
+
+            for _attempt in range(3):
+                if picked:
+                    # A picture that was chosen by eye for this artist.
+                    res = {"status": "ok", "image_url": picked,
+                           "source": "hand-picked-portrait", "confidence": "high",
+                           "reason": "picture picked by eye for this artist",
+                           "matched_label": artist["name"]}
+                else:
+                    res = await resolve(apple, wiki, deezer, artist,
+                                        sources - banned,
+                                        use_commons=not args.no_commons,
+                                        exact_name=apple_overrides.get(artist["id"]))
+
+                row = {
+                    "id": artist["id"], "name": artist["name"],
+                    "status": res["status"], "source": res.get("source"),
+                    "confidence": res.get("confidence"), "reason": res.get("reason"),
+                    "matched_label": res.get("matched_label"),
+                    "matched_description": res.get("matched_description"),
+                    "image_url": res.get("image_url"), "reference": res.get("reference"),
+                    "rejected_candidates": res.get("rejected_candidates", [])[:6],
+                    "rejected_sources": sorted(banned),
+                }
+
+                if res["status"] != "ok":
+                    counts["skipped" if res["status"] == "skipped" else
+                           ("no-image" if res["status"] == "no-image" else "error")] += 1
+                    record(row)
+                    return row
+
+                conf = res.get("confidence") or "low"
+                if CONFIDENCE_ORDER.get(conf, 0) < CONFIDENCE_ORDER[min_conf]:
+                    row["status"] = "low-confidence"
+                    counts["low-confidence"] += 1
+                    record(row, checkpoint=False)
+                    return row
+
+                jpeg, failure = await download(res)
+                if jpeg is None:
                     row["status"] = "download-failed"
-                    row["reason"] = "download failed: %s" % type(exc).__name__
+                    row["reason"] = failure
                     counts["download-failed"] += 1
                     record(row, checkpoint=False)
                     return row
 
-            jpeg = _normalize_image_to_jpeg_bytes(payload, max_edge=ARTIST_IMAGE_MAX_SIZE)
-            if not jpeg:
-                row["status"] = "download-failed"
-                row["reason"] = "not a decodable image"
-                counts["download-failed"] += 1
-                record(row, checkpoint=False)
-                return row
-
-            # Apple's "no artwork" tile is a flat colour block. Storing it is
-            # worse than the letter placeholder, so fall back to Wikimedia.
-            if res.get("source", "").startswith("apple-og-image"):
-                spread, edges = image_stats(jpeg)
-                if looks_flat(spread, edges):
-                    row["colour_spread"] = round(spread, 1)
-                    row["edge_energy"] = round(edges, 1)
-                    counts["flat-placeholder"] = counts.get("flat-placeholder", 0) + 1
-                    if apple is not None and "wiki" in sources and wiki is not None:
-                        try:
-                            fallback = await resolve_wiki(wiki, artist["name"],
-                                                         use_commons=not args.no_commons)
-                        except Exception:
-                            fallback = {}
-                        if fallback.get("status") == "ok":
-                            try:
-                                fb_payload = await fetch_image(http, wiki, fallback["image_url"])
-                                fb_jpeg = _normalize_image_to_jpeg_bytes(
-                                    fb_payload, max_edge=ARTIST_IMAGE_MAX_SIZE)
-                            except Exception:
-                                fb_jpeg = None
-                            if fb_jpeg:
-                                row.update({
-                                    "status": "ok", "source": fallback.get("source"),
-                                    "confidence": fallback.get("confidence"),
-                                    "reason": "Apple placeholder -> " + str(fallback.get("reason")),
-                                    "reference": fallback.get("reference"),
-                                    "matched_label": fallback.get("matched_label"),
-                                    "matched_description": fallback.get("matched_description"),
-                                    "image_url": fallback.get("image_url"),
-                                })
-                                payload, jpeg = fb_payload, fb_jpeg
-                                by_source[row["source"]] = by_source.get(row["source"], 0) + 1
-                            else:
-                                row["status"] = "flat-placeholder"
-                        else:
-                            row["status"] = "flat-placeholder"
-                    else:
+                # A service's "no artwork" tile is a flat colour block.
+                # Storing it is worse than the letter placeholder, so the
+                # source that produced it is set aside and the next one is
+                # asked for a real picture.
+                if res.get("source", "").startswith(("apple-og-image", "deezer-")):
+                    spread, edges = image_stats(jpeg)
+                    if looks_flat(spread, edges):
+                        row["colour_spread"] = round(spread, 1)
+                        row["edge_energy"] = round(edges, 1)
+                        counts["flat-placeholder"] = counts.get("flat-placeholder", 0) + 1
+                        if res.get("source_key"):
+                            banned.add(res["source_key"])
+                            continue
                         row["status"] = "flat-placeholder"
-                    if row["status"] == "flat-placeholder":
-                        row["reason"] = ("Apple returned a flat placeholder "
+                        row["reason"] = ("service returned a flat placeholder "
                                          "(spread %.1f, edges %.1f)" % (spread, edges))
                         record(row, checkpoint=False)
                         return row
 
-            if not args.dry_run:
-                dest = IMAGE_DIR / ("%d.jpg" % artist["id"])
-                tmp = dest.with_suffix(".jpg.tmp")
-                tmp.write_bytes(jpeg)
-                tmp.replace(dest)
-                writer.queue(str(dest.resolve()), artist["id"])
-                row["stored_path"] = str(dest.resolve())
-                row["bytes"] = len(jpeg)
-            counts["ok"] += 1
-            counts["stored"] += 1
-            by_source[res["source"]] = by_source.get(res["source"], 0) + 1
-            record(row)
+                if not args.dry_run:
+                    dest = IMAGE_DIR / ("%d.jpg" % artist["id"])
+                    tmp = dest.with_suffix(".jpg.tmp")
+                    tmp.write_bytes(jpeg)
+                    tmp.replace(dest)
+                    writer.queue(str(dest.resolve()), artist["id"])
+                    row["stored_path"] = str(dest.resolve())
+                    row["bytes"] = len(jpeg)
+                counts["ok"] += 1
+                counts["stored"] += 1
+                by_source[res["source"]] = by_source.get(res["source"], 0) + 1
+                record(row)
+                return row
+
+            # Every source that answered did so with a stand-in tile.
+            row["status"] = "flat-placeholder"
+            row["reason"] = "every source returned a flat placeholder"
+            record(row, checkpoint=False)
             return row
 
         try:
@@ -1125,6 +1442,7 @@ async def run(args: argparse.Namespace) -> int:
         "counts": counts,
         "by_source": by_source,
         "itunes_requests": apple.calls if apple else 0,
+        "deezer_requests": deezer.calls if deezer else 0,
         "wikimedia_requests": wiki.calls if wiki else 0,
         "elapsed_seconds": round(time.time() - started, 1),
     }

@@ -135,5 +135,132 @@ class AppleArtistImageTests(unittest.TestCase):
         self.assertEqual(found["source"], "apple-og-image-generic")
 
 
+class UpscaleTests(unittest.TestCase):
+    """Apple serves a picture only with a size segment.
+
+    The regex that finds the artist picture stops before that segment, so
+    the URL it returns has none and Apple answers 404 for it. The size
+    segment therefore has to be put back on.
+    """
+
+    BASE = ("https://is1-ssl.mzstatic.com/image/thumb/AMCArtistImages221/v4/32/2f/40/"
+            "322f40b2-6f05-567a-c2a1-ac7de53f3599/"
+            "2321431d-ddfd-46a5-89bd-d61f6527ec31_file_cropped.png")
+
+    def test_size_segment_is_appended_when_missing(self):
+        out = backfill._upscale(self.BASE)
+        self.assertTrue(out.endswith("/800x800bb.jpg"))
+        self.assertIn("file_cropped.png", out)
+
+    def test_existing_size_segment_is_replaced(self):
+        out = backfill._upscale(self.BASE + "/1200x630cw.png")
+        self.assertTrue(out.endswith("/800x800bb.jpg"))
+        self.assertNotIn("1200x630cw", out)
+
+    def test_non_apple_url_is_left_alone(self):
+        url = "https://api.deezer.com/artist/1/image?size=big"
+        self.assertEqual(backfill._upscale(url), url)
+
+
+class TitleKeyTests(unittest.TestCase):
+    def test_release_tag_is_ignored(self):
+        self.assertIn("red", backfill._title_keys("Red - Single"))
+        self.assertEqual(backfill._title_keys("Red - Single"),
+                         backfill._title_keys("Red"))
+
+    def test_feature_suffix_still_meets_the_plain_title(self):
+        keys = backfill._title_keys("The Time We Dream (feat. FDSM Elite-Voice Choir)")
+        self.assertIn("thetimewedream", keys)
+
+    def test_different_titles_do_not_meet(self):
+        self.assertFalse(backfill._title_keys("Meet You")
+                         & backfill._title_keys("Meet Yourself"))
+
+
+class DeezerMatchTests(unittest.TestCase):
+    """Deezer is matched by discography, not by name alone.
+
+    謝凌君 is filed by Deezer as "Lisa Djaati" and the library's albums
+    turn up under exactly that name, so the album titles are what prove the
+    two are the same act.
+    """
+
+    def _client(self, albums_by_id):
+        import httpx
+
+        def handler(request):
+            path = request.url.path
+            if path == "/search/artist":
+                return httpx.Response(200, json={"data": [
+                    {"id": 1, "name": "Lisa Djaati",
+                     "picture_big": "https://img/1.jpg"},
+                    {"id": 2, "name": "Someone Else",
+                     "picture_big": "https://img/2.jpg"},
+                ]})
+            if path.startswith("/artist/") and path.endswith("/albums"):
+                aid = int(path.split("/")[2])
+                return httpx.Response(200, json={
+                    "data": [{"title": t} for t in albums_by_id.get(aid, [])]})
+            return httpx.Response(404, json={})
+
+        return httpx.AsyncClient(transport=httpx.MockTransport(handler))
+
+    def _picture(self, albums_by_id, library_albums):
+        async def run():
+            async with self._client(albums_by_id) as client:
+                deezer = backfill.Deezer(client)
+                return await deezer.artist_picture(["謝凌君"], library_albums)
+
+        return asyncio.run(run())
+
+    def test_album_overlap_identifies_a_differently_named_act(self):
+        found = self._picture(
+            {1: ["World Of Silver & Gold", "漣漪效應", "Re-Vox"],
+             2: ["Unrelated Record"]},
+            ["漣漪效應", "Re-Vox", "World Of Silver & Gold", "漫漫"])
+        self.assertIsNotNone(found)
+        self.assertEqual(found["deezer_name"], "Lisa Djaati")
+        self.assertEqual(found["source"], "deezer-artist-picture")
+        self.assertEqual(found["confidence"], "high")
+        self.assertGreaterEqual(found["album_overlap"], 2)
+
+    def test_act_without_overlapping_albums_is_not_used(self):
+        found = self._picture(
+            {1: ["Totally Different"], 2: ["Also Different"]},
+            ["漣漪效應", "Re-Vox"])
+        self.assertIsNone(found)
+
+
+class ResolveSourceTests(unittest.TestCase):
+    """Apple's stand-in artwork must not end up on an artist page."""
+
+    def test_generic_og_image_falls_through_to_the_next_source(self):
+        class StubApple:
+            async def artist_image(self, name, min_level="alias", exact_name=None):
+                return {"url": "https://music.apple.com/assets/meta/apple-music.png",
+                        "apple_name": "測試歌手", "artist_id": 1,
+                        "match_level": "exact",
+                        "source": "apple-og-image-generic"}
+
+        class StubDeezer:
+            async def artist_picture(self, names, library_albums):
+                return {"url": "https://img/1.jpg", "deezer_name": "測試歌手",
+                        "deezer_id": 7, "match_level": "exact",
+                        "album_overlap": 2, "matched_albums": ["A", "B"],
+                        "source": "deezer-artist-picture",
+                        "confidence": "high",
+                        "reason": "Deezer artist picture, 2 album title(s) match the library (A; B)",
+                        "reference": "https://www.deezer.com/artist/7"}
+
+        async def run():
+            artist = {"id": 1, "name": "測試歌手", "aliases": [], "albums": ["A", "B"]}
+            return await backfill.resolve(StubApple(), None, StubDeezer(), artist,
+                                          {"apple", "deezer"}, use_commons=False)
+
+        found = asyncio.run(run())
+        self.assertEqual(found["source"], "deezer-artist-picture")
+        self.assertEqual(found["status"], "ok")
+
+
 if __name__ == "__main__":
     unittest.main()
