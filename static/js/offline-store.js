@@ -1,8 +1,9 @@
-/* VELVET offline-store: playlists downloaded to this device for offline playback.
+/* VELVET offline-store: playlists and albums downloaded to this device for offline playback.
  * Classic script (globals) like the other extracted modules.
  *
- * Tracks are stored once per track id; playlists are manifests that reference
- * them, so removing one playlist never deletes a track another still uses.
+ * Tracks are stored once per track id; playlists and albums are manifests
+ * that reference them, so removing one never deletes a track another still
+ * uses. Playlists are keyed by their numeric id, albums by "album:<id>".
  * Audio is streamed into IndexedDB in bounded chunks (a hi-res FLAC or a
  * transcoded WAV can be hundreds of MB; holding it whole in memory gets the
  * PWA killed on iOS) and reassembled as one Blob of disk-backed parts.
@@ -15,6 +16,10 @@ const OFFLINE_WARM_LIMIT = 4;
 const OFFLINE_FETCH_ATTEMPTS = 3;
 const OFFLINE_CHUNK_BYTES = 4 * 1024 * 1024;
 const OFFLINE_RETRY_DELAYS_MS = [1000, 3000];
+
+// Album manifests share the playlists store under a string key.
+const offlineManifestKey = id => (String(id).startsWith('album:') ? String(id) : Number(id));
+const isOfflineAlbumKey = id => typeof id === 'string';
 
 function createOfflineManager({
   store, fetchTrack, createObjectURL, revokeObjectURL, persist = null,
@@ -183,7 +188,7 @@ function createOfflineManager({
 
     async download(playlist) {
       if (current) return { downloaded: 0, failed: 0, stopped: 'busy' };
-      const playlistId = Number(playlist.id);
+      const playlistId = offlineManifestKey(playlist.id);
       const trackIds = playlist.tracks.map(track => Number(track.id));
       current = { playlistId, done: 0, total: trackIds.length, paused: false, controller: new AbortController() };
       const result = { downloaded: 0, failed: 0, stopped: null };
@@ -194,6 +199,7 @@ function createOfflineManager({
             id: playlistId,
             name: playlist.name || '',
             description: playlist.description || '',
+            info: playlist.info || null, // Album page details, for opening it offline.
             tracks: playlist.tracks,
             trackIds,
             savedAt: Date.now(),
@@ -240,7 +246,7 @@ function createOfflineManager({
     },
 
     async remove(playlistId) {
-      const id = Number(playlistId);
+      const id = offlineManifestKey(playlistId);
       const manifest = await store.getPlaylist(id);
       await store.deletePlaylist(id);
       if (!manifest) return;
@@ -248,9 +254,11 @@ function createOfflineManager({
       emit();
     },
 
-    getPlaylist: playlistId => store.getPlaylist(Number(playlistId)),
+    getPlaylist: playlistId => store.getPlaylist(offlineManifestKey(playlistId)),
 
-    listPlaylists: () => store.listPlaylists(),
+    listPlaylists: async () => (await store.listPlaylists()).filter(saved => !isOfflineAlbumKey(saved.id)),
+
+    listAlbums: async () => (await store.listPlaylists()).filter(saved => isOfflineAlbumKey(saved.id)),
 
     async usage() {
       return (await store.listTracks()).reduce((total, record) => total + (record.size || 0), 0);

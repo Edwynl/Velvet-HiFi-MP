@@ -580,6 +580,30 @@ const DEFAULT_ALBUM_DECADE = '2020s';
 const offeredAlbumFilter = (values, wanted) =>
   (Array.isArray(values) && values.includes(wanted)) ? wanted : '';
 
+function renderSavedAlbums(vc, saved) {
+  vc.innerHTML = `
+    <div class="topbar">${getTopNavHtml('albums')}</div>
+    <div class="section-header">
+      <div class="section-title">Albums</div>
+      <div class="section-sub">${saved.length} album${saved.length === 1 ? '' : 's'} saved on this device</div>
+    </div>
+    <div class="grid" id="albums-grid"></div>
+  `;
+  const grid = vc.querySelector('#albums-grid');
+  saved.forEach(copy => {
+    const card = makeAlbumCard({ ...copy.info, title: copy.info?.title || copy.name });
+    // The card's own play button asks the server; play the saved tracks instead.
+    const play = card.querySelector('.card-play-btn');
+    const offlinePlay = play.cloneNode(true);
+    play.replaceWith(offlinePlay);
+    offlinePlay.addEventListener('click', event => {
+      event.stopPropagation();
+      if (copy.tracks.length) playTrack(copy.tracks[0], copy.tracks, 0);
+    });
+    grid.appendChild(card);
+  });
+}
+
 async function renderAlbums(vc) {
   const isMobile = isCompactLayout();
   // Server filters and returns only one page; the device never receives 15k albums.
@@ -590,6 +614,11 @@ async function renderAlbums(vc) {
     + '&sort=' + DEFAULT_ALBUM_SORT
     + '&genre=' + encodeURIComponent(DEFAULT_ALBUM_GENRE)
     + '&decade=' + encodeURIComponent(DEFAULT_ALBUM_DECADE));
+  if (!firstPage && window.VelvetOffline) {
+    // Server unreachable: list the albums saved on this device instead.
+    const saved = await window.VelvetOffline.listAlbums().catch(() => []);
+    if (saved.length) { renderSavedAlbums(vc, saved); return; }
+  }
   let allAlbums = firstPage?.albums || [];
   let totalAlbums = Number(firstPage?.total || 0);
   const genres = firstPage?.genres || [];
@@ -2336,16 +2365,24 @@ function offlinePlaylistLabel(status, job) {
   return status.missing ? `+${status.missing}` : 'Saved';
 }
 
-// Wires #offline-playlist-btn and the row markers; returns a re-sync function.
-function attachOfflinePlaylistControls(vc, playlist) {
+function offlineAlbumLabel(status, job) {
+  if (job) return `Downloading ${job.done}/${job.total}`;
+  if (!status.downloaded) return 'Download offline';
+  return status.missing ? `Download ${status.missing} more` : 'Remove offline copy';
+}
+
+// Wires one download control and the row markers for a playlist or an album
+// (collection.id is the offline key: the playlist id, or "album:<id>").
+// `label` is the element whose text shows the state; `announce` adds toasts
+// for a control that sits in a menu that closes on tap. Returns a re-sync.
+function attachOfflineControls({ vc, button, label = button, collection, rowSelector, labelFor, announce = false }) {
   const offline = window.VelvetOffline;
-  const button = vc.querySelector('#offline-playlist-btn');
   if (!offline || !button) return () => {};
-  const playlistId = Number(playlist.id);
-  const ownJob = job => (job && Number(job.playlistId) === playlistId ? job : null);
+  const key = collection.id;
+  const ownJob = job => (job && job.playlistId === key ? job : null);
   const sync = (job = ownJob(offline.job())) => {
-    button.textContent = offlinePlaylistLabel(offline.status(playlist), job);
-    vc.querySelectorAll('#playlist-tracks-list .track-item').forEach(row => {
+    label.textContent = labelFor(offline.status(collection), job);
+    vc.querySelectorAll(rowSelector).forEach(row => {
       row.classList.toggle('is-offline', offline.has(row.dataset.trackId));
     });
   };
@@ -2353,37 +2390,70 @@ function attachOfflinePlaylistControls(vc, playlist) {
     if (!button.isConnected) { unsubscribe(); return; }
     sync(ownJob(job));
   });
-  button.addEventListener('click', async () => {
-    if (ownJob(offline.job())) { offline.pause(); return; }
-    const status = offline.status(playlist);
-    if (status.total && !status.missing) {
-      showConfirm({
-        title: 'Remove offline copy?',
-        body: `Remove the downloaded audio of “${escHtml(playlist.name)}” from this device?`,
-        confirmText: 'Remove',
-        onConfirm: async () => {
-          await offline.remove(playlistId);
-          if (button.isConnected) sync();
-        },
-      });
-      return;
-    }
+  const removeCopy = async () => {
+    await offline.remove(key);
+    if (button.isConnected) sync();
+  };
+  const startDownload = async () => {
+    if (announce) showToast('Downloading for offline…');
     let result;
     try {
-      result = await offline.download(playlist);
+      result = await offline.download(collection);
     } catch (error) {
       console.warn('[VELVET] Offline download could not start:', error);
       showToast('Download could not start');
       if (button.isConnected) sync();
       return;
     }
-    if (result.stopped === 'busy') showToast('Another playlist is downloading');
+    if (result.stopped === 'busy') showToast('Another download is in progress');
     else if (result.stopped === 'quota') showToast('Not enough storage on this device');
     else if (result.failed) showToast(`${result.failed} track${result.failed === 1 ? '' : 's'} could not be downloaded`);
+    else if (announce && result.stopped === 'paused') showToast('Download paused');
+    else if (announce && !result.stopped) showToast('Saved for offline');
     if (button.isConnected) sync();
+  };
+  button.addEventListener('click', () => {
+    if (ownJob(offline.job())) { offline.pause(); return; }
+    const status = offline.status(collection);
+    if (status.total && !status.missing) {
+      showConfirm({
+        title: 'Remove offline copy?',
+        body: `Remove the downloaded audio of “${escHtml(collection.name)}” from this device?`,
+        confirmText: 'Remove',
+        onConfirm: removeCopy,
+      });
+      return;
+    }
+    if (status.downloaded) {
+      // Partly saved: finish it, or free what is already on the device.
+      const close = showConfirm({
+        title: 'Offline copy',
+        body: `${status.downloaded} of ${status.total} tracks are saved on this device.`,
+        extra: '<button type="button" class="btn btn-ghost" id="offline-delete-partial" style="width:100%;justify-content:center;margin-top:14px;color:#ff6b6b">Delete downloaded</button>',
+        confirmText: 'Continue download',
+        confirmTone: 'gold',
+        onConfirm: () => { startDownload(); }, // The dialog closes now; progress shows on the control.
+      });
+      document.getElementById('offline-delete-partial')?.addEventListener('click', () => {
+        close?.();
+        removeCopy();
+      });
+      return;
+    }
+    startDownload();
   });
   sync();
   return sync;
+}
+
+function attachOfflinePlaylistControls(vc, playlist) {
+  return attachOfflineControls({
+    vc,
+    button: vc.querySelector('#offline-playlist-btn'),
+    collection: { ...playlist, id: Number(playlist.id) },
+    rowSelector: '#playlist-tracks-list .track-item',
+    labelFor: offlinePlaylistLabel,
+  });
 }
 
 async function renderPlaylists(vc) {
@@ -2901,7 +2971,17 @@ async function renderAlbum(vc, { id }) {
       api(`/albums/${id}`),
       api(`/albums/${id}/credits`)
     ]);
-    _cacheData(cacheKey, { album, credits });
+    if (album) _cacheData(cacheKey, { album, credits });
+  }
+  const offline = window.VelvetOffline;
+  if (!album) {
+    // Server unreachable: open the copy saved on this device, if any.
+    const saved = await offline?.getPlaylist(`album:${id}`).catch(() => null);
+    if (!saved) {
+      vc.innerHTML = `<div class="empty-state"><div class="empty-state-title">Album not found</div></div>`;
+      return;
+    }
+    album = { ...saved.info, tracks: saved.tracks };
   }
   recordHomeVisit('album', album);
   const tracks = album.tracks || [];
@@ -2956,6 +3036,10 @@ async function renderAlbum(vc, { id }) {
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" style="width:15px;height:15px;flex-shrink:0"><path d="M22 17H2a3 3 0 0 0 0 6h20v-6zM2 5h20M6 5V3M18 5V3M16 17v-5a4 4 0 0 0-8 0v5"/></svg>
                 Album Radio
               </button>
+              ${offline ? `<button class="album-more-item" id="offline-album-btn">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" style="width:15px;height:15px;flex-shrink:0"><path d="M12 3v12M7 10l5 5 5-5M5 21h14"/></svg>
+                <span id="offline-album-label">Download offline</span>
+              </button>` : ''}
               <button class="album-more-item" id="search-itunes-btn">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" style="width:15px;height:15px;flex-shrink:0"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
                 Search Covers
@@ -3147,6 +3231,24 @@ async function renderAlbum(vc, { id }) {
   });
   container.appendChild(fragment);
 
+  attachOfflineControls({
+    vc,
+    button: vc.querySelector('#offline-album-btn'),
+    label: vc.querySelector('#offline-album-label'),
+    collection: {
+      id: `album:${album.id}`,
+      name: album.title || '',
+      info: {
+        id: album.id, title: album.title, artist_name: album.artist_name, artist_id: album.artist_id,
+        year: album.year, genre: album.genre, is_hires: album.is_hires, updated_at: album.updated_at,
+      },
+      tracks,
+    },
+    rowSelector: '#tracks-container .track-item',
+    labelFor: offlineAlbumLabel,
+    announce: true,
+  });
+
   // Play all
   UI['play-all-btn'].addEventListener('click', () => {
     if (tracks.length) playTrack(tracks[0], tracks, 0);
@@ -3291,6 +3393,7 @@ async function renderAlbum(vc, { id }) {
           const res = await api(`/albums/${album.id}?delete_files=${delFiles}`, { method: 'DELETE' });
           // api() returns null after toasting a refusal (e.g. 409 with reason).
           if (res?.success) {
+            await offline?.remove(`album:${album.id}`).catch(() => {});
             showToast(res.message || 'Album removed');
             navigate('albums');
             loadStats(); // Update sidebar counts

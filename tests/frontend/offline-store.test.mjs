@@ -119,6 +119,31 @@ const playlist = (id, ids) => ({ id, name: `P${id}`, tracks: ids.map(t => ({ id:
   assert.equal((await manager.listPlaylists()).length, 1);
 }
 
+// Albums are saved under their own "album:<id>" key: they never show up as
+// playlists, keep their page details, and share tracks with playlists.
+{
+  const { manager } = setup();
+  const jobs = [];
+  manager.onChange(job => jobs.push(job && job.playlistId));
+  await manager.download(playlist(5, [11, 22]));
+  await manager.download({ id: 'album:5', name: 'LP', info: { id: 5, title: 'LP', artist_name: 'X' },
+    tracks: [{ id: 22, title: 'T22' }, { id: 33, title: 'T33' }] });
+  assert.ok(jobs.includes('album:5'), 'Album jobs keep the string key');
+  const album = await manager.getPlaylist('album:5');
+  assert.equal(album.id, 'album:5');
+  assert.equal(album.info.artist_name, 'X');
+  assert.equal((await manager.getPlaylist(5)).name, 'P5', 'Playlist 5 and album 5 do not collide');
+  assert.deepEqual((await manager.listPlaylists()).map(p => p.id), [5]);
+  assert.deepEqual((await manager.listAlbums()).map(a => a.id), ['album:5']);
+  await manager.remove('album:5');
+  assert.equal(manager.has(33), false, 'Album-only tracks are freed');
+  assert.equal(manager.has(22), true, 'Tracks a playlist still uses are kept');
+  assert.equal(await manager.getPlaylist('album:5'), null);
+  await manager.download(playlist(6, [44]));
+  await manager.remove(5);
+  assert.equal(manager.has(22), false);
+}
+
 // Re-downloading a playlist that lost tracks on the server frees them, unless
 // another offline playlist still uses them.
 {
