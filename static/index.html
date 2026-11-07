@@ -2012,6 +2012,16 @@ input[type=range]::-webkit-slider-thumb:hover { background: var(--gold); }
 
 .playlist-toolbar-actions { margin-left: auto; display: flex; gap: 8px; }
 .playlist-toolbar .btn { width: 84px; min-height: 34px; padding: 8px 12px; justify-content: center; flex-shrink: 0; }
+/* 76px keeps Back + Download + Rename + Delete on one row at 430px. */
+.playlist-toolbar #offline-playlist-btn { width: 76px; padding-inline: 4px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+/* Downloaded track: a dot beside the number, absolutely placed so rows keep their size. */
+.track-item.is-offline .track-num { position: relative; }
+.track-item.is-offline .track-num::after {
+  content: ''; position: absolute; left: 2px; top: 50%; width: 4px; height: 4px;
+  margin-top: -2px; border-radius: 50%; background: var(--gold); pointer-events: none;
+}
+/* The playing indicator fills the number cell; the dot would sit on it. */
+.track-item.is-offline.playing .track-num::after { display: none; }
 .track-swipe-row { position: relative; overflow: hidden; border-radius: var(--radius); }
 .track-swipe-row .track-item {
   position: relative; z-index: 1; background-color: var(--bg);
@@ -7685,6 +7695,7 @@ input[type=range]::-webkit-slider-thumb:hover { background: var(--gold); }
 <script src="/static/js/library-cards.js"></script>
 <script src="/static/js/dsp-controls.js"></script>
 <script src="/static/js/vu-meter-engine.js"></script>
+<script src="/static/js/offline-store.js"></script>
 <script>
 // Load expensive Settings/Remote logic only when the user opens that screen.
 // Keep login/auth and core DSP modules in the initial shell; they are shared.
@@ -9594,17 +9605,101 @@ document.addEventListener('visibilitychange', () => {
 // so that HTML5 Audio continues on mobile lock screen. VU overlay calls initAudioAnalyser
 // when the user opens it. See "AudioContext / VU Meter Notes" above.
 
+// Offline downloads (static/js/offline-store.js). A downloaded track plays from
+// its blob: URL unless server-side EQ or upsampling is on; then it streams, and
+// the local copy is only the fallback for when the server cannot be reached.
+let browserForceLocal = false;
+let offlineCopyToastTrackId = null;
+window.addEventListener('online', () => { browserForceLocal = false; });
+
+// EQ, upsampling and ReplayGain are all applied by the server.
+function browserHasServerProcessing() {
+  return !!state.dspProfile || (state.upsample || 'none') !== 'none' || (state.replaygain || 'off') !== 'off';
+}
+
+function browserPrefersLocal() {
+  return browserForceLocal || !browserHasServerProcessing();
+}
+
+// The fallback lasts until the server answers again. Tailscale dropping
+// leaves navigator.onLine true, so the 'online' event alone never ends it.
+function recheckServerAfterOfflineFallback() {
+  if (!browserForceLocal) return;
+  probeServerReachable().then(reachable => { if (reachable) browserForceLocal = false; });
+}
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') recheckServerAfterOfflineFallback();
+});
+
+function localPlaybackUrl(trackId) {
+  const offline = window.VelvetOffline;
+  if (!offline?.has(trackId) || !browserPrefersLocal()) return '';
+  return offline.urlFor(trackId);
+}
+
+function probeServerReachable(timeoutMs = 3000) {
+  if (navigator.onLine === false) return Promise.resolve(false);
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  return fetch('/api/security/status', { cache: 'no-store', signal: controller.signal })
+    .then(response => response.ok, () => false)
+    .finally(() => clearTimeout(timer));
+}
+
+// A streamed track with a local copy failed (play() rejected or a media
+// error). Resolves { outcome, played }: 'local' after switching to the copy
+// because the server is unreachable (played: that playback's result),
+// 'reachable' when the stream itself is the problem, or 'stale' when another
+// track took over. Both failure paths share one probe and one local restart.
+let offlineFallbackProbe = null;
+let offlineFallbackPlayback = null;
+function fallBackToOfflineCopy(track, resumeTime) {
+  if (!offlineFallbackProbe) {
+    offlineFallbackProbe = probeServerReachable().finally(() => { offlineFallbackProbe = null; });
+  }
+  return offlineFallbackProbe.then(reachable => {
+    if (state.currentTrack && state.currentTrack.id !== track.id) return { outcome: 'stale', played: null };
+    if (reachable) return { outcome: 'reachable', played: null };
+    if (!browserForceLocal) {
+      browserForceLocal = true;
+      offlineFallbackPlayback = startBrowserPlayback(track, { resumeTime }).catch(() => false);
+    }
+    return { outcome: 'local', played: offlineFallbackPlayback };
+  });
+}
+
+function canFallBackToOfflineCopy(track) {
+  return !!track && !browserForceLocal && !!window.VelvetOffline?.has(track.id) &&
+    !String(audio.src).startsWith('blob:');
+}
+
 async function startBrowserPlayback(track, { resumeTime = null, token = null } = {}) {
   const playbackToken = token ?? ++browserPlaybackToken;
+  // Warm local copies (see playTrack) keep play() synchronous within the tap.
+  const wantsLocal = !!window.VelvetOffline?.has(track.id) && browserPrefersLocal();
+  let localUrl = wantsLocal ? localPlaybackUrl(track.id) : '';
+  const localWasAwaited = wantsLocal && !localUrl;
+  if (localWasAwaited) localUrl = await window.VelvetOffline.load(track.id).catch(() => '');
   // Synchronous whenever a credential response delivered a ticket. Awaiting
   // is a last resort (ticket expired while the page slept); if the browser
   // then refuses play() for lack of a fresh gesture, ask for one more tap.
-  let ticket = authState.apiKey ? currentStreamTicket() : '';
-  const ticketWasAwaited = !!authState.apiKey && !ticket;
-  if (ticketWasAwaited) ticket = await refreshStreamTicket();
-  const streamOffset = Number.isFinite(resumeTime) && resumeTime > 0 && browserStreamNeedsOffset(track) ? resumeTime : 0;
-  const targetUrl = streamUrl(track.id, undefined, ticket) + (streamOffset ? `&start=${encodeURIComponent(streamOffset)}` : '');
+  let ticket = '';
+  let ticketWasAwaited = false;
+  if (!localUrl) {
+    ticket = authState.apiKey ? currentStreamTicket() : '';
+    ticketWasAwaited = !!authState.apiKey && !ticket;
+    if (ticketWasAwaited) ticket = await refreshStreamTicket();
+  }
+  const streamOffset = !localUrl && Number.isFinite(resumeTime) && resumeTime > 0 && browserStreamNeedsOffset(track) ? resumeTime : 0;
+  const targetUrl = localUrl ||
+    streamUrl(track.id, undefined, ticket) + (streamOffset ? `&start=${encodeURIComponent(streamOffset)}` : '');
   if (playbackToken !== browserPlaybackToken) return false;
+  // The URL <audio> is about to use must outlive removals and warm() eviction.
+  window.VelvetOffline?.pin?.(localUrl ? track.id : null);
+  if (localUrl && browserHasServerProcessing() && offlineCopyToastTrackId !== track.id) {
+    offlineCopyToastTrackId = track.id;
+    showToast('Offline copy, EQ off');
+  }
   clearDspStartupHealthCheck();
 
   cancelBrowserPlaybackRecovery();
@@ -9649,11 +9744,21 @@ async function startBrowserPlayback(track, { resumeTime = null, token = null } =
     await audio.play();
     // Keep VU audio in sync with the new playback state / src
     syncVUAudioToPlayback();
-    scheduleDspStartupHealthCheck(playbackToken);
+    if (!localUrl) scheduleDspStartupHealthCheck(playbackToken);
   } catch (error) {
     if (playbackToken !== browserPlaybackToken) return false;
     reportBrowserAudio('play-rejected', error);
-    if (state.dspProfile) {
+    // An unreachable server is not an EQ codec problem: try the local copy
+    // before the EQ fallback below changes the container or turns EQ off.
+    if (canFallBackToOfflineCopy(track) && error?.name !== 'NotAllowedError') {
+      const { outcome, played } = await fallBackToOfflineCopy(track, resumeTime);
+      // Report the local playback's result: callers must not announce a
+      // failure while the copy is playing.
+      if (outcome === 'local') return (await played) === true;
+      if (outcome === 'stale') return false;
+    }
+    if (playbackToken !== browserPlaybackToken) return false;
+    if (state.dspProfile && !localUrl) {
       const errorMessage = String(error?.message || '').toLowerCase();
       const likelyUnsupported =
         errorMessage.includes('not supported') ||
@@ -9669,6 +9774,10 @@ async function startBrowserPlayback(track, { resumeTime = null, token = null } =
     console.warn('[VELVET] Browser playback failed:', error?.message || error);
     if (ticketWasAwaited && error?.name === 'NotAllowedError') {
       showToast('Secure stream ready. Tap play again.');
+    } else if (localUrl && error?.name === 'NotAllowedError') {
+      // After an IndexedDB read, or a fallback started by a probe rather
+      // than a tap, iOS may want a fresh gesture.
+      showToast('Offline copy ready. Tap play again.');
     }
     state.playing = false;
     updatePlayBtnUI();
@@ -9695,6 +9804,11 @@ async function playTrack(track, queue, idx, { resume = false } = {}) {
   }
   state.queue    = queue || state.queue;
   state.queueIdx = idx   !== undefined ? idx : state.queueIdx;
+  // Prepare blob: URLs for this track and the next so neither a tap nor the
+  // lock-screen advance has to wait on IndexedDB before play().
+  const upNext = state.queue?.[state.queueIdx + 1];
+  window.VelvetOffline?.warm(upNext ? [track.id, upNext.id] : [track.id]).catch(() => {});
+  recheckServerAfterOfflineFallback(); // Applies from the next track on.
 
   // Only update player UI if this is a different track from what's currently playing.
   // This avoids expensive DOM updates (especially cover art reload) when resuming the
@@ -10307,13 +10421,27 @@ audio.addEventListener('pause', () => {
 audio.addEventListener('error', () => {
   reportBrowserAudio('media-error');
   const errCode = Number(audio.error?.code || 0);
-  if (errCode === 4 && state.dspProfile) {
+  const track = state.currentTrack;
+  // A downloaded track streaming with EQ: if the server is gone (Tailscale
+  // dropped, no signal), play the local copy instead of retrying the stream.
+  if (isBrowserZone() && canFallBackToOfflineCopy(track)) {
+    fallBackToOfflineCopy(track, browserPlaybackPosition()).then(outcome => {
+      if (outcome === 'reachable') handleBrowserAudioError(errCode);
+    });
+    return;
+  }
+  handleBrowserAudioError(errCode);
+});
+
+function handleBrowserAudioError(errCode) {
+  // A local copy plays without EQ, so its errors say nothing about the preset.
+  if (errCode === 4 && state.dspProfile && !String(audio.src).startsWith('blob:')) {
     const failures = noteDspError(state.dspProfile);
     if (failures >= 2 && attemptDspAutoFallback('media-src-not-supported')) return;
   }
   if (!canRecoverBrowserPlayback()) return;
   scheduleBrowserPlaybackRecovery('error', { delayMs: browserPlaybackRecoveryConfig.pauseDelayMs });
-});
+}
 
 audio.addEventListener('ended', async () => {
   if (isCastZone() || isNativeZone()) return; // Handle outside browser output
@@ -12340,6 +12468,11 @@ loadStats();
 loadDspProfiles();
 
 window.addEventListener('DOMContentLoaded', async () => {
+  // Offline downloads use the same short-lived stream ticket as <audio>.
+  window.VelvetOffline?.configure?.({
+    getTicket: async () => (authState.apiKey ? currentStreamTicket() || await refreshStreamTicket() : ''),
+  });
+  window.VelvetOffline?.init().catch(error => console.warn('[VELVET] Offline index unavailable:', error));
   // Refresh the cover-only HttpOnly cookie for clients with a saved API key.
   // Startup session refresh: also delivers the stream ticket before the first
   // navigation renders anything the user can tap.

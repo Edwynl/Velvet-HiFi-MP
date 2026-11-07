@@ -53,7 +53,7 @@ function request(path, method = 'GET') { return { url: key(path), method }; }
 
 await dispatch('install');
 assert.ok(await caches.match('/static/index.html'));
-assert.equal(networkCalls, 10, 'Install fetches only existing cacheable public assets');
+assert.equal(networkCalls, 11, 'Install fetches only existing cacheable public assets');
 cacheControl = 'private, NO-STORE';
 await dispatch('fetch', request('/'));
 assert.equal(await caches.match('/'), undefined, 'Root no-store must be respected');

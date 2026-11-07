@@ -1,5 +1,5 @@
 // VELVET - Service Worker for PWA
-const CACHE_NAME = 'velvet-v10';
+const CACHE_NAME = 'velvet-v11';
 const STATIC_ASSETS = [
   '/static/index.html',
   '/static/manifest.json',
@@ -10,7 +10,8 @@ const STATIC_ASSETS = [
   '/static/js/library-cards.js',
   '/static/js/dsp-controls.js',
   '/static/js/remote-settings.js',
-  '/static/js/vu-meter-engine.js'
+  '/static/js/vu-meter-engine.js',
+  '/static/js/offline-store.js'
 ];
 
 // Separate cache for thumbnails to avoid polluting main cache
